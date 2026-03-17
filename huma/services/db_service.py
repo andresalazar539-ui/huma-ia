@@ -50,7 +50,7 @@ async def ping() -> bool:
 async def get_client(client_id: str) -> ClientIdentity | None:
     """Busca identidade completa de um cliente."""
     resp = await run_in_threadpool(
-        lambda: get_supabase().table("clients").select("*").eq("id", client_id).execute()
+        lambda: get_supabase().table("clients").select("*").eq("client_id", client_id).execute()
     )
     if not resp.data:
         return None
@@ -67,7 +67,7 @@ async def get_client(client_id: str) -> ClientIdentity | None:
 async def update_client(client_id: str, updates: dict):
     """Atualiza campos de um cliente."""
     await run_in_threadpool(
-        lambda: get_supabase().table("clients").update(updates).eq("id", client_id).execute()
+        lambda: get_supabase().table("clients").update(updates).eq("client_id", client_id).execute()
     )
     log.info(f"Cliente atualizado | {client_id} | fields={list(updates.keys())}")
 
