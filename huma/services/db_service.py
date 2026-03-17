@@ -59,9 +59,9 @@ async def get_client(client_id: str) -> ClientIdentity | None:
     # Filtra só campos que existem no model
     valid_fields = {
         k: v for k, v in data.items()
-        if k != "id" and k in ClientIdentity.model_fields
+        if k in ClientIdentity.model_fields
     }
-    return ClientIdentity(client_id=client_id, **valid_fields)
+    return ClientIdentity(**valid_fields)
 
 
 async def update_client(client_id: str, updates: dict):
