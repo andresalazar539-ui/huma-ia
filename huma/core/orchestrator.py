@@ -152,7 +152,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
         classification = classify_message(unified_text, client_data, conv)
 
-        if classification.can_resolve_without_llm and classification.confidence >= 0.70:
+        if classification.can_resolve_without_llm and classification.confidence >= 0.95 and classification.msg_type.value == "greeting":
             # Resposta por regra — sem gastar IA
             ai_result = format_rule_response(classification, client_data, conv)
 
