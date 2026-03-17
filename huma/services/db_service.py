@@ -111,7 +111,7 @@ async def save_conversation(conv: Conversation):
         "updated_at": datetime.utcnow().isoformat(),
     }
     await run_in_threadpool(
-        lambda: get_supabase().table("conversations").upsert(data).execute()
+        lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
     )
 
 
