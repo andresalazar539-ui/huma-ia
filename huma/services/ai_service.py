@@ -452,10 +452,11 @@ async def validate_response(identity, reply, confidence):
 
         if not parsed.get("is_safe", True):
             log.warning(f"Alucinação detectada | reason={parsed.get('reason', '')}")
+            # Modo soft: avisa mas não bloqueia
             return {
-                "is_safe": False,
+                "is_safe": True,
                 "reason": parsed.get("reason", ""),
-                "corrected": identity.fallback_message,
+                "corrected": parsed.get("corrected", ""),
             }
 
         return {"is_safe": True}
