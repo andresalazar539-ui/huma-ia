@@ -386,13 +386,14 @@ Só "advance" se coletou TODOS os dados obrigatórios."""
         return result
 
     except json.JSONDecodeError:
-        log.warning(f"JSON inválido da IA | raw={raw[:200] if 'raw' in dir() else 'N/A'}")
-        if 'raw' in dir() and raw and len(raw.strip()) > 10:
+        log.warning(f"JSON inválido da IA | raw={raw[:200] if raw else 'N/A'}")
+        if raw and len(raw.strip()) > 10:
             clean = raw.strip().replace("```json", "").replace("```", "").strip()
-            if clean and not clean.startswith("{"):
+            lines = [p.strip() for p in clean.split("\n") if p.strip()]
+            if lines:
                 result = _fallback_result(identity.fallback_message)
                 result["reply"] = clean[:500]
-                result["reply_parts"] = [p.strip() for p in clean.split("\n\n") if p.strip()][:3]
+                result["reply_parts"] = lines[:3]
                 return result
         return _fallback_result(identity.fallback_message)
     except Exception as e:
