@@ -368,52 +368,8 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
 
 
 def _build_audio_with_name(conv, reply):
-    """
-    Gera texto curto e personalizado pro áudio.
-
-    Em vez de converter toda a resposta em áudio (longo e caro),
-    gera uma frase curta que fala o nome do lead e confirma a ação.
-    5-8 segundos. Custo irrisório. Efeito psicológico máximo.
-
-    "Oi Camila, acabei de gerar seu Pix aqui, tá? Dá uma olhadinha!"
-    """
-    # Busca nome nos fatos
-    lead_name = ""
-    for fact in conv.lead_facts:
-        if "nome" in fact.lower():
-            # Extrai o nome do fato "nome: Camila" ou "nome completo: Camila Silva"
-            parts = fact.split(":", 1)
-            if len(parts) > 1:
-                lead_name = parts[1].strip().split()[0]  # Primeiro nome
-                break
-
-    if not lead_name:
-        lead_name = ""
-
-    # Gera frase curta baseada no estágio e contexto
-    if "pix" in reply.lower() or "pagamento" in reply.lower() or "boleto" in reply.lower():
-        if lead_name:
-            return f"Oi {lead_name}, acabei de gerar seu pagamento aqui, tá? Dá uma olhadinha que tá tudo certo!"
-        return "Oi, acabei de gerar seu pagamento aqui. Dá uma olhadinha!"
-
-    if "agend" in reply.lower() or "horário" in reply.lower() or "marcar" in reply.lower():
-        if lead_name:
-            return f"Oi {lead_name}, agendamento confirmado! Te mandei todos os detalhes aqui na conversa."
-        return "Agendamento confirmado! Te mandei os detalhes aqui."
-
-    # Genérico — resumo curto
-    if lead_name:
-        # Pega primeira frase da resposta e simplifica
-        first_sentence = reply.split(".")[0].split("!")[0].split("?")[0]
-        if len(first_sentence) > 60:
-            first_sentence = first_sentence[:60]
-        return f"Oi {lead_name}, {first_sentence.lower().strip()}."
-
-    # Sem nome — usa resposta curta
-    short = reply.split(".")[0].split("!")[0]
-    if len(short) > 80:
-        short = short[:80]
-    return short
+    """Usa a resposta completa como áudio."""
+    return reply
 
 
 # ================================================================
