@@ -81,3 +81,5 @@ if not REDIS_URL:
     REDIS_URL = ""
     import logging
     logging.warning("REDIS_URL não configurado. Cache e rate limit desabilitados.")
+    # ── ElevenLabs ──
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
