@@ -548,14 +548,6 @@ def _should_send_audio(client_data, conv):
     if not client_data.voice_id:
         return False
     return conv.stage in set(client_data.audio_trigger_stages)
-    """Verifica se deve enviar áudio clonado."""
-    if SAFE_MODE:
-        return False
-    if not client_data.enable_audio:
-        return False
-    if not client_data.voice_id:
-        return False
-    return conv.stage in set(client_data.audio_trigger_stages)
 
 
 async def _select_voice(client_data, phone: str) -> str:
