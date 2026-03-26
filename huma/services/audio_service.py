@@ -28,7 +28,7 @@ async def generate_and_upload(text: str, voice_id: str) -> str | None:
     try:
         # Gera áudio via ElevenLabs
         audio_bytes = await run_in_threadpool(
-            lambda: _eleven.generate(
+            lambda: _get_eleven().generate(
                 text=text,
                 voice=voice_id,
                 model=ELEVENLABS_MODEL,
