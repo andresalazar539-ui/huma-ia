@@ -681,7 +681,7 @@ def _is_silent_hours(client_data) -> bool:
 
 _client_cache: dict[str, tuple] = {}  # {client_id: (data, timestamp)}
 _plan_cache: dict[str, tuple] = {}
-CACHE_TTL = 300  # 5 minutos
+CACHE_TTL = 0
 
 
 async def _get_client_cached(client_id: str):
