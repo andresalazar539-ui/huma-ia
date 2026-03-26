@@ -13,8 +13,9 @@ from huma.utils.logger import get_logger
 
 log = get_logger("audio")
 
-_eleven = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-
+def _get_eleven():
+    from huma.config import ELEVENLABS_API_KEY
+    return ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 async def generate_and_upload(text: str, voice_id: str) -> str | None:
     """
