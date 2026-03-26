@@ -56,10 +56,12 @@ async def get_client(client_id: str) -> ClientIdentity | None:
         return None
 
     data = resp.data[0]
-    # Filtra só campos que existem no model
+    log.info(f"DB raw | enable_audio={data.get('enable_audio')} | voice_id={data.get('voice_id')} | triggers={data.get('audio_trigger_stages')}")
     valid_fields = {
         k: v for k, v in data.items()
         if k in ClientIdentity.model_fields
+    }
+    return ClientIdentity(**valid_fields)
     }
     return ClientIdentity(**valid_fields)
 
