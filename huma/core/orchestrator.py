@@ -540,6 +540,15 @@ def _apply_stage_action(client_data, current_stage, action):
 
 def _should_send_audio(client_data, conv):
     """Verifica se deve enviar áudio clonado."""
+    log.info(f"Audio check | safe={SAFE_MODE} | enable={client_data.enable_audio} | voice={client_data.voice_id} | stage={conv.stage} | triggers={client_data.audio_trigger_stages}")
+    if SAFE_MODE:
+        return False
+    if not client_data.enable_audio:
+        return False
+    if not client_data.voice_id:
+        return False
+    return conv.stage in set(client_data.audio_trigger_stages)
+    """Verifica se deve enviar áudio clonado."""
     if SAFE_MODE:
         return False
     if not client_data.enable_audio:
