@@ -74,9 +74,18 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
         prompt += f"\nPERSONALIDADE: Você é {traits}.\n"
 
     if identity.use_emojis:
-        prompt += "Use emojis quando fizer sentido.\n"
+        prompt += (
+            "EMOJIS (regra rígida):\n"
+            "  - Máximo 1 emoji a cada 3-4 mensagens. NÃO em toda mensagem.\n"
+            "  - NUNCA no início da mensagem.\n"
+            "  - NUNCA junto com informação séria (preço, horário, endereço, dados).\n"
+            "  - OK em: celebração ('fechou! 🎉'), humor leve, saudação casual.\n"
+            "  - Se o lead NÃO usou emoji, você também NÃO usa.\n"
+            "  - Prefira: 😊 👍 🙏 — evite emojis obscuros ou infantis.\n"
+            "  - Na dúvida: NÃO use.\n"
+        )
     else:
-        prompt += "NUNCA use emojis.\n"
+        prompt += "NUNCA use emojis. Zero. Em nenhuma mensagem.\n"
 
     fields = identity.lead_collection_fields
     if not fields:
@@ -212,12 +221,14 @@ REGRAS ABSOLUTAS:
   2. NUNCA mencione concorrentes
   3. NUNCA use palavras proibidas
   4. Na dúvida: "{identity.fallback_message}"
-  5. Sem markdown, sem asteriscos, sem formatação
+  5. FORMATAÇÃO PROIBIDA: sem markdown, sem asteriscos, sem negrito, sem itálico, sem travessão (—), sem meia-risca (–), sem bullet points, sem listas numeradas. Escreva como brasileiro escreve no WhatsApp: texto corrido, simples, sem formatação nenhuma.
   6. NÃO avance no funil sem dados obrigatórios coletados
   7. FOCO NO NEGÓCIO: Se o lead perguntar sobre assuntos sem relação com {identity.business_name}, redirecione educadamente
   8. Cada mensagem sua tem UM micro-objetivo. Se não sabe o que quer alcançar, NÃO responda no automático
   9. ESPELHE o ritmo do lead. Curto com curto. Detalhado com detalhado
   10. NUNCA termine sem pergunta ou convite (exceto em "won" e "lost")
+  11. ANTI-REPETIÇÃO: releia o histórico ANTES de responder. Se você já disse algo, NÃO repita. Se o lead perguntou algo que já respondeu, reformule com palavras diferentes. Repetir a mesma frase é o erro mais óbvio de IA.
+  12. SOM DE HUMANO: use contrações (tá, pra, né, pro, tô). Varie o comprimento das frases. Comece frases de formas diferentes. Se todas as suas mensagens começam igual, você parece robô.
 
 ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 
