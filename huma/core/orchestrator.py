@@ -345,27 +345,24 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             elif action_type == "create_appointment":
                 await _handle_appointment_action(phone, action, client_data)
 
-        # 3. Áudio inteligente (v9.1 — throttle + anti-repetição)
+        # 3. Áudio inteligente (v9.2 — texto gerado na mesma chamada, mesma mente)
+        audio_text = ai_result.get("audio_text", "")
         sentiment = ai_result.get("sentiment", "neutral")
         if isinstance(sentiment, str):
             sentiment_value = sentiment
         else:
             sentiment_value = sentiment.value if hasattr(sentiment, "value") else "neutral"
 
-        intent = ai_result.get("intent", "neutral")
-        if not isinstance(intent, str):
-            intent = intent.value if hasattr(intent, "value") else "neutral"
-
-        audio_decision = _should_send_audio(
-            client_data, conv, sentiment_value, intent, reply,
-        )
-
-        if audio_decision["send"]:
-            audio_text = await _generate_audio_text(
-                conv, reply, client_data, sentiment_value,
+        # Só envia se o Claude gerou audio_text E os filtros passam
+        if audio_text and audio_text.strip():
+            audio_decision = _should_send_audio(
+                client_data, conv, sentiment_value,
             )
 
-            if audio_text:
+            if audio_decision["send"]:
+                # Limpa travessões e sanitiza
+                audio_text = audio_text.strip().replace('—', ',').replace('–', ',')
+
                 voice_id = await _select_voice(client_data, phone)
                 audio_url = await audio.generate_and_upload(
                     text=audio_text,
@@ -378,7 +375,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     await asyncio.sleep(3.0)
                     await wa.send_audio(phone, audio_url, client_id=cid)
                     await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
-                    await billing.log_usage(cid, billing.UsageType.ANTHROPIC_HAIKU, cost_usd=0.0005)
                     log.info(
                         f"Áudio enviado | {phone} | reason={audio_decision['reason']} | "
                         f"sentiment={sentiment_value} | words={len(audio_text.split())}"
@@ -386,92 +382,35 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 else:
                     log.warning(f"Áudio falhou na geração | {phone}")
             else:
-                log.warning(f"Texto do áudio não gerado | {phone}")
+                log.debug(
+                    f"Áudio pulado (filtro) | {phone} | reason={audio_decision['reason']}"
+                )
         else:
-            log.debug(
-                f"Áudio pulado | {phone} | reason={audio_decision['reason']}"
-            )
+            log.debug(f"Áudio pulado (Claude não gerou) | {phone}")
 
     except Exception as e:
         log.error(f"Envio erro | {phone} | {e}")
 
 
 # ================================================================
-# AUDIO DECISION MATRIX v9.1
+# AUDIO DECISION v9.2
 #
-# Throttle inteligente: máximo 1 áudio a cada 3 trocas.
-# Nunca na primeira interação. Nunca em conteúdo informacional.
-# Nunca quando lead tá com pressa ou frustrado.
+# O Claude já decide SE e O QUE dizer no áudio (campo audio_text).
+# Aqui só filtramos condições técnicas: SAFE_MODE, voice_id,
+# stage, sentiment, throttle.
 # ================================================================
-
-_INFORMATIONAL_KEYWORDS = {
-    "preço", "preco", "valor", "custa", "quanto",
-    "endereço", "endereco", "localização", "localizacao",
-    "horário", "horario", "funciona", "abre", "fecha",
-    "cnpj", "cpf", "pix", "boleto", "parcela",
-    "link", "site", "www", "http",
-    "telefone", "numero", "número", "contato",
-    "prazo", "entrega", "frete",
-}
-
-
-def _reply_is_informational(reply: str) -> bool:
-    """
-    Detecta se o reply contém informação que o lead precisa RELER.
-    Preço, endereço, dados de contato → só texto, sem áudio.
-    """
-    reply_lower = reply.lower()
-
-    import re
-    has_price = bool(re.search(r'r\$\s*[\d.,]+', reply_lower))
-    if has_price:
-        return True
-
-    word_count = 0
-    for keyword in _INFORMATIONAL_KEYWORDS:
-        if keyword in reply_lower:
-            word_count += 1
-            if word_count >= 2:
-                return True
-
-    return False
-
-
-def _lead_is_in_a_hurry(conv) -> bool:
-    """
-    Detecta se o lead está com pressa baseado no padrão de mensagens.
-    Msgs curtas = pressa = não vai ouvir áudio.
-    """
-    user_msgs = [
-        m["content"] for m in conv.history[-8:]
-        if m["role"] == "user"
-    ]
-
-    if len(user_msgs) < 2:
-        return False
-
-    last_msgs = user_msgs[-3:] if len(user_msgs) >= 3 else user_msgs
-    avg_words = sum(len(m.split()) for m in last_msgs) / len(last_msgs)
-
-    return avg_words < 5
 
 
 def _should_send_audio(
     client_data,
     conv,
     sentiment: str = "neutral",
-    intent: str = "neutral",
-    reply: str = "",
 ) -> dict:
     """
-    Decide se deve enviar áudio.
+    Filtros de infraestrutura pra envio de áudio.
 
-    v9.1 — Throttle inteligente:
-      - Máximo 1 áudio a cada 3 trocas de mensagem (6 msgs no histórico)
-      - Mínimo 6 mensagens antes do primeiro áudio
-      - Nunca quando lead tá frustrado
-      - Nunca em conteúdo informacional (preço, endereço)
-      - Nunca quando lead tá com pressa (msgs curtas)
+    v9.2: O Claude já decidiu SE e O QUE mandar no áudio (campo audio_text).
+    Aqui só verificamos condições técnicas e de throttle.
     """
     if SAFE_MODE:
         return {"send": False, "reason": "safe_mode"}
@@ -493,277 +432,13 @@ def _should_send_audio(
     if len(conv.history) < 6:
         return {"send": False, "reason": f"too_early_{len(conv.history)}_msgs"}
 
-    # THROTTLE: conta respostas da IA desde o início
-    # Só manda áudio a cada 3 respostas da IA (ou seja, a cada 3 trocas)
+    # Throttle: 1 áudio a cada 3 respostas da IA
     assistant_count = sum(1 for m in conv.history if m["role"] == "assistant")
     if assistant_count % 3 != 0:
-        return {"send": False, "reason": f"throttle_assistant_msg_{assistant_count}"}
-
-    # Conteúdo informacional — lead precisa reler, áudio não ajuda
-    if _reply_is_informational(reply):
-        return {"send": False, "reason": "informational_content"}
-
-    # Lead com pressa — msgs curtas, não vai ouvir áudio
-    if _lead_is_in_a_hurry(conv):
-        return {"send": False, "reason": "lead_in_a_hurry"}
+        return {"send": False, "reason": f"throttle_msg_{assistant_count}"}
 
     return {"send": True, "reason": f"ok_stage_{conv.stage}_sentiment_{sent}"}
 
-
-# ================================================================
-# GERAÇÃO DE TEXTO PRO ÁUDIO VIA CLAUDE v9.1
-#
-# O áudio é COMPLEMENTAR ao texto. Nunca repete.
-# Traz emoção, confiança, experiência — não informação.
-# ================================================================
-
-async def _generate_audio_text(
-    conv,
-    reply: str,
-    client_data,
-    sentiment: str,
-) -> str:
-    """
-    Usa Claude Haiku pra gerar texto de voice note sob medida.
-
-    v9.1 — Mudanças:
-      - Proibição ABSOLUTA de repetir conteúdo do texto
-      - Validação de overlap (>40% = fallback)
-      - max_tokens reduzido pra forçar concisão
-      - Instrução de complementaridade reforçada
-    """
-    lead_name = _extract_lead_name(conv.lead_facts)
-
-    recent_context = ""
-    for msg in conv.history[-6:]:
-        role = "Lead" if msg["role"] == "user" else "Você"
-        content = msg["content"][:120]
-        recent_context += f"{role}: {content}\n"
-
-    products_summary = ""
-    if client_data.products_or_services:
-        items = []
-        for p in client_data.products_or_services[:5]:
-            name = p.get("name", "")
-            desc = p.get("description", "")
-            if name:
-                items.append(f"{name}: {desc[:60]}" if desc else name)
-        products_summary = ", ".join(items)
-
-    faq_summary = ""
-    if client_data.faq:
-        faq_items = []
-        for item in client_data.faq[:3]:
-            q = item.get("question", item.get("q", ""))
-            a = item.get("answer", item.get("a", ""))
-            if q and a:
-                faq_items.append(f"P: {q[:50]} R: {a[:80]}")
-        faq_summary = "\n".join(faq_items)
-
-    lead_facts_text = ""
-    if conv.lead_facts:
-        lead_facts_text = ", ".join(conv.lead_facts[:6])
-
-    speech_patterns = ""
-    if client_data.speech_patterns:
-        speech_patterns = client_data.speech_patterns[:200]
-
-    prompt = f"""Você é {client_data.business_name}. Pessoa real. Dono do negócio.
-Você está mandando um VOICE NOTE curto no WhatsApp pra um cliente.
-
-SEU NEGÓCIO:
-{client_data.business_description or 'Não informado'}
-Tom: {client_data.tone_of_voice or 'Profissional e amigável'}
-{f'Produtos/serviços: {products_summary}' if products_summary else ''}
-{f'FAQ:{chr(10)}{faq_summary}' if faq_summary else ''}
-{f'Regras: {client_data.custom_rules[:150]}' if client_data.custom_rules else ''}
-{f'Seu jeito de falar: {speech_patterns}' if speech_patterns else ''}
-
-SOBRE O LEAD:
-{f'Nome: {lead_name}' if lead_name else 'Nome ainda não descoberto'}
-{f'O que você sabe: {lead_facts_text}' if lead_facts_text else 'Poucos dados ainda'}
-Sentimento agora: {sentiment}
-Estágio: {conv.stage}
-
-CONVERSA RECENTE:
-{recent_context}
-
-O QUE VOCÊ JÁ MANDOU POR TEXTO (o lead JÁ LEU isso):
-"{reply[:250]}"
-
-===== REGRA MAIS IMPORTANTE =====
-O áudio é COMPLEMENTAR ao texto. O lead JÁ LEU a mensagem acima.
-Se você repetir QUALQUER informação que já está no texto, o lead vai pensar "isso é um robô repetindo a mesma coisa".
-
-O áudio deve trazer algo NOVO:
-- Se o texto respondeu a pergunta: áudio traz EMOÇÃO, CONFIANÇA, EXPERIÊNCIA PESSOAL
-- Se o texto deu preço: áudio fala de VALOR, EXPERIÊNCIA, como o paciente vai se sentir
-- Se o texto explicou procedimento: áudio conta uma HISTÓRIA curta de outro paciente (sem nome)
-- Se o texto agendou: áudio demonstra ENTUSIASMO genuíno pelo encontro
-
-O ÁUDIO NÃO É UM RESUMO DO TEXTO. É UMA CAMADA A MAIS.
-=====================================
-
-COMO FALAR:
-- Vai direto, sem "Olá" nem "Oi, tudo bem?"
-- Expressões reais: "olha só", "sério", "fica tranquilo", "pode confiar", "então"
-- Termina com algo curto: "tá?", "beleza?", "me fala"
-- Tom de conversa, não de vendedor
-- Sem travessão, sem formatação
-- Varie o ritmo: misture frases curtas com longas
-- Use "..." pra pausas naturais entre ideias
-
-REGRAS:
-1. PROIBIDO repetir QUALQUER frase ou informação do texto. ZERO repetição.
-2. Entre 20 e 50 palavras. Curto. Voice note de 8-15 segundos.
-3. NÃO invente dados. Só use o que está listado acima.
-4. Sem emoji. Sem URL. Sem formatação.
-5. Nome do lead UMA vez se souber. Não force.
-6. Seja ESPECÍFICO ao negócio. Nunca genérico.
-
-RESPONDA APENAS O TEXTO DO VOICE NOTE. Nada mais."""
-
-    try:
-        from huma.config import AI_MODEL_FAST
-        client = ai._get_ai_client()
-        if not client:
-            return _fallback_audio_text(conv, reply, client_data, lead_name)
-
-        response = await client.messages.create(
-            model=AI_MODEL_FAST,
-            max_tokens=150,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        audio_text = response.content[0].text.strip()
-
-        # Remove aspas
-        audio_text = audio_text.strip('"').strip("'").strip('\u201c').strip('\u201d')
-
-        # Remove travessões
-        audio_text = audio_text.replace('—', ',').replace('–', ',')
-
-        # Validação: não pode ser longo demais (60 palavras = teto)
-        words = audio_text.split()
-        if len(words) > 60:
-            audio_text = " ".join(words[:50])
-            if audio_text[-1] not in '.!?':
-                audio_text += '.'
-
-        # Validação: não pode ser vazio ou muito curto
-        if len(audio_text) < 10:
-            log.warning(f"Áudio texto muito curto ({len(audio_text)} chars) — usando fallback")
-            return _fallback_audio_text(conv, reply, client_data, lead_name)
-
-        # Validação: checa se tá repetindo o texto
-        reply_words = set(reply.lower().split())
-        audio_words = set(audio_text.lower().split())
-        stopwords = {
-            "a", "o", "e", "de", "da", "do", "que", "pra", "pro", "com",
-            "no", "na", "em", "um", "uma", "te", "se", "é", "tá", "vai",
-            "vou", "você", "seu", "sua", "os", "as", "não", "sim",
-        }
-        reply_meaningful = reply_words - stopwords
-        audio_meaningful = audio_words - stopwords
-        if reply_meaningful and audio_meaningful:
-            overlap = len(audio_meaningful & reply_meaningful) / len(audio_meaningful)
-            if overlap > 0.4:
-                log.warning(f"Áudio repetindo texto ({overlap:.0%} overlap) — usando fallback")
-                return _fallback_audio_text(conv, reply, client_data, lead_name)
-
-        log.info(
-            f"Áudio texto gerado | words={len(audio_text.split())} | "
-            f"stage={conv.stage} | sentiment={sentiment}"
-        )
-        return audio_text
-
-    except Exception as e:
-        log.warning(f"Erro gerando texto do áudio via Claude | {e}")
-        return _fallback_audio_text(conv, reply, client_data, lead_name)
-
-
-def _fallback_audio_text(conv, reply: str, client_data, lead_name: str) -> str:
-    """
-    Fallback se o Claude falhar na geração do texto do áudio.
-    Usa dados reais do negócio quando possível. Nunca genérico.
-    """
-    core = _extract_core_message(reply)
-    stage = conv.stage
-
-    if stage == "won":
-        if lead_name:
-            return f"{lead_name}, fechou! Vou te mandar tudo certinho, qualquer coisa me chama aqui, beleza?"
-        return "Fechou! Vou te mandar tudo certinho, qualquer coisa me chama aqui, beleza?"
-
-    if stage == "closing":
-        if lead_name:
-            return f"{lead_name}, sério, acho que vai ser perfeito pra você. Me fala o que decidiu, tá?"
-        return f"Sério, acho que vai ser perfeito pra você. Me fala o que decidiu, tá?"
-
-    if lead_name:
-        return f"{lead_name}, {core}"
-    return core
-
-
-# ================================================================
-# HELPERS DE EXTRAÇÃO
-# ================================================================
-
-def _extract_lead_name(lead_facts: list[str]) -> str:
-    """Extrai o primeiro nome do lead a partir dos fatos coletados."""
-    import re
-
-    name_patterns = [
-        r"[Nn]ome[:\s]+(\w+)",
-        r"[Ss]e\s+chama\s+(\w+)",
-        r"[Nn]ome.completo[:\s]+(\w+)",
-        r"[Ll]ead[:\s]+(\w+)",
-    ]
-
-    for fact in lead_facts:
-        for pattern in name_patterns:
-            match = re.search(pattern, fact)
-            if match:
-                name = match.group(1).strip()
-                if len(name) >= 2 and name.lower() not in ("lead", "nome", "cliente", "user", "não", "nao"):
-                    return name.capitalize()
-
-    return ""
-
-
-def _extract_core_message(reply: str) -> str:
-    """Extrai a essência do reply em no máximo 25 palavras."""
-    import re
-
-    clean = re.sub(
-        r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF'
-        r'\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF'
-        r'\U00002702-\U000027B0\U00002600-\U000026FF'
-        r'\U0001F900-\U0001F9FF\U0001FA00-\U0001FAFF]+',
-        '', reply
-    )
-
-    clean = re.sub(r'https?://\S+', '', clean)
-    clean = clean.replace('*', '').replace('_', '').replace('`', '')
-    clean = re.sub(r'\s+', ' ', clean).strip()
-
-    if not clean:
-        return "Fico à disposição pra te ajudar!"
-
-    sentences = re.split(r'[.!?]+', clean)
-    sentences = [s.strip() for s in sentences if len(s.strip().split()) >= 3]
-
-    if not sentences:
-        words = clean.split()[:25]
-        return " ".join(words)
-
-    first = sentences[0]
-    words = first.split()
-
-    if len(words) <= 25:
-        return first
-
-    return " ".join(words[:25])
 
 
 # ================================================================
