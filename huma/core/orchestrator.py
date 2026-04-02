@@ -233,7 +233,14 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             user_content = f"[imagem: {unified_image}] {unified_text}".strip()
 
         conv.history.append({"role": "user", "content": user_content})
-        conv.history.append({"role": "assistant", "content": reply})
+
+        # Inclui audio_text no histórico pra o Claude saber o que já mandou por áudio
+        audio_text_for_history = ai_result.get("audio_text", "").strip()
+        if audio_text_for_history:
+            assistant_content = f"{reply} [áudio enviado: {audio_text_for_history[:150]}]"
+        else:
+            assistant_content = reply
+        conv.history.append({"role": "assistant", "content": assistant_content})
         conv.last_message_at = datetime.utcnow()
 
         await db.save_conversation(conv)
@@ -336,9 +343,37 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         else:
             sentiment_value = sentiment.value if hasattr(sentiment, "value") else "neutral"
 
-        # Decide se é modo audio-first ou texto-first
+        # Verifica se a mensagem ATUAL do lead pediu áudio
+        # (não confia no Claude — ele pode gerar audio_text longo sem o lead pedir)
+        _audio_request_words = {
+            "áudio", "audio", "voice", "voz", "gravar", "grava",
+            "dirigindo", "trânsito", "transito", "ouvir",
+            "manda um audio", "manda audio", "mandar audio",
+            "manda áudio", "mandar áudio", "manda um áudio",
+            "me explica por audio", "me explica por áudio",
+            "prefiro ouvir", "prefiro audio", "prefiro áudio",
+        }
+        last_user_msg = ""
+        for msg in reversed(conv.history):
+            if msg["role"] == "user":
+                last_user_msg = msg.get("content", "").lower() if isinstance(msg.get("content"), str) else ""
+                break
+
+        lead_requested_audio = any(w in last_user_msg for w in _audio_request_words)
+
         audio_word_count = len(audio_text.split()) if audio_text else 0
-        audio_is_substantial = audio_word_count >= 30  # Áudio com resposta completa
+        # Audio-first SÓ se o lead REALMENTE pediu áudio E o Claude gerou resposta longa
+        audio_is_substantial = lead_requested_audio and audio_word_count >= 30
+
+        # Se o Claude gerou audio_text longo mas o lead NÃO pediu, trata como complemento
+        if audio_word_count >= 30 and not lead_requested_audio:
+            # Trunca pra complemento curto (35 palavras max)
+            words = audio_text.split()[:35]
+            audio_text = " ".join(words)
+            if audio_text and audio_text[-1] not in '.!?':
+                audio_text += '.'
+            audio_word_count = len(audio_text.split())
+            log.debug(f"Audio truncado pra complemento | lead não pediu | words={audio_word_count}")
 
         # Checa se vai enviar áudio (filtros de infra)
         will_send_audio = False
