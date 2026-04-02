@@ -1,12 +1,15 @@
 # ================================================================
-# huma/core/orchestrator.py — Orquestrador principal v7
+# huma/core/orchestrator.py — Orquestrador principal v8.2
 #
-# Novidades:
-#   - Message buffer (brasileiro manda msg picada)
-#   - Middleware de créditos (debita antes de enviar)
-#   - Áudio com nome (personalizado no closing)
-#   - Silent hours
-#   - Delay humano 4-15s
+# Novidades v8.2 (nível máximo):
+#   - Texto do áudio gerado pelo Claude Haiku (não mais templates)
+#   - Decision matrix com leitura de ritmo do lead
+#   - Voice profiles emocionais passados pro audio_service
+#   - Detecção de mensagens informacionais (preço/endereço → sem áudio)
+#
+# Mantido:
+#   - Message buffer, middleware de créditos, silent hours
+#   - Delay humano 4-15s, outbound, funil, vozes regionais
 # ================================================================
 
 import asyncio
@@ -139,12 +142,6 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
         # ============================================================
         # CAMADA DE CLASSIFICAÇÃO INTELIGENTE (antes da LLM)
-        #
-        # Classifica a mensagem e tenta resolver sem chamar o Claude.
-        # "Qual o preço?" → responde da tabela de produtos. Sem IA.
-        # "Tenho medo de botox" → IA entra forte.
-        #
-        # 80% das mensagens são simples. 80% menos custo.
         # ============================================================
         from huma.services.conversation_intelligence import (
             classify_message, format_rule_response, log_classification,
@@ -165,7 +162,6 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 f"conf={classification.confidence:.2f} | sem_IA"
             )
         elif ia_limit_reached:
-            # Atingiu limite de IA pra esse lead hoje → resposta humana
             ai_result = {
                 "reply": f"Vou pedir pro {client_data.business_name.split()[0]} te atender pessoalmente, tá? Ele te responde em breve!",
                 "reply_parts": [f"Vou pedir pro {client_data.business_name.split()[0]} te atender pessoalmente, tá? Ele te responde em breve!"],
@@ -176,7 +172,6 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             }
             log.warning(f"Limite IA | {phone} | {billing.get_ia_calls_today(phone)}/{max_ia}")
         else:
-            # IA resolve — roteamento Haiku (simples) / Sonnet (complexo)
             is_complex = classification.msg_type.value in (
                 "objection", "buy_intent", "schedule_intent", "complex", "unknown"
             )
@@ -185,10 +180,9 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
                 image_url=unified_image,
-                use_fast_model=not use_sonnet,  # Haiku pra simples
+                use_fast_model=not use_sonnet,
             )
 
-            # Registra chamada de IA e custo
             billing.increment_ia_calls(phone)
             model_type = billing.UsageType.ANTHROPIC_SONNET if use_sonnet else billing.UsageType.ANTHROPIC_HAIKU
             cost = 0.003 if use_sonnet else 0.001
@@ -202,7 +196,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         reply_parts = ai_result["reply_parts"]
         actions = ai_result.get("actions", [])
 
-        # Anti-alucinação (SKIP se resposta veio de regra — regras não alucinam)
+        # Anti-alucinação (SKIP se resposta veio de regra)
         if ai_result.get("resolved_by") != "rule":
             validation = await ai.validate_response(client_data, reply, ai_result["confidence"])
             if not validation.get("is_safe", True):
@@ -244,12 +238,11 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
         # Envia ou pede aprovação
         if client_data.clone_mode == CloneMode.AUTO and not force_approval:
-            # Debita 1 crédito (conversa)
-            # Conversa já debitada no início da janela 24h
-            # WhatsApp = custo do cliente via Meta
-
             asyncio.create_task(
-                _send_with_human_delay(phone, reply, reply_parts, actions, client_data, conv)
+                _send_with_human_delay(
+                    phone, reply, reply_parts, actions,
+                    client_data, conv, ai_result,
+                )
             )
         else:
             pending = PendingApproval(
@@ -282,7 +275,6 @@ async def process_outbound_campaign(client_data, campaign):
 
     for lead in batch:
         try:
-            # Verifica créditos
             credit_check = await billing.check_credits(client_data.client_id)
             if not credit_check["has_credits"]:
                 log.warning(f"Outbound parado | sem créditos | {client_data.client_id}")
@@ -323,9 +315,11 @@ def _typing_delay(text: str) -> float:
     return min(4.0 + len(text) * 0.06, 15.0)
 
 
-async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv):
+async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv, ai_result):
     """
-    Envia com delay humano + processa actions + áudio com nome.
+    Envia com delay humano + processa actions + áudio inteligente.
+
+    v8.2: Texto do áudio gerado pelo Claude, VoiceSettings por emoção.
     """
     cid = client_data.client_id
 
@@ -346,30 +340,450 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
 
             if action_type == "send_media":
                 await _handle_media_action(phone, action, client_data)
-
             elif action_type == "generate_payment":
                 await _handle_payment_action(phone, action, client_data)
-
             elif action_type == "create_appointment":
                 await _handle_appointment_action(phone, action, client_data)
 
-        # 3. Áudio com nome + voz regional (Scale+)
-        if _should_send_audio(client_data, conv):
-            audio_text = _build_audio_with_name(conv, reply)
-            voice_id = await _select_voice(client_data, phone)
-            audio_url = await audio.generate_and_upload(audio_text, voice_id)
-            if audio_url:
-                await asyncio.sleep(3.0)
-                await wa.send_audio(phone, audio_url, client_id=cid)
-                await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
+        # 3. Áudio inteligente (v8.2 — Claude gera texto, emoção controla voz)
+        sentiment = ai_result.get("sentiment", "neutral")
+        if isinstance(sentiment, str):
+            sentiment_value = sentiment
+        else:
+            sentiment_value = sentiment.value if hasattr(sentiment, "value") else "neutral"
+
+        intent = ai_result.get("intent", "neutral")
+        if not isinstance(intent, str):
+            intent = intent.value if hasattr(intent, "value") else "neutral"
+
+        audio_decision = _should_send_audio(
+            client_data, conv, sentiment_value, intent, reply,
+        )
+
+        if audio_decision["send"]:
+            # Gera texto conversacional via Claude (não template)
+            audio_text = await _generate_audio_text(
+                conv, reply, client_data, sentiment_value,
+            )
+
+            if audio_text:
+                voice_id = await _select_voice(client_data, phone)
+                audio_url = await audio.generate_and_upload(
+                    text=audio_text,
+                    voice_id=voice_id,
+                    sentiment=sentiment_value,
+                    stage=conv.stage,
+                )
+
+                if audio_url:
+                    await asyncio.sleep(3.0)
+                    await wa.send_audio(phone, audio_url, client_id=cid)
+                    await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
+                    # Custo do Haiku pra gerar texto do áudio
+                    await billing.log_usage(cid, billing.UsageType.ANTHROPIC_HAIKU, cost_usd=0.0005)
+                    log.info(
+                        f"Áudio enviado | {phone} | reason={audio_decision['reason']} | "
+                        f"sentiment={sentiment_value} | words={len(audio_text.split())}"
+                    )
+                else:
+                    log.warning(f"Áudio falhou na geração | {phone}")
+            else:
+                log.warning(f"Texto do áudio não gerado | {phone}")
+        else:
+            log.debug(
+                f"Áudio pulado | {phone} | reason={audio_decision['reason']}"
+            )
 
     except Exception as e:
         log.error(f"Envio erro | {phone} | {e}")
 
 
-def _build_audio_with_name(conv, reply):
-    """Usa a resposta completa como áudio."""
-    return reply
+# ================================================================
+# AUDIO DECISION MATRIX v8.2
+#
+# Decide SE e QUANDO enviar áudio. Conservadora de propósito.
+# Errar o timing é pior que não mandar.
+#
+# Novidades v8.2:
+#   - Detecção de conteúdo informacional (preço/endereço → texto)
+#   - Leitura de ritmo do lead (msgs curtas = pressa = sem áudio)
+#   - Bloqueio quando intent é informacional puro
+# ================================================================
+
+# Palavras que indicam conteúdo informacional (precisa ser relido)
+_INFORMATIONAL_KEYWORDS = {
+    "preço", "preco", "valor", "custa", "quanto",
+    "endereço", "endereco", "localização", "localizacao",
+    "horário", "horario", "funciona", "abre", "fecha",
+    "cnpj", "cpf", "pix", "boleto", "parcela",
+    "link", "site", "www", "http",
+    "telefone", "numero", "número", "contato",
+    "prazo", "entrega", "frete",
+}
+
+
+def _reply_is_informational(reply: str) -> bool:
+    """
+    Detecta se o reply contém informação que o lead precisa RELER.
+
+    Se o reply tem preço, endereço, dados de contato, link, etc,
+    o áudio é contra-produtivo: o lead não consegue "reler" áudio.
+    Nesses casos, só texto.
+    """
+    reply_lower = reply.lower()
+
+    # Checa se tem números que parecem preço (R$, R$ 500, 499,90)
+    import re
+    has_price = bool(re.search(r'r\$\s*[\d.,]+', reply_lower))
+    if has_price:
+        return True
+
+    # Checa keywords informacionais
+    word_count = 0
+    for keyword in _INFORMATIONAL_KEYWORDS:
+        if keyword in reply_lower:
+            word_count += 1
+            if word_count >= 2:  # 2+ keywords = definitivamente informacional
+                return True
+
+    return False
+
+
+def _lead_is_in_a_hurry(conv) -> bool:
+    """
+    Detecta se o lead está com pressa baseado no padrão de mensagens.
+
+    Sinais de pressa:
+        - Últimas 3 mensagens do lead < 15 palavras cada
+        - Respostas monossilábicas ("sim", "ok", "quanto")
+
+    Lead com pressa não vai ouvir áudio. Manda texto e é direto.
+    """
+    # Pega as últimas mensagens do lead
+    user_msgs = [
+        m["content"] for m in conv.history[-8:]
+        if m["role"] == "user"
+    ]
+
+    if len(user_msgs) < 2:
+        return False  # Sem dados suficientes
+
+    # Verifica se as últimas mensagens são curtas
+    last_msgs = user_msgs[-3:] if len(user_msgs) >= 3 else user_msgs
+    avg_words = sum(len(m.split()) for m in last_msgs) / len(last_msgs)
+
+    return avg_words < 5  # Média < 5 palavras = com pressa
+
+
+def _should_send_audio(
+    client_data,
+    conv,
+    sentiment: str = "neutral",
+    intent: str = "neutral",
+    reply: str = "",
+) -> dict:
+    """
+    Decide se deve enviar áudio clonado.
+
+    Retorna:
+        {"send": bool, "reason": str}
+
+    Hierarquia de decisão (ordem importa):
+
+    BLOQUEIOS HARD (config):
+        1. SAFE_MODE ativado
+        2. Áudio desabilitado no client
+        3. Sem voice_id configurado
+        4. Stage fora dos triggers
+
+    BLOQUEIOS SOFT (contexto):
+        5. Lead frustrado → áudio parece debochado
+        6. Conversa muito curta (< 3 trocas) → invasivo
+        7. Reply é informacional (preço, endereço) → lead precisa reler
+        8. Lead com pressa (msgs curtas) → não vai ouvir
+
+    LIBERAÇÕES:
+        9. Passou tudo → manda
+    """
+    # ── Bloqueios de config ──
+    if SAFE_MODE:
+        return {"send": False, "reason": "safe_mode"}
+
+    if not client_data.enable_audio:
+        return {"send": False, "reason": "audio_disabled"}
+
+    if not client_data.voice_id:
+        return {"send": False, "reason": "no_voice_id"}
+
+    trigger_stages = set(client_data.audio_trigger_stages)
+    if conv.stage not in trigger_stages:
+        return {"send": False, "reason": f"stage_{conv.stage}_not_in_triggers"}
+
+    # ── Bloqueios de contexto emocional ──
+    if sentiment == "frustrated":
+        return {"send": False, "reason": "lead_frustrated"}
+
+    # ── Bloqueio de conversa curta ──
+    message_count = len(conv.history)
+    if message_count < 6:  # 3 trocas = 6 mensagens
+        return {"send": False, "reason": f"too_short_{message_count}_msgs"}
+
+    # ── Bloqueio de conteúdo informacional ──
+    if reply and _reply_is_informational(reply):
+        return {"send": False, "reason": "reply_informational_needs_text"}
+
+    # ── Bloqueio de lead com pressa ──
+    if _lead_is_in_a_hurry(conv):
+        return {"send": False, "reason": "lead_in_a_hurry"}
+
+    # ── Passou todos os filtros ──
+    return {"send": True, "reason": f"ok_stage_{conv.stage}_sentiment_{sentiment}"}
+
+
+# ================================================================
+# GERAÇÃO DE TEXTO PRO ÁUDIO VIA CLAUDE (v8.2)
+#
+# Aqui é onde a mágica acontece. Em vez de templates fixos,
+# o Claude Haiku gera texto conversacional sob medida.
+#
+# O prompt é altamente específico pra gerar FALA, não escrita.
+# ================================================================
+
+async def _generate_audio_text(
+    conv,
+    reply: str,
+    client_data,
+    sentiment: str,
+) -> str:
+    """
+    Usa Claude Haiku pra gerar texto de voice note sob medida.
+
+    Cada áudio é único — gerado com contexto completo:
+        - Dados reais do negócio (produtos, FAQ, regras)
+        - Histórico recente da conversa
+        - Tom de voz do dono
+        - Fatos do lead
+        - Sentimento detectado
+
+    O prompt instrui o Claude a falar como BRASILEIRO REAL.
+    Não como chatbot. Não como telemarketing. Como o dono
+    do negócio mandando voice note pra um cliente.
+    """
+    lead_name = _extract_lead_name(conv.lead_facts)
+
+    # Contexto das últimas mensagens
+    recent_context = ""
+    for msg in conv.history[-6:]:
+        role = "Lead" if msg["role"] == "user" else "Você"
+        content = msg["content"][:120]
+        recent_context += f"{role}: {content}\n"
+
+    # Dados reais do negócio (pra nunca sair genérico)
+    products_summary = ""
+    if client_data.products_or_services:
+        items = []
+        for p in client_data.products_or_services[:5]:
+            name = p.get("name", "")
+            desc = p.get("description", "")
+            if name:
+                items.append(f"{name}: {desc[:60]}" if desc else name)
+        products_summary = ", ".join(items)
+
+    faq_summary = ""
+    if client_data.faq:
+        faq_items = []
+        for item in client_data.faq[:3]:
+            q = item.get("question", "")
+            a = item.get("answer", "")
+            if q and a:
+                faq_items.append(f"P: {q[:50]} R: {a[:80]}")
+        faq_summary = "\n".join(faq_items)
+
+    lead_facts_text = ""
+    if conv.lead_facts:
+        lead_facts_text = ", ".join(conv.lead_facts[:6])
+
+    speech_patterns = ""
+    if client_data.speech_patterns:
+        speech_patterns = client_data.speech_patterns[:200]
+
+    prompt = f"""Você é {client_data.business_name}. Pessoa real. Dono do negócio.
+Você está mandando um VOICE NOTE curto no WhatsApp pra um cliente.
+
+SEU NEGÓCIO:
+{client_data.business_description or 'Não informado'}
+Tom: {client_data.tone_of_voice or 'Profissional e amigável'}
+{f'Produtos/serviços: {products_summary}' if products_summary else ''}
+{f'FAQ do negócio:{chr(10)}{faq_summary}' if faq_summary else ''}
+{f'Regras: {client_data.custom_rules[:150]}' if client_data.custom_rules else ''}
+{f'Seu jeito de falar: {speech_patterns}' if speech_patterns else ''}
+
+SOBRE O LEAD:
+{f'Nome: {lead_name}' if lead_name else 'Nome ainda não descoberto — NÃO invente'}
+{f'O que você sabe: {lead_facts_text}' if lead_facts_text else 'Poucos dados ainda'}
+Sentimento agora: {sentiment}
+Estágio: {conv.stage}
+
+CONVERSA RECENTE:
+{recent_context}
+O QUE VOCÊ JÁ MANDOU POR TEXTO (o lead já leu isso):
+"{reply[:250]}"
+
+TAREFA: Mande um voice note COMPLEMENTAR. O lead JÁ LEU o texto acima.
+O áudio é pra criar conexão, mostrar que é gente de verdade, não robô.
+
+COMO BRASILEIRO FALA VOICE NOTE:
+- Vai direto, sem "Olá" nem "Oi, tudo bem?"
+- Fala DETALHE CONCRETO do negócio (nome do procedimento, característica do produto, algo específico que só quem conhece sabe)
+- Usa expressões reais: "relaxa", "juro", "fica tranquilo", "pode confiar", "sério", "olha só", "então"
+- Termina com algo que convida resposta: "tá?", "beleza?", "me fala", "pode mandar"
+- Tom de conversa entre amigos, não de vendedor
+- Se o lead tem medo/dúvida: acalma com FATO CONCRETO do negócio, não com frase motivacional genérica
+- Se o lead tá empolgado: acompanha a energia, fala do que vem a seguir
+- Se fechou (won): agradece como gente, fala do próximo passo real
+
+REGRAS:
+1. MÁXIMO 35 palavras. Voice note de WhatsApp. Curto.
+2. NÃO repita NADA que já foi no texto. Zero redundância.
+3. NÃO invente dados. Só use o que está listado acima.
+4. Sem emoji. Sem URL. Sem formatação.
+5. Use vírgulas pra pausas, "!" pra ênfase, "..." pra hesitação.
+6. Nome do lead UMA vez se souber. Não force.
+
+RESPONDA APENAS O TEXTO DO VOICE NOTE. Nada mais."""
+
+    try:
+        from huma.config import AI_MODEL_FAST
+        client = ai._get_ai_client()
+        if not client:
+            return _fallback_audio_text(conv, reply, client_data, lead_name)
+
+        response = await client.messages.create(
+            model=AI_MODEL_FAST,
+            max_tokens=120,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        audio_text = response.content[0].text.strip()
+
+        # Remove aspas que o Claude às vezes adiciona
+        audio_text = audio_text.strip('"').strip("'").strip('\u201c').strip('\u201d')
+
+        # Validação: não pode ser longo demais
+        words = audio_text.split()
+        if len(words) > 50:
+            audio_text = " ".join(words[:40])
+            if audio_text[-1] not in '.!?':
+                audio_text += '.'
+
+        # Validação: não pode ser vazio ou muito curto
+        if len(audio_text) < 10:
+            log.warning(f"Áudio texto muito curto ({len(audio_text)} chars) — usando fallback")
+            return _fallback_audio_text(conv, reply, client_data, lead_name)
+
+        log.info(
+            f"Áudio texto gerado | words={len(audio_text.split())} | "
+            f"stage={conv.stage} | sentiment={sentiment}"
+        )
+        return audio_text
+
+    except Exception as e:
+        log.warning(f"Erro gerando texto do áudio via Claude | {e}")
+        return _fallback_audio_text(conv, reply, client_data, lead_name)
+
+
+def _fallback_audio_text(conv, reply: str, client_data, lead_name: str) -> str:
+    """
+    Fallback se o Claude falhar na geração do texto do áudio.
+
+    Usa dados reais do negócio quando possível. Nunca genérico.
+    """
+    core = _extract_core_message(reply)
+    stage = conv.stage
+
+    if stage == "won":
+        if lead_name:
+            return f"{lead_name}, fechou! Vou te mandar tudo certinho, qualquer coisa me chama aqui, beleza?"
+        return "Fechou! Vou te mandar tudo certinho, qualquer coisa me chama aqui, beleza?"
+
+    if stage == "closing":
+        if lead_name:
+            return f"{lead_name}, sério, acho que vai ser perfeito pra você. Me fala o que decidiu, tá?"
+        return f"Sério, acho que vai ser perfeito pra você. Me fala o que decidiu, tá?"
+
+    if lead_name:
+        return f"{lead_name}, {core}"
+    return core
+
+
+# ================================================================
+# HELPERS DE EXTRAÇÃO
+# ================================================================
+
+def _extract_lead_name(lead_facts: list[str]) -> str:
+    """
+    Extrai o primeiro nome do lead a partir dos fatos coletados.
+
+    Procura padrões como "Nome: João Silva", "Se chama Maria", etc.
+    Retorna só o primeiro nome (mais natural na fala).
+    """
+    import re
+
+    name_patterns = [
+        r"[Nn]ome[:\s]+(\w+)",
+        r"[Ss]e\s+chama\s+(\w+)",
+        r"[Nn]ome.completo[:\s]+(\w+)",
+        r"[Ll]ead[:\s]+(\w+)",
+    ]
+
+    for fact in lead_facts:
+        for pattern in name_patterns:
+            match = re.search(pattern, fact)
+            if match:
+                name = match.group(1).strip()
+                if len(name) >= 2 and name.lower() not in ("lead", "nome", "cliente", "user", "não", "nao"):
+                    return name.capitalize()
+
+    return ""
+
+
+def _extract_core_message(reply: str) -> str:
+    """
+    Extrai a essência do reply em no máximo 25 palavras.
+
+    Usado como fallback quando o Claude não gera o texto do áudio.
+    """
+    import re
+
+    clean = re.sub(
+        r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF'
+        r'\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF'
+        r'\U00002702-\U000027B0\U00002600-\U000026FF'
+        r'\U0001F900-\U0001F9FF\U0001FA00-\U0001FAFF]+',
+        '', reply
+    )
+
+    clean = re.sub(r'https?://\S+', '', clean)
+    clean = clean.replace('*', '').replace('_', '').replace('`', '')
+    clean = re.sub(r'\s+', ' ', clean).strip()
+
+    if not clean:
+        return "Fico à disposição pra te ajudar!"
+
+    sentences = re.split(r'[.!?]+', clean)
+    sentences = [s.strip() for s in sentences if len(s.strip().split()) >= 3]
+
+    if not sentences:
+        words = clean.split()[:25]
+        return " ".join(words)
+
+    first = sentences[0]
+    words = first.split()
+
+    if len(words) <= 25:
+        return first
+
+    return " ".join(words[:25])
 
 
 # ================================================================
@@ -427,7 +841,6 @@ async def _handle_payment_action(phone, action, client_data):
             await wa.send_image(phone, result["qr_code_url"], caption="QR Code Pix", client_id=cid)
         if result.get("qr_code_text"):
             await asyncio.sleep(1.0)
-            # Pix de Um Toque: código sozinho, limpo, fácil de copiar
             await wa.send_text(phone, result["qr_code_text"], client_id=cid)
 
     elif method == "boleto":
@@ -491,20 +904,8 @@ def _apply_stage_action(client_data, current_stage, action):
 
 
 # ================================================================
-# HELPERS
+# VOZ REGIONAL
 # ================================================================
-
-def _should_send_audio(client_data, conv):
-    """Verifica se deve enviar áudio clonado."""
-    log.info(f"Audio check | safe={SAFE_MODE} | enable={client_data.enable_audio} | voice={client_data.voice_id} | stage={conv.stage} | triggers={client_data.audio_trigger_stages}")
-    if SAFE_MODE:
-        return False
-    if not client_data.enable_audio:
-        return False
-    if not client_data.voice_id:
-        return False
-    return conv.stage in set(client_data.audio_trigger_stages)
-
 
 async def _select_voice(client_data, phone: str) -> str:
     """
@@ -515,28 +916,15 @@ async def _select_voice(client_data, phone: str) -> str:
 
     Qualquer outro caso:
         voice_id padrão do dono
-
-    Mapeamento DDD → região:
-        11-19 (SP), 21-28 (RJ/ES) → sudeste
-        31-38 (MG) → sudeste
-        41-49 (PR/SC) → sul
-        51-55 (RS) → sul
-        61-69 (CO/DF/TO/MT/MS/GO) → centro_oeste
-        71-79 (BA/SE) → nordeste
-        81-89 (PE/AL/PB/RN/CE/PI/MA) → nordeste
-        91-99 (PA/AP/AM/RR/AC/RO) → norte
     """
-    # Se não tem vozes regionais, usa a padrão
     regional = client_data.regional_voices
     if not regional:
         return client_data.voice_id
 
-    # Verifica se o plano permite
     plan_config = await billing.get_client_plan_config(client_data.client_id)
     if not plan_config.get("regional_voices", False):
         return client_data.voice_id
 
-    # Extrai DDD
     ddd = ""
     if len(phone) >= 4:
         ddd = phone[2:4] if phone.startswith("55") else phone[:2]
@@ -544,7 +932,6 @@ async def _select_voice(client_data, phone: str) -> str:
     if not ddd:
         return regional.get("default", client_data.voice_id)
 
-    # Mapeia DDD → região
     try:
         ddd_num = int(ddd)
     except ValueError:
@@ -563,7 +950,6 @@ async def _select_voice(client_data, phone: str) -> str:
     else:
         region = "default"
 
-    # Busca voice_id da região
     voice_id = regional.get(region, "")
     if not voice_id:
         voice_id = regional.get("default", client_data.voice_id)
@@ -573,22 +959,15 @@ async def _select_voice(client_data, phone: str) -> str:
 
 
 async def _is_new_conversation(client_id: str, phone: str) -> bool:
-    """
-    Verifica se é nova conversa (janela 24h) ou continuação.
-
-    Nova conversa = lead não mandou msg nas últimas 24h.
-    Continuação = lead já tá ativo, não debita de novo.
-    """
+    """Verifica se é nova conversa (janela 24h) ou continuação."""
     from huma.services import redis_service as cache
 
     key = f"conv_window:{client_id}:{phone}"
-    # Se a chave existe no Redis, é continuação
     exists = await cache.exists(key)
     if exists:
         return False
 
-    # Nova conversa — marca janela de 24h
-    await cache.set_with_ttl(key, "1", ttl=86400)  # 24h
+    await cache.set_with_ttl(key, "1", ttl=86400)
     return True
 
 
@@ -621,19 +1000,16 @@ def _is_silent_hours(client_data) -> bool:
 
 
 # ================================================================
-# CACHE EM MEMÓRIA (reduz hits no Supabase)
-#
-# Client data e plan config não mudam a cada mensagem.
-# Cache de 5 minutos economiza ~4 queries Supabase por mensagem.
+# CACHE EM MEMÓRIA
 # ================================================================
 
-_client_cache: dict[str, tuple] = {}  # {client_id: (data, timestamp)}
+_client_cache: dict[str, tuple] = {}
 _plan_cache: dict[str, tuple] = {}
 CACHE_TTL = 0
 
 
 async def _get_client_cached(client_id: str):
-    """Busca client com cache em memória de 5 min."""
+    """Busca client com cache em memória."""
     now = time.time()
     if client_id in _client_cache:
         data, ts = _client_cache[client_id]
@@ -647,7 +1023,7 @@ async def _get_client_cached(client_id: str):
 
 
 async def _get_plan_cached(client_id: str) -> dict:
-    """Busca plan config com cache em memória de 5 min."""
+    """Busca plan config com cache em memória."""
     now = time.time()
     if client_id in _plan_cache:
         data, ts = _plan_cache[client_id]
