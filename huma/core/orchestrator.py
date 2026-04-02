@@ -320,19 +320,65 @@ def _typing_delay(text: str) -> float:
 async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv, ai_result):
     """
     Envia com delay humano + processa actions + áudio inteligente.
+
+    v9.2: Lógica audio-first.
+    Se o audio_text é uma resposta completa (>30 palavras) E o texto
+    repete a mesma info → manda só uma frase curta de texto + áudio completo.
+    Se o audio_text é complemento emocional curto → texto normal + áudio depois.
     """
     cid = client_data.client_id
 
     try:
-        # 1. Mensagens de texto
-        if len(parts) > 1:
-            for i, part in enumerate(parts):
-                delay = min(2.5 + len(part) * 0.04, 5.0) if i == 0 else _typing_delay(part)
-                await asyncio.sleep(delay)
-                await wa.send_text(phone, part, client_id=cid)
+        audio_text = ai_result.get("audio_text", "").strip()
+        sentiment = ai_result.get("sentiment", "neutral")
+        if isinstance(sentiment, str):
+            sentiment_value = sentiment
         else:
-            await asyncio.sleep(_typing_delay(reply))
-            await wa.send_text(phone, reply, client_id=cid)
+            sentiment_value = sentiment.value if hasattr(sentiment, "value") else "neutral"
+
+        # Decide se é modo audio-first ou texto-first
+        audio_word_count = len(audio_text.split()) if audio_text else 0
+        audio_is_substantial = audio_word_count >= 30  # Áudio com resposta completa
+
+        # Checa se vai enviar áudio (filtros de infra)
+        will_send_audio = False
+        audio_decision = {"send": False, "reason": "no_audio_text"}
+        if audio_text:
+            audio_decision = _should_send_audio(
+                client_data, conv, sentiment_value,
+                audio_is_substantial=audio_is_substantial,
+            )
+            will_send_audio = audio_decision["send"]
+
+        # ── MODO AUDIO-FIRST ──
+        # Áudio substantivo + filtros OK → texto curto de transição + áudio com conteúdo
+        if will_send_audio and audio_is_substantial:
+            # Manda só a primeira parte do texto (geralmente a frase de conexão)
+            # ou uma transição curta se o texto todo é informacional
+            if len(parts) > 1:
+                # Manda só a primeira parte (conexão) — o áudio carrega o resto
+                await asyncio.sleep(min(2.5 + len(parts[0]) * 0.04, 5.0))
+                await wa.send_text(phone, parts[0], client_id=cid)
+            else:
+                # Texto é uma msg só — manda versão curta
+                short = reply.split('.')[0].strip()
+                if len(short) > 10:
+                    await asyncio.sleep(min(2.5 + len(short) * 0.04, 5.0))
+                    await wa.send_text(phone, short, client_id=cid)
+
+            log.info(f"Audio-first mode | {phone} | text_parts_sent=1 | audio_words={audio_word_count}")
+
+        # ── MODO TEXTO-FIRST (padrão) ──
+        # Sem áudio ou áudio é só complemento curto → texto completo normal
+        else:
+            if len(parts) > 1:
+                for i, part in enumerate(parts):
+                    delay = min(2.5 + len(part) * 0.04, 5.0) if i == 0 else _typing_delay(part)
+                    await asyncio.sleep(delay)
+                    await wa.send_text(phone, part, client_id=cid)
+            else:
+                await asyncio.sleep(_typing_delay(reply))
+                await wa.send_text(phone, reply, client_id=cid)
 
         # 2. Actions
         for action in actions:
@@ -345,48 +391,37 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             elif action_type == "create_appointment":
                 await _handle_appointment_action(phone, action, client_data)
 
-        # 3. Áudio inteligente (v9.2 — texto gerado na mesma chamada, mesma mente)
-        audio_text = ai_result.get("audio_text", "")
-        sentiment = ai_result.get("sentiment", "neutral")
-        if isinstance(sentiment, str):
-            sentiment_value = sentiment
-        else:
-            sentiment_value = sentiment.value if hasattr(sentiment, "value") else "neutral"
+        # 3. Envia áudio se aprovado
+        if will_send_audio and audio_text:
+            clean_audio = audio_text.replace('—', ',').replace('–', ',')
 
-        # Só envia se o Claude gerou audio_text E os filtros passam
-        if audio_text and audio_text.strip():
-            audio_decision = _should_send_audio(
-                client_data, conv, sentiment_value,
+            voice_id = await _select_voice(client_data, phone)
+            audio_url = await audio.generate_and_upload(
+                text=clean_audio,
+                voice_id=voice_id,
+                sentiment=sentiment_value,
+                stage=conv.stage,
             )
 
-            if audio_decision["send"]:
-                # Limpa travessões e sanitiza
-                audio_text = audio_text.strip().replace('—', ',').replace('–', ',')
-
-                voice_id = await _select_voice(client_data, phone)
-                audio_url = await audio.generate_and_upload(
-                    text=audio_text,
-                    voice_id=voice_id,
-                    sentiment=sentiment_value,
-                    stage=conv.stage,
+            if audio_url:
+                await asyncio.sleep(3.0)
+                await wa.send_audio(phone, audio_url, client_id=cid)
+                await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
+                log.info(
+                    f"Áudio enviado | {phone} | mode={'audio_first' if audio_is_substantial else 'complement'} | "
+                    f"reason={audio_decision['reason']} | words={audio_word_count}"
                 )
-
-                if audio_url:
-                    await asyncio.sleep(3.0)
-                    await wa.send_audio(phone, audio_url, client_id=cid)
-                    await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
-                    log.info(
-                        f"Áudio enviado | {phone} | reason={audio_decision['reason']} | "
-                        f"sentiment={sentiment_value} | words={len(audio_text.split())}"
-                    )
+            else:
+                # Áudio falhou — manda texto completo como fallback
+                if audio_is_substantial and len(parts) > 1:
+                    for part in parts[1:]:
+                        await asyncio.sleep(_typing_delay(part))
+                        await wa.send_text(phone, part, client_id=cid)
+                    log.warning(f"Áudio falhou, fallback texto | {phone}")
                 else:
                     log.warning(f"Áudio falhou na geração | {phone}")
-            else:
-                log.debug(
-                    f"Áudio pulado (filtro) | {phone} | reason={audio_decision['reason']}"
-                )
-        else:
-            log.debug(f"Áudio pulado (Claude não gerou) | {phone}")
+        elif audio_text and not will_send_audio:
+            log.debug(f"Áudio pulado (filtro) | {phone} | reason={audio_decision['reason']}")
 
     except Exception as e:
         log.error(f"Envio erro | {phone} | {e}")
@@ -405,13 +440,18 @@ def _should_send_audio(
     client_data,
     conv,
     sentiment: str = "neutral",
+    audio_is_substantial: bool = False,
 ) -> dict:
     """
     Filtros de infraestrutura pra envio de áudio.
 
-    v9.2: O Claude já decidiu SE e O QUE mandar no áudio (campo audio_text).
-    Aqui só verificamos condições técnicas e de throttle.
+    Se audio_is_substantial=True (lead pediu áudio, Claude gerou resposta completa),
+    bypassa throttle e mínimo de mensagens. Só checa config técnica.
+
+    Se audio_is_substantial=False (complemento emocional),
+    aplica throttle normal.
     """
+    # Filtros técnicos — sempre aplicam
     if SAFE_MODE:
         return {"send": False, "reason": "safe_mode"}
     if not client_data.enable_audio:
@@ -428,16 +468,19 @@ def _should_send_audio(
     if sent == "frustrated":
         return {"send": False, "reason": "lead_frustrated"}
 
-    # Mínimo 6 mensagens (3 trocas) pra não mandar áudio cedo demais
+    # Se o lead PEDIU áudio (audio substantivo), bypassa throttle
+    if audio_is_substantial:
+        return {"send": True, "reason": f"lead_requested_audio_stage_{conv.stage}"}
+
+    # Throttle pra complementos emocionais (lead NÃO pediu)
     if len(conv.history) < 6:
         return {"send": False, "reason": f"too_early_{len(conv.history)}_msgs"}
 
-    # Throttle: 1 áudio a cada 3 respostas da IA
     assistant_count = sum(1 for m in conv.history if m["role"] == "assistant")
     if assistant_count % 3 != 0:
         return {"send": False, "reason": f"throttle_msg_{assistant_count}"}
 
-    return {"send": True, "reason": f"ok_stage_{conv.stage}_sentiment_{sent}"}
+    return {"send": True, "reason": f"ok_complement_stage_{conv.stage}"}
 
 
 
