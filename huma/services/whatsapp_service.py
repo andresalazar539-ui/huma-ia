@@ -1,12 +1,6 @@
 # ================================================================
 # huma/services/whatsapp_service.py — Twilio WhatsApp (teste)
 #
-# v8.1.0 — Correção:
-#   - send_audio sem body texto (antes mandava "🎤 Áudio:" que
-#     fazia parecer mensagem encaminhada)
-#   - Twilio exige body OU media_url. Com media_url, body=""
-#     funciona — o WhatsApp mostra só o player de áudio.
-#
 # Usa Twilio Sandbox pra teste. Não precisa de CNPJ nem verificação.
 # Depois de validar, migra pra Meta Cloud API em produção.
 # ================================================================
@@ -58,31 +52,18 @@ async def send_text(phone: str, message: str, client_id: str = "", **kwargs):
 
 
 async def send_audio(phone: str, audio_url: str, client_id: str = "", **kwargs):
-    """
-    Envia áudio via Twilio.
-
-    IMPORTANTE: body vazio ("") com media_url faz o WhatsApp
-    renderizar só o player de áudio, sem texto acompanhando.
-    Isso é o mais próximo de voice note nativo que o Twilio permite.
-
-    Quando migrarmos pra Meta Cloud API, usaremos o tipo "audio"
-    com formato OGG/OPUS pra aparecer como voice note real (bolinha).
-    """
+    """Envia áudio via Twilio."""
     if not _client:
-        log.error("Twilio não configurado — áudio não enviado")
         return
-
     to = _format_whatsapp(phone)
     from_number = _format_whatsapp(TWILIO_WHATSAPP_FROM)
-
     try:
-        msg = _client.messages.create(
+        _client.messages.create(
             body="",
             media_url=[audio_url],
             from_=from_number,
             to=to,
         )
-        log.debug(f"Áudio enviado | {to} | sid={msg.sid}")
     except Exception as e:
         log.error(f"Erro áudio | {to} | {e}")
 
@@ -135,7 +116,7 @@ async def mark_as_read(message_id: str, client_id: str = "", **kwargs):
 def parse_twilio_webhook(form_data: dict) -> dict:
     """
     Parseia webhook do Twilio WhatsApp.
-
+    
     Twilio manda form-data com:
     - From: whatsapp:+5511999999999
     - Body: texto da mensagem
