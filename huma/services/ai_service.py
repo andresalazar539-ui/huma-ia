@@ -1,11 +1,15 @@
 # ================================================================
 # huma/services/ai_service.py — Cérebro da HUMA
 #
-# - Constrói system prompt baseado na identidade + autonomia do dono
-# - Gera respostas via Claude (Anthropic API)
-# - Valida respostas (anti-alucinação)
-# - Comprime histórico
-# - Analisa padrões de fala do dono
+# v9.0 — Inteligência de vendas de elite:
+#   - Sales Intelligence Engine integrado ao system prompt
+#   - Tool definition expandida (micro_objective, emotional_reading)
+#   - Contexto temporal, ritmo, persuasão, subtexto
+#
+# Mantido (zero breaking changes):
+#   - Lazy init, generate_response, validate_response
+#   - compress_history, analyze_speech_patterns
+#   - Formato de saída idêntico (reply_parts, intent, etc)
 # ================================================================
 
 import json
@@ -62,6 +66,7 @@ async def _get_insights_cached(client_id: str) -> str:
 # ================================================================
 
 def build_autonomy_prompt(identity: ClientIdentity) -> str:
+    """Gera bloco de autonomia baseado nas configs do dono."""
     prompt = ""
 
     if identity.personality_traits:
@@ -117,6 +122,22 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
 
 
 def build_system_prompt(identity: ClientIdentity, conv: Conversation) -> str:
+    """
+    Monta o system prompt completo.
+
+    v9.0: integra sales_intelligence pra transformar a IA
+    de chatbot em closer de elite.
+
+    Ordem de prioridade no prompt:
+      1. Identidade (quem a IA é)
+      2. Contexto temporal (quando está falando)
+      3. Dados do negócio (produtos, FAQ, regras)
+      4. Autonomia do dono (personalidade, coleta, pagamento)
+      5. Funil (estágios, posição atual)
+      6. Inteligência de vendas (ritmo, micro-objetivos, persuasão, emoção)
+      7. Fatos do lead
+      8. Regras absolutas (anti-alucinação, proibições)
+    """
     forbidden = ", ".join(identity.forbidden_words) if identity.forbidden_words else "Nenhuma"
     competitors = ", ".join(identity.competitors) if identity.competitors else "N/A"
 
@@ -132,12 +153,16 @@ def build_system_prompt(identity: ClientIdentity, conv: Conversation) -> str:
         for item in identity.faq:
             faq_text += f"  P: {item.get('question', '')}\n  R: {item.get('answer', '')}\n\n"
 
+    # ── Bloco 1: Identidade core ──
     prompt = f"""Você é clone do "{identity.business_name}". WhatsApp. HUMANO, BRASILEIRO.
+Você é um CLOSER DE VENDAS — não um atendente que responde perguntas.
+Cada mensagem sua tem um objetivo. Cada palavra avança a conversa.
 
 RAPPORT:
   - Você é pessoa real, não robô.
   - Mensagens CURTAS (1-2 frases cada). Separadas.
   - Crie conexão antes de vender.
+  - Brasileiro de verdade: mensagem picada, informal, sem bloco de texto.
 
 IDENTIDADE:
   Negócio: {identity.business_description}
@@ -153,34 +178,50 @@ FAQ:
 {faq_text or '  Nenhuma.'}
 REGRAS CUSTOM:
 {identity.custom_rules or '  Nenhuma.'}
+"""
 
-{build_autonomy_prompt(identity)}
-{build_funnel_prompt(identity, conv.stage)}
+    # ── Bloco 2: Autonomia do dono ──
+    prompt += build_autonomy_prompt(identity)
+
+    # ── Bloco 3: Funil ──
+    prompt += "\n" + build_funnel_prompt(identity, conv.stage)
+
+    # ── Bloco 4: Inteligência de vendas (NOVO v9.0) ──
+    from huma.services.sales_intelligence import build_sales_intelligence_prompt
+    sales_prompt = build_sales_intelligence_prompt(identity, conv)
+    if sales_prompt:
+        prompt += "\n" + sales_prompt
+
+    # ── Bloco 5: Fatos do lead ──
+    prompt += f"""
 
 FATOS DO LEAD:
-{chr(10).join(f'  - {f}' for f in conv.lead_facts) if conv.lead_facts else '  Nenhum.'}
+{chr(10).join(f'  - {f}' for f in conv.lead_facts) if conv.lead_facts else '  Nenhum.'}"""
 
-INTELIGÊNCIA EMOCIONAL:
-  frustrated: curto, empático, valide frustração, zero pressão
-  anxious: calmo, provas, garantias, "sem compromisso"
-  excited: acompanhe a energia
-  cold: aqueça com perguntas, gere rapport
+    # ── Bloco 6: Mídias e áudio ──
+    prompt += """
 
 MÍDIAS: Se o lead pedir foto/vídeo, use action send_media com tags relevantes.
-ÁUDIO: Você TEM capacidade de enviar áudios. Quando o lead pedir áudio, confirme que vai mandar. NUNCA diga que só pode enviar texto.
+ÁUDIO: Você TEM capacidade de enviar áudios. Quando o lead pedir áudio, confirme que vai mandar. NUNCA diga que só pode enviar texto."""
 
+    # ── Bloco 7: Regras absolutas (último — maior peso no Claude) ──
+    prompt += f"""
 
 REGRAS ABSOLUTAS:
   1. NUNCA invente preços, produtos, prazos ou garantias
   2. NUNCA mencione concorrentes
   3. NUNCA use palavras proibidas
   4. Na dúvida: "{identity.fallback_message}"
-  5. Sem markdown, sem asteriscos
+  5. Sem markdown, sem asteriscos, sem formatação
   6. NÃO avance no funil sem dados obrigatórios coletados
-  7. FOCO NO NEGÓCIO: Se o lead perguntar sobre assuntos sem relação com {identity.business_name}, redirecione educadamente.
+  7. FOCO NO NEGÓCIO: Se o lead perguntar sobre assuntos sem relação com {identity.business_name}, redirecione educadamente
+  8. Cada mensagem sua tem UM micro-objetivo. Se não sabe o que quer alcançar, NÃO responda no automático
+  9. ESPELHE o ritmo do lead. Curto com curto. Detalhado com detalhado
+  10. NUNCA termine sem pergunta ou convite (exceto em "won" e "lost")
 
 ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 
+    # ── Blocos condicionais (vertical, market, speech, corrections) ──
     if identity.category:
         from huma.services.learning_engine import build_vertical_prompt
         vertical_prompt = build_vertical_prompt(identity.category)
@@ -225,6 +266,15 @@ ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 
 # ================================================================
 # TOOL DEFINITION — força JSON válido sempre
+#
+# v9.0: campos expandidos:
+#   - micro_objective: o que essa resposta quer alcançar
+#   - emotional_reading: leitura emocional detalhada do lead
+#
+# IMPORTANTE: os campos novos são opcionais no output.
+# O orchestrator NÃO precisa mudança — ele só usa reply_parts,
+# intent, sentiment, stage_action, confidence, new_facts, actions.
+# Os campos novos ficam pro log e futuro dashboard.
 # ================================================================
 
 def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
@@ -234,7 +284,12 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
             "reply_parts": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "2 a 4 mensagens CURTAS e SEPARADAS. Máximo 1-2 frases cada.",
+                "description": (
+                    "2 a 4 mensagens CURTAS e SEPARADAS. Máximo 1-2 frases cada. "
+                    "Parte 1: conexão ou resposta direta. "
+                    "Última parte: pergunta ou convite de ação. "
+                    "Cada parte tem uma FUNÇÃO — não é só quebrar texto."
+                ),
                 "minItems": 1,
                 "maxItems": 4,
             }
@@ -274,6 +329,22 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                 "confidence": {
                     "type": "number",
                     "description": "Confiança da resposta entre 0.0 e 1.0.",
+                },
+                "micro_objective": {
+                    "type": "string",
+                    "description": (
+                        "O que esta resposta quer alcançar. Ex: 'descobrir a dor do lead', "
+                        "'plantar semente de preço', 'criar urgência', 'acolher frustração'. "
+                        "Se você não sabe, escreva e repense a resposta."
+                    ),
+                },
+                "emotional_reading": {
+                    "type": "string",
+                    "description": (
+                        "Leitura emocional detalhada. Ex: 'lead ansioso, fez 3 perguntas seguidas, "
+                        "tom indica comparação com concorrente', ou 'empolgado, respondendo rápido, "
+                        "pronto pra fechar'. Seja específico, não genérico."
+                    ),
                 },
                 "new_facts": {
                     "type": "array",
@@ -379,6 +450,9 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             "confidence": confidence,
             "lead_facts": parsed.get("new_facts", []),
             "actions": parsed.get("actions", []),
+            # v9.0 — campos novos (opcionais, não quebram orchestrator)
+            "micro_objective": parsed.get("micro_objective", ""),
+            "emotional_reading": parsed.get("emotional_reading", ""),
         }
 
         if "reply_parts" in parsed and isinstance(parsed["reply_parts"], list) and parsed["reply_parts"]:
@@ -390,7 +464,8 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
 
         log.info(
             f"Resposta | intent={intent.value} | conf={confidence:.2f} | "
-            f"stage={parsed.get('stage_action','hold')} | actions={len(result['actions'])}"
+            f"stage={parsed.get('stage_action','hold')} | actions={len(result['actions'])} | "
+            f"objective={result['micro_objective'][:50]}"
         )
         return result
 
@@ -410,6 +485,8 @@ def _fallback_result(text):
         "confidence": 0.0,
         "lead_facts": [],
         "actions": [],
+        "micro_objective": "",
+        "emotional_reading": "",
     }
 
 
