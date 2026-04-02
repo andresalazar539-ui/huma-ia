@@ -407,6 +407,23 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 await asyncio.sleep(3.0)
                 await wa.send_audio(phone, audio_url, client_id=cid)
                 await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
+
+                # Se o áudio não termina com pergunta/convite E é audio-first,
+                # manda texto curto pós-áudio pra não deixar a conversa morrer
+                if audio_is_substantial:
+                    audio_ends_with_question = clean_audio.rstrip().endswith('?')
+                    audio_has_cta = any(
+                        w in clean_audio.lower()
+                        for w in ['tá?', 'ta?', 'beleza?', 'bora?', 'achou?', 'fala', 'me diz', 'que tal']
+                    )
+                    if not audio_ends_with_question and not audio_has_cta:
+                        await asyncio.sleep(2.0)
+                        # Pega a última parte do reply_parts como CTA
+                        if len(parts) > 1:
+                            await wa.send_text(phone, parts[-1], client_id=cid)
+                        else:
+                            await wa.send_text(phone, "Ficou alguma dúvida?", client_id=cid)
+
                 log.info(
                     f"Áudio enviado | {phone} | mode={'audio_first' if audio_is_substantial else 'complement'} | "
                     f"reason={audio_decision['reason']} | words={audio_word_count}"
