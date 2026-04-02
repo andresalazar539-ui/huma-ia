@@ -62,8 +62,6 @@ async def get_client(client_id: str) -> ClientIdentity | None:
         if k in ClientIdentity.model_fields
     }
     return ClientIdentity(**valid_fields)
-    }
-    return ClientIdentity(**valid_fields)
 
 
 async def update_client(client_id: str, updates: dict):
