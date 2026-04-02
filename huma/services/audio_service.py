@@ -203,9 +203,9 @@ async def generate_and_upload(
         return None
 
     word_count = len(clean_text.split())
-    if word_count > 60:
+    if word_count > 90:
         log.warning(f"Texto pro áudio muito longo | words={word_count} | truncando")
-        words = clean_text.split()[:45]
+        words = clean_text.split()[:80]
         clean_text = " ".join(words)
         if clean_text[-1] not in '.!?':
             clean_text += '.'
