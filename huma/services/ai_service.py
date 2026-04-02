@@ -294,14 +294,10 @@ ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 # ================================================================
 # TOOL DEFINITION — força JSON válido sempre
 #
-# v9.0: campos expandidos:
-#   - micro_objective: o que essa resposta quer alcançar
-#   - emotional_reading: leitura emocional detalhada do lead
-#
-# IMPORTANTE: os campos novos são opcionais no output.
-# O orchestrator NÃO precisa mudança — ele só usa reply_parts,
-# intent, sentiment, stage_action, confidence, new_facts, actions.
-# Os campos novos ficam pro log e futuro dashboard.
+# v9.2: audio_text gerado na mesma chamada que o texto.
+#   Uma mente, um contexto, uma conversa coerente.
+#   Elimina chamada separada ao Haiku pro áudio.
+#   Texto e áudio são pensados JUNTOS.
 # ================================================================
 
 def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
@@ -338,6 +334,20 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
             "type": "object",
             "properties": {
                 **reply_property,
+                "audio_text": {
+                    "type": "string",
+                    "description": (
+                        "Voice note COMPLEMENTAR ao texto. O lead JÁ VAI TER LIDO o texto quando ouvir isso. "
+                        "PROIBIDO repetir QUALQUER informação do texto. Zero sobreposição. "
+                        "O áudio traz o que o texto NÃO trouxe: emoção, confiança, experiência, história, entusiasmo. "
+                        "Se o texto deu informação (preço, horário, dados): áudio traz SENTIMENTO e VALOR emocional. "
+                        "Se o texto respondeu dúvida técnica: áudio traz EXPERIÊNCIA REAL ('a galera sai daqui sorrindo'). "
+                        "Se o texto avançou o funil: áudio reforça a DECISÃO ('vai ser incrível'). "
+                        "Entre 20 e 50 palavras. Fala de brasileiro real: 'olha só', 'sério', 'pode confiar', 'tá?'. "
+                        "Varie o ritmo. Sem formatação. Sem emoji. Sem travessão. "
+                        "Se NÃO faz sentido mandar áudio agora (ex: resposta simples, lead com pressa), deixe string vazia ''."
+                    ),
+                },
                 "intent": {
                     "type": "string",
                     "enum": ["price", "buy", "objection", "schedule", "support", "neutral"],
@@ -361,16 +371,13 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                     "type": "string",
                     "description": (
                         "O que esta resposta quer alcançar. Ex: 'descobrir a dor do lead', "
-                        "'plantar semente de preço', 'criar urgência', 'acolher frustração'. "
-                        "Se você não sabe, escreva e repense a resposta."
+                        "'plantar semente de preço', 'criar urgência', 'acolher frustração'."
                     ),
                 },
                 "emotional_reading": {
                     "type": "string",
                     "description": (
-                        "Leitura emocional detalhada. Ex: 'lead ansioso, fez 3 perguntas seguidas, "
-                        "tom indica comparação com concorrente', ou 'empolgado, respondendo rápido, "
-                        "pronto pra fechar'. Seja específico, não genérico."
+                        "Leitura emocional detalhada do lead neste momento."
                     ),
                 },
                 "new_facts": {
@@ -437,7 +444,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     try:
         response = await _get_ai_client().messages.create(
             model=model,
-            max_tokens=600,
+            max_tokens=800,
             system=system,
             tools=[reply_tool],
             tool_choice={"type": "tool", "name": "send_reply"},
@@ -477,9 +484,10 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             "confidence": confidence,
             "lead_facts": parsed.get("new_facts", []),
             "actions": parsed.get("actions", []),
-            # v9.0 — campos novos (opcionais, não quebram orchestrator)
             "micro_objective": parsed.get("micro_objective", ""),
             "emotional_reading": parsed.get("emotional_reading", ""),
+            # v9.2 — audio_text gerado na mesma chamada
+            "audio_text": parsed.get("audio_text", ""),
         }
 
         if "reply_parts" in parsed and isinstance(parsed["reply_parts"], list) and parsed["reply_parts"]:
@@ -514,6 +522,7 @@ def _fallback_result(text):
         "actions": [],
         "micro_objective": "",
         "emotional_reading": "",
+        "audio_text": "",
     }
 
 
