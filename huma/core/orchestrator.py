@@ -360,8 +360,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             client_data, conv, sentiment_value, intent, reply,
         )
 
-        log.info(f"Audio decision | {phone} | send={audio_decision['send']} | reason={audio_decision['reason']}")
-
         if audio_decision["send"]:
             # Gera texto conversacional via Claude (não template)
             audio_text = await _generate_audio_text(
@@ -381,6 +379,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     await asyncio.sleep(3.0)
                     await wa.send_audio(phone, audio_url, client_id=cid)
                     await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
+                    # Custo do Haiku pra gerar texto do áudio
                     await billing.log_usage(cid, billing.UsageType.ANTHROPIC_HAIKU, cost_usd=0.0005)
                     log.info(
                         f"Áudio enviado | {phone} | reason={audio_decision['reason']} | "
@@ -390,6 +389,10 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     log.warning(f"Áudio falhou na geração | {phone}")
             else:
                 log.warning(f"Texto do áudio não gerado | {phone}")
+        else:
+            log.debug(
+                f"Áudio pulado | {phone} | reason={audio_decision['reason']}"
+            )
 
     except Exception as e:
         log.error(f"Envio erro | {phone} | {e}")
@@ -398,10 +401,79 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
 # ================================================================
 # AUDIO DECISION MATRIX v8.2
 #
-# MODO TESTE: filtros de contexto desativados temporariamente.
-# Só checa config (SAFE_MODE, enable_audio, voice_id, triggers).
-# Depois de validar que o áudio funciona, reativar os filtros.
+# Decide SE e QUANDO enviar áudio. Conservadora de propósito.
+# Errar o timing é pior que não mandar.
+#
+# Novidades v8.2:
+#   - Detecção de conteúdo informacional (preço/endereço → texto)
+#   - Leitura de ritmo do lead (msgs curtas = pressa = sem áudio)
+#   - Bloqueio quando intent é informacional puro
 # ================================================================
+
+# Palavras que indicam conteúdo informacional (precisa ser relido)
+_INFORMATIONAL_KEYWORDS = {
+    "preço", "preco", "valor", "custa", "quanto",
+    "endereço", "endereco", "localização", "localizacao",
+    "horário", "horario", "funciona", "abre", "fecha",
+    "cnpj", "cpf", "pix", "boleto", "parcela",
+    "link", "site", "www", "http",
+    "telefone", "numero", "número", "contato",
+    "prazo", "entrega", "frete",
+}
+
+
+def _reply_is_informational(reply: str) -> bool:
+    """
+    Detecta se o reply contém informação que o lead precisa RELER.
+
+    Se o reply tem preço, endereço, dados de contato, link, etc,
+    o áudio é contra-produtivo: o lead não consegue "reler" áudio.
+    Nesses casos, só texto.
+    """
+    reply_lower = reply.lower()
+
+    # Checa se tem números que parecem preço (R$, R$ 500, 499,90)
+    import re
+    has_price = bool(re.search(r'r\$\s*[\d.,]+', reply_lower))
+    if has_price:
+        return True
+
+    # Checa keywords informacionais
+    word_count = 0
+    for keyword in _INFORMATIONAL_KEYWORDS:
+        if keyword in reply_lower:
+            word_count += 1
+            if word_count >= 2:  # 2+ keywords = definitivamente informacional
+                return True
+
+    return False
+
+
+def _lead_is_in_a_hurry(conv) -> bool:
+    """
+    Detecta se o lead está com pressa baseado no padrão de mensagens.
+
+    Sinais de pressa:
+        - Últimas 3 mensagens do lead < 15 palavras cada
+        - Respostas monossilábicas ("sim", "ok", "quanto")
+
+    Lead com pressa não vai ouvir áudio. Manda texto e é direto.
+    """
+    # Pega as últimas mensagens do lead
+    user_msgs = [
+        m["content"] for m in conv.history[-8:]
+        if m["role"] == "user"
+    ]
+
+    if len(user_msgs) < 2:
+        return False  # Sem dados suficientes
+
+    # Verifica se as últimas mensagens são curtas
+    last_msgs = user_msgs[-3:] if len(user_msgs) >= 3 else user_msgs
+    avg_words = sum(len(m.split()) for m in last_msgs) / len(last_msgs)
+
+    return avg_words < 5  # Média < 5 palavras = com pressa
+
 
 def _should_send_audio(
     client_data,
@@ -410,7 +482,14 @@ def _should_send_audio(
     intent: str = "neutral",
     reply: str = "",
 ) -> dict:
-    """Modo teste — manda áudio sempre que config permitir."""
+    """
+    Decide se deve enviar áudio.
+
+    Filtros ativos:
+        - Config (SAFE_MODE, enable_audio, voice_id, triggers)
+        - Conversa precisa ter pelo menos 2 trocas (4 msgs)
+        - Lead frustrado não recebe áudio
+    """
     if SAFE_MODE:
         return {"send": False, "reason": "safe_mode"}
     if not client_data.enable_audio:
@@ -420,11 +499,27 @@ def _should_send_audio(
     trigger_stages = set(client_data.audio_trigger_stages)
     if conv.stage not in trigger_stages:
         return {"send": False, "reason": f"stage_{conv.stage}_not_in_triggers"}
-    return {"send": True, "reason": "test_mode_all_filters_disabled"}
+
+    # Normaliza sentiment (pode vir como enum)
+    sent = sentiment.value if hasattr(sentiment, "value") else str(sentiment).lower()
+
+    if sent == "frustrated":
+        return {"send": False, "reason": "lead_frustrated"}
+
+    # Mínimo 2 trocas (4 mensagens) pra não mandar áudio no "oi"
+    if len(conv.history) < 4:
+        return {"send": False, "reason": f"too_short_{len(conv.history)}_msgs"}
+
+    return {"send": True, "reason": f"ok_stage_{conv.stage}_sentiment_{sent}"}
 
 
 # ================================================================
 # GERAÇÃO DE TEXTO PRO ÁUDIO VIA CLAUDE (v8.2)
+#
+# Aqui é onde a mágica acontece. Em vez de templates fixos,
+# o Claude Haiku gera texto conversacional sob medida.
+#
+# O prompt é altamente específico pra gerar FALA, não escrita.
 # ================================================================
 
 async def _generate_audio_text(
@@ -435,6 +530,17 @@ async def _generate_audio_text(
 ) -> str:
     """
     Usa Claude Haiku pra gerar texto de voice note sob medida.
+
+    Cada áudio é único — gerado com contexto completo:
+        - Dados reais do negócio (produtos, FAQ, regras)
+        - Histórico recente da conversa
+        - Tom de voz do dono
+        - Fatos do lead
+        - Sentimento detectado
+
+    O prompt instrui o Claude a falar como BRASILEIRO REAL.
+    Não como chatbot. Não como telemarketing. Como o dono
+    do negócio mandando voice note pra um cliente.
     """
     lead_name = _extract_lead_name(conv.lead_facts)
 
@@ -510,12 +616,15 @@ COMO BRASILEIRO FALA VOICE NOTE:
 - Se fechou (won): agradece como gente, fala do próximo passo real
 
 REGRAS:
-1. MÁXIMO 35 palavras. Voice note de WhatsApp. Curto.
-2. NÃO repita NADA que já foi no texto. Zero redundância.
-3. NÃO invente dados. Só use o que está listado acima.
-4. Sem emoji. Sem URL. Sem formatação.
-5. Use vírgulas pra pausas, "!" pra ênfase, "..." pra hesitação.
-6. Nome do lead UMA vez se souber. Não force.
+1. Se o lead PEDIU explicação sobre algo: fale entre 50 e 70 palavras. Explique com detalhes concretos do negócio, como se tivesse explicando pra um amigo. Voice note de 20-25 segundos.
+2. Se é só um complemento emocional (elogio, agradecimento, reforço): fale entre 20 e 35 palavras. Voice note de 8-12 segundos.
+3. NÃO repita NADA que já foi no texto. Se o texto já explicou o procedimento, o áudio fala de outra coisa — experiência, conforto, detalhe que só quem tá lá sabe.
+4. NÃO invente dados. Só use o que está listado acima.
+5. Sem emoji. Sem URL. Sem formatação.
+6. Use vírgulas pra pausas, "!" pra ênfase, "..." pra hesitação.
+7. Nome do lead UMA vez se souber. Não force.
+8. NUNCA comece com "fica tranquilo" ou "relaxa" se o lead não demonstrou preocupação.
+9. Seja ESPECÍFICO. Nunca genérico. Mencione nomes de produtos, procedimentos ou detalhes do negócio.
 
 RESPONDA APENAS O TEXTO DO VOICE NOTE. Nada mais."""
 
@@ -527,7 +636,7 @@ RESPONDA APENAS O TEXTO DO VOICE NOTE. Nada mais."""
 
         response = await client.messages.create(
             model=AI_MODEL_FAST,
-            max_tokens=120,
+            max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )
 
@@ -536,10 +645,10 @@ RESPONDA APENAS O TEXTO DO VOICE NOTE. Nada mais."""
         # Remove aspas que o Claude às vezes adiciona
         audio_text = audio_text.strip('"').strip("'").strip('\u201c').strip('\u201d')
 
-        # Validação: não pode ser longo demais
+        # Validação: não pode ser longo demais (80 palavras = teto absoluto)
         words = audio_text.split()
-        if len(words) > 50:
-            audio_text = " ".join(words[:40])
+        if len(words) > 80:
+            audio_text = " ".join(words[:70])
             if audio_text[-1] not in '.!?':
                 audio_text += '.'
 
@@ -562,6 +671,8 @@ RESPONDA APENAS O TEXTO DO VOICE NOTE. Nada mais."""
 def _fallback_audio_text(conv, reply: str, client_data, lead_name: str) -> str:
     """
     Fallback se o Claude falhar na geração do texto do áudio.
+
+    Usa dados reais do negócio quando possível. Nunca genérico.
     """
     core = _extract_core_message(reply)
     stage = conv.stage
@@ -586,7 +697,12 @@ def _fallback_audio_text(conv, reply: str, client_data, lead_name: str) -> str:
 # ================================================================
 
 def _extract_lead_name(lead_facts: list[str]) -> str:
-    """Extrai o primeiro nome do lead a partir dos fatos coletados."""
+    """
+    Extrai o primeiro nome do lead a partir dos fatos coletados.
+
+    Procura padrões como "Nome: João Silva", "Se chama Maria", etc.
+    Retorna só o primeiro nome (mais natural na fala).
+    """
     import re
 
     name_patterns = [
@@ -608,7 +724,11 @@ def _extract_lead_name(lead_facts: list[str]) -> str:
 
 
 def _extract_core_message(reply: str) -> str:
-    """Extrai a essência do reply em no máximo 25 palavras."""
+    """
+    Extrai a essência do reply em no máximo 25 palavras.
+
+    Usado como fallback quando o Claude não gera o texto do áudio.
+    """
     import re
 
     clean = re.sub(
@@ -764,7 +884,15 @@ def _apply_stage_action(client_data, current_stage, action):
 # ================================================================
 
 async def _select_voice(client_data, phone: str) -> str:
-    """Seleciona a voz certa pro lead baseado na região."""
+    """
+    Seleciona a voz certa pro lead baseado na região.
+
+    Plano Scale+ com regional_voices configurado:
+        DDD do lead → região → voice_id regional
+
+    Qualquer outro caso:
+        voice_id padrão do dono
+    """
     regional = client_data.regional_voices
     if not regional:
         return client_data.voice_id
