@@ -1,12 +1,11 @@
 # ================================================================
 # huma/services/audio_service.py — Voz clonada via ElevenLabs
 #
-# v8.2.1 — Correções:
-#   - Converte sentiment/stage enum pra string (bug Sentiment.NEUTRAL)
-#   - Stability mais baixa no neutral pra soar mais humano
-#   - VoiceSettings dinâmicos por emoção do lead
-#   - Sanitização avançada pra TTS natural
-#   - Logging estruturado pra debug em produção
+# v8.3.0 — Suporte eleven_v3 + eleven_multilingual_v2:
+#   - v3: audio tags inline, sem VoiceSettings (ignora)
+#   - v2: VoiceSettings dinâmicos por emoção
+#   - Detecção automática do modelo pra decidir comportamento
+#   - Truncamento 80 palavras (áudios mais longos)
 # ================================================================
 
 import uuid
@@ -27,12 +26,9 @@ AUDIO_FORMAT_PRIMARY = "mp3_44100_128"
 AUDIO_CONTENT_TYPE_PRIMARY = "audio/mpeg"
 AUDIO_EXTENSION_PRIMARY = "mp3"
 
-# Tamanho máximo aceitável
-MAX_AUDIO_BYTES = 1_500_000  # 1.5MB
+MAX_AUDIO_BYTES = 1_500_000
 
-# ── Voice Settings por emoção ──
-# stability baixa = mais variação emocional = mais humano
-# stability alta = mais consistente = mais robótico
+# ── Voice Settings por emoção (só usado no v2, v3 ignora) ──
 VOICE_PROFILES: dict[str, dict] = {
     "excited": {
         "stability": 0.30,
@@ -88,34 +84,38 @@ def _normalize_value(val) -> str:
     return str(val).lower().strip()
 
 
+def _is_v3_model() -> bool:
+    """Checa se o modelo configurado é eleven_v3."""
+    return "v3" in ELEVENLABS_MODEL.lower()
+
+
 def _get_eleven() -> Optional[ElevenLabs]:
-    """Lazy init do cliente ElevenLabs. Retorna None se não configurado."""
+    """Lazy init do cliente ElevenLabs."""
     if not ELEVENLABS_API_KEY:
-        log.warning("ELEVENLABS_API_KEY não configurada — áudio desabilitado")
+        log.warning("ELEVENLABS_API_KEY não configurada")
         return None
     return ElevenLabs(api_key=ELEVENLABS_API_KEY)
 
 
-def _build_voice_settings(sentiment: str = "neutral", stage: str = "") -> VoiceSettings:
+def _build_voice_settings(sentiment: str = "neutral", stage: str = "") -> Optional[VoiceSettings]:
     """
-    Constrói VoiceSettings dinâmicos baseado na emoção do lead e estágio.
+    Constrói VoiceSettings dinâmicos. Retorna None se modelo é v3.
+    """
+    if _is_v3_model():
+        return None
 
-    Converte enums pra string antes de buscar no dicionário.
-    """
-    # Normaliza pra string (corrige bug Sentiment.NEUTRAL vs "neutral")
     sentiment_str = _normalize_value(sentiment)
     stage_str = _normalize_value(stage)
 
-    # Stage-specific profiles têm prioridade
     if stage_str in VOICE_PROFILES:
         profile = VOICE_PROFILES[stage_str]
-        log.info(f"Voice profile | source=stage | stage={stage_str} | stability={profile['stability']} | style={profile['style']}")
+        log.info(f"Voice profile | source=stage | stage={stage_str}")
     elif sentiment_str in VOICE_PROFILES:
         profile = VOICE_PROFILES[sentiment_str]
-        log.info(f"Voice profile | source=sentiment | sentiment={sentiment_str} | stability={profile['stability']} | style={profile['style']}")
+        log.info(f"Voice profile | source=sentiment | sentiment={sentiment_str}")
     else:
         profile = VOICE_PROFILES["neutral"]
-        log.info(f"Voice profile | source=fallback | raw_sentiment={sentiment} | raw_stage={stage}")
+        log.info(f"Voice profile | source=fallback")
 
     return VoiceSettings(
         stability=profile["stability"],
@@ -126,25 +126,17 @@ def _build_voice_settings(sentiment: str = "neutral", stage: str = "") -> VoiceS
 
 
 def _sanitize_text_for_speech(text: str) -> str:
-    """
-    Limpa e otimiza texto pra TTS natural.
-    """
+    """Limpa texto pra TTS natural."""
     import re
 
     # Remove emojis
     text = re.sub(
-        r'[\U0001F600-\U0001F64F'
-        r'\U0001F300-\U0001F5FF'
-        r'\U0001F680-\U0001F6FF'
-        r'\U0001F1E0-\U0001F1FF'
-        r'\U00002702-\U000027B0'
-        r'\U0000FE00-\U0000FE0F'
-        r'\U0001F900-\U0001F9FF'
-        r'\U0001FA00-\U0001FA6F'
-        r'\U0001FA70-\U0001FAFF'
-        r'\U00002600-\U000026FF'
-        r'\U0000200D'
-        r'\U000023F0-\U000023FF'
+        r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF'
+        r'\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF'
+        r'\U00002702-\U000027B0\U0000FE00-\U0000FE0F'
+        r'\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F'
+        r'\U0001FA70-\U0001FAFF\U00002600-\U000026FF'
+        r'\U0000200D\U000023F0-\U000023FF'
         r']+', '', text
     )
 
@@ -155,9 +147,10 @@ def _sanitize_text_for_speech(text: str) -> str:
     text = text.replace('*', '').replace('_', '').replace('`', '')
     text = text.replace('#', '')
 
-    # Remove caracteres que confundem o TTS
-    text = text.replace('[', '').replace(']', '')
+    # Remove caracteres que confundem TTS (mas preserva [] pro v3 audio tags)
     text = text.replace('{', '').replace('}', '')
+    if not _is_v3_model():
+        text = text.replace('[', '').replace(']', '')
     text = text.replace('<', '').replace('>', '')
     text = text.replace('|', ',')
 
@@ -165,11 +158,7 @@ def _sanitize_text_for_speech(text: str) -> str:
     text = re.sub(r'!{2,}', '!', text)
     text = re.sub(r'\?{2,}', '?', text)
     text = re.sub(r'\.{4,}', '...', text)
-
-    # Remove múltiplos espaços
     text = re.sub(r'\s+', ' ', text).strip()
-
-    # Remove espaço antes de pontuação
     text = re.sub(r'\s+([,.!?;:])', r'\1', text)
 
     return text
@@ -181,9 +170,7 @@ async def generate_and_upload(
     sentiment: str = "neutral",
     stage: str = "",
 ) -> Optional[str]:
-    """
-    Gera áudio com voz clonada e faz upload pro Supabase Storage.
-    """
+    """Gera áudio com voz clonada e faz upload pro Supabase."""
     if not voice_id:
         log.warning("generate_and_upload chamado sem voice_id")
         return None
@@ -192,11 +179,9 @@ async def generate_and_upload(
         log.warning("generate_and_upload chamado com texto vazio")
         return None
 
-    # Normaliza sentiment e stage (corrige enums)
     sentiment_str = _normalize_value(sentiment)
     stage_str = _normalize_value(stage)
 
-    # Sanitiza antes de gerar
     clean_text = _sanitize_text_for_speech(text)
     if not clean_text:
         log.warning("Texto ficou vazio após sanitização")
@@ -214,25 +199,29 @@ async def generate_and_upload(
     if not eleven:
         return None
 
-    # VoiceSettings dinâmicos (agora com sentiment/stage normalizados)
+    # VoiceSettings só pro v2 (v3 usa audio tags no texto)
     voice_settings = _build_voice_settings(sentiment_str, stage_str)
+    model = ELEVENLABS_MODEL
 
     try:
         log.info(
-            f"Gerando áudio | voice={voice_id[:8]}... | "
+            f"Gerando áudio | model={model} | voice={voice_id[:8]}... | "
             f"words={len(clean_text.split())} | sentiment={sentiment_str} | "
-            f"stage={stage_str} | stability={voice_settings.stability} | "
-            f"style={voice_settings.style}"
+            f"stage={stage_str}"
         )
 
+        # Monta kwargs — v3 não recebe voice_settings
+        convert_kwargs = {
+            "text": clean_text,
+            "voice_id": voice_id,
+            "model_id": model,
+            "output_format": AUDIO_FORMAT_PRIMARY,
+        }
+        if voice_settings is not None:
+            convert_kwargs["voice_settings"] = voice_settings
+
         audio_iterator = await run_in_threadpool(
-            lambda: eleven.text_to_speech.convert(
-                text=clean_text,
-                voice_id=voice_id,
-                model_id=ELEVENLABS_MODEL,
-                output_format=AUDIO_FORMAT_PRIMARY,
-                voice_settings=voice_settings,
-            )
+            lambda: eleven.text_to_speech.convert(**convert_kwargs)
         )
 
         audio_bytes = b"".join(
@@ -262,9 +251,9 @@ async def generate_and_upload(
         url = supa.storage.from_("audios").get_public_url(storage_path)
 
         log.info(
-            f"Áudio OK | voice={voice_id[:8]}... | "
-            f"size={len(audio_bytes)} bytes | format={AUDIO_EXTENSION_PRIMARY} | "
-            f"words={len(clean_text.split())} | sentiment={sentiment_str}"
+            f"Áudio OK | model={model} | voice={voice_id[:8]}... | "
+            f"size={len(audio_bytes)} bytes | words={len(clean_text.split())} | "
+            f"sentiment={sentiment_str}"
         )
         return url
 
@@ -277,8 +266,8 @@ async def generate_and_upload(
             log.error("ElevenLabs — cota de caracteres esgotada")
         elif "voice" in error_msg and "not found" in error_msg:
             log.error(f"ElevenLabs — voice_id não encontrado: {voice_id[:8]}...")
-        elif "datacenter" in error_msg or "forbidden" in error_msg:
-            log.error("ElevenLabs — IP bloqueado (datacenter)")
+        elif "model" in error_msg:
+            log.error(f"ElevenLabs — modelo não suportado: {model}")
         else:
             log.error(f"ElevenLabs erro | {type(e).__name__}: {e}")
 
