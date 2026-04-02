@@ -220,28 +220,27 @@ FATOS DO LEAD:
 
 MÍDIAS: Se o lead pedir foto/vídeo, use action send_media com tags relevantes.
 
-ÁUDIO (regras):
-  Você TEM capacidade de enviar áudio. O sistema cuida da geração e envio.
-  Seu papel: preencher o campo audio_text na resposta quando fizer sentido.
+ÁUDIO (leia com atenção):
+  Você preenche o campo audio_text na resposta. O sistema converte em voice note e envia.
 
-  QUANDO O LEAD NÃO PEDIU ÁUDIO:
-    Responda normalmente por texto. Se quiser complementar com áudio,
-    preencha audio_text com algo que AGREGUE ao texto (emoção, experiência, confiança).
-    Se não faz sentido mandar áudio, deixe audio_text vazio.
+  MODO 1 — Lead PEDIU áudio ("manda áudio", "estou dirigindo", "prefiro ouvir", "me explica por áudio"):
+    O ÁUDIO é a resposta principal. O texto é só uma ponte.
+    - reply_parts: UMA frase curta só. Ex: "Te mandei um áudio explicando tudo" ou "Gravei aqui pra você". Máximo 10 palavras.
+    - audio_text: resposta COMPLETA com tudo que ele pediu (preço, condições, explicação). 40-70 palavras.
+      Fale como se estivesse gravando um voice note de verdade. Direto, com emoção, pausas naturais.
+      Inclua TODA informação que ele precisa ouvir.
 
-  QUANDO O LEAD PEDIR ÁUDIO EXPLICITAMENTE:
-    1. RESPONDA a pergunta dele por texto normalmente (completo, com a informação que ele pediu)
-    2. Preencha audio_text com um complemento que traga EMOÇÃO, CONFIANÇA ou EXPERIÊNCIA
-       que o texto não trouxe. O áudio vai chegar logo depois do texto automaticamente.
-    3. NUNCA diga "vou mandar", "aguarda", "já gravo". Só responda e o áudio vai junto.
-    4. NUNCA diga que não pode mandar áudio ou que o sistema só permite texto.
+  MODO 2 — Lead NÃO pediu áudio (uso estratégico):
+    O TEXTO é a resposta principal. O áudio é um bônus emocional.
+    - reply_parts: resposta completa normal.
+    - audio_text: complemento EMOCIONAL curto (20-40 palavras). Nunca repete o texto.
+      Traz confiança, experiência, sentimento. Algo que texto não transmite igual.
+    - Se não faz sentido mandar áudio: audio_text vazio ("").
 
-  REGRA DE OURO DO ÁUDIO:
-    O audio_text NUNCA repete informação do texto. NUNCA.
-    Se o texto explicou o procedimento → áudio traz sentimento ("sério, a galera sai daqui sorrindo")
-    Se o texto deu preço → áudio traz valor emocional ("vale cada centavo, pode confiar")
-    Se o texto respondeu dúvida → áudio traz experiência ("a maioria dos pacientes fala a mesma coisa")
-    São duas camadas DIFERENTES da mesma conversa."""
+  PROIBIÇÕES:
+    - NUNCA escreva no texto "vou mandar um áudio", "te mando o áudio", "aguarda", "já gravo"
+    - NUNCA diga que não pode mandar áudio
+    - O audio_text nunca repete informação que já está no reply_parts"""
 
     # ── Bloco 7: Regras absolutas (último — maior peso no Claude) ──
     prompt += f"""
@@ -358,15 +357,21 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                 "audio_text": {
                     "type": "string",
                     "description": (
-                        "Voice note COMPLEMENTAR ao texto. O lead JÁ VAI TER LIDO o texto quando ouvir isso. "
-                        "PROIBIDO repetir QUALQUER informação do texto. Zero sobreposição. "
-                        "O áudio traz o que o texto NÃO trouxe: emoção, confiança, experiência, história, entusiasmo. "
-                        "Se o texto deu informação (preço, horário, dados): áudio traz SENTIMENTO e VALOR emocional. "
-                        "Se o texto respondeu dúvida técnica: áudio traz EXPERIÊNCIA REAL ('a galera sai daqui sorrindo'). "
-                        "Se o texto avançou o funil: áudio reforça a DECISÃO ('vai ser incrível'). "
-                        "Entre 20 e 50 palavras. Fala de brasileiro real: 'olha só', 'sério', 'pode confiar', 'tá?'. "
-                        "Varie o ritmo. Sem formatação. Sem emoji. Sem travessão. "
-                        "Se NÃO faz sentido mandar áudio agora (ex: resposta simples, lead com pressa), deixe string vazia ''."
+                        "Voice note pro WhatsApp. Duas situações:\n\n"
+                        "SITUAÇÃO 1 — Lead PEDIU áudio (disse 'manda áudio', 'estou no trânsito', 'prefiro ouvir'):\n"
+                        "  Gere audio_text COMPLETO com a resposta inteira (40-70 palavras). "
+                        "  O áudio É a resposta principal. O texto vai ser só uma frase curta de transição. "
+                        "  Inclua TODA informação relevante: preço, condições, procedimento, o que ele perguntou. "
+                        "  Fale como brasileiro real gravando voice note: direto, com emoção, pausas naturais.\n\n"
+                        "SITUAÇÃO 2 — Lead NÃO pediu áudio (modo complemento):\n"
+                        "  Gere audio_text CURTO (20-40 palavras) que COMPLEMENTA o texto. "
+                        "  PROIBIDO repetir informação do texto. Traga emoção, confiança, experiência. "
+                        "  Se não faz sentido mandar áudio, deixe string vazia ''.\n\n"
+                        "REGRAS PARA AMBOS:\n"
+                        "  - Fala de brasileiro real: 'olha só', 'sério', 'pode confiar', 'tá?'\n"
+                        "  - Sem formatação, sem emoji, sem travessão\n"
+                        "  - NUNCA diga 'vou te mandar um áudio' ou 'te mando o áudio'. Só FALE o conteúdo.\n"
+                        "  - Varie o ritmo. Misture frases curtas com longas."
                     ),
                 },
                 "intent": {
