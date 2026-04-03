@@ -1,9 +1,11 @@
 # ================================================================
 # huma/services/ai_service.py — Cérebro da HUMA
 #
-# v9.0 — Inteligência de vendas de elite:
+# v9.3 — Actions tipadas + instruções obrigatórias:
+#   - Tool definition com schema explícito pra actions
+#   - create_appointment, generate_payment, send_media tipados
+#   - Instruções obrigatórias no autonomy prompt
 #   - Sales Intelligence Engine integrado ao system prompt
-#   - Tool definition expandida (micro_objective, emotional_reading)
 #   - Contexto temporal, ritmo, persuasão, subtexto
 #
 # Mantido (zero breaking changes):
@@ -126,6 +128,27 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
         prompt += f"\nDESCONTO: Máximo {identity.max_discount_percent}%. Só ofereça se o lead pedir.\n"
     else:
         prompt += "\nDESCONTO: NUNCA ofereça desconto.\n"
+
+    if identity.enable_scheduling:
+        prompt += (
+            "\n\nACTION DE AGENDAMENTO (OBRIGATÓRIO):\n"
+            "  Quando o lead CONFIRMAR que quer agendar E você tiver nome + email + data/hora + serviço:\n"
+            "  INCLUA na resposta uma action com type 'create_appointment'.\n"
+            "  O SISTEMA cria evento no Google Calendar, gera link Google Meet, envia convite por email.\n"
+            "  Se você NÃO incluir a action, o lead NÃO recebe confirmação real — só texto.\n"
+            "  Formato da data: DD/MM/YYYY HH:MM (ex: 04/04/2026 10:00)\n"
+            "  NUNCA 'confirme' agendamento só por texto. SEMPRE dispare a action.\n"
+        )
+
+    if identity.enable_payments and identity.accepted_payment_methods:
+        prompt += (
+            "\nACTION DE PAGAMENTO (OBRIGATÓRIO):\n"
+            "  Quando o lead CONFIRMAR que quer pagar:\n"
+            "  INCLUA na resposta uma action com type 'generate_payment'.\n"
+            "  O SISTEMA gera QR code Pix / boleto / link de checkout e envia pro lead.\n"
+            "  Se você NÃO incluir a action, o lead NÃO recebe forma de pagamento.\n"
+            "  NUNCA diga 'vou gerar o pix' sem incluir a action. A action É a geração.\n"
+        )
 
     return prompt
 
@@ -332,31 +355,10 @@ ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 # ================================================================
 # TOOL DEFINITION — força JSON válido sempre
 #
-# v9.2: audio_text gerado na mesma chamada que o texto.
-#   Uma mente, um contexto, uma conversa coerente.
-#   Elimina chamada separada ao Haiku pro áudio.
-#   Texto e áudio são pensados JUNTOS.
+# v9.3: actions tipadas com schema explícito.
+#   O Claude sabe exatamente a estrutura de create_appointment,
+#   generate_payment e send_media. Sem ambiguidade.
 # ================================================================
-
-# ================================================================
-# CORREÇÃO: _build_reply_tool em huma/services/ai_service.py
-#
-# Arquivo: huma/services/ai_service.py
-# Função: _build_reply_tool
-# O que muda: campo "actions" agora tem schema tipado com exemplos
-#   explícitos pra create_appointment, generate_payment e send_media.
-#   O Claude agora sabe EXATAMENTE a estrutura JSON que precisa enviar.
-#
-# COMO APLICAR:
-#   Abra huma/services/ai_service.py no GitHub
-#   Procure a função _build_reply_tool (começa com "def _build_reply_tool")
-#   Substitua a função INTEIRA pela versão abaixo
-#   NÃO MUDE NADA FORA dessa função
-#
-# Arquivos afetados em cascata: NENHUM. O orchestrator já espera
-#   exatamente esses campos nos handlers de actions.
-# ================================================================
-
 
 def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
     """Define a tool que força o Claude a retornar JSON estruturado."""
@@ -543,6 +545,7 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
             "required": required_reply + ["intent", "sentiment", "stage_action", "confidence"],
         },
     }
+
 
 # ================================================================
 # GERAÇÃO DE RESPOSTA
