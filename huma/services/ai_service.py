@@ -472,7 +472,9 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                         "   {\"type\": \"create_appointment\", \"lead_name\": \"nome completo\", "
                         "\"lead_email\": \"email@exemplo.com\", \"service\": \"nome do serviço\", "
                         "\"date_time\": \"DD/MM/YYYY HH:MM\"}\n"
-                        "   IMPORTANTE: date_time DEVE estar no formato DD/MM/YYYY HH:MM (ex: 04/04/2026 10:00)\n"
+                        "   IMPORTANTE: date_time pode ser texto natural como o lead falou. "
+                        "Exemplos: 'terça às 10h', 'amanhã 14h', 'segunda 10:00'. "
+                        "O sistema calcula a data exata automaticamente. NÃO tente calcular o dia/mês.\n"
                         "   O sistema cria evento no Google Calendar + link Google Meet + envia convite por email.\n\n"
                         "2. PAGAMENTO — use quando o lead confirmar que quer pagar:\n"
                         "   {\"type\": \"generate_payment\", \"lead_name\": \"nome\", "
@@ -509,7 +511,13 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                             },
                             "date_time": {
                                 "type": "string",
-                                "description": "Data e hora no formato DD/MM/YYYY HH:MM (agendamento).",
+                                "description": (
+                                    "Data e hora do agendamento. Pode ser texto natural OU formato estruturado.\n"
+                                    "Exemplos válidos: 'terça às 10h', 'amanhã 14h', 'segunda 10:00', "
+                                    "'depois de amanhã às 15h', '07/04/2026 10:00', 'dia 10 às 14h'.\n"
+                                    "O sistema converte automaticamente pra data exata. "
+                                    "NÃO calcule o dia da semana — mande o texto como o lead falou."
+                                ),
                             },
                             "description": {
                                 "type": "string",
