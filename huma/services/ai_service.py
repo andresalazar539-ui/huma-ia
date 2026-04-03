@@ -64,6 +64,60 @@ async def _get_insights_cached(client_id: str) -> str:
 
 
 # ================================================================
+# DOWNLOAD DE IMAGEM (pra enviar ao Claude como base64)
+# ================================================================
+
+async def _download_image_as_base64(url: str) -> dict | None:
+    """
+    Baixa imagem de URL (Twilio/Meta) e converte pra base64.
+
+    URLs do Twilio e Meta são protegidas — o Claude não acessa direto.
+    Precisamos baixar no servidor e enviar como base64.
+
+    Returns:
+        {"data": "base64string", "media_type": "image/jpeg"} ou None se falhar.
+    """
+    import base64
+    import httpx
+    from huma.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+
+    if not url:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            # Twilio exige autenticação básica pra acessar mídia
+            auth = None
+            if "twilio.com" in url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+                auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+            resp = await http.get(url, auth=auth, follow_redirects=True)
+
+            if resp.status_code != 200:
+                log.warning(f"Download imagem falhou | status={resp.status_code} | url={url[:60]}...")
+                return None
+
+            image_bytes = resp.content
+            if not image_bytes or len(image_bytes) < 100:
+                log.warning(f"Imagem vazia ou muito pequena | size={len(image_bytes)}")
+                return None
+
+            # Detecta tipo da imagem
+            content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            if content_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+                content_type = "image/jpeg"
+
+            encoded = base64.b64encode(image_bytes).decode("utf-8")
+
+            log.info(f"Imagem baixada | size={len(image_bytes)} bytes | type={content_type}")
+            return {"data": encoded, "media_type": content_type}
+
+    except Exception as e:
+        log.error(f"Download imagem erro | {type(e).__name__}: {e}")
+        return None
+
+
+# ================================================================
 # SYSTEM PROMPT
 # ================================================================
 
@@ -603,13 +657,30 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     messages = [{"role": m["role"], "content": m["content"]} for m in conv.history]
 
     if image_url:
-        messages.append({
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "url", "url": image_url}},
-                {"type": "text", "text": user_text.strip() or "Lead enviou imagem."},
-            ],
-        })
+        # Baixa a imagem e converte pra base64 (URLs do Twilio/Meta são protegidas)
+        image_data = await _download_image_as_base64(image_url)
+        if image_data:
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image_data["media_type"],
+                            "data": image_data["data"],
+                        },
+                    },
+                    {"type": "text", "text": user_text.strip() or "Lead enviou imagem."},
+                ],
+            })
+        else:
+            # Fallback: não conseguiu baixar, manda só o texto
+            log.warning(f"Imagem não carregou | url={image_url[:60]}...")
+            messages.append({
+                "role": "user",
+                "content": f"{user_text.strip()} [lead enviou imagem mas não foi possível carregar]",
+            })
     else:
         messages.append({"role": "user", "content": user_text})
 
