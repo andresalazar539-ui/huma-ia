@@ -1,5 +1,8 @@
 # ================================================================
 # huma/routes/api.py — Endpoints da API
+#
+# v9.4: webhook Twilio detecta áudio do lead e transcreve
+#   automaticamente via Groq Whisper antes de processar.
 # ================================================================
 
 import json
@@ -233,38 +236,70 @@ async def root():
 from fastapi import Form, Request
 from fastapi.responses import Response
 
+
 @router.post("/webhook/twilio", tags=["Webhook"])
 async def twilio_webhook(request: Request, bg: BackgroundTasks):
     """
     Recebe mensagem do Twilio WhatsApp Sandbox.
-    Twilio manda form-data, não JSON.
-    Responde com TwiML vazio (a resposta vai via API, não inline).
+
+    v9.4: detecta áudio do lead e transcreve automaticamente
+    via Groq Whisper antes de processar.
     """
     form = await request.form()
     form_dict = dict(form)
 
     parsed = wa.parse_twilio_webhook(form_dict)
+    phone = parsed["phone"]
+    text = parsed.get("text", "")
+    media_url = parsed.get("media_url", "")
 
-    if not parsed["phone"] or not parsed["text"]:
+    # Detecta tipo de mídia (áudio, imagem, etc)
+    media_content_type = form_dict.get("MediaContentType0", "")
+    is_audio = media_content_type.startswith("audio/") if media_content_type else False
+    is_image = media_content_type.startswith("image/") if media_content_type else False
+
+    # Se é áudio (voice note), transcreve pra texto
+    if is_audio and media_url:
+        from huma.services.transcription_service import transcribe_audio
+        from huma.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+
+        auth = None
+        if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+            auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+        transcribed = await transcribe_audio(media_url, auth=auth)
+        if transcribed:
+            text = transcribed
+            log.info(f"Áudio transcrito | {phone} | chars={len(text)} | preview={text[:60]}...")
+            media_url = ""  # Não é imagem, limpa pra não confundir
+        else:
+            log.warning(f"Transcrição falhou | {phone}")
+            return Response(
+                content='<Response></Response>',
+                media_type="application/xml",
+            )
+
+    # Define image_url só se for imagem (não áudio)
+    final_image_url = media_url if is_image else ""
+
+    # Se não tem telefone ou texto, ignora
+    if not phone or not text.strip():
         return Response(
             content='<Response></Response>',
             media_type="application/xml",
         )
 
-    # Monta o payload no formato que o orchestrator espera
+    # Monta payload e processa
     payload = MessagePayload(
         client_id="default",
-        phone=parsed["phone"],
-        text=parsed["text"],
-        image_url=parsed.get("media_url", ""),
+        phone=phone,
+        text=text,
+        image_url=final_image_url,
     )
 
-    # Processa em background
     bg.add_task(handle_message, payload, bg)
 
-    # Responde pro Twilio com TwiML vazio (não responde inline)
     return Response(
         content='<Response></Response>',
         media_type="application/xml",
     )
-
