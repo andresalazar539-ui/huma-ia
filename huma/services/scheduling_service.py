@@ -62,7 +62,13 @@ async def create_appointment(request) -> dict:
 
     platform = request.meeting_platform or DEFAULT_MEETING_PLATFORM
 
-    parsed_dt = _parse_datetime(request.date_time)
+    # Resolve data: primeiro tenta expressão natural (date_resolver),
+    # depois fallback pra formatos estruturados (_parse_datetime).
+    # O date_resolver é à prova de erro — Python calcula, não a IA.
+    from huma.services.date_resolver import resolve_date, format_date_br
+    parsed_dt = resolve_date(request.date_time)
+    if not parsed_dt:
+        parsed_dt = _parse_datetime(request.date_time)
     if not parsed_dt:
         log.warning(f"Data/hora inválida | input='{request.date_time}'")
         return {"status": "error", "detail": "Data/hora inválida"}
