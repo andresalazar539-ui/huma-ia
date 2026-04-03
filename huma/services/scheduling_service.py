@@ -157,12 +157,19 @@ async def _create_google_calendar_event(request, parsed_dt: datetime) -> dict:
         if delegated_user:
             credentials = credentials.with_subject(delegated_user)
 
-        # Qual agenda usar — GOOGLE_CALENDAR_ID do config
-        calendar_id = GOOGLE_CALENDAR_ID or "primary"
+        # Service account usa a própria agenda ("primary") e adiciona
+        # o dono do negócio (GOOGLE_CALENDAR_ID) como convidado.
+        # Isso funciona com contas Gmail pessoais (não precisa Workspace).
+        owner_email = GOOGLE_CALENDAR_ID or ""
 
         def _create():
             svc = build("calendar", "v3", credentials=credentials)
             end_dt = parsed_dt + timedelta(hours=1)
+
+            # Convidados: lead + dono do negócio
+            attendees = [{"email": request.lead_email}]
+            if owner_email and owner_email != "primary":
+                attendees.append({"email": owner_email})
 
             event = {
                 "summary": f"{request.service} — {request.lead_name}",
@@ -181,7 +188,7 @@ async def _create_google_calendar_event(request, parsed_dt: datetime) -> dict:
                     "dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
                     "timeZone": "America/Sao_Paulo",
                 },
-                "attendees": [{"email": request.lead_email}],
+                "attendees": attendees,
                 "conferenceData": {
                     "createRequest": {
                         "requestId": f"huma-{request.client_id[:8]}-{int(datetime.utcnow().timestamp())}",
@@ -198,7 +205,7 @@ async def _create_google_calendar_event(request, parsed_dt: datetime) -> dict:
             }
 
             return svc.events().insert(
-                calendarId=calendar_id,
+                calendarId="primary",
                 body=event,
                 conferenceDataVersion=1,
                 sendUpdates="all",
@@ -218,7 +225,7 @@ async def _create_google_calendar_event(request, parsed_dt: datetime) -> dict:
         event_id = result.get("id", "")
         log.info(
             f"Google Calendar OK | event={event_id} | "
-            f"calendar={calendar_id} | meet={meet_url}"
+            f"owner={owner_email} | meet={meet_url}"
         )
         return {"event_id": event_id, "meeting_url": meet_url}
 
