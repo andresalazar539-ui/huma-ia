@@ -145,7 +145,7 @@ async def _create_pix(req) -> dict:
             "description": req.description or "Pagamento via HUMA",
             "payment_method_id": "pix",
             "payer": {
-                "email": f"lead_{req.phone[-8:]}@huma.tmp",
+                "email": req.lead_email if req.lead_email and "@" in req.lead_email else f"lead.{req.phone[-8:]}@humaia.com.br",
                 "first_name": req.lead_name.split()[0] if req.lead_name else "Cliente",
             },
         }
@@ -236,7 +236,7 @@ async def _create_boleto(req) -> dict:
             "description": req.description or "Pagamento via HUMA",
             "payment_method_id": "bolbradesco",
             "payer": {
-                "email": f"lead_{req.phone[-8:]}@huma.tmp",
+                "email": req.lead_email if req.lead_email and "@" in req.lead_email else f"lead.{req.phone[-8:]}@humaia.com.br",
                 "first_name": first_name,
                 "last_name": last_name,
                 "identification": {"type": "CPF", "number": cpf},
