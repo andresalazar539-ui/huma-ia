@@ -1,10 +1,17 @@
 # ================================================================
 # huma/services/scheduling_service.py — Agendamento com confirmação
 #
-# Integração real com:
-#   - Google Calendar API (cria evento com Google Meet)
+# v9.3 — Integração real:
+#   - Google Calendar API (cria evento com Google Meet automático)
 #   - Zoom API (cria meeting)
-#   - Presencial (sem link)
+#   - Presencial (sem link, só confirmação)
+#
+# Correções v9.3:
+#   - Usa GOOGLE_CALENDAR_ID em vez de "primary" (service account
+#     não tem agenda própria — precisa saber QUAL agenda escrever)
+#   - Validação robusta de resposta do Google
+#   - Logs detalhados pra debug
+#   - Fallback graceful se Google Calendar falhar
 # ================================================================
 
 import json
@@ -17,11 +24,17 @@ from fastapi.concurrency import run_in_threadpool
 from huma.config import (
     DEFAULT_MEETING_PLATFORM,
     GOOGLE_CALENDAR_CREDENTIALS,
+    GOOGLE_CALENDAR_ID,
     ZOOM_API_KEY,
 )
 from huma.utils.logger import get_logger
 
 log = get_logger("scheduling")
+
+
+# ================================================================
+# ENTRY POINT
+# ================================================================
 
 
 async def create_appointment(request) -> dict:
@@ -51,6 +64,7 @@ async def create_appointment(request) -> dict:
 
     parsed_dt = _parse_datetime(request.date_time)
     if not parsed_dt:
+        log.warning(f"Data/hora inválida | input='{request.date_time}'")
         return {"status": "error", "detail": "Data/hora inválida"}
 
     # Cria evento na plataforma escolhida
@@ -79,7 +93,10 @@ async def create_appointment(request) -> dict:
     confirmation += f"\nConfirmação enviada pro email: {request.lead_email}"
 
     appointment_id = f"apt_{request.client_id[:8]}_{int(datetime.utcnow().timestamp())}"
-    log.info(f"Agendado | {appointment_id} | {request.lead_name} | {date_display} | {platform}")
+    log.info(
+        f"Agendado | {appointment_id} | {request.lead_name} | "
+        f"{date_display} | {platform} | meet_url={'sim' if meeting_url else 'não'}"
+    )
 
     return {
         "appointment_id": appointment_id,
@@ -100,30 +117,48 @@ async def create_appointment(request) -> dict:
 # GOOGLE CALENDAR + MEET
 # ================================================================
 
+
 async def _create_google_calendar_event(request, parsed_dt: datetime) -> dict:
     """
-    Cria evento no Google Calendar com Google Meet.
-    Usa Service Account (GOOGLE_CALENDAR_CREDENTIALS = JSON da service account).
-    Envia convite pro lead por email.
+    Cria evento no Google Calendar com link Google Meet automático.
+
+    Usa Service Account com GOOGLE_CALENDAR_CREDENTIALS.
+    Escreve na agenda definida em GOOGLE_CALENDAR_ID.
+    Envia convite por email pro lead.
     """
     if not GOOGLE_CALENDAR_CREDENTIALS:
-        log.warning("Google Calendar não configurado — link standalone")
+        log.warning("Google Calendar não configurado — usando link standalone")
         return {"meeting_url": _standalone_meet_link(request)}
 
     try:
         creds_data = json.loads(GOOGLE_CALENDAR_CREDENTIALS)
+    except json.JSONDecodeError as e:
+        log.error(f"Google Calendar — JSON de credenciais inválido | {e}")
+        return {"meeting_url": _standalone_meet_link(request)}
+
+    try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
+    except ImportError:
+        log.error(
+            "google-api-python-client não instalado — "
+            "pip install google-api-python-client google-auth"
+        )
+        return {"meeting_url": _standalone_meet_link(request)}
 
+    try:
         credentials = service_account.Credentials.from_service_account_info(
             creds_data,
             scopes=["https://www.googleapis.com/auth/calendar"],
         )
 
-        # Impersonation se configurado
+        # Impersonation se configurado (workspace com domain-wide delegation)
         delegated_user = creds_data.get("delegated_user", "")
         if delegated_user:
             credentials = credentials.with_subject(delegated_user)
+
+        # Qual agenda usar — GOOGLE_CALENDAR_ID do config
+        calendar_id = GOOGLE_CALENDAR_ID or "primary"
 
         def _create():
             svc = build("calendar", "v3", credentials=credentials)
@@ -163,7 +198,7 @@ async def _create_google_calendar_event(request, parsed_dt: datetime) -> dict:
             }
 
             return svc.events().insert(
-                calendarId="primary",
+                calendarId=calendar_id,
                 body=event,
                 conferenceDataVersion=1,
                 sendUpdates="all",
@@ -180,26 +215,48 @@ async def _create_google_calendar_event(request, parsed_dt: datetime) -> dict:
         if not meet_url:
             meet_url = result.get("hangoutLink", "")
 
-        log.info(f"Google Calendar OK | event={result.get('id','')} | meet={meet_url}")
-        return {"event_id": result.get("id", ""), "meeting_url": meet_url}
+        event_id = result.get("id", "")
+        log.info(
+            f"Google Calendar OK | event={event_id} | "
+            f"calendar={calendar_id} | meet={meet_url}"
+        )
+        return {"event_id": event_id, "meeting_url": meet_url}
 
-    except ImportError:
-        log.warning("google-api-python-client não instalado — pip install google-api-python-client google-auth")
-        return {"meeting_url": _standalone_meet_link(request)}
     except Exception as e:
-        log.error(f"Google Calendar erro | {e}")
+        error_msg = str(e)
+
+        if "404" in error_msg or "notFound" in error_msg:
+            log.error(
+                f"Google Calendar — agenda não encontrada ou sem permissão | "
+                f"calendar_id={GOOGLE_CALENDAR_ID} | "
+                f"Verifique se a service account tem acesso à agenda"
+            )
+        elif "403" in error_msg or "forbidden" in error_msg.lower():
+            log.error(
+                f"Google Calendar — sem permissão | "
+                f"calendar_id={GOOGLE_CALENDAR_ID} | "
+                f"Verifique compartilhamento da agenda com a service account"
+            )
+        elif "invalid_grant" in error_msg.lower():
+            log.error("Google Calendar — credenciais inválidas ou expiradas")
+        else:
+            log.error(f"Google Calendar erro | {type(e).__name__}: {e}")
+
         return {"meeting_url": _standalone_meet_link(request)}
 
 
 def _standalone_meet_link(request) -> str:
-    """Fallback: gera link Meet sem Calendar (pra demos)."""
-    h = hashlib.md5(f"{request.client_id}_{request.phone}_{request.date_time}".encode()).hexdigest()[:12]
+    """Fallback: gera link Meet sem Calendar (pra demos/quando Google falha)."""
+    h = hashlib.md5(
+        f"{request.client_id}_{request.phone}_{request.date_time}".encode()
+    ).hexdigest()[:12]
     return f"https://meet.google.com/{h[:3]}-{h[3:7]}-{h[7:10]}"
 
 
 # ================================================================
 # ZOOM
 # ================================================================
+
 
 async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
     """
@@ -208,7 +265,9 @@ async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
     """
     if not ZOOM_API_KEY:
         log.warning("Zoom não configurado — link placeholder")
-        h = hashlib.md5(f"{request.client_id}_{request.date_time}".encode()).hexdigest()[:10]
+        h = hashlib.md5(
+            f"{request.client_id}_{request.date_time}".encode()
+        ).hexdigest()[:10]
         return {"meeting_url": f"https://zoom.us/j/{h}", "meeting_id": h}
 
     try:
@@ -221,7 +280,11 @@ async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
                     "start_time": parsed_dt.strftime("%Y-%m-%dT%H:%M:%S"),
                     "duration": 60,
                     "timezone": "America/Sao_Paulo",
-                    "agenda": f"Lead: {request.lead_name}\nEmail: {request.lead_email}\nServiço: {request.service}",
+                    "agenda": (
+                        f"Lead: {request.lead_name}\n"
+                        f"Email: {request.lead_email}\n"
+                        f"Serviço: {request.service}"
+                    ),
                     "settings": {
                         "host_video": True,
                         "participant_video": True,
@@ -237,11 +300,14 @@ async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
             resp.raise_for_status()
             data = resp.json()
 
-        log.info(f"Zoom OK | id={data.get('id','')} | url={data.get('join_url','')}")
-        return {"meeting_url": data.get("join_url", ""), "meeting_id": str(data.get("id", ""))}
+        log.info(f"Zoom OK | id={data.get('id', '')} | url={data.get('join_url', '')}")
+        return {
+            "meeting_url": data.get("join_url", ""),
+            "meeting_id": str(data.get("id", "")),
+        }
 
     except Exception as e:
-        log.error(f"Zoom erro | {e}")
+        log.error(f"Zoom erro | {type(e).__name__}: {e}")
         return {"meeting_url": "", "meeting_id": ""}
 
 
@@ -249,8 +315,12 @@ async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
 # HELPERS
 # ================================================================
 
+
 def _parse_datetime(dt_str: str) -> datetime | None:
     """Parse flexível de data/hora (vários formatos BR e ISO)."""
+    if not dt_str or not dt_str.strip():
+        return None
+
     formats = [
         "%Y-%m-%d %H:%M",
         "%Y-%m-%dT%H:%M:%S",
@@ -259,10 +329,14 @@ def _parse_datetime(dt_str: str) -> datetime | None:
         "%d/%m/%Y às %Hh",
         "%d/%m/%Y %Hh",
         "%d/%m/%Y às %H:%M",
+        "%d/%m %H:%M",
+        "%d/%m às %H:%M",
     ]
     for fmt in formats:
         try:
             return datetime.strptime(dt_str.strip(), fmt)
         except ValueError:
             continue
+
+    log.debug(f"Nenhum formato reconhecido pra '{dt_str}'")
     return None
