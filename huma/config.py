@@ -34,6 +34,7 @@ PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "mercadopago")
 
 # ── Agendamento ──
 GOOGLE_CALENDAR_CREDENTIALS = os.getenv("GOOGLE_CALENDAR_CREDENTIALS", "")
+GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 DEFAULT_MEETING_PLATFORM = os.getenv("DEFAULT_MEETING_PLATFORM", "google_meet")
 ZOOM_API_KEY = os.getenv("ZOOM_API_KEY", "")
 
