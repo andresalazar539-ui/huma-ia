@@ -338,6 +338,26 @@ ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 #   Texto e áudio são pensados JUNTOS.
 # ================================================================
 
+# ================================================================
+# CORREÇÃO: _build_reply_tool em huma/services/ai_service.py
+#
+# Arquivo: huma/services/ai_service.py
+# Função: _build_reply_tool
+# O que muda: campo "actions" agora tem schema tipado com exemplos
+#   explícitos pra create_appointment, generate_payment e send_media.
+#   O Claude agora sabe EXATAMENTE a estrutura JSON que precisa enviar.
+#
+# COMO APLICAR:
+#   Abra huma/services/ai_service.py no GitHub
+#   Procure a função _build_reply_tool (começa com "def _build_reply_tool")
+#   Substitua a função INTEIRA pela versão abaixo
+#   NÃO MUDE NADA FORA dessa função
+#
+# Arquivos afetados em cascata: NENHUM. O orchestrator já espera
+#   exatamente esses campos nos handlers de actions.
+# ================================================================
+
+
 def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
     """Define a tool que força o Claude a retornar JSON estruturado."""
     if messaging_style == MessagingStyle.SPLIT:
@@ -435,14 +455,94 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                 },
                 "actions": {
                     "type": "array",
-                    "items": {"type": "object"},
-                    "description": "Ações especiais como pagamento, agendamento ou mídia.",
+                    "description": (
+                        "AÇÕES QUE O SISTEMA EXECUTA AUTOMATICAMENTE. "
+                        "VOCÊ DEVE USAR ACTIONS — o sistema depende disso.\n\n"
+                        "REGRA CRÍTICA: quando o lead confirmar agendamento (tem nome + email + data/hora + serviço), "
+                        "você DEVE incluir uma action create_appointment. O sistema cria o evento no Google Calendar, "
+                        "gera link do Google Meet, envia convite por email, e manda tudo pro lead no WhatsApp. "
+                        "Se você NÃO incluir a action, NADA disso acontece e o lead fica sem confirmação real.\n\n"
+                        "REGRA CRÍTICA: quando o lead quiser pagar (Pix, boleto ou cartão), "
+                        "você DEVE incluir uma action generate_payment. O sistema gera QR code Pix, boleto, "
+                        "ou link de checkout e envia pro lead. Se você NÃO incluir a action, o lead não recebe nada.\n\n"
+                        "TIPOS DISPONÍVEIS:\n\n"
+                        "1. AGENDAMENTO — use quando tiver TODOS os dados:\n"
+                        "   {\"type\": \"create_appointment\", \"lead_name\": \"nome completo\", "
+                        "\"lead_email\": \"email@exemplo.com\", \"service\": \"nome do serviço\", "
+                        "\"date_time\": \"DD/MM/YYYY HH:MM\"}\n"
+                        "   IMPORTANTE: date_time DEVE estar no formato DD/MM/YYYY HH:MM (ex: 04/04/2026 10:00)\n"
+                        "   O sistema cria evento no Google Calendar + link Google Meet + envia convite por email.\n\n"
+                        "2. PAGAMENTO — use quando o lead confirmar que quer pagar:\n"
+                        "   {\"type\": \"generate_payment\", \"lead_name\": \"nome\", "
+                        "\"description\": \"descrição do serviço\", \"amount_cents\": 35000, "
+                        "\"payment_method\": \"pix\"}\n"
+                        "   payment_method: \"pix\" | \"boleto\" | \"credit_card\"\n"
+                        "   amount_cents: valor em centavos (350 reais = 35000)\n"
+                        "   Se boleto: inclua \"lead_cpf\": \"12345678900\"\n"
+                        "   O sistema gera QR code / boleto / link de checkout e manda pro lead.\n\n"
+                        "3. MÍDIA — use quando quiser enviar foto ou vídeo:\n"
+                        "   {\"type\": \"send_media\", \"tags\": [\"antes e depois\", \"clareamento\"]}\n"
+                        "   O sistema busca fotos/vídeos cadastrados com essas tags.\n\n"
+                        "Se não tem action pra disparar, mande array vazio []."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["create_appointment", "generate_payment", "send_media"],
+                                "description": "Tipo da ação.",
+                            },
+                            "lead_name": {
+                                "type": "string",
+                                "description": "Nome completo do lead.",
+                            },
+                            "lead_email": {
+                                "type": "string",
+                                "description": "Email do lead (obrigatório pra agendamento).",
+                            },
+                            "service": {
+                                "type": "string",
+                                "description": "Nome do serviço (agendamento).",
+                            },
+                            "date_time": {
+                                "type": "string",
+                                "description": "Data e hora no formato DD/MM/YYYY HH:MM (agendamento).",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Descrição do pagamento.",
+                            },
+                            "amount_cents": {
+                                "type": "integer",
+                                "description": "Valor em centavos. 350 reais = 35000.",
+                            },
+                            "payment_method": {
+                                "type": "string",
+                                "enum": ["pix", "boleto", "credit_card"],
+                                "description": "Método de pagamento.",
+                            },
+                            "lead_cpf": {
+                                "type": "string",
+                                "description": "CPF do lead (obrigatório pra boleto).",
+                            },
+                            "installments": {
+                                "type": "integer",
+                                "description": "Número de parcelas (cartão). Default: 1.",
+                            },
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Tags pra buscar mídia (send_media).",
+                            },
+                        },
+                        "required": ["type"],
+                    },
                 },
             },
             "required": required_reply + ["intent", "sentiment", "stage_action", "confidence"],
         },
     }
-
 
 # ================================================================
 # GERAÇÃO DE RESPOSTA
