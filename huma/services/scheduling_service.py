@@ -78,12 +78,12 @@ async def create_appointment(request) -> dict:
     event_result = await _create_google_calendar_event(request, parsed_dt, platform)
     event_id = event_result.get("event_id", "")
     calendar_ok = event_result.get("calendar_ok", False)
+    meeting_url = event_result.get("meeting_url", "")
 
     # Se plataforma é zoom, cria meeting separado
-    meeting_url = ""
     if platform == "zoom":
         zoom_result = await _create_zoom_meeting(request, parsed_dt)
-        meeting_url = zoom_result.get("meeting_url", "")
+        meeting_url = zoom_result.get("meeting_url", "") or meeting_url
 
     date_display = parsed_dt.strftime("%d/%m/%Y às %H:%M")
 
@@ -92,21 +92,15 @@ async def create_appointment(request) -> dict:
     confirmation += f"Serviço: {request.service}\n"
     confirmation += f"Data: {date_display}\n"
 
-    if platform == "presencial" or platform == "google_meet":
-        # Presencial ou online sem zoom — informa que confirmação vai por email
-        if calendar_ok:
-            confirmation += "Você vai receber um email de confirmação com todos os detalhes.\n"
-        if platform == "presencial":
-            confirmation += "Atendimento presencial na clínica.\n"
-        elif platform == "google_meet":
-            confirmation += "Atendimento online. O link da videochamada será enviado por email.\n"
-    elif platform == "zoom" and meeting_url:
-        confirmation += f"Link Zoom: {meeting_url}\n"
+    if platform == "presencial":
+        confirmation += "Atendimento presencial na clínica.\n"
+    elif meeting_url:
+        confirmation += f"Link da videochamada: {meeting_url}\n"
+    elif platform == "google_meet" or platform == "zoom":
+        confirmation += "Atendimento online. O link será enviado por email.\n"
 
     if calendar_ok:
-        confirmation += "\nLembrete automático: 1h antes e 15min antes."
-    else:
-        confirmation += f"\nConfirmação enviada pro email: {request.lead_email}"
+        confirmation += "\nVocê vai receber um email de confirmação. Lembrete automático: 1h e 15min antes."
 
     appointment_id = f"apt_{request.client_id[:8]}_{int(datetime.utcnow().timestamp())}"
     log.info(
@@ -173,23 +167,22 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
             scopes=["https://www.googleapis.com/auth/calendar"],
         )
 
-        # Impersonation se configurado (workspace com domain-wide delegation)
-        delegated_user = creds_data.get("delegated_user", "")
-        if delegated_user:
-            credentials = credentials.with_subject(delegated_user)
-
+        # Domain-wide delegation: service account age em nome do dono do negócio.
+        # GOOGLE_CALENDAR_ID = email do Workspace (ex: andre@empresa.com.br)
+        # Isso permite criar eventos COM Google Meet na conta do dono.
         owner_email = GOOGLE_CALENDAR_ID or ""
+        if owner_email and owner_email != "primary" and "@" in owner_email:
+            credentials = credentials.with_subject(owner_email)
+            log.info(f"Google Calendar — delegation ativa | user={owner_email}")
 
         def _create():
             svc = build("calendar", "v3", credentials=credentials)
             end_dt = parsed_dt + timedelta(hours=1)
 
-            # Convidados: lead + dono do negócio
+            # Convidados: lead (o dono já é o organizador via delegation)
             attendees = []
             if request.lead_email:
                 attendees.append({"email": request.lead_email})
-            if owner_email and owner_email != "primary":
-                attendees.append({"email": owner_email})
 
             # Descrição rica com todos os dados
             description_lines = [
@@ -206,11 +199,7 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
                 description_lines.append(f"Tipo: Atendimento presencial")
             elif platform == "google_meet":
                 description_lines.append(f"")
-                description_lines.append(f"Tipo: Atendimento online")
-                description_lines.append(f"O link da videochamada será compartilhado pelo profissional.")
-            elif platform == "zoom":
-                description_lines.append(f"")
-                description_lines.append(f"Tipo: Atendimento online via Zoom")
+                description_lines.append(f"Tipo: Atendimento online via Google Meet")
 
             if request.notes:
                 description_lines.append(f"")
@@ -228,6 +217,12 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
                     "timeZone": "America/Sao_Paulo",
                 },
                 "attendees": attendees,
+                "conferenceData": {
+                    "createRequest": {
+                        "requestId": f"huma-{request.client_id[:8]}-{int(datetime.utcnow().timestamp())}",
+                        "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                    }
+                },
                 "reminders": {
                     "useDefault": False,
                     "overrides": [
@@ -237,25 +232,34 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
                 },
             }
 
-            # Cria evento na agenda da service account (calendarId="primary")
-            # e envia convites pra todos os attendees
+            # Com delegation, calendarId="primary" = agenda do dono
             return svc.events().insert(
                 calendarId="primary",
                 body=event,
+                conferenceDataVersion=1,
                 sendUpdates="all",
             ).execute()
 
         result = await run_in_threadpool(_create)
+
+        # Extrai link do Meet
+        meet_url = ""
+        for ep in result.get("conferenceData", {}).get("entryPoints", []):
+            if ep.get("entryPointType") == "video":
+                meet_url = ep.get("uri", "")
+                break
+        if not meet_url:
+            meet_url = result.get("hangoutLink", "")
 
         event_id = result.get("id", "")
         html_link = result.get("htmlLink", "")
 
         log.info(
             f"Google Calendar OK | event={event_id} | "
-            f"owner={owner_email} | lead={request.lead_email} | "
+            f"owner={owner_email} | meet={meet_url} | "
             f"platform={platform} | link={html_link[:60] if html_link else 'none'}"
         )
-        return {"event_id": event_id, "calendar_ok": True}
+        return {"event_id": event_id, "meeting_url": meet_url, "calendar_ok": True}
 
     except Exception as e:
         error_msg = str(e)
