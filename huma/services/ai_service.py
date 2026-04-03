@@ -233,6 +233,12 @@ REGRAS CUSTOM:
     if sales_prompt:
         prompt += "\n" + sales_prompt
 
+    # ── Bloco 4.5: Inteligência visual (v9.4) ──
+    from huma.services.image_intelligence import build_image_intelligence_prompt
+    image_prompt = build_image_intelligence_prompt(identity)
+    if image_prompt:
+        prompt += "\n" + image_prompt
+
     # ── Bloco 5: Fatos do lead ──
     prompt += f"""
 
@@ -454,6 +460,16 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Novos fatos descobertos sobre o lead.",
+                },
+                "image_analysis": {
+                    "type": "string",
+                    "description": (
+                        "Se o lead mandou imagem, descreva aqui sua análise em 1-2 frases.\n"
+                        "Inclua: o que observou, se tem relação com o negócio, e como usou na resposta.\n"
+                        "Se não teve imagem ou não era relevante, string vazia ''.\n"
+                        "Exemplo: 'Mancha escura na bochecha, parece melasma. Usei como gatilho pra avaliação gratuita.'\n"
+                        "Exemplo: 'Foto de carro, sem relação com clínica. Ignorei e voltei pro contexto.'"
+                    ),
                 },
                 "actions": {
                     "type": "array",
