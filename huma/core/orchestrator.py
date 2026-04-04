@@ -1,19 +1,18 @@
 # ================================================================
-# huma/core/orchestrator.py — Orquestrador principal v9.5
+# huma/core/orchestrator.py — Orquestrador principal v9.5.1
 #
-# v9.5:
-#   - CORRIGIDO: link Meet duplicado removido (confirmation_message já contém)
-#   - ADICIONADO: tratamento de status "conflict" (agenda ocupada)
+# v9.5.1:
+#   - FIX CRÍTICO: agendamento agora roda ANTES do envio de texto.
+#     Se a agenda estiver ocupada, o reply do Claude é descartado
+#     e o lead recebe a mensagem de conflito — sem confirmação falsa.
+#   - Link Meet duplicado removido
+#   - Tratamento de status "conflict"
 #
-# Mantido de v9.1:
-#   - Throttle de áudio (1 a cada 3 trocas, mínimo 6 msgs)
-#   - Prompt do áudio anti-repetição (complementar ao texto, não repete)
-#   - Validação de overlap texto/áudio (>40% = fallback)
-#   - Detecção de conteúdo informacional e pressa do lead
-#   - max_tokens do áudio reduzido (150) pra forçar concisão
+# Mantido:
 #   - Message buffer, middleware de créditos, silent hours
 #   - Delay humano 4-15s, outbound, funil, vozes regionais
-#   - Decision matrix com leitura de ritmo do lead
+#   - Audio-first / texto-first decision matrix
+#   - Throttle de áudio, anti-repetição, overlap validation
 # ================================================================
 
 import asyncio
@@ -55,21 +54,15 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
     Em vez de processar imediatamente, coloca no buffer.
     Quando o lead parar de digitar (8s de silêncio), junta tudo
     e processa como uma mensagem única.
-
-    Isso resolve o problema do brasileiro que manda:
-        "oi" → "gostei" → "do tênis" → "quero saber mais"
     """
     phone = payload.phone
 
-    # Dedup (mensagem idêntica)
     if await cache.is_duplicate(phone, payload.text + (payload.image_url or "")):
         return {"status": "duplicate"}
 
-    # Rate limit
     if not await cache.check_rate_limit(phone):
         return {"status": "rate_limited"}
 
-    # Coloca no buffer (não processa ainda)
     result = await buffer.buffer_message(
         client_id=payload.client_id,
         phone=phone,
@@ -83,17 +76,13 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
 
 
 async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
-    """
-    Processa mensagem unificada (após buffer juntar tudo).
-    Aqui é onde a mágica acontece.
-    """
+    """Processa mensagem unificada (após buffer juntar tudo)."""
     if not await cache.acquire_lock(phone):
         return
 
     try:
         start = time.time()
 
-        # Busca cliente (com cache Redis — evita hit no Supabase a cada msg)
         client_data = await _get_client_cached(client_id)
         if not client_data:
             return
@@ -101,7 +90,6 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         if client_data.onboarding_status not in (OnboardingStatus.ACTIVE, OnboardingStatus.SANDBOX):
             return
 
-        # Descobre plano (com cache)
         plan_config = await _get_plan_cached(client_id)
 
         # Silent hours
@@ -110,11 +98,10 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             log.info(f"Silent hours | {phone}")
             return
 
-        # Verifica se é nova conversa (janela 24h) ou continuação
+        # Janela 24h
         is_new_conversation = await _is_new_conversation(client_id, phone)
 
         if is_new_conversation:
-            # Nova janela 24h → debita 1 conversa do pool
             conv_check = await billing.check_conversations(client_id)
             if not conv_check["has_conversations"]:
                 await wa.send_text(
@@ -132,20 +119,17 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
             await billing.debit_conversation(client_id)
 
-        # Verifica limite de chamadas IA pra esse lead hoje
         max_ia = plan_config.get("max_ia_calls_per_conversation", 30)
         ia_limit_reached = not billing.check_ia_limit(phone, max_ia)
 
-        # Busca conversa
         conv = await db.get_conversation(client_id, phone)
 
-        # Comprime histórico
         conv.history, conv.history_summary, conv.lead_facts = await ai.compress_history(
             conv.history, conv.history_summary, conv.lead_facts
         )
 
         # ============================================================
-        # CAMADA DE CLASSIFICAÇÃO INTELIGENTE (antes da LLM)
+        # CLASSIFICAÇÃO INTELIGENTE
         # ============================================================
         from huma.services.conversation_intelligence import (
             classify_message, format_rule_response, log_classification,
@@ -154,13 +138,10 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         classification = classify_message(unified_text, client_data, conv)
 
         if classification.can_resolve_without_llm and classification.confidence >= 0.95 and classification.msg_type.value == "greeting":
-            # Resposta por regra — sem gastar IA
             ai_result = format_rule_response(classification, client_data, conv)
-
             asyncio.create_task(
                 log_classification(client_id, phone, unified_text, classification, "rule")
             )
-
             log.info(
                 f"Regra | {phone} | tipo={classification.msg_type.value} | "
                 f"conf={classification.confidence:.2f} | sem_IA"
@@ -181,10 +162,36 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             )
             use_sonnet = is_complex
 
+            # ── PRE-FETCH de disponibilidade da agenda ──
+            # Se o lead demonstra intenção de agendar, consulta a agenda
+            # do dono e injeta os horários disponíveis no contexto.
+            # Assim o Claude já sabe o que tá livre e NUNCA confirma horário ocupado.
+            schedule_context = ""
+            if (
+                client_data.enable_scheduling
+                and classification.msg_type.value in ("schedule_intent", "complex", "unknown")
+            ):
+                try:
+                    slots = await sched.get_available_slots(days_ahead=5)
+                    if slots:
+                        lines = ["\n\n<AGENDA_DISPONÍVEL>"]
+                        lines.append("Horários LIVRES na sua agenda (só ofereça estes):")
+                        for day in slots:
+                            slots_str = ", ".join(day["slots"])
+                            lines.append(f"  {day['weekday']} {day['date']}: {slots_str}")
+                        lines.append("REGRA: NÃO confirme horário fora desta lista.")
+                        lines.append("Se o lead pedir horário ocupado, diga que não tem e ofereça os disponíveis.")
+                        lines.append("</AGENDA_DISPONÍVEL>")
+                        schedule_context = "\n".join(lines)
+                        log.info(f"Agenda injetada | {len(slots)} dias | phone={phone}")
+                except Exception as e:
+                    log.warning(f"Agenda fetch erro | {e}")
+
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
                 image_url=unified_image,
                 use_fast_model=not use_sonnet,
+                extra_context=schedule_context,
             )
 
             billing.increment_ia_calls(phone)
@@ -200,7 +207,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         reply_parts = ai_result["reply_parts"]
         actions = ai_result.get("actions", [])
 
-        # Anti-alucinação (SKIP se resposta veio de regra)
+        # Anti-alucinação
         if ai_result.get("resolved_by") != "rule":
             validation = await ai.validate_response(client_data, reply, ai_result["confidence"])
             if not validation.get("is_safe", True):
@@ -209,7 +216,6 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 reply_parts = [reply]
                 actions = []
 
-        # Força aprovação se confidence baixa
         force_approval = ai_result["confidence"] < 0.5 and client_data.clone_mode == CloneMode.AUTO
 
         # Atualiza fatos do lead
@@ -222,7 +228,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         prev_stage = conv.stage
         conv.stage = _apply_stage_action(client_data, conv.stage, ai_result["stage_action"])
 
-        # Motor de aprendizado: analisa quando conversa termina
+        # Motor de aprendizado
         if conv.stage in ("won", "lost") and prev_stage != conv.stage:
             from huma.services.learning_engine import analyze_completed_conversation
             asyncio.create_task(
@@ -236,7 +242,6 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
         conv.history.append({"role": "user", "content": user_content})
 
-        # Inclui audio_text no histórico pra o Claude saber o que já mandou por áudio
         audio_text_for_history = ai_result.get("audio_text", "").strip()
         if audio_text_for_history:
             assistant_content = f"{reply} [áudio enviado: {audio_text_for_history[:150]}]"
@@ -330,14 +335,58 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
     """
     Envia com delay humano + processa actions + áudio inteligente.
 
-    v9.2: Lógica audio-first.
-    Se o audio_text é uma resposta completa (>30 palavras) E o texto
-    repete a mesma info → manda só uma frase curta de texto + áudio completo.
-    Se o audio_text é complemento emocional curto → texto normal + áudio depois.
+    v9.5.1 — PRE-FLIGHT DE AGENDAMENTO:
+    Actions de agendamento rodam ANTES de enviar qualquer texto.
+    Se a agenda estiver ocupada → descarta o reply do Claude e manda
+    a mensagem de conflito no lugar. O lead NUNCA recebe confirmação
+    seguida de "horário ocupado".
+
+    Audio-first / texto-first mantido como v9.2.
     """
     cid = client_data.client_id
 
     try:
+        # ============================================================
+        # PRE-FLIGHT: executa agendamentos ANTES de enviar texto
+        # Se conflito → descarta reply do Claude, manda mensagem de conflito
+        # Se confirmado → manda reply do Claude ("vou verificar...") + confirmação
+        # ============================================================
+        appointment_override = None
+        appointment_confirmation = None
+        remaining_actions = []
+
+        for action in actions:
+            action_type = action.get("type", "")
+
+            if action_type == "create_appointment":
+                result = await _preflight_appointment(phone, action, client_data)
+
+                if result.get("status") == "conflict":
+                    # Agenda ocupada → descarta reply do Claude inteiro
+                    appointment_override = result["whatsapp_message"]
+                    remaining_actions = []
+                    log.info(f"Pre-flight CONFLITO | {phone} | descartando reply do Claude")
+                    break
+
+                elif result.get("status") == "confirmed":
+                    # Horário livre → guarda confirmação pra mandar DEPOIS do reply
+                    appointment_confirmation = result["confirmation_message"]
+                    # Não adiciona nas remaining_actions (já foi executado)
+
+                elif result.get("status") in ("incomplete", "error"):
+                    remaining_actions.append(action)
+            else:
+                remaining_actions.append(action)
+
+        # Se houve conflito, manda só a mensagem de conflito e sai
+        if appointment_override:
+            await asyncio.sleep(_typing_delay(appointment_override))
+            await wa.send_text(phone, appointment_override, client_id=cid)
+            return
+
+        # ============================================================
+        # ÁUDIO DECISION
+        # ============================================================
         audio_text = ai_result.get("audio_text", "").strip()
         sentiment = ai_result.get("sentiment", "neutral")
         if isinstance(sentiment, str):
@@ -345,8 +394,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         else:
             sentiment_value = sentiment.value if hasattr(sentiment, "value") else "neutral"
 
-        # Verifica se a mensagem ATUAL do lead pediu áudio
-        # (não confia no Claude — ele pode gerar audio_text longo sem o lead pedir)
         _audio_request_words = {
             "áudio", "audio", "voice", "voz", "gravar", "grava",
             "dirigindo", "trânsito", "transito", "ouvir",
@@ -364,12 +411,9 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         lead_requested_audio = any(w in last_user_msg for w in _audio_request_words)
 
         audio_word_count = len(audio_text.split()) if audio_text else 0
-        # Audio-first SÓ se o lead REALMENTE pediu áudio E o Claude gerou resposta longa
         audio_is_substantial = lead_requested_audio and audio_word_count >= 30
 
-        # Se o Claude gerou audio_text longo mas o lead NÃO pediu, trata como complemento
         if audio_word_count >= 30 and not lead_requested_audio:
-            # Trunca pra complemento curto (35 palavras max)
             words = audio_text.split()[:35]
             audio_text = " ".join(words)
             if audio_text and audio_text[-1] not in '.!?':
@@ -377,7 +421,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             audio_word_count = len(audio_text.split())
             log.debug(f"Audio truncado pra complemento | lead não pediu | words={audio_word_count}")
 
-        # Checa se vai enviar áudio (filtros de infra)
         will_send_audio = False
         audio_decision = {"send": False, "reason": "no_audio_text"}
         if audio_text:
@@ -387,17 +430,16 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             )
             will_send_audio = audio_decision["send"]
 
+        # ============================================================
+        # ENVIO DO TEXTO
+        # ============================================================
+
         # ── MODO AUDIO-FIRST ──
-        # Áudio substantivo + filtros OK → texto curto de transição + áudio com conteúdo
         if will_send_audio and audio_is_substantial:
-            # Manda só a primeira parte do texto (geralmente a frase de conexão)
-            # ou uma transição curta se o texto todo é informacional
             if len(parts) > 1:
-                # Manda só a primeira parte (conexão) — o áudio carrega o resto
                 await asyncio.sleep(min(2.5 + len(parts[0]) * 0.04, 5.0))
                 await wa.send_text(phone, parts[0], client_id=cid)
             else:
-                # Texto é uma msg só — manda versão curta
                 short = reply.split('.')[0].strip()
                 if len(short) > 10:
                     await asyncio.sleep(min(2.5 + len(short) * 0.04, 5.0))
@@ -406,7 +448,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             log.info(f"Audio-first mode | {phone} | text_parts_sent=1 | audio_words={audio_word_count}")
 
         # ── MODO TEXTO-FIRST (padrão) ──
-        # Sem áudio ou áudio é só complemento curto → texto completo normal
         else:
             if len(parts) > 1:
                 for i, part in enumerate(parts):
@@ -417,8 +458,10 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 await asyncio.sleep(_typing_delay(reply))
                 await wa.send_text(phone, reply, client_id=cid)
 
-        # 2. Actions
-        for action in actions:
+        # ============================================================
+        # ACTIONS RESTANTES (mídia, pagamento — agendamento já foi executado)
+        # ============================================================
+        for action in remaining_actions:
             action_type = action.get("type", "")
 
             if action_type == "send_media":
@@ -428,7 +471,15 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             elif action_type == "create_appointment":
                 await _handle_appointment_action(phone, action, client_data)
 
-        # 3. Envia áudio se aprovado
+        # Envia confirmação de agendamento DEPOIS do reply do Claude
+        # Fluxo pro lead: "vou verificar na agenda..." → (2s) → "Agendado! Quinta às 15h..."
+        if appointment_confirmation:
+            await asyncio.sleep(2.0)
+            await wa.send_text(phone, appointment_confirmation, client_id=cid)
+
+        # ============================================================
+        # ÁUDIO
+        # ============================================================
         if will_send_audio and audio_text:
             clean_audio = audio_text.replace('—', ',').replace('–', ',')
 
@@ -445,8 +496,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 await wa.send_audio(phone, audio_url, client_id=cid)
                 await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
 
-                # Se o áudio não termina com pergunta/convite E é audio-first,
-                # manda texto curto pós-áudio pra não deixar a conversa morrer
                 if audio_is_substantial:
                     audio_ends_with_question = clean_audio.rstrip().endswith('?')
                     audio_has_cta = any(
@@ -455,7 +504,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     )
                     if not audio_ends_with_question and not audio_has_cta:
                         await asyncio.sleep(2.0)
-                        # Pega a última parte do reply_parts como CTA
                         if len(parts) > 1:
                             await wa.send_text(phone, parts[-1], client_id=cid)
                         else:
@@ -466,7 +514,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     f"reason={audio_decision['reason']} | words={audio_word_count}"
                 )
             else:
-                # Áudio falhou — manda texto completo como fallback
                 if audio_is_substantial and len(parts) > 1:
                     for part in parts[1:]:
                         await asyncio.sleep(_typing_delay(part))
@@ -483,10 +530,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
 
 # ================================================================
 # AUDIO DECISION v9.2
-#
-# O Claude já decide SE e O QUE dizer no áudio (campo audio_text).
-# Aqui só filtramos condições técnicas: SAFE_MODE, voice_id,
-# stage, sentiment, throttle.
 # ================================================================
 
 
@@ -496,16 +539,7 @@ def _should_send_audio(
     sentiment: str = "neutral",
     audio_is_substantial: bool = False,
 ) -> dict:
-    """
-    Filtros de infraestrutura pra envio de áudio.
-
-    Se audio_is_substantial=True (lead pediu áudio, Claude gerou resposta completa),
-    bypassa throttle e mínimo de mensagens. Só checa config técnica.
-
-    Se audio_is_substantial=False (complemento emocional),
-    aplica throttle normal.
-    """
-    # Filtros técnicos — sempre aplicam
+    """Filtros de infraestrutura pra envio de áudio."""
     if SAFE_MODE:
         return {"send": False, "reason": "safe_mode"}
     if not client_data.enable_audio:
@@ -522,11 +556,9 @@ def _should_send_audio(
     if sent == "frustrated":
         return {"send": False, "reason": "lead_frustrated"}
 
-    # Se o lead PEDIU áudio (audio substantivo), bypassa throttle
     if audio_is_substantial:
         return {"send": True, "reason": f"lead_requested_audio_stage_{conv.stage}"}
 
-    # Throttle pra complementos emocionais (lead NÃO pediu)
     if len(conv.history) < 6:
         return {"send": False, "reason": f"too_early_{len(conv.history)}_msgs"}
 
@@ -535,7 +567,6 @@ def _should_send_audio(
         return {"send": False, "reason": f"throttle_msg_{assistant_count}"}
 
     return {"send": True, "reason": f"ok_complement_stage_{conv.stage}"}
-
 
 
 # ================================================================
@@ -607,8 +638,49 @@ async def _handle_payment_action(phone, action, client_data):
     log.info(f"Pagamento enviado | {method} | {result.get('amount_display', '')}")
 
 
+async def _preflight_appointment(phone, action, client_data) -> dict:
+    """
+    PRE-FLIGHT de agendamento: executa ANTES de enviar qualquer texto.
+
+    NÃO envia nada — só retorna o resultado.
+    O caller (_send_with_human_delay) gerencia a ordem de envio:
+      1. Reply do Claude ("vou verificar...")
+      2. Confirmation ou conflito do scheduling_service
+
+    Returns:
+        result dict com status: "confirmed", "conflict", "incomplete", "error"
+    """
+    cid = client_data.client_id
+    request = SchedulingRequest(
+        client_id=cid,
+        phone=phone,
+        lead_name=action.get("lead_name", ""),
+        lead_email=action.get("lead_email", ""),
+        lead_phone_confirmed=True,
+        service=action.get("service", ""),
+        date_time=action.get("date_time", ""),
+        meeting_platform=client_data.scheduling_platform,
+    )
+
+    result = await sched.create_appointment(request)
+
+    if result.get("status") == "confirmed":
+        log.info(f"Agendamento OK (pre-flight) | {result['date_time']}")
+    elif result.get("status") == "conflict":
+        log.info(
+            f"Agendamento conflito (pre-flight) | {phone} | "
+            f"conflito={result.get('conflicting_event', '')} | "
+            f"slots={result.get('available_slots', [])}"
+        )
+
+    return result
+
+
 async def _handle_appointment_action(phone, action, client_data):
-    """Cria agendamento — verifica disponibilidade antes."""
+    """
+    Fallback: trata agendamentos que não passaram pelo pre-flight
+    (ex: status=incomplete ou error).
+    """
     cid = client_data.client_id
     request = SchedulingRequest(
         client_id=cid,
@@ -625,12 +697,10 @@ async def _handle_appointment_action(phone, action, client_data):
 
     if result.get("status") == "confirmed":
         await asyncio.sleep(2.0)
-        # confirmation_message JÁ contém o link Meet — não enviar separado
         await wa.send_text(phone, result["confirmation_message"], client_id=cid)
         log.info(f"Agendamento OK | {result['date_time']}")
 
     elif result.get("status") == "conflict":
-        # Agenda ocupada — informa lead e sugere horários alternativos
         await asyncio.sleep(1.0)
         await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
         log.info(
