@@ -258,8 +258,8 @@ async def _check_availability(dt: datetime, duration_minutes: int = 60) -> dict:
         conflicting = events[0].get("summary", "compromisso") if events else "compromisso"
         log.info(f"Conflito | {dt.strftime('%d/%m %H:%M')} | evento={conflicting}")
 
-        # Busca alternativas
-        suggestions = await _find_available_slots(dt, duration_minutes)
+        # Busca alternativas (reutiliza mesmas credentials)
+        suggestions = await _find_available_slots(dt, duration_minutes, credentials=credentials)
 
         return {
             "available": False,
@@ -277,17 +277,16 @@ async def _find_available_slots(
     original_dt: datetime,
     duration_minutes: int = 60,
     slots_to_find: int = 3,
+    credentials=None,
 ) -> list[datetime]:
     """
     Encontra horários disponíveis próximos ao original.
 
-    Estratégia: consulta freebusy do dia inteiro (8h-18h),
-    testa slots de 1h em 1h, pula os ocupados.
-    Checa até 5 dias úteis pra frente.
+    Reutiliza credentials já autenticadas do _check_availability
+    pra evitar erro de authorization com scope diferente.
     """
-    credentials, _ = _build_google_credentials(
-        scope="https://www.googleapis.com/auth/calendar.readonly"
-    )
+    if not credentials:
+        credentials, _ = _build_google_credentials()
     if not credentials:
         return []
 
