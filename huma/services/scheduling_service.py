@@ -81,7 +81,7 @@ async def create_appointment(request) -> dict:
     """
     missing = []
     if not request.lead_name:
-        missing.append("nome completo")
+        missing.append("nome")
     if not request.lead_email:
         missing.append("email")
     if not request.lead_phone_confirmed:
