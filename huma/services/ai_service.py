@@ -558,10 +558,27 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     messages = [{"role": m["role"], "content": m["content"]} for m in conv.history]
 
     if image_url:
+        # Suporta base64 (Twilio) e URL pública (Meta)
+        if image_url.startswith("data:"):
+            # Base64: data:image/jpeg;base64,/9j/4AAQ...
+            parts = image_url.split(",", 1)
+            media_type = parts[0].replace("data:", "").replace(";base64", "")
+            b64_data = parts[1] if len(parts) > 1 else ""
+            image_block = {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+            }
+        else:
+            # URL pública
+            image_block = {
+                "type": "image",
+                "source": {"type": "url", "url": image_url},
+            }
+
         messages.append({
             "role": "user",
             "content": [
-                {"type": "image", "source": {"type": "url", "url": image_url}},
+                image_block,
                 {"type": "text", "text": user_text.strip() or "Lead enviou imagem."},
             ],
         })
