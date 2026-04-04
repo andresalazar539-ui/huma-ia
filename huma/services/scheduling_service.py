@@ -1,26 +1,18 @@
 # ================================================================
 # huma/services/scheduling_service.py — Agendamento profissional
 #
-# v9.4 — Funciona com Gmail pessoal (sem Google Workspace):
-#   - Service account cria evento na própria agenda
-#   - Dono do negócio e lead são convidados (attendees)
-#   - Ambos recebem email de confirmação do Google
-#   - Lembretes: 1h antes (email) + 15min antes (popup)
-#   - Evento aparece na agenda do dono automaticamente
-#   - Suporta presencial (endereço) e online (nota sobre videochamada)
-#   - SEM Google Meet via API (service account não suporta)
-#   - Com OAuth2 no futuro, Meet será automático
-#
-# Integração:
-#   - Google Calendar API (service account)
-#   - Zoom API (opcional)
+# v9.5 — Verificação de disponibilidade + Google Meet real:
+#   - ANTES de criar evento, consulta agenda pra ver se horário tá livre
+#   - Se conflito, retorna horários disponíveis como sugestão
+#   - Domain-wide delegation (Workspace) pra Google Meet real
+#   - Suporta presencial e online
+#   - Date resolver integrado (Python calcula datas, não a IA)
+#   - Lembretes: 1h email + 15min popup
 # ================================================================
 
 import json
-import hashlib
 from datetime import datetime, timedelta
 
-import httpx
 from fastapi.concurrency import run_in_threadpool
 
 from huma.config import (
@@ -35,16 +27,57 @@ log = get_logger("scheduling")
 
 
 # ================================================================
+# GOOGLE AUTH — reutilizado por availability e criação
+# ================================================================
+
+
+def _build_google_credentials(scope: str = "https://www.googleapis.com/auth/calendar"):
+    """
+    Constrói credentials com domain-wide delegation.
+    Retorna (credentials, owner_email) ou (None, None) se falhar.
+    """
+    if not GOOGLE_CALENDAR_CREDENTIALS:
+        return None, None
+
+    try:
+        creds_data = json.loads(GOOGLE_CALENDAR_CREDENTIALS)
+    except json.JSONDecodeError as e:
+        log.error(f"Google Calendar — JSON inválido | {e}")
+        return None, None
+
+    try:
+        from google.oauth2 import service_account
+
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_data,
+            scopes=[scope],
+        )
+
+        owner_email = GOOGLE_CALENDAR_ID or ""
+        if owner_email and owner_email != "primary" and "@" in owner_email:
+            credentials = credentials.with_subject(owner_email)
+
+        return credentials, owner_email
+
+    except Exception as e:
+        log.error(f"Google Auth erro | {type(e).__name__}: {e}")
+        return None, None
+
+
+# ================================================================
 # ENTRY POINT
 # ================================================================
 
 
 async def create_appointment(request) -> dict:
     """
-    Cria agendamento. Valida dados obrigatórios antes.
+    Cria agendamento. Valida dados, verifica disponibilidade, cria evento.
 
     Returns:
-        {"status": "confirmed", ...} ou {"status": "incomplete", "missing_fields": [...]}
+        {"status": "confirmed", ...}
+        {"status": "conflict", "whatsapp_message": "...", "available_slots": [...]}
+        {"status": "incomplete", "missing_fields": [...]}
+        {"status": "error", "detail": "..."}
     """
     missing = []
     if not request.lead_name:
@@ -64,9 +97,9 @@ async def create_appointment(request) -> dict:
 
     platform = request.meeting_platform or DEFAULT_MEETING_PLATFORM
 
-    # Resolve data: primeiro tenta expressão natural (date_resolver),
-    # depois fallback pra formatos estruturados (_parse_datetime).
+    # Resolve data natural → datetime exato
     from huma.services.date_resolver import resolve_date
+
     parsed_dt = resolve_date(request.date_time)
     if not parsed_dt:
         parsed_dt = _parse_datetime(request.date_time)
@@ -74,7 +107,35 @@ async def create_appointment(request) -> dict:
         log.warning(f"Data/hora inválida | input='{request.date_time}'")
         return {"status": "error", "detail": "Data/hora inválida"}
 
-    # Cria evento no Google Calendar (funciona pra qualquer plataforma)
+    # ── Verifica disponibilidade ANTES de criar ──
+    availability = await _check_availability(parsed_dt)
+
+    if not availability["available"]:
+        conflicting = availability.get("conflicting_event", "compromisso")
+        suggestions = availability.get("suggestions", [])
+
+        slots_text = ""
+        if suggestions:
+            formatted = [s.strftime("%d/%m às %H:%M") for s in suggestions[:3]]
+            slots_text = "Horários disponíveis: " + ", ".join(formatted)
+
+        log.info(
+            f"Conflito de agenda | {request.lead_name} | "
+            f"horario={parsed_dt.strftime('%d/%m %H:%M')} | conflito={conflicting}"
+        )
+
+        return {
+            "status": "conflict",
+            "detail": "Horário indisponível",
+            "conflicting_event": conflicting,
+            "available_slots": [s.strftime("%d/%m/%Y %H:%M") for s in suggestions],
+            "whatsapp_message": (
+                f"Esse horário já tá ocupado na agenda. "
+                f"{slots_text if slots_text else 'Quer tentar outro horário?'}"
+            ),
+        }
+
+    # ── Cria evento no Google Calendar ──
     event_result = await _create_google_calendar_event(request, parsed_dt, platform)
     event_id = event_result.get("event_id", "")
     calendar_ok = event_result.get("calendar_ok", False)
@@ -87,7 +148,7 @@ async def create_appointment(request) -> dict:
 
     date_display = parsed_dt.strftime("%d/%m/%Y às %H:%M")
 
-    # Monta mensagem de confirmação
+    # ── Mensagem de confirmação (ÚNICA — sem link duplicado) ──
     confirmation = f"Agendado {request.lead_name}!\n"
     confirmation += f"Serviço: {request.service}\n"
     confirmation += f"Data: {date_display}\n"
@@ -96,11 +157,14 @@ async def create_appointment(request) -> dict:
         confirmation += "Atendimento presencial na clínica.\n"
     elif meeting_url:
         confirmation += f"Link da videochamada: {meeting_url}\n"
-    elif platform == "google_meet" or platform == "zoom":
+    elif platform in ("google_meet", "zoom"):
         confirmation += "Atendimento online. O link será enviado por email.\n"
 
     if calendar_ok:
-        confirmation += "\nVocê vai receber um email de confirmação. Lembrete automático: 1h e 15min antes."
+        confirmation += (
+            "\nVocê vai receber um email de confirmação. "
+            "Lembrete automático: 1h e 15min antes."
+        )
 
     appointment_id = f"apt_{request.client_id[:8]}_{int(datetime.utcnow().timestamp())}"
     log.info(
@@ -125,69 +189,216 @@ async def create_appointment(request) -> dict:
 
 
 # ================================================================
-# GOOGLE CALENDAR (sem Meet — funciona com Gmail pessoal)
+# VERIFICAÇÃO DE DISPONIBILIDADE
 # ================================================================
 
 
-async def _create_google_calendar_event(request, parsed_dt: datetime, platform: str) -> dict:
+async def _check_availability(dt: datetime, duration_minutes: int = 60) -> dict:
     """
-    Cria evento no Google Calendar via Service Account.
+    Verifica se o horário está livre na agenda do dono.
 
-    A service account cria o evento na PRÓPRIA agenda e adiciona
-    o dono do negócio e o lead como convidados. Ambos recebem
-    email de confirmação do Google com lembretes.
-
-    NÃO cria Google Meet (service account não suporta com Gmail pessoal).
-    Pra videochamada: usa Zoom ou aguarda implementação OAuth2.
+    Consulta freebusy API — mais eficiente que listar eventos.
+    Se conflito, busca até 3 horários alternativos.
 
     Returns:
-        {"event_id": "...", "calendar_ok": True} se criou
-        {"event_id": "", "calendar_ok": False} se falhou
+        {"available": True}
+        {"available": False, "conflicting_event": "...", "suggestions": [...]}
     """
-    if not GOOGLE_CALENDAR_CREDENTIALS:
-        log.warning("Google Calendar não configurado — agendamento sem evento no calendário")
-        return {"event_id": "", "calendar_ok": False}
+    credentials, owner_email = _build_google_credentials()
+    if not credentials:
+        # Sem Calendar configurado → assume disponível
+        return {"available": True}
 
     try:
-        creds_data = json.loads(GOOGLE_CALENDAR_CREDENTIALS)
-    except json.JSONDecodeError as e:
-        log.error(f"Google Calendar — JSON de credenciais inválido | {e}")
-        return {"event_id": "", "calendar_ok": False}
+
+        def _query():
+            from googleapiclient.discovery import build
+
+            svc = build("calendar", "v3", credentials=credentials)
+
+            end_dt = dt + timedelta(minutes=duration_minutes)
+
+            # Primeiro: freebusy (rápido, uma query)
+            body = {
+                "timeMin": dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
+                "timeMax": end_dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
+                "timeZone": "America/Sao_Paulo",
+                "items": [{"id": "primary"}],
+            }
+            fb = svc.freebusy().query(body=body).execute()
+            busy = fb.get("calendars", {}).get("primary", {}).get("busy", [])
+
+            if not busy:
+                return {"available": True, "events": []}
+
+            # Tem conflito — busca detalhes do evento pra dar nome
+            events = (
+                svc.events()
+                .list(
+                    calendarId="primary",
+                    timeMin=dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
+                    timeMax=end_dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
+                    singleEvents=True,
+                    orderBy="startTime",
+                )
+                .execute()
+                .get("items", [])
+            )
+
+            return {"available": False, "events": events}
+
+        result = await run_in_threadpool(_query)
+
+        if result["available"]:
+            log.debug(f"Horário livre | {dt.strftime('%d/%m %H:%M')}")
+            return {"available": True}
+
+        # Pega nome do evento conflitante
+        events = result.get("events", [])
+        conflicting = events[0].get("summary", "compromisso") if events else "compromisso"
+        log.info(f"Conflito | {dt.strftime('%d/%m %H:%M')} | evento={conflicting}")
+
+        # Busca alternativas
+        suggestions = await _find_available_slots(dt, duration_minutes)
+
+        return {
+            "available": False,
+            "conflicting_event": conflicting,
+            "suggestions": suggestions,
+        }
+
+    except Exception as e:
+        log.error(f"Verificação de disponibilidade erro | {type(e).__name__}: {e}")
+        # Erro → assume disponível pra não bloquear atendimento
+        return {"available": True}
+
+
+async def _find_available_slots(
+    original_dt: datetime,
+    duration_minutes: int = 60,
+    slots_to_find: int = 3,
+) -> list[datetime]:
+    """
+    Encontra horários disponíveis próximos ao original.
+
+    Estratégia: consulta freebusy do dia inteiro (8h-18h),
+    testa slots de 1h em 1h, pula os ocupados.
+    Checa até 5 dias úteis pra frente.
+    """
+    credentials, _ = _build_google_credentials(
+        scope="https://www.googleapis.com/auth/calendar.readonly"
+    )
+    if not credentials:
+        return []
 
     try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-    except ImportError:
-        log.error("google-api-python-client não instalado")
-        return {"event_id": "", "calendar_ok": False}
+        available: list[datetime] = []
+        now = datetime.now()
+        check_date = original_dt.date()
+
+        for day_offset in range(7):
+            if len(available) >= slots_to_find:
+                break
+
+            current_date = check_date + timedelta(days=day_offset)
+
+            # Pula fim de semana
+            if current_date.weekday() >= 5:
+                continue
+
+            day_start = datetime.combine(current_date, datetime.min.time()).replace(hour=8)
+            day_end = datetime.combine(current_date, datetime.min.time()).replace(hour=18)
+
+            def _query_day(ds=day_start, de=day_end):
+                from googleapiclient.discovery import build
+
+                svc = build("calendar", "v3", credentials=credentials)
+                body = {
+                    "timeMin": ds.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
+                    "timeMax": de.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
+                    "timeZone": "America/Sao_Paulo",
+                    "items": [{"id": "primary"}],
+                }
+                fb = svc.freebusy().query(body=body).execute()
+                return fb.get("calendars", {}).get("primary", {}).get("busy", [])
+
+            busy_ranges = await run_in_threadpool(_query_day)
+
+            # Parse dos ranges ocupados
+            busy_parsed: list[tuple[datetime, datetime]] = []
+            for b in busy_ranges:
+                try:
+                    bs = datetime.fromisoformat(b["start"].replace("Z", "+00:00")).replace(
+                        tzinfo=None
+                    )
+                    be = datetime.fromisoformat(b["end"].replace("Z", "+00:00")).replace(
+                        tzinfo=None
+                    )
+                    busy_parsed.append((bs, be))
+                except (ValueError, KeyError):
+                    pass
+
+            # Testa cada hora
+            candidate = day_start
+            while candidate.hour < 18 and len(available) < slots_to_find:
+                candidate_end = candidate + timedelta(minutes=duration_minutes)
+
+                # Não sugere passado nem o horário original com conflito
+                if candidate <= now or candidate == original_dt:
+                    candidate += timedelta(hours=1)
+                    continue
+
+                # Verifica conflito
+                is_free = True
+                for bs, be in busy_parsed:
+                    if candidate < be and candidate_end > bs:
+                        is_free = False
+                        break
+
+                if is_free:
+                    available.append(candidate)
+
+                candidate += timedelta(hours=1)
+
+        return available
+
+    except Exception as e:
+        log.error(f"Busca de slots erro | {type(e).__name__}: {e}")
+        return []
+
+
+# ================================================================
+# GOOGLE CALENDAR + MEET (domain-wide delegation)
+# ================================================================
+
+
+async def _create_google_calendar_event(
+    request, parsed_dt: datetime, platform: str
+) -> dict:
+    """
+    Cria evento no Google Calendar via domain-wide delegation.
+    Inclui Google Meet automático e lembretes.
+    """
+    credentials, owner_email = _build_google_credentials()
+    if not credentials:
+        log.warning("Google Calendar não configurado")
+        return {"event_id": "", "meeting_url": "", "calendar_ok": False}
 
     try:
-        credentials = service_account.Credentials.from_service_account_info(
-            creds_data,
-            scopes=["https://www.googleapis.com/auth/calendar"],
-        )
-
-        # Domain-wide delegation: service account age em nome do dono do negócio.
-        # GOOGLE_CALENDAR_ID = email do Workspace (ex: andre@empresa.com.br)
-        # Isso permite criar eventos COM Google Meet na conta do dono.
-        owner_email = GOOGLE_CALENDAR_ID or ""
-        if owner_email and owner_email != "primary" and "@" in owner_email:
-            credentials = credentials.with_subject(owner_email)
-            log.info(f"Google Calendar — delegation ativa | user={owner_email}")
 
         def _create():
+            from googleapiclient.discovery import build
+
             svc = build("calendar", "v3", credentials=credentials)
             end_dt = parsed_dt + timedelta(hours=1)
 
-            # Convidados: lead (o dono já é o organizador via delegation)
             attendees = []
             if request.lead_email:
                 attendees.append({"email": request.lead_email})
 
-            # Descrição rica com todos os dados
             description_lines = [
-                f"Agendamento via HUMA IA",
-                f"",
+                "Agendamento via HUMA IA",
+                "",
                 f"Lead: {request.lead_name}",
                 f"Email: {request.lead_email}",
                 f"Telefone: {request.phone}",
@@ -195,15 +406,12 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
             ]
 
             if platform == "presencial":
-                description_lines.append(f"")
-                description_lines.append(f"Tipo: Atendimento presencial")
+                description_lines += ["", "Tipo: Atendimento presencial"]
             elif platform == "google_meet":
-                description_lines.append(f"")
-                description_lines.append(f"Tipo: Atendimento online via Google Meet")
+                description_lines += ["", "Tipo: Atendimento online via Google Meet"]
 
             if request.notes:
-                description_lines.append(f"")
-                description_lines.append(f"Observações: {request.notes}")
+                description_lines += ["", f"Observações: {request.notes}"]
 
             event = {
                 "summary": f"{request.service} — {request.lead_name}",
@@ -219,7 +427,10 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
                 "attendees": attendees,
                 "conferenceData": {
                     "createRequest": {
-                        "requestId": f"huma-{request.client_id[:8]}-{int(datetime.utcnow().timestamp())}",
+                        "requestId": (
+                            f"huma-{request.client_id[:8]}-"
+                            f"{int(datetime.utcnow().timestamp())}"
+                        ),
                         "conferenceSolutionKey": {"type": "hangoutsMeet"},
                     }
                 },
@@ -232,7 +443,6 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
                 },
             }
 
-            # Com delegation, calendarId="primary" = agenda do dono
             return svc.events().insert(
                 calendarId="primary",
                 body=event,
@@ -242,7 +452,6 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
 
         result = await run_in_threadpool(_create)
 
-        # Extrai link do Meet
         meet_url = ""
         for ep in result.get("conferenceData", {}).get("entryPoints", []):
             if ep.get("entryPointType") == "video":
@@ -252,19 +461,15 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
             meet_url = result.get("hangoutLink", "")
 
         event_id = result.get("id", "")
-        html_link = result.get("htmlLink", "")
-
         log.info(
             f"Google Calendar OK | event={event_id} | "
-            f"owner={owner_email} | meet={meet_url} | "
-            f"platform={platform} | link={html_link[:60] if html_link else 'none'}"
+            f"owner={owner_email} | meet={meet_url} | platform={platform}"
         )
         return {"event_id": event_id, "meeting_url": meet_url, "calendar_ok": True}
 
     except Exception as e:
-        error_msg = str(e)
-        log.error(f"Google Calendar erro | {type(e).__name__}: {error_msg[:200]}")
-        return {"event_id": "", "calendar_ok": False}
+        log.error(f"Google Calendar erro | {type(e).__name__}: {str(e)[:200]}")
+        return {"event_id": "", "meeting_url": "", "calendar_ok": False}
 
 
 # ================================================================
@@ -273,21 +478,20 @@ async def _create_google_calendar_event(request, parsed_dt: datetime, platform: 
 
 
 async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
-    """
-    Cria meeting no Zoom via API (Server-to-Server OAuth).
-    ZOOM_API_KEY = Bearer token.
-    """
+    """Cria meeting no Zoom via API."""
     if not ZOOM_API_KEY:
         log.warning("Zoom não configurado")
         return {"meeting_url": "", "meeting_id": ""}
 
     try:
+        import httpx
+
         async with httpx.AsyncClient(timeout=15.0) as http:
             resp = await http.post(
                 "https://api.zoom.us/v2/users/me/meetings",
                 json={
                     "topic": f"{request.service} — {request.lead_name}",
-                    "type": 2,  # Scheduled
+                    "type": 2,
                     "start_time": parsed_dt.strftime("%Y-%m-%dT%H:%M:%S"),
                     "duration": 60,
                     "timezone": "America/Sao_Paulo",
@@ -328,7 +532,7 @@ async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
 
 
 def _parse_datetime(dt_str: str) -> datetime | None:
-    """Parse flexível de data/hora (vários formatos BR e ISO). Fallback do date_resolver."""
+    """Parse flexível de data/hora. Fallback do date_resolver."""
     if not dt_str or not dt_str.strip():
         return None
 
@@ -348,6 +552,4 @@ def _parse_datetime(dt_str: str) -> datetime | None:
             return datetime.strptime(dt_str.strip(), fmt)
         except ValueError:
             continue
-
-    log.debug(f"Nenhum formato reconhecido pra '{dt_str}'")
     return None
