@@ -171,10 +171,35 @@ GREETING_PATTERNS = [
 ]
 
 def _check_greeting(text: str, lead_name: str, conv: Conversation) -> Optional[ClassificationResult]:
-    """Detecta saudação simples."""
+    """
+    Detecta saudação simples.
+
+    REGRA CRÍTICA: se a mensagem contém mais do que uma saudação
+    (ex: nome do lead, intenção de agendar/comprar, dados),
+    NÃO classifica como greeting — manda pro Claude que vai
+    extrair o nome e responder com contexto.
+    """
     for pattern in GREETING_PATTERNS:
         if re.search(pattern, text):
-            # Se é primeira mensagem (sem histórico), responde com saudação + pergunta nome
+            # Se a mensagem tem conteúdo ALÉM da saudação, não é greeting puro
+            # Ex: "oi boa tarde, meu nome é João e quero agendar" → NÃO é greeting
+            intent_signals = [
+                "agendar", "marcar", "consulta", "sessao", "sessão",
+                "comprar", "quero", "gostaria", "preciso", "interessado",
+                "preço", "preco", "valor", "quanto",
+                "meu nome", "me chamo", "sou o ", "sou a ",
+                "horario", "horário", "disponível", "disponivel",
+                "reservar", "visita", "reuniao", "reunião",
+            ]
+
+            has_intent = any(signal in text for signal in intent_signals)
+            is_long = len(text.split()) > 5
+
+            if has_intent or is_long:
+                # Mensagem complexa — Claude resolve melhor
+                return None
+
+            # Saudação pura (curta, sem intenção)
             if not conv.history or len(conv.history) <= 2:
                 if lead_name:
                     response = f"Oi {lead_name}! Tudo bem? Como posso te ajudar?"
