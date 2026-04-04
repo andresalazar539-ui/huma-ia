@@ -60,26 +60,46 @@ async def transcribe_audio(audio_url: str, auth: tuple | None = None) -> str | N
 
 
 async def _download_audio(url: str, auth: tuple | None = None) -> bytes | None:
-    """Baixa arquivo de áudio da URL."""
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as http:
-            resp = await http.get(url, auth=auth, follow_redirects=True)
+    """
+    Baixa arquivo de áudio da URL.
+    Retry com delay pra lidar com Twilio Sandbox que demora
+    pra disponibilizar a mídia (causa 404 na primeira tentativa).
+    """
+    import asyncio
 
-            if resp.status_code != 200:
-                log.warning(f"Download áudio falhou | status={resp.status_code}")
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as http:
+                resp = await http.get(url, auth=auth, follow_redirects=True)
+
+                if resp.status_code == 200:
+                    audio_bytes = resp.content
+                    if not audio_bytes or len(audio_bytes) < 500:
+                        log.warning(f"Áudio vazio ou muito pequeno | size={len(audio_bytes)}")
+                        return None
+
+                    log.info(f"Áudio baixado | size={len(audio_bytes)} bytes | attempt={attempt+1}")
+                    return audio_bytes
+
+                elif resp.status_code == 404 and attempt < max_retries - 1:
+                    # Twilio pode demorar pra disponibilizar a mídia
+                    wait = 2.0 * (attempt + 1)
+                    log.info(f"Áudio 404, retry em {wait}s | attempt={attempt+1}")
+                    await asyncio.sleep(wait)
+                    continue
+                else:
+                    log.warning(f"Download áudio falhou | status={resp.status_code} | attempt={attempt+1}")
+                    return None
+
+        except Exception as e:
+            log.error(f"Download áudio erro | {type(e).__name__}: {e} | attempt={attempt+1}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2.0)
+            else:
                 return None
 
-            audio_bytes = resp.content
-            if not audio_bytes or len(audio_bytes) < 500:
-                log.warning(f"Áudio vazio ou muito pequeno | size={len(audio_bytes)}")
-                return None
-
-            log.info(f"Áudio baixado | size={len(audio_bytes)} bytes")
-            return audio_bytes
-
-    except Exception as e:
-        log.error(f"Download áudio erro | {type(e).__name__}: {e}")
-        return None
+    return None
 
 
 async def _transcribe_groq(audio_bytes: bytes) -> str | None:
