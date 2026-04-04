@@ -162,36 +162,10 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             )
             use_sonnet = is_complex
 
-            # ── PRE-FETCH de disponibilidade da agenda ──
-            # Se o lead demonstra intenção de agendar, consulta a agenda
-            # do dono e injeta os horários disponíveis no contexto.
-            # Assim o Claude já sabe o que tá livre e NUNCA confirma horário ocupado.
-            schedule_context = ""
-            if (
-                client_data.enable_scheduling
-                and classification.msg_type.value in ("schedule_intent", "complex", "unknown")
-            ):
-                try:
-                    slots = await sched.get_available_slots(days_ahead=5)
-                    if slots:
-                        lines = ["\n\n<AGENDA_DISPONÍVEL>"]
-                        lines.append("Horários LIVRES na sua agenda (só ofereça estes):")
-                        for day in slots:
-                            slots_str = ", ".join(day["slots"])
-                            lines.append(f"  {day['weekday']} {day['date']}: {slots_str}")
-                        lines.append("REGRA: NÃO confirme horário fora desta lista.")
-                        lines.append("Se o lead pedir horário ocupado, diga que não tem e ofereça os disponíveis.")
-                        lines.append("</AGENDA_DISPONÍVEL>")
-                        schedule_context = "\n".join(lines)
-                        log.info(f"Agenda injetada | {len(slots)} dias | phone={phone}")
-                except Exception as e:
-                    log.warning(f"Agenda fetch erro | {e}")
-
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
                 image_url=unified_image,
                 use_fast_model=not use_sonnet,
-                extra_context=schedule_context,
             )
 
             billing.increment_ia_calls(phone)
