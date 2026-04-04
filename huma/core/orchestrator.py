@@ -333,7 +333,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             action_type = action.get("type", "")
 
             if action_type == "create_appointment":
-                result = await _preflight_appointment(phone, action, client_data)
+                result = await _preflight_appointment(phone, action, client_data, conv)
 
                 if result.get("status") == "conflict":
                     # Agenda ocupada → descarta reply do Claude inteiro
@@ -612,27 +612,82 @@ async def _handle_payment_action(phone, action, client_data):
     log.info(f"Pagamento enviado | {method} | {result.get('amount_display', '')}")
 
 
-async def _preflight_appointment(phone, action, client_data) -> dict:
+async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
     """
     PRE-FLIGHT de agendamento: executa ANTES de enviar qualquer texto.
 
-    NÃO envia nada — só retorna o resultado.
-    O caller (_send_with_human_delay) gerencia a ordem de envio:
-      1. Reply do Claude ("vou verificar...")
-      2. Confirmation ou conflito do scheduling_service
+    Se o Claude não incluiu nome/email na action, tenta preencher
+    dos lead_facts da conversa (o lead pode ter dito na conversa
+    mas o Claude não colocou na action).
 
-    Returns:
-        result dict com status: "confirmed", "conflict", "incomplete", "error"
+    NÃO envia nada — só retorna o resultado.
     """
     cid = client_data.client_id
+
+    # Dados da action
+    lead_name = action.get("lead_name", "").strip()
+    lead_email = action.get("lead_email", "").strip()
+    service = action.get("service", "").strip()
+    date_time = action.get("date_time", "").strip()
+
+    # Se faltam dados, tenta extrair dos lead_facts da conversa
+    if conv and (not lead_name or not lead_email):
+        facts = conv.lead_facts or []
+        history_text = " ".join(
+            m.get("content", "") for m in (conv.history or [])
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        ).lower()
+
+        if not lead_name:
+            # Busca nos fatos
+            for fact in facts:
+                fl = fact.lower()
+                if "nome" in fl:
+                    parts = fact.split(":", 1)
+                    if len(parts) > 1:
+                        lead_name = parts[1].strip()
+                        break
+            # Busca no histórico: "meu nome é X", "sou o X", "me chamo X"
+            if not lead_name:
+                import re
+                name_match = re.search(
+                    r'(?:meu nome [eé] |me chamo |sou o |sou a )([A-ZÀ-Ú][a-zà-ú]+(?: [A-ZÀ-Ú][a-zà-ú]+)*)',
+                    " ".join(m.get("content", "") for m in (conv.history or []) if m.get("role") == "user"),
+                )
+                if name_match:
+                    lead_name = name_match.group(1).strip()
+
+        if not lead_email:
+            # Busca nos fatos
+            for fact in facts:
+                if "@" in fact:
+                    import re
+                    email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', fact)
+                    if email_match:
+                        lead_email = email_match.group(0)
+                        break
+            # Busca no histórico
+            if not lead_email:
+                import re
+                for msg in (conv.history or []):
+                    content = msg.get("content", "")
+                    if isinstance(content, str) and "@" in content:
+                        email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.-]+', content)
+                        if email_match:
+                            lead_email = email_match.group(0)
+                            break
+
+        if lead_name or lead_email:
+            log.info(f"Pre-flight enriquecido | name={lead_name} | email={lead_email}")
+
     request = SchedulingRequest(
         client_id=cid,
         phone=phone,
-        lead_name=action.get("lead_name", ""),
-        lead_email=action.get("lead_email", ""),
+        lead_name=lead_name,
+        lead_email=lead_email,
         lead_phone_confirmed=True,
-        service=action.get("service", ""),
-        date_time=action.get("date_time", ""),
+        service=service or "Consulta",
+        date_time=date_time,
         meeting_platform=client_data.scheduling_platform,
     )
 
@@ -645,6 +700,12 @@ async def _preflight_appointment(phone, action, client_data) -> dict:
             f"Agendamento conflito (pre-flight) | {phone} | "
             f"conflito={result.get('conflicting_event', '')} | "
             f"slots={result.get('available_slots', [])}"
+        )
+    elif result.get("status") == "incomplete":
+        log.warning(
+            f"Agendamento incompleto (pre-flight) | {phone} | "
+            f"faltam={result.get('missing_fields', [])} | "
+            f"name='{lead_name}' | email='{lead_email}'"
         )
 
     return result
