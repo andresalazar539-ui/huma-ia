@@ -1,15 +1,21 @@
 # ================================================================
-# huma/routes/api.py — Endpoints da API
+# huma/routes/api.py — Endpoints da API v9.5
 #
-# v9.4: webhook Twilio detecta áudio do lead e transcreve
-#   automaticamente via Groq Whisper antes de processar.
+# v9.5:
+#   - ADICIONADO: /webhook/mercadopago (IPN do Mercado Pago)
+#     → Recebe notificação de pagamento
+#     → Cruza com lead pelo phone (via tabela payments)
+#     → Se aprovado: notifica lead no WhatsApp + avança funil pra "won"
+#     → Notifica dono do negócio
+#   - Webhook Twilio atualizado (audio + imagem)
 # ================================================================
 
 import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials
 
 from huma.config import APP_VERSION
@@ -34,7 +40,7 @@ log = get_logger("routes")
 router = APIRouter()
 
 
-# ── Webhook ──
+# ── Webhook WhatsApp ──
 
 @router.post("/api/message", response_model=MessageResponse, tags=["Webhook"])
 async def receive_message(payload: MessagePayload, bg: BackgroundTasks, _=Depends(verify_webhook)):
@@ -70,7 +76,6 @@ async def approve_message(payload: ApprovalPayload, bg: BackgroundTasks, creds=D
         bg.add_task(wa.send_text, payload.phone, final_text)
         await cache.delete_pending(payload.client_id, payload.phone)
 
-        # Se editou, salva como correção pra IA aprender
         if payload.edited_text and payload.edited_text != pending["ai_response"]:
             client = await db.get_client(payload.client_id)
             if client:
@@ -207,7 +212,7 @@ async def import_whatsapp(client_id: str, payload: WhatsAppImportPayload, _=Depe
 
 @router.get("/health", tags=["Sistema"])
 async def health():
-    """Health check — sempre responde, mesmo se Redis/DB estiver fora."""
+    """Health check."""
     redis_ok = False
     db_ok = False
     try:
@@ -231,70 +236,46 @@ async def root():
     return {"service": "HUMA IA", "version": APP_VERSION}
 
 
-# ── Twilio WhatsApp Webhook ──
-
-from fastapi import Form, Request
-from fastapi.responses import Response
-
+# ================================================================
+# WEBHOOK TWILIO (WhatsApp Sandbox)
+# ================================================================
 
 @router.post("/webhook/twilio", tags=["Webhook"])
 async def twilio_webhook(request: Request, bg: BackgroundTasks):
     """
     Recebe mensagem do Twilio WhatsApp Sandbox.
-
-    v9.4: detecta áudio do lead e transcreve automaticamente
-    via Groq Whisper antes de processar.
+    Detecta texto, imagem e áudio.
     """
     form = await request.form()
     form_dict = dict(form)
 
     parsed = wa.parse_twilio_webhook(form_dict)
-    phone = parsed["phone"]
-    text = parsed.get("text", "")
-    media_url = parsed.get("media_url", "")
 
-    # Detecta tipo de mídia (áudio, imagem, etc)
+    # Detecta áudio do lead
     media_content_type = form_dict.get("MediaContentType0", "")
-    is_audio = media_content_type.startswith("audio/") if media_content_type else False
-    is_image = media_content_type.startswith("image/") if media_content_type else False
+    media_url = form_dict.get("MediaUrl0", "")
 
-    # Se é áudio (voice note), transcreve pra texto
-    if is_audio and media_url:
-        from huma.services.transcription_service import transcribe_audio
-        from huma.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+    if media_content_type and "audio" in media_content_type and media_url:
+        try:
+            from huma.services.transcription_service import transcribe_audio
+            transcribed = await transcribe_audio(media_url)
+            if transcribed:
+                parsed["text"] = transcribed
+                log.info(f"Áudio transcrito | {len(transcribed)} chars | phone={parsed.get('phone', '?')}")
+        except Exception as e:
+            log.error(f"Transcrição erro | {e}")
 
-        auth = None
-        if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-            auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-        transcribed = await transcribe_audio(media_url, auth=auth)
-        if transcribed:
-            text = transcribed
-            log.info(f"Áudio transcrito | {phone} | chars={len(text)} | preview={text[:60]}...")
-            media_url = ""  # Não é imagem, limpa pra não confundir
-        else:
-            log.warning(f"Transcrição falhou | {phone}")
-            return Response(
-                content='<Response></Response>',
-                media_type="application/xml",
-            )
-
-    # Define image_url só se for imagem (não áudio)
-    final_image_url = media_url if is_image else ""
-
-    # Se não tem telefone ou texto, ignora
-    if not phone or not text.strip():
+    if not parsed["phone"] or not parsed["text"]:
         return Response(
             content='<Response></Response>',
             media_type="application/xml",
         )
 
-    # Monta payload e processa
     payload = MessagePayload(
         client_id="default",
-        phone=phone,
-        text=text,
-        image_url=final_image_url,
+        phone=parsed["phone"],
+        text=parsed["text"],
+        image_url=parsed.get("media_url", ""),
     )
 
     bg.add_task(handle_message, payload, bg)
@@ -303,3 +284,192 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
         content='<Response></Response>',
         media_type="application/xml",
     )
+
+
+# ================================================================
+# WEBHOOK MERCADO PAGO (IPN — Instant Payment Notification)
+#
+# Fluxo:
+#   1. Lead paga (Pix, boleto, cartão)
+#   2. Mercado Pago chama POST /webhook/mercadopago
+#   3. Consultamos API do MP pra confirmar (nunca confia no body)
+#   4. Cruzamos com lead pelo phone (tabela payments)
+#   5. Se approved: confirmação WhatsApp + funil "won" + notifica dono
+# ================================================================
+
+@router.post("/webhook/mercadopago", tags=["Webhook"])
+async def mercadopago_webhook(request: Request, bg: BackgroundTasks):
+    """
+    Recebe notificação IPN do Mercado Pago.
+
+    O MP envia:
+    - type: "payment" → pagamento direto (Pix, boleto)
+    - type: "merchant_order" → Checkout Pro (ignoramos, esperamos o payment)
+    - data.id: ID do pagamento
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = dict(request.query_params)
+
+    topic = body.get("type") or body.get("topic", "")
+    action = body.get("action", "")
+
+    log.info(f"Webhook MP recebido | type={topic} | action={action} | body={json.dumps(body)[:500]}")
+
+    # Só processa notificações de pagamento
+    if topic in ("payment", "payment.updated"):
+        mp_payment_id = ""
+
+        # Formato v2 (IPN novo): data.id
+        if "data" in body and isinstance(body["data"], dict):
+            mp_payment_id = str(body["data"].get("id", ""))
+
+        # Formato v1 (IPN antigo): id no root
+        if not mp_payment_id:
+            mp_payment_id = str(body.get("id", ""))
+
+        if not mp_payment_id:
+            log.warning("Webhook MP — sem payment_id")
+            return {"status": "ignored", "reason": "no_payment_id"}
+
+        # Processa em background pra responder rápido (MP espera 200 em <500ms)
+        bg.add_task(_process_mp_payment, mp_payment_id)
+        return {"status": "received"}
+
+    if topic == "merchant_order":
+        log.debug("Webhook MP — merchant_order ignorado (esperando payment)")
+        return {"status": "ignored", "reason": "merchant_order"}
+
+    log.debug(f"Webhook MP — tipo ignorado | type={topic}")
+    return {"status": "ignored", "reason": f"type_{topic}"}
+
+
+async def _process_mp_payment(mp_payment_id: str):
+    """
+    Background task: processa pagamento do Mercado Pago.
+
+    1. Consulta API do MP pra confirmar status
+    2. Atualiza tabela payments no Supabase
+    3. Se approved: notifica lead + avança funil + notifica dono
+    """
+    try:
+        result = await pay.process_payment_notification(mp_payment_id)
+
+        if not result.get("processed"):
+            log.warning(f"MP payment não processado | id={mp_payment_id} | reason={result.get('reason', '?')}")
+            return
+
+        status = result["status"]
+        client_id = result["client_id"]
+        phone = result["phone"]
+        lead_name = result.get("lead_name", "")
+        amount_display = result.get("amount_display", "")
+        method = result.get("method", "")
+
+        if not client_id or not phone:
+            log.error(f"MP payment sem client_id ou phone | id={mp_payment_id}")
+            return
+
+        # ── PAGAMENTO APROVADO ──
+        if status == "approved":
+            log.info(
+                f"VENDA CONFIRMADA | mp_id={mp_payment_id} | "
+                f"lead={lead_name} | phone={phone} | {amount_display} | {method}"
+            )
+
+            # 1. Confirmação pro lead no WhatsApp
+            first_name = lead_name.split()[0] if lead_name else "você"
+
+            if method == "pix":
+                msg = (
+                    f"Pix de {amount_display} confirmado! "
+                    f"Obrigado pela confiança, {first_name}! "
+                    f"Já vou preparar tudo pra você."
+                )
+            elif method == "boleto":
+                msg = (
+                    f"Boleto de {amount_display} compensado! "
+                    f"Tudo certo, {first_name}! "
+                    f"Vou dar andamento no seu pedido."
+                )
+            else:
+                msg = (
+                    f"Pagamento de {amount_display} confirmado! "
+                    f"Valeu, {first_name}! "
+                    f"Já vou cuidar de tudo pra você."
+                )
+
+            try:
+                await wa.send_text(phone, msg, client_id=client_id)
+            except Exception as e:
+                log.error(f"Erro enviando confirmação | {phone} | {e}")
+
+            # 2. Avança funil pra "won"
+            try:
+                conv = await db.get_conversation(client_id, phone)
+                if conv and conv.stage != "won":
+                    prev_stage = conv.stage
+                    conv.stage = "won"
+                    conv.history.append({
+                        "role": "system",
+                        "content": (
+                            f"[PAGAMENTO CONFIRMADO] {amount_display} via {method}. "
+                            f"MP ID: {mp_payment_id}. Funil: {prev_stage} → won."
+                        ),
+                    })
+                    conv.last_message_at = datetime.utcnow()
+                    await db.save_conversation(conv)
+                    log.info(f"Funil | {phone} | {prev_stage} → won")
+
+                    # Motor de aprendizado
+                    try:
+                        from huma.services.learning_engine import analyze_completed_conversation
+                        import asyncio
+                        asyncio.create_task(
+                            analyze_completed_conversation(client_id, conv, "won")
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                log.error(f"Erro atualizando funil | {phone} | {e}")
+
+            # 3. Notifica dono do negócio
+            try:
+                client_data = await db.get_client(client_id)
+                if client_data and client_data.owner_phone:
+                    owner_msg = (
+                        f"💰 Venda confirmada!\n"
+                        f"Lead: {lead_name or phone}\n"
+                        f"Valor: {amount_display}\n"
+                        f"Método: {method.upper()}\n"
+                        f"Telefone: {phone}"
+                    )
+                    await wa.notify_owner(
+                        client_data.owner_phone,
+                        owner_msg,
+                        client_id=client_id,
+                    )
+            except Exception as e:
+                log.error(f"Erro notificando dono | {e}")
+
+        # ── PAGAMENTO REJEITADO ──
+        elif status == "rejected":
+            log.warning(f"Pagamento rejeitado | mp_id={mp_payment_id} | phone={phone}")
+
+            try:
+                await wa.send_text(
+                    phone,
+                    "Ops, parece que teve um probleminha com o pagamento. "
+                    "Quer tentar de novo ou usar outro método?",
+                    client_id=client_id,
+                )
+            except Exception as e:
+                log.error(f"Erro enviando rejeição | {phone} | {e}")
+
+        # ── OUTROS STATUS ──
+        else:
+            log.info(f"MP status={status} | mp_id={mp_payment_id} | phone={phone}")
+
+    except Exception as e:
+        log.error(f"_process_mp_payment erro | mp_id={mp_payment_id} | {type(e).__name__}: {e}")
