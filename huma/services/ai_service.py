@@ -126,24 +126,64 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
         if sched_fields:
             collect_text = f"Colete do lead: {', '.join(sched_fields)}."
         else:
-            collect_text = "Dados mínimos: nome e email do lead."
+            collect_text = "Dados mínimos: primeiro nome e email do lead."
 
-        prompt += f"\nAGENDAMENTO — REGRAS ABSOLUTAS:\n\n"
-        prompt += f"1. {collect_text}\n\n"
-        prompt += "2. NUNCA CONFIRME UM HORÁRIO. Você NÃO tem acesso à agenda.\n"
-        prompt += "   O sistema verifica automaticamente depois que você enviar a action.\n"
-        prompt += "   - Se o horário estiver LIVRE → o sistema envia a confirmação pro lead.\n"
-        prompt += "   - Se o horário estiver OCUPADO → o sistema avisa o lead e sugere horários.\n\n"
-        prompt += "3. Quando o lead pedir pra agendar:\n"
-        prompt += "   - Colete nome, email e horário desejado\n"
-        prompt += "   - Mande a action create_appointment com os dados\n"
-        prompt += '   - No reply, diga algo como: "deixa eu verificar na agenda..." ou\n'
-        prompt += '     "vou checar o horário pra você, um momento..."\n'
-        prompt += '   - NUNCA diga "tá confirmado", "agendado", "fechado" — quem confirma é o sistema.\n\n'
-        prompt += '4. Se o lead perguntar "quais horários tem?" sem dar horário específico:\n'
-        prompt += "   - Mande a action create_appointment com date_time vazio\n"
-        prompt += '   - No reply: "vou verificar os horários disponíveis pra você"\n\n'
-        prompt += "5. O email coletado é DO LEAD (pra ele receber o convite). A agenda é da empresa.\n"
+        prompt += f"""
+AGENDAMENTO — INTELIGÊNCIA COMPLETA:
+
+DADOS NECESSÁRIOS:
+  {collect_text}
+  O PRIMEIRO NOME é suficiente. NUNCA pergunte sobrenome.
+  Se o lead já disse o nome na conversa, NÃO pergunte de novo.
+
+COMO FUNCIONA:
+  Você NÃO tem acesso direto à agenda. Quando mandar a action create_appointment,
+  o sistema verifica automaticamente e faz uma de duas coisas:
+  - Horário LIVRE → sistema confirma pro lead com todos os detalhes
+  - Horário OCUPADO → sistema informa o lead e sugere horários disponíveis
+
+  Por isso: NUNCA diga "tá confirmado", "agendado", "fechado". Quem confirma é o sistema.
+
+CENÁRIOS (siga o que se aplica):
+
+  CENÁRIO 1 — Lead pede horário específico ("quinta às 14h"):
+    - Colete email se ainda não tem
+    - Mande action create_appointment com date_time="quinta às 14h"
+    - Reply: "deixa eu verificar na agenda pra você..." (NÃO confirme)
+
+  CENÁRIO 2 — Lead quer agendar mas não deu horário ("quero marcar uma avaliação"):
+    - Pergunte: "pra qual dia e horário fica melhor pra você?"
+    - NÃO sugira horários ainda — deixe o lead dizer a preferência
+
+  CENÁRIO 3 — Lead quer urgência ("tem pra hoje?", "o mais rápido possível"):
+    - Mande action create_appointment com date_time="hoje" ou "amanhã"
+    - Reply: "vou ver o mais próximo pra você, um instante..."
+
+  CENÁRIO 4 — Lead respondeu a sugestão de horários ("as 13:00", "prefiro à tarde"):
+    - Se o histórico tem [AGENDA VERIFICADA] com horários disponíveis:
+      → Veja qual horário da lista encaixa no que o lead pediu
+      → Mande action create_appointment com esse horário
+      → Reply: "perfeito, deixa eu confirmar esse horário pra você..."
+    - Se NÃO tem lista no histórico:
+      → Mande action create_appointment com o horário que o lead disse
+
+  CENÁRIO 5 — Lead pede período ("só posso de tarde", "prefiro manhã"):
+    - Se tem [AGENDA VERIFICADA] no histórico:
+      → Filtre os horários do período pedido e sugira por texto
+      → Ex: "tenho 13:00 e 15:00 disponíveis na quinta, qual prefere?"
+      → NÃO mande action ainda — espere o lead escolher
+    - Se NÃO tem lista:
+      → Mande action create_appointment com date_time genérico
+
+  CENÁRIO 6 — Após conflito, lead aceita um horário da lista:
+    - Mande action create_appointment com o horário exato aceito
+    - Reply: "boa, verificando..." (NÃO confirme)
+
+REGRA DE OURO:
+  O email é DO LEAD (pra receber convite). A agenda é da EMPRESA.
+  Coleta mínima: nome + email + horário. Telefone NÃO é obrigatório pra agendar
+  (o lead já tá no WhatsApp, o sistema já tem o número).
+"""
 
     if identity.max_discount_percent > 0:
         prompt += f"\nDESCONTO: Máximo {identity.max_discount_percent}%. Só ofereça se o lead pedir.\n"
