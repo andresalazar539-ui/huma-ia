@@ -324,16 +324,32 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # PRE-FLIGHT: executa agendamentos ANTES de enviar texto
         # Se conflito → descarta reply do Claude, manda mensagem de conflito
         # Se confirmado → manda reply do Claude ("vou verificar...") + confirmação
+        #
+        # TRAVAS ANTI-DUPLICAÇÃO:
+        #   1. already_scheduled: se já agendou nessa conversa, ignora
+        #   2. Marca [AGENDAMENTO CONFIRMADO] no histórico após confirmar
+        #   3. Se funil == "won", ignora actions de agendamento
         # ============================================================
         appointment_override = None
         appointment_confirmation = None
         appointment_slots = []
         remaining_actions = []
 
+        # Trava: se já tem agendamento confirmado nessa conversa, ignora
+        already_scheduled = any(
+            "[AGENDAMENTO CONFIRMADO]" in str(m.get("content", ""))
+            for m in conv.history
+            if m.get("role") == "assistant"
+        ) or conv.stage == "won"
+
         for action in actions:
             action_type = action.get("type", "")
 
             if action_type == "create_appointment":
+                if already_scheduled:
+                    log.info(f"Pre-flight IGNORADO | {phone} | já agendado ou funil=won")
+                    continue
+
                 result = await _preflight_appointment(phone, action, client_data, conv)
 
                 if result.get("status") == "conflict":
@@ -345,6 +361,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
 
                 elif result.get("status") == "confirmed":
                     appointment_confirmation = result["confirmation_message"]
+                    already_scheduled = True  # Impede duplicação no mesmo ciclo
 
                 elif result.get("status") in ("incomplete", "error"):
                     remaining_actions.append(action)
@@ -449,7 +466,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 await wa.send_text(phone, reply, client_id=cid)
 
         # ============================================================
-        # ACTIONS RESTANTES (mídia, pagamento — agendamento já foi executado)
+        # ACTIONS RESTANTES (mídia, pagamento — agendamento já tratado)
         # ============================================================
         for action in remaining_actions:
             action_type = action.get("type", "")
@@ -459,13 +476,27 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             elif action_type == "generate_payment":
                 await _handle_payment_action(phone, action, client_data)
             elif action_type == "create_appointment":
-                await _handle_appointment_action(phone, action, client_data)
+                # Só executa se NÃO agendou ainda (trava anti-duplicação)
+                if not already_scheduled:
+                    await _handle_appointment_action(phone, action, client_data)
+                else:
+                    log.info(f"Action create_appointment ignorada | {phone} | já agendado")
 
         # Envia confirmação de agendamento DEPOIS do reply do Claude
         # Fluxo pro lead: "vou verificar na agenda..." → (2s) → "Agendado! Quinta às 15h..."
         if appointment_confirmation:
             await asyncio.sleep(2.0)
             await wa.send_text(phone, appointment_confirmation, client_id=cid)
+
+            # Marca no histórico — impede duplicação em mensagens futuras
+            try:
+                conv.history.append({
+                    "role": "assistant",
+                    "content": f"[AGENDAMENTO CONFIRMADO] {appointment_confirmation[:100]}",
+                })
+                await db.save_conversation(conv)
+            except Exception:
+                pass
 
         # ============================================================
         # ÁUDIO
