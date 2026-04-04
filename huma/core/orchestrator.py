@@ -327,6 +327,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # ============================================================
         appointment_override = None
         appointment_confirmation = None
+        appointment_slots = []
         remaining_actions = []
 
         for action in actions:
@@ -336,26 +337,40 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 result = await _preflight_appointment(phone, action, client_data, conv)
 
                 if result.get("status") == "conflict":
-                    # Agenda ocupada → descarta reply do Claude inteiro
                     appointment_override = result["whatsapp_message"]
+                    appointment_slots = result.get("available_slots", [])
                     remaining_actions = []
                     log.info(f"Pre-flight CONFLITO | {phone} | descartando reply do Claude")
                     break
 
                 elif result.get("status") == "confirmed":
-                    # Horário livre → guarda confirmação pra mandar DEPOIS do reply
                     appointment_confirmation = result["confirmation_message"]
-                    # Não adiciona nas remaining_actions (já foi executado)
 
                 elif result.get("status") in ("incomplete", "error"):
                     remaining_actions.append(action)
             else:
                 remaining_actions.append(action)
 
-        # Se houve conflito, manda só a mensagem de conflito e sai
+        # Se houve conflito, manda mensagem e salva slots no histórico
         if appointment_override:
             await asyncio.sleep(_typing_delay(appointment_override))
             await wa.send_text(phone, appointment_override, client_id=cid)
+
+            # Salva slots no histórico pra Claude saber o que oferecer
+            if appointment_slots:
+                try:
+                    conv.history.append({
+                        "role": "system",
+                        "content": (
+                            f"[AGENDA] Horários disponíveis: {', '.join(appointment_slots)}. "
+                            f"Se o lead pedir outro horário, sugira os que encaixam. "
+                            f"Quando escolher, mande create_appointment com esse horário."
+                        ),
+                    })
+                    await db.save_conversation(conv)
+                except Exception:
+                    pass
+
             return
 
         # ============================================================
