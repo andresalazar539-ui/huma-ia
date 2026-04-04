@@ -1,12 +1,11 @@
 # ================================================================
 # huma/services/ai_service.py — Cérebro da HUMA
 #
-# v9.3 — Actions tipadas + instruções obrigatórias:
-#   - Tool definition com schema explícito pra actions
-#   - create_appointment, generate_payment, send_media tipados
-#   - Instruções obrigatórias no autonomy prompt
+# v9.5 — Inteligência de vendas de elite:
 #   - Sales Intelligence Engine integrado ao system prompt
-#   - Contexto temporal, ritmo, persuasão, subtexto
+#   - Tool definition expandida (micro_objective, emotional_reading)
+#   - FIX: agendamento — Claude NUNCA confirma horário
+#     O sistema verifica a agenda e confirma/sugere automaticamente
 #
 # Mantido (zero breaking changes):
 #   - Lazy init, generate_response, validate_response
@@ -43,13 +42,11 @@ def _get_ai_client():
         _client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     return _client
 
-# Cache de insights aprendidos (não muda a cada mensagem)
-_insights_cache: dict[str, tuple] = {}  # {client_id: (text, timestamp)}
-INSIGHTS_CACHE_TTL = 600  # 10 minutos
+_insights_cache: dict[str, tuple] = {}
+INSIGHTS_CACHE_TTL = 600
 
 
 async def _get_insights_cached(client_id: str) -> str:
-    """Busca insights com cache de 10 min."""
     import time
     now = time.time()
     if client_id in _insights_cache:
@@ -61,60 +58,6 @@ async def _get_insights_cached(client_id: str) -> str:
     text = await get_learned_insights(client_id)
     _insights_cache[client_id] = (text, now)
     return text
-
-
-# ================================================================
-# DOWNLOAD DE IMAGEM (pra enviar ao Claude como base64)
-# ================================================================
-
-async def _download_image_as_base64(url: str) -> dict | None:
-    """
-    Baixa imagem de URL (Twilio/Meta) e converte pra base64.
-
-    URLs do Twilio e Meta são protegidas — o Claude não acessa direto.
-    Precisamos baixar no servidor e enviar como base64.
-
-    Returns:
-        {"data": "base64string", "media_type": "image/jpeg"} ou None se falhar.
-    """
-    import base64
-    import httpx
-    from huma.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-
-    if not url:
-        return None
-
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            # Twilio exige autenticação básica pra acessar mídia
-            auth = None
-            if "twilio.com" in url and TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
-                auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-            resp = await http.get(url, auth=auth, follow_redirects=True)
-
-            if resp.status_code != 200:
-                log.warning(f"Download imagem falhou | status={resp.status_code} | url={url[:60]}...")
-                return None
-
-            image_bytes = resp.content
-            if not image_bytes or len(image_bytes) < 100:
-                log.warning(f"Imagem vazia ou muito pequena | size={len(image_bytes)}")
-                return None
-
-            # Detecta tipo da imagem
-            content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
-            if content_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
-                content_type = "image/jpeg"
-
-            encoded = base64.b64encode(image_bytes).decode("utf-8")
-
-            log.info(f"Imagem baixada | size={len(image_bytes)} bytes | type={content_type}")
-            return {"data": encoded, "media_type": content_type}
-
-    except Exception as e:
-        log.error(f"Download imagem erro | {type(e).__name__}: {e}")
-        return None
 
 
 # ================================================================
@@ -174,35 +117,31 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
     if identity.enable_scheduling:
         sched_fields = identity.scheduling_required_fields
         if sched_fields:
-            prompt += f"\nAGENDAMENTO: Colete {', '.join(sched_fields)} antes de confirmar.\n"
+            collect_text = f"Colete do lead: {', '.join(sched_fields)}."
         else:
-            prompt += "\nAGENDAMENTO: Confirme direto sem coletar dados extras.\n"
+            collect_text = "Dados mínimos: nome e email do lead."
+
+        prompt += f"\nAGENDAMENTO — REGRAS ABSOLUTAS:\n\n"
+        prompt += f"1. {collect_text}\n\n"
+        prompt += "2. NUNCA CONFIRME UM HORÁRIO. Você NÃO tem acesso à agenda.\n"
+        prompt += "   O sistema verifica automaticamente depois que você enviar a action.\n"
+        prompt += "   - Se o horário estiver LIVRE → o sistema envia a confirmação pro lead.\n"
+        prompt += "   - Se o horário estiver OCUPADO → o sistema avisa o lead e sugere horários.\n\n"
+        prompt += "3. Quando o lead pedir pra agendar:\n"
+        prompt += "   - Colete nome, email e horário desejado\n"
+        prompt += "   - Mande a action create_appointment com os dados\n"
+        prompt += '   - No reply, diga algo como: "deixa eu verificar na agenda..." ou\n'
+        prompt += '     "vou checar o horário pra você, um momento..."\n'
+        prompt += '   - NUNCA diga "tá confirmado", "agendado", "fechado" — quem confirma é o sistema.\n\n'
+        prompt += '4. Se o lead perguntar "quais horários tem?" sem dar horário específico:\n'
+        prompt += "   - Mande a action create_appointment com date_time vazio\n"
+        prompt += '   - No reply: "vou verificar os horários disponíveis pra você"\n\n'
+        prompt += "5. O email coletado é DO LEAD (pra ele receber o convite). A agenda é da empresa.\n"
 
     if identity.max_discount_percent > 0:
         prompt += f"\nDESCONTO: Máximo {identity.max_discount_percent}%. Só ofereça se o lead pedir.\n"
     else:
         prompt += "\nDESCONTO: NUNCA ofereça desconto.\n"
-
-    if identity.enable_scheduling:
-        prompt += (
-            "\n\nACTION DE AGENDAMENTO (OBRIGATÓRIO):\n"
-            "  Quando o lead CONFIRMAR que quer agendar E você tiver nome + email + data/hora + serviço:\n"
-            "  INCLUA na resposta uma action com type 'create_appointment'.\n"
-            "  O SISTEMA cria evento no Google Calendar, gera link Google Meet, envia convite por email.\n"
-            "  Se você NÃO incluir a action, o lead NÃO recebe confirmação real — só texto.\n"
-            "  Formato da data: DD/MM/YYYY HH:MM (ex: 04/04/2026 10:00)\n"
-            "  NUNCA 'confirme' agendamento só por texto. SEMPRE dispare a action.\n"
-        )
-
-    if identity.enable_payments and identity.accepted_payment_methods:
-        prompt += (
-            "\nACTION DE PAGAMENTO (OBRIGATÓRIO):\n"
-            "  Quando o lead CONFIRMAR que quer pagar:\n"
-            "  INCLUA na resposta uma action com type 'generate_payment'.\n"
-            "  O SISTEMA gera QR code Pix / boleto / link de checkout e envia pro lead.\n"
-            "  Se você NÃO incluir a action, o lead NÃO recebe forma de pagamento.\n"
-            "  NUNCA diga 'vou gerar o pix' sem incluir a action. A action É a geração.\n"
-        )
 
     return prompt
 
@@ -286,12 +225,6 @@ REGRAS CUSTOM:
     sales_prompt = build_sales_intelligence_prompt(identity, conv)
     if sales_prompt:
         prompt += "\n" + sales_prompt
-
-    # ── Bloco 4.5: Inteligência visual (v9.4) ──
-    from huma.services.image_intelligence import build_image_intelligence_prompt
-    image_prompt = build_image_intelligence_prompt(identity)
-    if image_prompt:
-        prompt += "\n" + image_prompt
 
     # ── Bloco 5: Fatos do lead ──
     prompt += f"""
@@ -415,9 +348,10 @@ ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 # ================================================================
 # TOOL DEFINITION — força JSON válido sempre
 #
-# v9.3: actions tipadas com schema explícito.
-#   O Claude sabe exatamente a estrutura de create_appointment,
-#   generate_payment e send_media. Sem ambiguidade.
+# v9.2: audio_text gerado na mesma chamada que o texto.
+#   Uma mente, um contexto, uma conversa coerente.
+#   Elimina chamada separada ao Haiku pro áudio.
+#   Texto e áudio são pensados JUNTOS.
 # ================================================================
 
 def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
@@ -515,109 +449,10 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                     "items": {"type": "string"},
                     "description": "Novos fatos descobertos sobre o lead.",
                 },
-                "image_analysis": {
-                    "type": "string",
-                    "description": (
-                        "Se o lead mandou imagem, descreva aqui sua análise em 1-2 frases.\n"
-                        "Inclua: o que observou, se tem relação com o negócio, e como usou na resposta.\n"
-                        "Se não teve imagem ou não era relevante, string vazia ''.\n"
-                        "Exemplo: 'Mancha escura na bochecha, parece melasma. Usei como gatilho pra avaliação gratuita.'\n"
-                        "Exemplo: 'Foto de carro, sem relação com clínica. Ignorei e voltei pro contexto.'"
-                    ),
-                },
                 "actions": {
                     "type": "array",
-                    "description": (
-                        "AÇÕES QUE O SISTEMA EXECUTA AUTOMATICAMENTE. "
-                        "VOCÊ DEVE USAR ACTIONS — o sistema depende disso.\n\n"
-                        "REGRA CRÍTICA: quando o lead confirmar agendamento (tem nome + email + data/hora + serviço), "
-                        "você DEVE incluir uma action create_appointment. O sistema cria o evento no Google Calendar, "
-                        "gera link do Google Meet, envia convite por email, e manda tudo pro lead no WhatsApp. "
-                        "Se você NÃO incluir a action, NADA disso acontece e o lead fica sem confirmação real.\n\n"
-                        "REGRA CRÍTICA: quando o lead quiser pagar (Pix, boleto ou cartão), "
-                        "você DEVE incluir uma action generate_payment. O sistema gera QR code Pix, boleto, "
-                        "ou link de checkout e envia pro lead. Se você NÃO incluir a action, o lead não recebe nada.\n\n"
-                        "TIPOS DISPONÍVEIS:\n\n"
-                        "1. AGENDAMENTO — use quando tiver TODOS os dados:\n"
-                        "   {\"type\": \"create_appointment\", \"lead_name\": \"nome completo\", "
-                        "\"lead_email\": \"email@exemplo.com\", \"service\": \"nome do serviço\", "
-                        "\"date_time\": \"DD/MM/YYYY HH:MM\"}\n"
-                        "   IMPORTANTE: date_time pode ser texto natural como o lead falou. "
-                        "Exemplos: 'terça às 10h', 'amanhã 14h', 'segunda 10:00'. "
-                        "O sistema calcula a data exata automaticamente. NÃO tente calcular o dia/mês.\n"
-                        "   O sistema cria evento no Google Calendar + link Google Meet + envia convite por email.\n\n"
-                        "2. PAGAMENTO — use quando o lead confirmar que quer pagar:\n"
-                        "   {\"type\": \"generate_payment\", \"lead_name\": \"nome\", "
-                        "\"description\": \"descrição do serviço\", \"amount_cents\": 35000, "
-                        "\"payment_method\": \"pix\"}\n"
-                        "   payment_method: \"pix\" | \"boleto\" | \"credit_card\"\n"
-                        "   amount_cents: valor em centavos (350 reais = 35000)\n"
-                        "   Se boleto: inclua \"lead_cpf\": \"12345678900\"\n"
-                        "   O sistema gera QR code / boleto / link de checkout e manda pro lead.\n\n"
-                        "3. MÍDIA — use quando quiser enviar foto ou vídeo:\n"
-                        "   {\"type\": \"send_media\", \"tags\": [\"antes e depois\", \"clareamento\"]}\n"
-                        "   O sistema busca fotos/vídeos cadastrados com essas tags.\n\n"
-                        "Se não tem action pra disparar, mande array vazio []."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "type": {
-                                "type": "string",
-                                "enum": ["create_appointment", "generate_payment", "send_media"],
-                                "description": "Tipo da ação.",
-                            },
-                            "lead_name": {
-                                "type": "string",
-                                "description": "Nome completo do lead.",
-                            },
-                            "lead_email": {
-                                "type": "string",
-                                "description": "Email do lead (obrigatório pra agendamento).",
-                            },
-                            "service": {
-                                "type": "string",
-                                "description": "Nome do serviço (agendamento).",
-                            },
-                            "date_time": {
-                                "type": "string",
-                                "description": (
-                                    "Data e hora do agendamento. Pode ser texto natural OU formato estruturado.\n"
-                                    "Exemplos válidos: 'terça às 10h', 'amanhã 14h', 'segunda 10:00', "
-                                    "'depois de amanhã às 15h', '07/04/2026 10:00', 'dia 10 às 14h'.\n"
-                                    "O sistema converte automaticamente pra data exata. "
-                                    "NÃO calcule o dia da semana — mande o texto como o lead falou."
-                                ),
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Descrição do pagamento.",
-                            },
-                            "amount_cents": {
-                                "type": "integer",
-                                "description": "Valor em centavos. 350 reais = 35000.",
-                            },
-                            "payment_method": {
-                                "type": "string",
-                                "enum": ["pix", "boleto", "credit_card"],
-                                "description": "Método de pagamento.",
-                            },
-                            "lead_cpf": {
-                                "type": "string",
-                                "description": "CPF do lead (obrigatório pra boleto).",
-                            },
-                            "installments": {
-                                "type": "integer",
-                                "description": "Número de parcelas (cartão). Default: 1.",
-                            },
-                            "tags": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Tags pra buscar mídia (send_media).",
-                            },
-                        },
-                        "required": ["type"],
-                    },
+                    "items": {"type": "object"},
+                    "description": "Ações especiais como pagamento, agendamento ou mídia.",
                 },
             },
             "required": required_reply + ["intent", "sentiment", "stage_action", "confidence"],
@@ -657,30 +492,13 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     messages = [{"role": m["role"], "content": m["content"]} for m in conv.history]
 
     if image_url:
-        # Baixa a imagem e converte pra base64 (URLs do Twilio/Meta são protegidas)
-        image_data = await _download_image_as_base64(image_url)
-        if image_data:
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": image_data["media_type"],
-                            "data": image_data["data"],
-                        },
-                    },
-                    {"type": "text", "text": user_text.strip() or "Lead enviou imagem."},
-                ],
-            })
-        else:
-            # Fallback: não conseguiu baixar, manda só o texto
-            log.warning(f"Imagem não carregou | url={image_url[:60]}...")
-            messages.append({
-                "role": "user",
-                "content": f"{user_text.strip()} [lead enviou imagem mas não foi possível carregar]",
-            })
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "url", "url": image_url}},
+                {"type": "text", "text": user_text.strip() or "Lead enviou imagem."},
+            ],
+        })
     else:
         messages.append({"role": "user", "content": user_text})
 
