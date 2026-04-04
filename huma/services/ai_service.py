@@ -92,6 +92,14 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
     else:
         field_names = ", ".join(fields)
         prompt += f"\nCOLETA: Você DEVE coletar do lead: {field_names}.\n"
+        prompt += (
+            "REGRA CRÍTICA DE COLETA:\n"
+            "  - LEIA a mensagem do lead ANTES de perguntar qualquer coisa.\n"
+            "  - Se o lead JÁ DISSE o nome, email, telefone ou qualquer dado na mensagem dele,\n"
+            "    NÃO pergunte de novo. Use o que ele já deu.\n"
+            "  - Ex: lead diz 'oi sou o João quero agendar' → você JÁ SABE o nome. Não pergunte.\n"
+            "  - Só pergunte o que FALTA, nunca o que ele já disse.\n"
+        )
         if identity.collect_before_offer:
             prompt += "Colete ANTES de falar de produto/preço.\n"
         else:
