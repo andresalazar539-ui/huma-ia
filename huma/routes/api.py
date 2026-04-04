@@ -255,15 +255,38 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
     media_content_type = form_dict.get("MediaContentType0", "")
     media_url = form_dict.get("MediaUrl0", "")
 
+    # Auth do Twilio pra baixar mídia protegida
+    from huma.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+    twilio_auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
+
     if media_content_type and "audio" in media_content_type and media_url:
         try:
             from huma.services.transcription_service import transcribe_audio
-            transcribed = await transcribe_audio(media_url)
+            transcribed = await transcribe_audio(media_url, auth=twilio_auth)
             if transcribed:
                 parsed["text"] = transcribed
                 log.info(f"Áudio transcrito | {len(transcribed)} chars | phone={parsed.get('phone', '?')}")
         except Exception as e:
             log.error(f"Transcrição erro | {e}")
+
+    # Se é imagem, baixa como base64 (URLs do Twilio são protegidas)
+    image_for_payload = parsed.get("media_url", "")
+    if media_content_type and "image" in media_content_type and media_url:
+        try:
+            import httpx
+            import base64
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                resp = await http.get(media_url, auth=twilio_auth, follow_redirects=True)
+                if resp.status_code == 200 and resp.content:
+                    b64 = base64.b64encode(resp.content).decode("utf-8")
+                    # Detecta content type
+                    ct = resp.headers.get("content-type", "image/jpeg")
+                    image_for_payload = f"data:{ct};base64,{b64}"
+                    log.info(f"Imagem baixada | size={len(resp.content)} | type={ct}")
+                else:
+                    log.warning(f"Download imagem falhou | status={resp.status_code}")
+        except Exception as e:
+            log.error(f"Download imagem erro | {e}")
 
     if not parsed["phone"] or not parsed["text"]:
         return Response(
@@ -275,7 +298,7 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
         client_id="default",
         phone=parsed["phone"],
         text=parsed["text"],
-        image_url=parsed.get("media_url", ""),
+        image_url=image_for_payload,
     )
 
     bg.add_task(handle_message, payload, bg)
