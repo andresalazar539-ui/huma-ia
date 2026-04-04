@@ -359,12 +359,13 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             # Salva slots no histórico pra Claude saber o que oferecer
             if appointment_slots:
                 try:
+                    # IMPORTANTE: role="assistant" porque a API do Claude
+                    # não aceita role="system" nas messages
                     conv.history.append({
-                        "role": "system",
+                        "role": "assistant",
                         "content": (
-                            f"[AGENDA] Horários disponíveis: {', '.join(appointment_slots)}. "
-                            f"Se o lead pedir outro horário, sugira os que encaixam. "
-                            f"Quando escolher, mande create_appointment com esse horário."
+                            f"[AGENDA VERIFICADA] Horários disponíveis: {', '.join(appointment_slots)}. "
+                            f"O lead pediu horário ocupado. Já informei as opções disponíveis."
                         ),
                     })
                     await db.save_conversation(conv)
