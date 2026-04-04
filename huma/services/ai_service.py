@@ -1,4 +1,3 @@
-# ================================================================
 # huma/services/ai_service.py — Cérebro da HUMA
 #
 # v9.5 — Inteligência de vendas de elite:
@@ -460,7 +459,26 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                 "actions": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": "Ações especiais como pagamento, agendamento ou mídia.",
+                    "description": (
+                        "Ações especiais. CADA action DEVE ter 'type' + campos obrigatórios:\n\n"
+                        "create_appointment (agendar):\n"
+                        "  type: 'create_appointment'\n"
+                        "  lead_name: nome COMPLETO do lead (OBRIGATÓRIO — pegue dos fatos ou da conversa)\n"
+                        "  lead_email: email do lead (OBRIGATÓRIO — pegue dos fatos ou da conversa)\n"
+                        "  service: o que vai fazer (ex: 'Avaliação odontológica')\n"
+                        "  date_time: horário desejado em texto natural (ex: 'quinta às 14h')\n"
+                        "  REGRA: RELEIA os FATOS DO LEAD e o HISTÓRICO. Se o lead já disse nome e email, USE.\n\n"
+                        "generate_payment (cobrar):\n"
+                        "  type: 'generate_payment'\n"
+                        "  lead_name: nome do lead\n"
+                        "  description: o que está pagando\n"
+                        "  amount_cents: valor em centavos (35000 = R$350)\n"
+                        "  payment_method: 'pix' | 'boleto' | 'credit_card'\n"
+                        "  lead_cpf: CPF (obrigatório pra boleto)\n\n"
+                        "send_media (enviar foto/vídeo):\n"
+                        "  type: 'send_media'\n"
+                        "  tags: ['tag1', 'tag2'] — tags do criativo"
+                    ),
                 },
             },
             "required": required_reply + ["intent", "sentiment", "stage_action", "confidence"],
