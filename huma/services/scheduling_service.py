@@ -114,14 +114,26 @@ async def create_appointment(request) -> dict:
         conflicting = availability.get("conflicting_event", "compromisso")
         suggestions = availability.get("suggestions", [])
 
+        # Agrupa por período pra mensagem mais útil
         slots_text = ""
         if suggestions:
-            formatted = [s.strftime("%d/%m às %H:%M") for s in suggestions[:3]]
-            slots_text = "Horários disponíveis: " + ", ".join(formatted)
+            manha = [s for s in suggestions if s.hour < 12]
+            tarde = [s for s in suggestions if s.hour >= 12]
+
+            parts = []
+            if manha:
+                manha_str = ", ".join(s.strftime("%d/%m às %H:%M") for s in manha)
+                parts.append(f"Manhã: {manha_str}")
+            if tarde:
+                tarde_str = ", ".join(s.strftime("%d/%m às %H:%M") for s in tarde)
+                parts.append(f"Tarde: {tarde_str}")
+
+            slots_text = "\n".join(parts) if parts else ""
 
         log.info(
             f"Conflito de agenda | {request.lead_name} | "
-            f"horario={parsed_dt.strftime('%d/%m %H:%M')} | conflito={conflicting}"
+            f"horario={parsed_dt.strftime('%d/%m %H:%M')} | conflito={conflicting} | "
+            f"sugestoes={len(suggestions)}"
         )
 
         return {
@@ -130,8 +142,10 @@ async def create_appointment(request) -> dict:
             "conflicting_event": conflicting,
             "available_slots": [s.strftime("%d/%m/%Y %H:%M") for s in suggestions],
             "whatsapp_message": (
-                f"Esse horário já tá ocupado na agenda. "
-                f"{slots_text if slots_text else 'Quer tentar outro horário?'}"
+                f"Poxa, esse horário já tá ocupado. "
+                f"Mas tenho esses disponíveis:\n\n{slots_text}\n\nQual fica melhor pra você?"
+                if slots_text
+                else "Esse horário tá ocupado. Quer tentar outro dia ou horário?"
             ),
         }
 
@@ -259,7 +273,8 @@ async def _check_availability(dt: datetime, duration_minutes: int = 60) -> dict:
         log.info(f"Conflito | {dt.strftime('%d/%m %H:%M')} | evento={conflicting}")
 
         # Busca alternativas (reutiliza mesmas credentials)
-        suggestions = await _find_available_slots(dt, duration_minutes, credentials=credentials)
+        # 6 slots pra cobrir manhã E tarde — lead escolhe o período
+        suggestions = await _find_available_slots(dt, duration_minutes, slots_to_find=6, credentials=credentials)
 
         return {
             "available": False,
