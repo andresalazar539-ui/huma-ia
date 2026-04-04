@@ -1,14 +1,16 @@
 # ================================================================
-# huma/core/orchestrator.py — Orquestrador principal v9.1
+# huma/core/orchestrator.py — Orquestrador principal v9.5
 #
-# Novidades v9.1:
+# v9.5:
+#   - CORRIGIDO: link Meet duplicado removido (confirmation_message já contém)
+#   - ADICIONADO: tratamento de status "conflict" (agenda ocupada)
+#
+# Mantido de v9.1:
 #   - Throttle de áudio (1 a cada 3 trocas, mínimo 6 msgs)
 #   - Prompt do áudio anti-repetição (complementar ao texto, não repete)
 #   - Validação de overlap texto/áudio (>40% = fallback)
 #   - Detecção de conteúdo informacional e pressa do lead
 #   - max_tokens do áudio reduzido (150) pra forçar concisão
-#
-# Mantido:
 #   - Message buffer, middleware de créditos, silent hours
 #   - Delay humano 4-15s, outbound, funil, vozes regionais
 #   - Decision matrix com leitura de ritmo do lead
@@ -606,7 +608,7 @@ async def _handle_payment_action(phone, action, client_data):
 
 
 async def _handle_appointment_action(phone, action, client_data):
-    """Cria agendamento e envia confirmação."""
+    """Cria agendamento — verifica disponibilidade antes."""
     cid = client_data.client_id
     request = SchedulingRequest(
         client_id=cid,
@@ -623,13 +625,18 @@ async def _handle_appointment_action(phone, action, client_data):
 
     if result.get("status") == "confirmed":
         await asyncio.sleep(2.0)
+        # confirmation_message JÁ contém o link Meet — não enviar separado
         await wa.send_text(phone, result["confirmation_message"], client_id=cid)
-
-        if result.get("meeting_url"):
-            await asyncio.sleep(1.5)
-            await wa.send_text(phone, f"Link: {result['meeting_url']}", client_id=cid)
-
         log.info(f"Agendamento OK | {result['date_time']}")
+
+    elif result.get("status") == "conflict":
+        # Agenda ocupada — informa lead e sugere horários alternativos
+        await asyncio.sleep(1.0)
+        await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
+        log.info(
+            f"Agendamento conflito | {result.get('conflicting_event', '')} | "
+            f"slots={result.get('available_slots', [])}"
+        )
 
 
 # ================================================================
