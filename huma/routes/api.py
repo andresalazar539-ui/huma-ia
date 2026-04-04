@@ -250,28 +250,36 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
     form_dict = dict(form)
 
     parsed = wa.parse_twilio_webhook(form_dict)
+    phone = parsed["phone"]
+    text = parsed.get("text", "")
+    media_url = parsed.get("media_url", "")
 
-    # Detecta áudio do lead
+    # Detecta tipo de mídia
     media_content_type = form_dict.get("MediaContentType0", "")
-    media_url = form_dict.get("MediaUrl0", "")
+    is_audio = media_content_type.startswith("audio/") if media_content_type else False
+    is_image = media_content_type.startswith("image/") if media_content_type else False
 
     # Auth do Twilio pra baixar mídia protegida
     from huma.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-    twilio_auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
+    twilio_auth = None
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+        twilio_auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
-    if media_content_type and "audio" in media_content_type and media_url:
-        try:
-            from huma.services.transcription_service import transcribe_audio
-            transcribed = await transcribe_audio(media_url, auth=twilio_auth)
-            if transcribed:
-                parsed["text"] = transcribed
-                log.info(f"Áudio transcrito | {len(transcribed)} chars | phone={parsed.get('phone', '?')}")
-        except Exception as e:
-            log.error(f"Transcrição erro | {e}")
+    # Se é áudio, transcreve
+    if is_audio and media_url and not text.strip():
+        from huma.services.transcription_service import transcribe_audio
+        transcribed = await transcribe_audio(media_url, auth=twilio_auth)
+        if transcribed:
+            text = transcribed
+            log.info(f"Áudio transcrito | {phone} | chars={len(text)} | preview={text[:60]}...")
+            media_url = ""  # Não é imagem
+        else:
+            log.warning(f"Transcrição falhou | {phone} | url={media_url[:80]}")
+            text = "[áudio do lead - transcrição indisponível]"
 
     # Se é imagem, baixa como base64 (URLs do Twilio são protegidas)
-    image_for_payload = parsed.get("media_url", "")
-    if media_content_type and "image" in media_content_type and media_url:
+    final_image_url = ""
+    if is_image and media_url:
         try:
             import httpx
             import base64
@@ -279,16 +287,13 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
                 resp = await http.get(media_url, auth=twilio_auth, follow_redirects=True)
                 if resp.status_code == 200 and resp.content:
                     b64 = base64.b64encode(resp.content).decode("utf-8")
-                    # Detecta content type
                     ct = resp.headers.get("content-type", "image/jpeg")
-                    image_for_payload = f"data:{ct};base64,{b64}"
+                    final_image_url = f"data:{ct};base64,{b64}"
                     log.info(f"Imagem baixada | size={len(resp.content)} | type={ct}")
-                else:
-                    log.warning(f"Download imagem falhou | status={resp.status_code}")
         except Exception as e:
             log.error(f"Download imagem erro | {e}")
 
-    if not parsed["phone"] or not parsed["text"]:
+    if not phone or not text.strip():
         return Response(
             content='<Response></Response>',
             media_type="application/xml",
@@ -296,9 +301,9 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
 
     payload = MessagePayload(
         client_id="default",
-        phone=parsed["phone"],
-        text=parsed["text"],
-        image_url=image_for_payload,
+        phone=phone,
+        text=text,
+        image_url=final_image_url,
     )
 
     bg.add_task(handle_message, payload, bg)
