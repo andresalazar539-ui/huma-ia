@@ -1,14 +1,14 @@
 # ================================================================
-# huma/core/orchestrator.py — Orquestrador principal v9.5.1
+# huma/core/orchestrator.py — Orquestrador principal v10
 #
-# v9.5.1:
-#   - FIX CRÍTICO: agendamento agora roda ANTES do envio de texto.
-#     Se a agenda estiver ocupada, o reply do Claude é descartado
-#     e o lead recebe a mensagem de conflito — sem confirmação falsa.
-#   - Link Meet duplicado removido
-#   - Tratamento de status "conflict"
+# v10.0:
+#   - Funil inquebrável: "won" é sistema-only, "lost" reativa
+#   - Novo estágio "committed" (oportunidade, não conversão)
+#   - Reversão automática de stage quando agendamento dá conflito
+#   - Claude avança até "committed", nunca até "won"
 #
-# Mantido:
+# v9.5.1 (mantido):
+#   - PRE-FLIGHT de agendamento roda ANTES do envio de texto
 #   - Message buffer, middleware de créditos, silent hours
 #   - Delay humano 4-15s, outbound, funil, vozes regionais
 #   - Audio-first / texto-first decision matrix
@@ -123,6 +123,18 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         ia_limit_reached = not billing.check_ia_limit(phone, max_ia)
 
         conv = await db.get_conversation(client_id, phone)
+
+        # ── Reativação: lead em "lost" que volta a falar ──
+        # Se alguém que foi "lost" manda mensagem, é porque tem
+        # interesse de novo. Porta aberta na prática, não só no discurso.
+        # Reseta pra discovery com histórico limpo de follow-ups.
+        if conv.stage == "lost":
+            log.info(
+                f"Reativação | {phone} | lost → discovery | "
+                f"lead voltou após {conv.follow_up_count} follow-ups"
+            )
+            conv.stage = "discovery"
+            conv.follow_up_count = 0
 
         conv.history, conv.history_summary, conv.lead_facts = await ai.compress_history(
             conv.history, conv.history_summary, conv.lead_facts
@@ -309,13 +321,13 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
     """
     Envia com delay humano + processa actions + áudio inteligente.
 
-    v9.5.1 — PRE-FLIGHT DE AGENDAMENTO:
-    Actions de agendamento rodam ANTES de enviar qualquer texto.
-    Se a agenda estiver ocupada → descarta o reply do Claude e manda
-    a mensagem de conflito no lugar. O lead NUNCA recebe confirmação
-    seguida de "horário ocupado".
+    v10.0 — Mudanças:
+      - Reversão de stage quando agendamento dá conflito
+        (lead não fica em "committed" se o agendamento falhou)
 
-    Audio-first / texto-first mantido como v9.2.
+    v9.5.1 (mantido):
+      - PRE-FLIGHT de agendamento roda ANTES de enviar texto
+      - Audio-first / texto-first decision matrix
     """
     cid = client_data.client_id
 
@@ -366,26 +378,41 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             else:
                 remaining_actions.append(action)
 
-        # Se houve conflito, manda mensagem e salva slots no histórico
+        # Se houve conflito, manda mensagem e REVERTE o stage
+        # O stage foi salvo como "committed" em _process_buffered,
+        # mas o agendamento falhou. O lead não está comprometido com nada.
         if appointment_override:
             await asyncio.sleep(_typing_delay(appointment_override))
             await wa.send_text(phone, appointment_override, client_id=cid)
 
-            # Salva slots no histórico pra Claude saber o que oferecer
-            if appointment_slots:
-                try:
-                    # IMPORTANTE: role="assistant" porque a API do Claude
-                    # não aceita role="system" nas messages
+            # Reverte stage — o lead NÃO está committed se o agendamento falhou
+            try:
+                prev_stage = conv.stage
+                if conv.stage == "committed":
+                    conv.stage = "closing"
+                    log.info(
+                        f"Stage revertido | {prev_stage} → closing | "
+                        f"conflito de agenda | {phone}"
+                    )
+
+                # Salva slots disponíveis no histórico pra Claude saber o que oferecer
+                if appointment_slots:
                     conv.history.append({
                         "role": "assistant",
                         "content": (
-                            f"[AGENDA VERIFICADA] Horários disponíveis: {', '.join(appointment_slots)}. "
-                            f"O lead pediu horário ocupado. Já informei as opções disponíveis."
+                            f"[AGENDA VERIFICADA] Horários disponíveis: "
+                            f"{', '.join(appointment_slots)}. "
+                            f"O lead pediu horário ocupado. "
+                            f"Já informei as opções disponíveis."
                         ),
                     })
-                    await db.save_conversation(conv)
-                except Exception:
-                    pass
+
+                await db.save_conversation(conv)
+            except Exception as e:
+                log.error(
+                    f"Erro revertendo stage após conflito | "
+                    f"{phone} | {type(e).__name__}: {e}"
+                )
 
             return
 
@@ -493,8 +520,8 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     "content": f"[AGENDAMENTO CONFIRMADO] {appointment_confirmation[:100]}",
                 })
                 await db.save_conversation(conv)
-            except Exception:
-                pass
+            except Exception as e:
+                log.error(f"Erro salvando confirmação no histórico | {phone} | {e}")
 
         # ============================================================
         # ÁUDIO
@@ -790,17 +817,20 @@ async def _handle_appointment_action(phone, action, client_data):
 
 
 # ================================================================
-# FUNIL
+# FUNIL v10 — Proteção em múltiplas camadas
 # ================================================================
 
-# Estados terminais — NENHUMA ação do Claude pode mover um lead
-# que já está em "won" ou "lost". Isso é inegociável.
-# Se o Claude mandar "advance" num lead que já fechou, o sistema
-# ignora e loga o incidente pra diagnóstico.
+# Estados terminais — NENHUMA ação do Claude muda esses estágios.
 TERMINAL_STAGES = frozenset({"won", "lost"})
 
-# Ações válidas que o Claude pode retornar em stage_action.
-# Qualquer valor fora disso é tratado como "hold" (segurança).
+# Estágios que SÓ o sistema pode atingir via advance.
+# O Claude pode avançar até "committed".
+# De "committed" pra "won", só via evento do sistema:
+#   - Pagamento confirmado (IPN Mercado Pago)
+#   - Dono marca manualmente (futuro: dashboard)
+SYSTEM_ONLY_ENTRY = frozenset({"won"})
+
+# Ações válidas que o Claude pode retornar.
 VALID_STAGE_ACTIONS = frozenset({"advance", "hold", "stop"})
 
 
@@ -810,7 +840,7 @@ def _apply_stage_action(
     action: str,
 ) -> str:
     """
-    Aplica ação do funil com proteção de estados terminais.
+    Aplica ação do funil com proteção em múltiplas camadas.
 
     Args:
         client_data: identidade do cliente (ClientIdentity)
@@ -820,14 +850,13 @@ def _apply_stage_action(
     Returns:
         Novo estágio da conversa.
 
-    Regras:
-        1. "won" e "lost" são TERMINAIS — nunca mudam.
-        2. "hold" mantém no estágio atual.
-        3. "stop" move pra "lost" (exceto se já terminal).
-        4. "advance" move pro próximo estágio do funil.
-        5. Ação inválida é tratada como "hold" + log de warning.
+    Camadas de proteção:
+        1. Validação de action — valores inválidos viram "hold"
+        2. Estados terminais — "won" e "lost" nunca mudam via Claude
+        3. Sistema-only — Claude não avança INTO "won"
+        4. Skip de "lost" — advance nunca cai em "lost" por acidente
     """
-    # ── Validação da action ──
+    # ── Camada 1: validação da action ──
     if action not in VALID_STAGE_ACTIONS:
         log.warning(
             f"Funil | stage_action inválido | "
@@ -836,8 +865,7 @@ def _apply_stage_action(
         )
         return current_stage
 
-    # ── Proteção de estados terminais ──
-    # Won é won. Lost é lost. O Claude não muda isso.
+    # ── Camada 2: proteção de estados terminais ──
     if current_stage in TERMINAL_STAGES:
         if action != "hold":
             log.warning(
@@ -867,23 +895,30 @@ def _apply_stage_action(
             return current_stage
 
         idx = stage_names.index(current_stage)
-
-        # Procura o próximo estágio que NÃO seja terminal
-        # Isso garante que mesmo se o funil customizado do dono
-        # colocar "lost" antes de "won", o advance não cai nele
         next_idx = idx + 1
+
         while next_idx < len(stage_names):
             candidate = stage_names[next_idx]
-            if candidate not in TERMINAL_STAGES or candidate == "won":
-                # Permite avançar pra "won" (é o objetivo do funil)
-                # mas nunca pra "lost" via advance
-                log.info(f"Funil | {current_stage} → {candidate}")
-                return candidate
-            next_idx += 1
 
-        # Se não tem mais estágios pra avançar, mantém
+            # ── Camada 3: Claude não avança INTO estágios sistema-only ──
+            if candidate in SYSTEM_ONLY_ENTRY:
+                log.info(
+                    f"Funil | advance bloqueado em '{current_stage}' | "
+                    f"'{candidate}' é sistema-only (pagamento/dono confirma)"
+                )
+                return current_stage
+
+            # ── Camada 4: pula "lost" na sequência ──
+            if candidate in TERMINAL_STAGES:
+                next_idx += 1
+                continue
+
+            log.info(f"Funil | {current_stage} → {candidate}")
+            return candidate
+
         log.info(
-            f"Funil | {current_stage} já é o último estágio | mantendo"
+            f"Funil | {current_stage} já é o último estágio "
+            f"acessível via Claude | mantendo"
         )
         return current_stage
 
