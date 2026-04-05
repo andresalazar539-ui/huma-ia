@@ -1,14 +1,17 @@
 # ================================================================
 # huma/core/funnel.py — Funil dinâmico com psicologia de vendas
 #
-# v9.0 — Evolução:
-#   - Estágios com instruções de closer (não de atendente)
-#   - Psicologia comportamental em cada transição
-#   - Discovery que qualifica de verdade (não só coleta dados)
-#   - Offer que cria desejo (não só apresenta preço)
-#   - Closing que facilita (não pressiona)
+# v10.0 — Evolução:
+#   - Novo estágio "committed" (oportunidade confirmada)
+#   - "won" é sistema-only (pagamento confirmado / dono marca)
+#   - "lost" permite reativação automática
+#   - Cada estágio tem psicologia de closer, não de atendente
+#   - Instruções explícitas pro Claude sobre limites de advance
 #
-# Mantido (zero breaking changes):
+# Ordem: discovery → offer → closing → committed → won / lost
+# Claude avança até "committed". De "committed" pra "won", só o sistema.
+#
+# Mantido (zero breaking changes na interface):
 #   - get_stages, build_funnel_prompt, build_dynamic_discovery
 #   - FunnelStageConfig format idêntico
 #   - Funil customizado do dono tem prioridade
@@ -104,7 +107,14 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
     """
     Retorna estágios do funil.
 
-    v9.0: cada estágio tem instruções de closer, não de atendente.
+    v10.0 — Funil de vendas profissional:
+      - Novo estágio "committed" (oportunidade confirmada)
+      - "won" é sistema-only (pagamento confirmado / dono marca)
+      - "lost" permite reativação automática
+      - Cada estágio tem psicologia de closer, não de atendente
+
+    Ordem: discovery → offer → closing → committed → won / lost
+    Claude avança até "committed". De "committed" pra "won", só o sistema.
     """
     # Funil customizado pelo dono tem prioridade
     if identity.funnel_config and identity.funnel_config.stages:
@@ -162,6 +172,36 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Silêncio depois do preço é NORMAL. Não quebre o silêncio com mais argumentos."
     )
 
+    # ── Committed: lead disse sim, mas ainda não converteu ──
+    # Este é o estágio mais crítico do funil. O lead se comprometeu
+    # (agendou, recebeu link de pagamento) mas o dinheiro não entrou
+    # e/ou o compromisso não foi cumprido. A IA muda de papel:
+    # de closer para nurture. Parar de vender, começar a cuidar.
+    committed_instructions = (
+        "O lead JÁ DISSE SIM. Agendamento confirmado ou link de pagamento enviado.\n"
+        "  Seu papel MUDOU. Você não é mais vendedor. Você é o anfitrião\n"
+        "  que cuida de quem já decidiu.\n"
+        "\n"
+        "  O QUE FAZER:\n"
+        "    - Celebre a decisão: 'Que bom que decidiu! Vai ser incrível.'\n"
+        "    - Use o NOME do lead. Sempre.\n"
+        "    - Confirme todos os detalhes: data, hora, endereço, o que levar/preparar\n"
+        "    - Responda dúvidas logísticas com segurança e clareza\n"
+        "    - Se pagamento pendente: UMA mensagem sutil, não mais.\n"
+        "      Ex: 'Ah, o link tá te esperando ali em cima quando quiser finalizar!'\n"
+        "    - Reduza ansiedade pós-decisão: 'você vai adorar', 'nossos clientes sempre falam que valeu'\n"
+        "    - Se o lead sumir: espere. NÃO bombardeie. O follow-up automático cuida.\n"
+        "\n"
+        "  O QUE NUNCA FAZER (INVIOLÁVEL):\n"
+        "    - NUNCA re-venda. O lead já decidiu. Vender de novo gera INSEGURANÇA.\n"
+        "    - NUNCA pergunte 'quer agendar?' de novo. Já agendou.\n"
+        "    - NUNCA envie outro link de pagamento. Já enviou.\n"
+        "    - NUNCA pressione pra pagar rápido. Dê espaço.\n"
+        "    - NUNCA mude de tom. Continue caloroso e confiante.\n"
+        "    - NUNCA mande stage_action='advance'. O sistema avança quando\n"
+        "      o pagamento for confirmado. Você NÃO controla isso."
+    )
+
     return [
         discovery,
         FunnelStageConfig(
@@ -175,17 +215,29 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
             name="closing",
             goal="Facilitar a decisão — tirar obstáculos, não empurrar",
             instructions=closing_instructions or "Facilite o fechamento. Opções concretas. Presuma o sim.",
-            triggers_to_advance="Pagamento OK ou agendamento confirmado",
+            triggers_to_advance="Lead confirmou que quer fechar (agendamento ou pagamento)",
             required_qualifications=closing_reqs,
+        ),
+        FunnelStageConfig(
+            name="committed",
+            goal="Nutrir o compromisso — reduzir ansiedade, confirmar detalhes, zero re-venda",
+            instructions=committed_instructions,
+            forbidden_actions=(
+                "NUNCA re-venda. NUNCA envie link de pagamento duplicado. "
+                "NUNCA pergunte se quer agendar novamente. "
+                "NUNCA mande stage_action='advance'."
+            ),
         ),
         FunnelStageConfig(
             name="won",
             goal="Encantar + confirmar + próximos passos concretos",
             instructions=(
-                "Agradeça pelo nome. Confirme TODOS os detalhes.\n"
+                "PAGAMENTO CONFIRMADO PELO SISTEMA. Venda real.\n"
+                "  Agradeça pelo nome. Confirme TODOS os detalhes.\n"
                 "  Link da call/endereço/data/hora se aplicável.\n"
                 "  'Qualquer coisa me chama aqui.'\n"
-                "  Faça ele sentir que tomou a MELHOR decisão."
+                "  Faça ele sentir que tomou a MELHOR decisão.\n"
+                "  NUNCA mande stage_action='advance' ou 'stop'. Mande 'hold'."
             ),
         ),
         FunnelStageConfig(
@@ -194,7 +246,8 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
             instructions=(
                 "Agradeça em 1-2 frases. Sem drama. Sem insistência.\n"
                 "  'Fico aqui quando precisar.' Ponto.\n"
-                "  NÃO pergunte 'tem certeza?'. NÃO tente reverter."
+                "  NÃO pergunte 'tem certeza?'. NÃO tente reverter.\n"
+                "  NUNCA mande stage_action='advance'. Mande 'hold'."
             ),
             forbidden_actions="Não insista. Não peça motivo. Não ofereça desconto de desespero.",
         ),
@@ -227,7 +280,7 @@ def build_funnel_prompt(identity: ClientIdentity, current_stage: str) -> str:
         if stage.forbidden_actions:
             prompt += f"\n     PROIBIDO: {stage.forbidden_actions}"
 
-  prompt += (
+    prompt += (
         '\n\n  DECISAO DE FUNIL:'
         '\n  "stage_action": "advance" | "hold" | "stop"'
         '\n'
@@ -236,16 +289,20 @@ def build_funnel_prompt(identity: ClientIdentity, current_stage: str) -> str:
         '\n    - "hold" quando ainda falta informação ou o lead está decidindo'
         '\n    - "stop" quando o lead desistiu explicitamente (disse que não quer)'
         '\n'
-        '\n  ESTADOS TERMINAIS (NUNCA mude):'
-        '\n    - Se estiver em [WON]: a venda foi feita. Agradeça, confirme, encante.'
-        '\n      NÃO mande "advance" nem "stop". Mande "hold".'
-        '\n    - Se estiver em [LOST]: conversa encerrada. Porta aberta, sem insistência.'
-        '\n      NÃO mande "advance" nem "stop". Mande "hold".'
+        '\n  LIMITE DO CLAUDE (VOCÊ):'
+        '\n    - Você pode avançar o lead até [COMMITTED]. Esse é seu teto.'
+        '\n    - De [COMMITTED] pra [WON], o SISTEMA cuida. Quando o pagamento'
+        '\n      for confirmado, o sistema muda automaticamente. Você NÃO faz isso.'
+        '\n    - Se estiver em [COMMITTED]: mande "hold". Sempre.'
         '\n'
-        '\n  ERROS COMUNS (NUNCA faça):'
-        '\n    - NÃO mande "advance" em "won" — não existe estágio depois de vender'
-        '\n    - NÃO mande "stop" em "won" — o lead JÁ COMPROU, não é "lost"'
-        '\n    - NÃO mande "advance" em "closing" a menos que pagamento ou agendamento'
-        '\n      esteja CONFIRMADO pelo sistema (não por você)'
+        '\n  ESTADOS TERMINAIS (NUNCA mude):'
+        '\n    - [WON]: venda confirmada pelo sistema. Mande "hold".'
+        '\n    - [LOST]: conversa encerrada. Mande "hold".'
+        '\n'
+        '\n  ERROS FATAIS (NUNCA faça):'
+        '\n    - NÃO mande "advance" em [COMMITTED] — o sistema cuida do próximo passo'
+        '\n    - NÃO mande "advance" em [WON] — não existe estágio depois de vender'
+        '\n    - NÃO mande "stop" em [WON] — o lead JÁ PAGOU'
+        '\n    - NÃO mande "advance" em [CLOSING] sem o lead ter confirmado que quer fechar'
     )
     return prompt
