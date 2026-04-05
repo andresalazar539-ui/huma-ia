@@ -573,7 +573,9 @@ REGRAS CUSTOM:
         prompt += "\n" + sales_prompt
 
     # ── Bloco 7: Memória do lead (v10 — layered memory) ──
-    prompt += "\n\n" + _format_lead_memory(conv.lead_facts, conv.history_summary)
+    # Cap: máximo 25 fatos no prompt pra não estourar tokens
+    capped_facts = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
+    prompt += "\n\n" + _format_lead_memory(capped_facts, conv.history_summary)
 
     # ── Bloco 8: Mídias e áudio ──
     prompt += """
@@ -946,7 +948,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             last_error = e
             error_str = str(e)
             # Retry em erros transientes (529 overloaded, 500 internal, timeout)
-            if attempt < max_retries and ("529" in error_str or "overloaded" in error_str.lower() or "timeout" in error_str.lower() or "500" in error_str):
+            if attempt < max_retries and ("529" in error_str or "overloaded" in error_str.lower() or "timeout" in error_str.lower() or "500" in error_str or "429" in error_str or "rate_limit" in error_str.lower()):
                 wait = (attempt + 1) * 2  # 2s, 4s
                 log.warning(f"IA retry {attempt + 1}/{max_retries} | {type(e).__name__} | aguardando {wait}s")
                 import asyncio as _aio
@@ -1157,15 +1159,10 @@ async def compress_history(history, summary, facts):
         new_summary = parsed.get("summary", summary)
         new_facts = parsed.get("facts", facts)
 
-        # Proteção: se perdeu fatos, mescla
-        if isinstance(new_facts, list) and len(new_facts) < len(facts or []) // 2:
-            log.warning(f"Compressão perdeu fatos | antes={len(facts)} | depois={len(new_facts)}")
-            existing_set = {f.lower().strip() for f in (facts or [])}
-            merged = list(facts or [])
-            for nf in new_facts:
-                if isinstance(nf, str) and nf.lower().strip() not in existing_set:
-                    merged.append(nf)
-            new_facts = merged
+        # Cap duro: máximo 25 fatos. Mais que isso estoura o prompt.
+        if isinstance(new_facts, list) and len(new_facts) > 25:
+            new_facts = new_facts[:25]
+            log.info(f"Compressão: fatos cortados pra 25 (tinha {len(parsed.get('facts', []))})")
 
         log.info(
             f"Compressão OK | msgs_comprimidas={len(to_compress)} | "
