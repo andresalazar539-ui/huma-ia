@@ -807,6 +807,24 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         if lead_name or lead_email:
             log.info(f"Pre-flight enriquecido | name={lead_name} | email={lead_email}")
 
+    # Trava: sem email, não agenda. Retorna incomplete pro Claude pedir.
+    if not lead_email or "@" not in lead_email:
+        log.info(f"Pre-flight BLOQUEADO | {phone} | email ausente | name={lead_name}")
+        return {
+            "status": "incomplete",
+            "missing_fields": ["email"],
+            "whatsapp_message": "",
+        }
+
+    # Trava: sem nome, não agenda
+    if not lead_name:
+        log.info(f"Pre-flight BLOQUEADO | {phone} | nome ausente | email={lead_email}")
+        return {
+            "status": "incomplete",
+            "missing_fields": ["nome"],
+            "whatsapp_message": "",
+        }
+
     request = SchedulingRequest(
         client_id=cid,
         phone=phone,
