@@ -638,12 +638,25 @@ REGRAS ABSOLUTAS:
 
 ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
 
-    # ── Blocos condicionais (vertical, market, speech, corrections) ──
+    # ── Blocos condicionais (vertical, market, speech, corrections, visão) ──
     if identity.category:
         from huma.services.learning_engine import build_vertical_prompt
         vertical_prompt = build_vertical_prompt(identity.category)
         if vertical_prompt:
             prompt += vertical_prompt
+
+        # Visão computacional — instruções de como analisar imagens do lead
+        # ESSE IMPORT ESTAVA FALTANDO. O módulo existia mas nunca era chamado.
+        from huma.services.image_intelligence import build_image_intelligence_prompt
+        image_prompt = build_image_intelligence_prompt(identity)
+        if image_prompt:
+            prompt += image_prompt
+
+    # ── Bloco de análise visual (v10 — era código morto, agora ativo) ──
+    from huma.services.image_intelligence import build_image_intelligence_prompt
+    image_prompt = build_image_intelligence_prompt(identity)
+    if image_prompt:
+        prompt += "\n" + image_prompt
 
     if identity.market_analysis:
         ma = identity.market_analysis
