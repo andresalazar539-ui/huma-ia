@@ -1,5 +1,9 @@
 # ================================================================
 # huma/services/redis_service.py — Cache, rate limiting, dedup, locks
+#
+# v10.0 — Adicionado:
+#   - get_value: busca valor genérico por chave
+#     Usado pra recuperar message_ids armazenados (quoted reply)
 # ================================================================
 
 import hashlib
@@ -126,3 +130,22 @@ async def set_with_ttl(key: str, value: str, ttl: int = 86400):
         await _client.set(key, value, ex=ttl)
     except Exception:
         pass
+
+
+async def get_value(key: str) -> str | None:
+    """
+    Busca valor genérico por chave no Redis.
+
+    Usado pra recuperar message_ids armazenados (quoted reply),
+    dados temporários, e qualquer valor que precise ser lido
+    depois de um set_with_ttl.
+
+    Returns:
+        Valor da chave, ou None se não existe ou Redis indisponível.
+    """
+    if not _client:
+        return None
+    try:
+        return await _client.get(key)
+    except Exception:
+        return None
