@@ -499,7 +499,31 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             if action_type == "send_media":
                 await _handle_media_action(phone, action, client_data)
             elif action_type == "generate_payment":
-                await _handle_payment_action(phone, action, client_data)
+                pay_result = await _handle_payment_action(phone, action, client_data)
+                # Marca no histórico — impede IA de tentar gerar de novo
+                if pay_result and (pay_result.get("sent") or pay_result.get("reason") == "dedup"):
+                    try:
+                        amount = action.get("amount_cents", 0) / 100
+                        method = action.get("payment_method", "pix")
+                        if pay_result.get("sent"):
+                            conv.history.append({
+                                "role": "assistant",
+                                "content": (
+                                    f"[PAGAMENTO ENVIADO: R${amount:,.2f} via {method} — "
+                                    f"link ativo no chat. NÃO gerar outro.]"
+                                ),
+                            })
+                        else:
+                            conv.history.append({
+                                "role": "assistant",
+                                "content": (
+                                    f"[PAGAMENTO JÁ EXISTE: R${amount:,.2f} via {method} — "
+                                    f"link já enviado. NÃO gerar outro.]"
+                                ),
+                            })
+                        await db.save_conversation(conv)
+                    except Exception as e:
+                        log.error(f"Erro salvando pagamento no histórico | {phone} | {e}")
             elif action_type == "create_appointment":
                 # Só executa se NÃO agendou ainda (trava anti-duplicação)
                 if not already_scheduled_this_turn:
@@ -677,7 +701,7 @@ async def _handle_payment_action(phone, action, client_data):
             await wa.send_text(phone, result.get("whatsapp_message", "Preciso do seu CPF pra gerar o boleto."), client_id=cid)
         else:
             await wa.send_text(phone, "Tive um probleminha pra gerar o pagamento. Pode tentar de novo?", client_id=cid)
-        return
+        return {"sent": False, "reason": "error"}
 
     # Dedup: pagamento já existe, só manda lembrete
     # Usa reply_to pra citar a mensagem original (Meta Cloud API)
@@ -695,7 +719,7 @@ async def _handle_payment_action(phone, action, client_data):
                 reply_to=original_msg_id,
             )
         log.info(f"Pagamento dedup | {phone} | {result.get('amount_display', '')}")
-        return
+        return {"sent": False, "reason": "dedup", "amount_display": result.get("amount_display", "")}
 
     method = result.get("method", "pix")
     await asyncio.sleep(2.0)
@@ -737,6 +761,7 @@ async def _handle_payment_action(phone, action, client_data):
 
     await billing.log_usage(cid, billing.UsageType.PAYMENT)
     log.info(f"Pagamento enviado | {method} | {result.get('amount_display', '')}")
+    return {"sent": True, "method": method, "amount_display": result.get("amount_display", "")}
 
 
 async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
