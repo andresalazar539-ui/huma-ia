@@ -384,6 +384,23 @@ CENÁRIOS (siga o que se aplica):
     - Mande action create_appointment com o horário exato aceito
     - Reply: "boa, verificando..." (NÃO confirme)
 
+  CENÁRIO 7 — Lead PERGUNTA sobre disponibilidade ("tem horário?", "tem às 14h?", "quarta tem vaga?"):
+    *** ATENÇÃO: pergunta NÃO é pedido. NÃO mande action. ***
+    - Reply: "deixa eu dar uma olhada na agenda... sim, tem disponível na quarta às 14h! quer que eu marque pra você?"
+    - ESPERE o lead CONFIRMAR antes de mandar action
+    - Só mande create_appointment DEPOIS que o lead disser: "sim", "marca", "pode marcar", "quero", "bora"
+    
+    SINAIS DE PERGUNTA (NÃO agende):
+      "tem horário?", "tem vaga?", "tem às X?", "quarta tem?", "dá pra ir tal dia?",
+      "vocês atendem no sábado?", "funciona domingo?"
+    
+    SINAIS DE PEDIDO (AGENDE):
+      "quero marcar", "marca pra mim", "pode agendar", "fecha", "bora", "confirma"
+
+  CENÁRIO 8 — Lead confirma agendamento ("sim", "marca", "pode marcar", "bora"):
+    - AGORA sim: mande action create_appointment com os dados
+    - Reply: "perfeito, verificando na agenda..."
+
 REGRA DE OURO:
   O email é DO LEAD (pra receber convite). A agenda é da EMPRESA.
   Coleta mínima: nome + email + horário. Telefone NÃO é obrigatório pra agendar
@@ -571,11 +588,12 @@ MÍDIAS: Se o lead pedir foto/vídeo, use action send_media com tags relevantes.
     - NO INÍCIO DA CONVERSA: SÓ texto. Áudio só se o lead pedir explicitamente.
 
   SE O LEAD PEDIU ÁUDIO:
-    - reply_parts: frase CURTA de ponte. Exemplos REAIS:
-      "opa, já te mando aqui"
-      "minutinho"
-      "já tô mandando"
-      "segura aí que já vai"
+    - reply_parts: frase CURTA de ponte. Adapte ao tom do negócio:
+      Clínica/saúde: "um instante que já te explico", "deixa eu te falar", "já te mando"
+      E-commerce/loja: "segura aí que já vai", "já tô mandando", "minutinho"
+      Barbearia/salão: "opa, já mando", "segura aí", "já te falo"
+      Advocacia/financeiro: "um momento que já gravo pra você", "deixa eu te explicar"
+      Geral: "já te mando aqui", "um instante", "segura aí"
       NÃO use: "te gravei", "gravei aqui pra você", "vou te mandar um áudio explicando"
     - audio_text: resposta COMPLETA (40-70 palavras). Preço, condições, explicação, tudo que ele pediu.
       Fale como brasileiro gravando voice note: direto, natural, com emoção.
@@ -644,13 +662,6 @@ ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
         vertical_prompt = build_vertical_prompt(identity.category)
         if vertical_prompt:
             prompt += vertical_prompt
-
-        # Visão computacional — instruções de como analisar imagens do lead
-        # ESSE IMPORT ESTAVA FALTANDO. O módulo existia mas nunca era chamado.
-        from huma.services.image_intelligence import build_image_intelligence_prompt
-        image_prompt = build_image_intelligence_prompt(identity)
-        if image_prompt:
-            prompt += image_prompt
 
     # ── Bloco de análise visual (v10 — era código morto, agora ativo) ──
     from huma.services.image_intelligence import build_image_intelligence_prompt
@@ -1069,22 +1080,13 @@ async def generate_outbound_message(identity, lead, template=""):
 
 async def compress_history(history, summary, facts):
     """
-    Comprime histórico com memória em camadas.
+    Comprime histórico preservando memória do lead.
 
-    v10.0 — Layered Memory:
-      Em vez de "resumo em 5 linhas", extrai informação estruturada
-      que sobrevive a múltiplas compressões sem perder contexto.
-
-      Camadas:
-        1. Perfil do lead (permanente): nome, gênero, profissão, localização
-        2. Preferências (permanente): comunicação, pagamento, horários
-        3. Histórico relacional (acumula): compras, agendamentos, reclamações
-        4. Objeções resolvidas (acumula): o que resistiu e como foi convencido
-        5. Pendências (atualizável): promessas, itens em aberto
-        6. Estado emocional (atualizável): confiança, sentimento, temas sensíveis
-
-      Resultado: mesmo após 50 compressões, o Claude sabe exatamente
-      quem é o lead, o que ele quer, e como tratá-lo.
+    v10.1 — Simplificado pra não quebrar:
+      JSON simples (summary + facts array).
+      Prompt inteligente que pede fatos categorizados.
+      Haiku consegue processar sem errar JSON.
+      Fallback robusto: se falhar, mantém tudo.
     """
     if len(history) <= HISTORY_MAX_BEFORE_COMPRESS:
         return history, summary, facts
@@ -1093,83 +1095,67 @@ async def compress_history(history, summary, facts):
     recent = history[-HISTORY_WINDOW:]
 
     messages_text = "\n".join(
-        f"{m['role'].upper()}: {m['content']}" for m in to_compress
+        f"{m['role'].upper()}: {m['content']}"
+        for m in to_compress
+        if isinstance(m.get("content"), str)
     )
 
+    existing_facts = json.dumps(facts, ensure_ascii=False) if facts else "[]"
+
     prompt = (
-        f"Você é um extrator de memória conversacional. Analise as mensagens abaixo "
-        f"e extraia informação estruturada que permita a outra IA retomar a conversa "
-        f"sem perder NADA de contexto.\n\n"
-        f"MEMÓRIA ANTERIOR (mantenha e atualize, NUNCA remova):\n"
-        f"Resumo: {summary or 'Nenhum.'}\n"
-        f"Fatos: {json.dumps(facts, ensure_ascii=False) if facts else 'Nenhum.'}\n\n"
-        f"MENSAGENS NOVAS:\n{messages_text}\n\n"
-        f"Retorne SOMENTE JSON válido (sem markdown, sem backticks):\n"
-        f'{{\n'
-        f'  "summary": "Narrativa de 3-5 linhas do estado atual da conversa. '
-        f'O que o lead quer, onde estamos no processo, qual o próximo passo natural.",\n'
-        f'  "facts": [\n'
-        f'    "perfil: nome, gênero, idade/faixa se mencionou, profissão, cidade/bairro, '
-        f'como gosta de ser chamado, estilo de comunicação (direto/detalhista/informal)",\n'
-        f'    "preferência: métodos de pagamento, horários preferidos, '
-        f'canal preferido (texto/áudio), o que valoriza (preço/qualidade/rapidez)",\n'
-        f'    "histórico: produtos/serviços discutidos, preços mencionados, '
-        f'o que já foi oferecido, agendamentos feitos, pagamentos realizados",\n'
-        f'    "objeção: objeções levantadas e COMO foram resolvidas '
-        f'(importante pra não repetir argumento que já funcionou ou que falhou)",\n'
-        f'    "pendência: qualquer promessa feita pela IA, informação que falta, '
-        f'ação que ficou pra depois, follow-up necessário",\n'
-        f'    "emocional: nível de confiança (baixo/médio/alto), sentimento '
-        f'predominante, temas sensíveis que devem ser evitados, '
-        f'o que deixou o lead feliz ou irritado"\n'
-        f'  ]\n'
-        f'}}\n\n'
-        f"REGRAS CRÍTICAS:\n"
-        f"- Cada item do array facts DEVE começar com o prefixo da categoria (perfil:, preferência:, etc)\n"
-        f"- MANTENHA todos os fatos anteriores. Adicione novos. NUNCA remova informação já extraída.\n"
-        f"- Se um fato mudou (lead mudou de ideia), atualize mantendo o contexto da mudança.\n"
-        f"- Se não tem informação pra uma categoria, NÃO inclua a categoria.\n"
-        f"- Priorize informação ÚTIL pra vendas e atendimento personalizado.\n"
-        f"- O summary deve permitir que outra IA retome a conversa como se fosse a mesma pessoa."
+        f"Resuma esta conversa e extraia fatos do lead.\n\n"
+        f"Fatos anteriores (MANTENHA todos, adicione novos): {existing_facts}\n\n"
+        f"Mensagens:\n{messages_text}\n\n"
+        f"Responda APENAS com JSON, sem texto antes ou depois:\n"
+        f'{{"summary":"resumo de 3-5 linhas do estado da conversa",'
+        f'"facts":["fato 1","fato 2","fato 3"]}}\n\n'
+        f"Nos facts, inclua com prefixo:\n"
+        f"- perfil: nome, gênero, como gosta de ser chamado\n"
+        f"- preferência: pagamento, horário, comunicação\n"
+        f"- histórico: o que já comprou, agendou, perguntou\n"
+        f"- objeção: o que resistiu e como resolveu\n"
+        f"- pendência: promessas abertas, follow-up\n"
+        f"NUNCA remova fatos anteriores. Só adicione."
     )
 
     try:
         response = await _get_ai_client().messages.create(
             model=AI_MODEL_FAST,
-            max_tokens=600,
+            max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
-        # Limpa possíveis backticks que o modelo pode adicionar
+
+        # Limpeza: remove backticks e texto extra
         raw = raw.replace("```json", "").replace("```", "").strip()
+        brace_start = raw.find("{")
+        brace_end = raw.rfind("}")
+        if brace_start >= 0 and brace_end > brace_start:
+            raw = raw[brace_start:brace_end + 1]
+
         parsed = json.loads(raw)
 
         new_summary = parsed.get("summary", summary)
         new_facts = parsed.get("facts", facts)
 
-        # Garante que fatos anteriores não se percam em caso de extração ruim
-        if not new_facts or len(new_facts) < len(facts) // 2:
-            log.warning(
-                f"Compressão perdeu fatos | antes={len(facts)} | depois={len(new_facts)} | "
-                f"mantendo originais e adicionando novos"
-            )
-            # Mescla: mantém os antigos e adiciona os novos que não existem
-            existing_set = set(f.lower().strip() for f in facts)
-            merged = list(facts)
+        # Proteção: se perdeu fatos, mescla
+        if isinstance(new_facts, list) and len(new_facts) < len(facts or []) // 2:
+            log.warning(f"Compressão perdeu fatos | antes={len(facts)} | depois={len(new_facts)}")
+            existing_set = {f.lower().strip() for f in (facts or [])}
+            merged = list(facts or [])
             for nf in new_facts:
-                if nf.lower().strip() not in existing_set:
+                if isinstance(nf, str) and nf.lower().strip() not in existing_set:
                     merged.append(nf)
             new_facts = merged
 
         log.info(
             f"Compressão OK | msgs_comprimidas={len(to_compress)} | "
-            f"msgs_mantidas={len(recent)} | "
-            f"fatos={len(new_facts)} | summary_len={len(new_summary)}"
+            f"msgs_mantidas={len(recent)} | fatos={len(new_facts)}"
         )
         return recent, new_summary, new_facts
 
     except Exception as e:
-        log.error(f"Compressão falhou | {type(e).__name__}: {e} | mantendo histórico original")
+        log.error(f"Compressão falhou | {type(e).__name__}: {e} | mantendo original")
         return recent, summary, facts
 
 
