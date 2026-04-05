@@ -128,7 +128,8 @@ TOM — CLÍNICA (INVIOLÁVEL):
   
   PALAVRAS PROIBIDAS nesta vertical:
     "mano", "cara", "bicho", "brother", "parceiro", "chefe", "véi", "meu",
-    "show", "massa", "da hora", "irado", "sinistro", "top demais"
+    "show", "massa", "da hora", "irado", "sinistro", "top demais", "top",
+    "brabo", "bora", "fechou" (como gíria)
   
   USE: "pode ficar tranquila", "vamos cuidar de tudo pra você", "sem preocupação",
        "é super tranquilo o procedimento", "nossos pacientes adoram o resultado"
@@ -646,6 +647,7 @@ REGRAS ABSOLUTAS:
         ✓ Já mandei essa action? Se sim → NÃO mande de novo
         ✓ Estou dizendo algo NOVO? Se não → reformule com ângulo diferente ou avance a conversa
         ✓ Se tirar essa frase, a mensagem perde sentido? Se não → remova a frase
+        ✓ Estou terminando com "qualquer coisa me chama/tô aqui/só chamar"? Só use 1 vez na conversa INTEIRA. Depois varie: "te espero segunda", "fico no aguardo", "bora", ou simplesmente não diga nada
   12. SOM DE HUMANO: use contrações (tá, pra, né, pro, tô). Varie o comprimento. Comece frases de formas diferentes. Misture frases curtas com longas.
   13. DADOS JÁ COLETADOS: verifique a MEMÓRIA DO LEAD acima. Se o dado já está lá, NÃO pergunte de novo.
   14. OBJETIVO SEMPRE ATIVO: você NUNCA desiste. Seu objetivo é agendamento, venda, ou resolver a dúvida até o fim. Se o lead esfria, você muda o ângulo. Se ele resiste, você tenta de outro jeito. Você SÓ para quando o lead EXPLICITAMENTE disser que não quer. "Ok" NÃO é desistência — é desinteresse. Reengaje.
@@ -925,72 +927,89 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     # Tool que força JSON válido
     reply_tool = _build_reply_tool(identity.messaging_style)
 
-    try:
-        response = await _get_ai_client().messages.create(
-            model=model,
-            max_tokens=800,
-            system=system,
-            tools=[reply_tool],
-            tool_choice={"type": "tool", "name": "send_reply"},
-            messages=messages,
-        )
+    # Retry com backoff pra erros transientes (529 overloaded, timeout)
+    max_retries = 2
+    last_error = None
 
-        # Extrai o tool_use block
-        parsed = None
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "send_reply":
-                parsed = block.input
-                break
-
-        if not parsed:
-            log.warning("Tool use não retornou dados")
+    for attempt in range(max_retries + 1):
+        try:
+            response = await _get_ai_client().messages.create(
+                model=model,
+                max_tokens=800,
+                system=system,
+                tools=[reply_tool],
+                tool_choice={"type": "tool", "name": "send_reply"},
+                messages=messages,
+            )
+            break  # Sucesso, sai do loop
+        except Exception as e:
+            last_error = e
+            error_str = str(e)
+            # Retry em erros transientes (529 overloaded, 500 internal, timeout)
+            if attempt < max_retries and ("529" in error_str or "overloaded" in error_str.lower() or "timeout" in error_str.lower() or "500" in error_str):
+                wait = (attempt + 1) * 2  # 2s, 4s
+                log.warning(f"IA retry {attempt + 1}/{max_retries} | {type(e).__name__} | aguardando {wait}s")
+                import asyncio as _aio
+                await _aio.sleep(wait)
+                continue
+            # Erro não-transiente ou último retry
+            log.error(f"Erro na IA | {e}")
             return _fallback_result(identity.fallback_message)
-
-        # Extrai campos
-        try:
-            intent = Intent(parsed.get("intent", "neutral").lower())
-        except ValueError:
-            intent = Intent.NEUTRAL
-
-        try:
-            sentiment = Sentiment(parsed.get("sentiment", "neutral").lower())
-        except ValueError:
-            sentiment = Sentiment.NEUTRAL
-
-        confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.7))))
-
-        result = {
-            "reply": "",
-            "reply_parts": [],
-            "intent": intent,
-            "sentiment": sentiment,
-            "stage_action": parsed.get("stage_action", "hold"),
-            "confidence": confidence,
-            "lead_facts": parsed.get("new_facts", []),
-            "actions": parsed.get("actions", []),
-            "micro_objective": parsed.get("micro_objective", ""),
-            "emotional_reading": parsed.get("emotional_reading", ""),
-            # v9.2 — audio_text gerado na mesma chamada
-            "audio_text": parsed.get("audio_text", ""),
-        }
-
-        if "reply_parts" in parsed and isinstance(parsed["reply_parts"], list) and parsed["reply_parts"]:
-            result["reply_parts"] = parsed["reply_parts"]
-            result["reply"] = " ".join(parsed["reply_parts"])
-        else:
-            result["reply"] = parsed.get("reply", identity.fallback_message)
-            result["reply_parts"] = [result["reply"]]
-
-        log.info(
-            f"Resposta | intent={intent.value} | conf={confidence:.2f} | "
-            f"stage={parsed.get('stage_action','hold')} | actions={len(result['actions'])} | "
-            f"objective={result['micro_objective'][:50]}"
-        )
-        return result
-
-    except Exception as e:
-        log.error(f"Erro na IA | {e}")
+    else:
+        log.error(f"IA falhou após {max_retries} retries | {last_error}")
         return _fallback_result(identity.fallback_message)
+
+    # Extrai o tool_use block (só chega aqui se o retry teve sucesso)
+    parsed = None
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "send_reply":
+            parsed = block.input
+            break
+
+    if not parsed:
+        log.warning("Tool use não retornou dados")
+        return _fallback_result(identity.fallback_message)
+
+    # Extrai campos
+    try:
+        intent = Intent(parsed.get("intent", "neutral").lower())
+    except ValueError:
+        intent = Intent.NEUTRAL
+
+    try:
+        sentiment = Sentiment(parsed.get("sentiment", "neutral").lower())
+    except ValueError:
+        sentiment = Sentiment.NEUTRAL
+
+    confidence = max(0.0, min(1.0, float(parsed.get("confidence", 0.7))))
+
+    result = {
+        "reply": "",
+        "reply_parts": [],
+        "intent": intent,
+        "sentiment": sentiment,
+        "stage_action": parsed.get("stage_action", "hold"),
+        "confidence": confidence,
+        "lead_facts": parsed.get("new_facts", []),
+        "actions": parsed.get("actions", []),
+        "micro_objective": parsed.get("micro_objective", ""),
+        "emotional_reading": parsed.get("emotional_reading", ""),
+        "audio_text": parsed.get("audio_text", ""),
+    }
+
+    if "reply_parts" in parsed and isinstance(parsed["reply_parts"], list) and parsed["reply_parts"]:
+        result["reply_parts"] = parsed["reply_parts"]
+        result["reply"] = " ".join(parsed["reply_parts"])
+    else:
+        result["reply"] = parsed.get("reply", identity.fallback_message)
+        result["reply_parts"] = [result["reply"]]
+
+    log.info(
+        f"Resposta | intent={intent.value} | conf={confidence:.2f} | "
+        f"stage={parsed.get('stage_action','hold')} | actions={len(result['actions'])} | "
+        f"objective={result['micro_objective'][:50]}"
+    )
+    return result
 
 
 def _fallback_result(text):
@@ -1100,7 +1119,7 @@ async def compress_history(history, summary, facts):
         if isinstance(m.get("content"), str)
     )
 
-    existing_facts = json.dumps(facts, ensure_ascii=False) if facts else "[]"
+    existing_facts = json.dumps(facts[-20:], ensure_ascii=False) if facts else "[]"
 
     prompt = (
         f"Resuma esta conversa e extraia fatos do lead.\n\n"
@@ -1121,7 +1140,7 @@ async def compress_history(history, summary, facts):
     try:
         response = await _get_ai_client().messages.create(
             model=AI_MODEL_FAST,
-            max_tokens=500,
+            max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
