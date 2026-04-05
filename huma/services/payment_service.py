@@ -211,14 +211,14 @@ async def get_payment_by_external_ref(external_reference: str) -> dict | None:
 
 async def _get_pending_payment(client_id: str, phone: str) -> dict | None:
     """
-    Busca pagamento PENDENTE do mesmo lead.
+    Busca pagamento PENDENTE do mesmo lead nas últimas 2 horas.
 
-    Se já existe uma cobrança pendente (Pix, boleto ou cartão)
-    pro mesmo client_id + phone, retorna o registro.
-    Isso evita criar múltiplas cobranças pro mesmo lead.
+    Janela de 2h evita que pagamentos de sessões anteriores
+    bloqueiem novas cobranças. Se o lead volta 1 dia depois,
+    o pagamento antigo não interfere.
 
     Returns:
-        Registro do pagamento pendente, ou None se não existe.
+        Registro do pagamento pendente recente, ou None.
     """
     try:
         from huma.services.db_service import get_supabase
@@ -229,12 +229,17 @@ async def _get_pending_payment(client_id: str, phone: str) -> dict | None:
 
         clean_phone = "".join(c for c in phone if c.isdigit())
 
+        # Janela de 2 horas — pagamentos mais antigos são ignorados
+        from datetime import datetime, timedelta
+        two_hours_ago = (datetime.utcnow() - timedelta(hours=2)).isoformat()
+
         resp = await run_in_threadpool(
             lambda: supa.table("payments")
             .select("*")
             .eq("client_id", client_id)
             .eq("phone", clean_phone)
             .eq("status", "pending")
+            .gte("created_at", two_hours_ago)
             .order("created_at", desc=True)
             .limit(1)
             .execute()
