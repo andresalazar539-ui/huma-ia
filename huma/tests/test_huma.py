@@ -5,7 +5,7 @@
 #
 # O que testa:
 #   - Schemas (validação de dados)
-#   - Funil dinâmico (autonomia do dono)
+#   - Funil dinâmico v10 (autonomia do dono + committed + terminais)
 #   - Payment (formatação, métodos)
 #   - Orchestrator (stage transitions, delays)
 #   - AI prompt (autonomia refletida no prompt)
@@ -181,7 +181,7 @@ class TestSchemas:
 
 
 # ================================================================
-# TESTES DO FUNIL DINÂMICO
+# TESTES DO FUNIL DINÂMICO v10
 # ================================================================
 
 class TestFunnel:
@@ -214,10 +214,12 @@ class TestFunnel:
         assert "NÃO fale de preço" not in (stage.forbidden_actions or "")
 
     def test_get_stages_count(self, clinica_identity):
-        """Funil padrão tem 5 estágios."""
+        """Funil padrão v10 tem 6 estágios (inclui committed)."""
         stages = get_stages(clinica_identity)
-        assert len(stages) == 5
+        assert len(stages) == 6
         assert stages[0].name == "discovery"
+        assert stages[3].name == "committed"
+        assert stages[4].name == "won"
         assert stages[-1].name == "lost"
 
     def test_closing_has_payment_methods(self, clinica_identity):
@@ -233,6 +235,23 @@ class TestFunnel:
         closing = [s for s in stages if s.name == "closing"][0]
         # clinica aceita pix e credit_card, NÃO boleto
         assert "Boleto" not in closing.instructions
+
+    def test_committed_stage_exists(self, clinica_identity):
+        """Estágio committed existe entre closing e won."""
+        stages = get_stages(clinica_identity)
+        names = [s.name for s in stages]
+        assert "committed" in names
+        committed_idx = names.index("committed")
+        closing_idx = names.index("closing")
+        won_idx = names.index("won")
+        assert closing_idx < committed_idx < won_idx
+
+    def test_committed_forbids_resell(self, clinica_identity):
+        """Committed proíbe re-venda e duplicação de link."""
+        stages = get_stages(clinica_identity)
+        committed = [s for s in stages if s.name == "committed"][0]
+        assert "NUNCA re-venda" in committed.forbidden_actions
+        assert "NUNCA envie link de pagamento duplicado" in committed.forbidden_actions
 
     def test_custom_funnel_overrides(self, clinica_identity):
         """Funil customizado pelo dono tem prioridade."""
@@ -251,6 +270,18 @@ class TestFunnel:
         prompt = build_funnel_prompt(clinica_identity, "offer")
         assert "VOCE ESTA AQUI" in prompt
         assert "[OFFER]" in prompt
+
+    def test_funnel_prompt_has_committed_instructions(self, clinica_identity):
+        """Prompt do funil inclui instruções do committed."""
+        prompt = build_funnel_prompt(clinica_identity, "committed")
+        assert "VOCE ESTA AQUI" in prompt
+        assert "[COMMITTED]" in prompt
+
+    def test_funnel_prompt_has_terminal_rules(self, clinica_identity):
+        """Prompt inclui regras de estados terminais."""
+        prompt = build_funnel_prompt(clinica_identity, "discovery")
+        assert "ESTADOS TERMINAIS" in prompt
+        assert "LIMITE DO CLAUDE" in prompt
 
 
 # ================================================================
@@ -410,7 +441,7 @@ class TestScheduling:
 
 
 # ================================================================
-# TESTES DO ORCHESTRATOR
+# TESTES DO ORCHESTRATOR v10
 # ================================================================
 
 class TestOrchestrator:
@@ -453,22 +484,55 @@ class TestOrchestrator:
         with patch("huma.core.orchestrator.SAFE_MODE", True):
             assert _should_send_audio(clinica_identity, conv) is False
 
-    def test_stage_advance(self, clinica_identity):
-        """Advance move pro próximo estágio."""
+    # ── Funil v10: transições de estágio ──
+
+    def test_stage_advance_normal(self, clinica_identity):
+        """Advance move pro próximo estágio (até committed)."""
         from huma.core.orchestrator import _apply_stage_action
         assert _apply_stage_action(clinica_identity, "discovery", "advance") == "offer"
         assert _apply_stage_action(clinica_identity, "offer", "advance") == "closing"
-        assert _apply_stage_action(clinica_identity, "closing", "advance") == "won"
+        assert _apply_stage_action(clinica_identity, "closing", "advance") == "committed"
+
+    def test_stage_committed_blocks_advance(self, clinica_identity):
+        """Committed não avança — won é sistema-only."""
+        from huma.core.orchestrator import _apply_stage_action
+        assert _apply_stage_action(clinica_identity, "committed", "advance") == "committed"
+
+    def test_stage_committed_allows_stop(self, clinica_identity):
+        """Committed pode ir pra lost via stop (lead desistiu)."""
+        from huma.core.orchestrator import _apply_stage_action
+        assert _apply_stage_action(clinica_identity, "committed", "stop") == "lost"
 
     def test_stage_hold(self, clinica_identity):
         """Hold mantém no mesmo estágio."""
         from huma.core.orchestrator import _apply_stage_action
         assert _apply_stage_action(clinica_identity, "discovery", "hold") == "discovery"
+        assert _apply_stage_action(clinica_identity, "committed", "hold") == "committed"
 
     def test_stage_stop(self, clinica_identity):
         """Stop vai pra lost."""
         from huma.core.orchestrator import _apply_stage_action
         assert _apply_stage_action(clinica_identity, "offer", "stop") == "lost"
+
+    def test_stage_won_is_terminal(self, clinica_identity):
+        """Won é terminal — nenhuma ação do Claude muda."""
+        from huma.core.orchestrator import _apply_stage_action
+        assert _apply_stage_action(clinica_identity, "won", "advance") == "won"
+        assert _apply_stage_action(clinica_identity, "won", "stop") == "won"
+        assert _apply_stage_action(clinica_identity, "won", "hold") == "won"
+
+    def test_stage_lost_is_terminal(self, clinica_identity):
+        """Lost é terminal — nenhuma ação do Claude muda."""
+        from huma.core.orchestrator import _apply_stage_action
+        assert _apply_stage_action(clinica_identity, "lost", "advance") == "lost"
+        assert _apply_stage_action(clinica_identity, "lost", "stop") == "lost"
+        assert _apply_stage_action(clinica_identity, "lost", "hold") == "lost"
+
+    def test_stage_invalid_action(self, clinica_identity):
+        """Ação inválida é tratada como hold."""
+        from huma.core.orchestrator import _apply_stage_action
+        assert _apply_stage_action(clinica_identity, "offer", "fly_to_moon") == "offer"
+        assert _apply_stage_action(clinica_identity, "closing", "") == "closing"
 
 
 # ================================================================
