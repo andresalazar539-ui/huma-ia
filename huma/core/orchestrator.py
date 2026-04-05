@@ -511,7 +511,16 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # Fluxo pro lead: "vou verificar na agenda..." → (2s) → "Agendado! Quinta às 15h..."
         if appointment_confirmation:
             await asyncio.sleep(2.0)
-            await wa.send_text(phone, appointment_confirmation, client_id=cid)
+            confirm_msg_id = await wa.send_text(phone, appointment_confirmation, client_id=cid)
+
+            # Armazena message_id da confirmação pra quoted reply futuro
+            # Quando o lead perguntar "que horas era?" o sistema pode citar
+            if confirm_msg_id:
+                await cache.set_with_ttl(
+                    f"sent_msg:{cid}:{phone}:appointment",
+                    confirm_msg_id,
+                    ttl=86400,
+                )
 
             # Marca no histórico — impede duplicação em mensagens futuras
             try:
@@ -638,8 +647,10 @@ async def _handle_payment_action(phone, action, client_data):
     """
     Gera cobrança e envia no WhatsApp.
 
-    v10.0 — Dedup: se já existe pagamento pendente pro mesmo lead,
-    manda lembrete amigável em vez de criar cobrança nova.
+    v10.0 — Dedup + quoted reply:
+      - Se já existe pagamento pendente, manda lembrete com referência
+      - Armazena message_id do link pra futuro quoted reply (Meta Cloud API)
+      - Twilio: reply_to ignorado, mas infra pronta
     """
     cid = client_data.client_id
     request = PaymentRequest(
@@ -663,25 +674,39 @@ async def _handle_payment_action(phone, action, client_data):
             await wa.send_text(phone, "Tive um probleminha pra gerar o pagamento. Pode tentar de novo?", client_id=cid)
         return
 
-    # Dedup: pagamento já existe, só manda lembrete amigável
-    # Sem criar cobrança nova, sem cobrar billing
+    # Dedup: pagamento já existe, só manda lembrete
+    # Usa reply_to pra citar a mensagem original (Meta Cloud API)
     if result.get("status") == "duplicate":
         if result.get("whatsapp_message"):
+            # Busca message_id do link original pra quoted reply
+            original_msg_id = await cache.get_value(
+                f"sent_msg:{cid}:{phone}:payment"
+            )
             await asyncio.sleep(2.0)
-            await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
+            await wa.send_text(
+                phone,
+                result["whatsapp_message"],
+                client_id=cid,
+                reply_to=original_msg_id,
+            )
         log.info(f"Pagamento dedup | {phone} | {result.get('amount_display', '')}")
         return
 
     method = result.get("method", "pix")
     await asyncio.sleep(2.0)
 
+    # Envia mensagem principal do pagamento e armazena message_id
+    payment_msg_id = None
     if result.get("whatsapp_message"):
-        await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
+        payment_msg_id = await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
 
     if method == "pix":
         if result.get("qr_code_url"):
             await asyncio.sleep(1.5)
-            await wa.send_image(phone, result["qr_code_url"], caption="QR Code Pix", client_id=cid)
+            qr_msg_id = await wa.send_image(phone, result["qr_code_url"], caption="QR Code Pix", client_id=cid)
+            # QR code é a mensagem mais relevante pra citar no dedup
+            if qr_msg_id:
+                payment_msg_id = qr_msg_id
         if result.get("qr_code_text"):
             await asyncio.sleep(1.0)
             await wa.send_text(phone, result["qr_code_text"], client_id=cid)
@@ -693,6 +718,17 @@ async def _handle_payment_action(phone, action, client_data):
         if result.get("boleto_pdf_url"):
             await asyncio.sleep(1.0)
             await wa.send_image(phone, result["boleto_pdf_url"], caption="Boleto", client_id=cid)
+
+    # Armazena message_id da mensagem de pagamento no Redis
+    # Usado pra quoted reply quando o lead pedir o link de novo
+    # TTL 24h (janela de conversa)
+    if payment_msg_id:
+        await cache.set_with_ttl(
+            f"sent_msg:{cid}:{phone}:payment",
+            payment_msg_id,
+            ttl=86400,
+        )
+        log.debug(f"Payment msg_id armazenado | {phone} | sid={payment_msg_id}")
 
     await billing.log_usage(cid, billing.UsageType.PAYMENT)
     log.info(f"Pagamento enviado | {method} | {result.get('amount_display', '')}")
