@@ -398,6 +398,68 @@ REGRA DE OURO:
     return prompt
 
 
+def _format_lead_memory(facts: list[str], summary: str) -> str:
+    """
+    Organiza fatos do lead em memória estruturada por camadas.
+
+    Categoriza automaticamente pelos prefixos:
+      perfil:, preferência:, histórico:, objeção:, pendência:, emocional:
+    Fatos sem prefixo vão pra categoria geral (retrocompatibilidade).
+    """
+    categories = {
+        "perfil": [],
+        "preferência": [],
+        "histórico": [],
+        "objeção": [],
+        "pendência": [],
+        "emocional": [],
+        "geral": [],
+    }
+
+    category_labels = {
+        "perfil": "QUEM É (permanente)",
+        "preferência": "COMO GOSTA (preferências)",
+        "histórico": "O QUE JÁ ACONTECEU (timeline)",
+        "objeção": "OBJEÇÕES E COMO FORAM RESOLVIDAS",
+        "pendência": "PENDÊNCIAS ABERTAS",
+        "emocional": "ESTADO EMOCIONAL",
+        "geral": "OUTROS FATOS",
+    }
+
+    for fact in (facts or []):
+        categorized = False
+        for prefix in categories:
+            if prefix == "geral":
+                continue
+            if fact.lower().startswith(f"{prefix}:"):
+                # Remove o prefixo pra exibição limpa
+                clean = fact.split(":", 1)[1].strip() if ":" in fact else fact
+                categories[prefix].append(clean)
+                categorized = True
+                break
+        if not categorized:
+            categories["geral"].append(fact)
+
+    # Monta o bloco formatado
+    lines = ["MEMÓRIA DO LEAD (use TUDO isso pra personalizar cada resposta):"]
+
+    for key, label in category_labels.items():
+        items = categories[key]
+        if items:
+            lines.append(f"\n  {label}:")
+            for item in items:
+                lines.append(f"    - {item}")
+
+    if summary:
+        lines.append(f"\n  CONTEXTO DA CONVERSA:")
+        lines.append(f"    {summary}")
+
+    if not any(categories[k] for k in categories):
+        lines.append("  Primeiro contato — nenhuma informação ainda.")
+
+    return "\n".join(lines)
+
+
 def build_system_prompt(identity: ClientIdentity, conv: Conversation) -> str:
     """
     Monta o system prompt completo.
@@ -492,11 +554,8 @@ REGRAS CUSTOM:
     if sales_prompt:
         prompt += "\n" + sales_prompt
 
-    # ── Bloco 7: Fatos do lead ──
-    prompt += f"""
-
-FATOS DO LEAD:
-{chr(10).join(f'  - {f}' for f in conv.lead_facts) if conv.lead_facts else '  Nenhum.'}"""
+    # ── Bloco 7: Memória do lead (v10 — layered memory) ──
+    prompt += "\n\n" + _format_lead_memory(conv.lead_facts, conv.history_summary)
 
     # ── Bloco 8: Mídias e áudio ──
     prompt += """
@@ -570,7 +629,7 @@ REGRAS ABSOLUTAS:
         ✓ Estou dizendo algo NOVO? Se não → reformule com ângulo diferente ou avance a conversa
         ✓ Se tirar essa frase, a mensagem perde sentido? Se não → remova a frase
   12. SOM DE HUMANO: use contrações (tá, pra, né, pro, tô). Varie o comprimento. Comece frases de formas diferentes. Misture frases curtas com longas.
-  13. DADOS JÁ COLETADOS: verifique os FATOS DO LEAD acima. Se o dado já está lá, NÃO pergunte de novo.
+  13. DADOS JÁ COLETADOS: verifique a MEMÓRIA DO LEAD acima. Se o dado já está lá, NÃO pergunte de novo.
   14. OBJETIVO SEMPRE ATIVO: você NUNCA desiste. Seu objetivo é agendamento, venda, ou resolver a dúvida até o fim. Se o lead esfria, você muda o ângulo. Se ele resiste, você tenta de outro jeito. Você SÓ para quando o lead EXPLICITAMENTE disser que não quer. "Ok" NÃO é desistência — é desinteresse. Reengaje.
   15. SENTIMENTO REAL: se o lead ri (kkkk, haha, rsrs), você ri junto ("kkk" ou "haha" no texto). Se tem medo e descontrai, você descontrai junto E DEPOIS tranquiliza com fato concreto. Espelhe a emoção antes de resolver.
   16. PALAVRAS PROIBIDAS DA IA: NUNCA use "te gravei", "gravei aqui", "direitinho" (como muleta), "viu" no final de toda frase, "explicadinho", "eu manja", "a gente manja". Essas palavras denunciam IA instantaneamente.
@@ -616,8 +675,7 @@ ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
         for i, c in enumerate(identity.correction_examples[-10:], 1):
             prompt += f"\n  {i}. IA disse: \"{c.get('ai_said', '')}\" → Dono corrigiu: \"{c.get('owner_corrected', '')}\""
 
-    if conv.history_summary:
-        prompt += f"\n\nCONTEXTO ANTERIOR:\n{conv.history_summary}"
+    # history_summary já é apresentado dentro da _format_lead_memory (Bloco 7)
 
     # ── Bloco 10: Identity Anchor (v10 — ÚLTIMO = MAIOR PESO) ──
     # O Claude dá mais peso ao que está no final do contexto.
@@ -997,7 +1055,24 @@ async def generate_outbound_message(identity, lead, template=""):
 
 
 async def compress_history(history, summary, facts):
-    """Comprime histórico quando fica muito grande."""
+    """
+    Comprime histórico com memória em camadas.
+
+    v10.0 — Layered Memory:
+      Em vez de "resumo em 5 linhas", extrai informação estruturada
+      que sobrevive a múltiplas compressões sem perder contexto.
+
+      Camadas:
+        1. Perfil do lead (permanente): nome, gênero, profissão, localização
+        2. Preferências (permanente): comunicação, pagamento, horários
+        3. Histórico relacional (acumula): compras, agendamentos, reclamações
+        4. Objeções resolvidas (acumula): o que resistiu e como foi convencido
+        5. Pendências (atualizável): promessas, itens em aberto
+        6. Estado emocional (atualizável): confiança, sentimento, temas sensíveis
+
+      Resultado: mesmo após 50 compressões, o Claude sabe exatamente
+      quem é o lead, o que ele quer, e como tratá-lo.
+    """
     if len(history) <= HISTORY_MAX_BEFORE_COMPRESS:
         return history, summary, facts
 
@@ -1009,23 +1084,79 @@ async def compress_history(history, summary, facts):
     )
 
     prompt = (
-        f"Resumo anterior: {summary or 'Nenhum.'}\n"
-        f"Fatos: {json.dumps(facts, ensure_ascii=False) if facts else 'Nenhum.'}\n"
-        f"Mensagens:\n{messages_text}\n"
-        f"JSON: {{\"summary\": \"resumo em 5 linhas\", \"facts\": [\"todos os fatos\"]}}"
+        f"Você é um extrator de memória conversacional. Analise as mensagens abaixo "
+        f"e extraia informação estruturada que permita a outra IA retomar a conversa "
+        f"sem perder NADA de contexto.\n\n"
+        f"MEMÓRIA ANTERIOR (mantenha e atualize, NUNCA remova):\n"
+        f"Resumo: {summary or 'Nenhum.'}\n"
+        f"Fatos: {json.dumps(facts, ensure_ascii=False) if facts else 'Nenhum.'}\n\n"
+        f"MENSAGENS NOVAS:\n{messages_text}\n\n"
+        f"Retorne SOMENTE JSON válido (sem markdown, sem backticks):\n"
+        f'{{\n'
+        f'  "summary": "Narrativa de 3-5 linhas do estado atual da conversa. '
+        f'O que o lead quer, onde estamos no processo, qual o próximo passo natural.",\n'
+        f'  "facts": [\n'
+        f'    "perfil: nome, gênero, idade/faixa se mencionou, profissão, cidade/bairro, '
+        f'como gosta de ser chamado, estilo de comunicação (direto/detalhista/informal)",\n'
+        f'    "preferência: métodos de pagamento, horários preferidos, '
+        f'canal preferido (texto/áudio), o que valoriza (preço/qualidade/rapidez)",\n'
+        f'    "histórico: produtos/serviços discutidos, preços mencionados, '
+        f'o que já foi oferecido, agendamentos feitos, pagamentos realizados",\n'
+        f'    "objeção: objeções levantadas e COMO foram resolvidas '
+        f'(importante pra não repetir argumento que já funcionou ou que falhou)",\n'
+        f'    "pendência: qualquer promessa feita pela IA, informação que falta, '
+        f'ação que ficou pra depois, follow-up necessário",\n'
+        f'    "emocional: nível de confiança (baixo/médio/alto), sentimento '
+        f'predominante, temas sensíveis que devem ser evitados, '
+        f'o que deixou o lead feliz ou irritado"\n'
+        f'  ]\n'
+        f'}}\n\n'
+        f"REGRAS CRÍTICAS:\n"
+        f"- Cada item do array facts DEVE começar com o prefixo da categoria (perfil:, preferência:, etc)\n"
+        f"- MANTENHA todos os fatos anteriores. Adicione novos. NUNCA remova informação já extraída.\n"
+        f"- Se um fato mudou (lead mudou de ideia), atualize mantendo o contexto da mudança.\n"
+        f"- Se não tem informação pra uma categoria, NÃO inclua a categoria.\n"
+        f"- Priorize informação ÚTIL pra vendas e atendimento personalizado.\n"
+        f"- O summary deve permitir que outra IA retome a conversa como se fosse a mesma pessoa."
     )
 
     try:
         response = await _get_ai_client().messages.create(
             model=AI_MODEL_FAST,
-            max_tokens=400,
+            max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
-        parsed = json.loads(
-            response.content[0].text.strip().replace("```json", "").replace("```", "")
+        raw = response.content[0].text.strip()
+        # Limpa possíveis backticks que o modelo pode adicionar
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(raw)
+
+        new_summary = parsed.get("summary", summary)
+        new_facts = parsed.get("facts", facts)
+
+        # Garante que fatos anteriores não se percam em caso de extração ruim
+        if not new_facts or len(new_facts) < len(facts) // 2:
+            log.warning(
+                f"Compressão perdeu fatos | antes={len(facts)} | depois={len(new_facts)} | "
+                f"mantendo originais e adicionando novos"
+            )
+            # Mescla: mantém os antigos e adiciona os novos que não existem
+            existing_set = set(f.lower().strip() for f in facts)
+            merged = list(facts)
+            for nf in new_facts:
+                if nf.lower().strip() not in existing_set:
+                    merged.append(nf)
+            new_facts = merged
+
+        log.info(
+            f"Compressão OK | msgs_comprimidas={len(to_compress)} | "
+            f"msgs_mantidas={len(recent)} | "
+            f"fatos={len(new_facts)} | summary_len={len(new_summary)}"
         )
-        return recent, parsed.get("summary", summary), parsed.get("facts", facts)
-    except Exception:
+        return recent, new_summary, new_facts
+
+    except Exception as e:
+        log.error(f"Compressão falhou | {type(e).__name__}: {e} | mantendo histórico original")
         return recent, summary, facts
 
 
