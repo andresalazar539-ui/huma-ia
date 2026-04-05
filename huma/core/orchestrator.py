@@ -793,20 +793,100 @@ async def _handle_appointment_action(phone, action, client_data):
 # FUNIL
 # ================================================================
 
-def _apply_stage_action(client_data, current_stage, action):
-    """Aplica ação do funil."""
+# Estados terminais — NENHUMA ação do Claude pode mover um lead
+# que já está em "won" ou "lost". Isso é inegociável.
+# Se o Claude mandar "advance" num lead que já fechou, o sistema
+# ignora e loga o incidente pra diagnóstico.
+TERMINAL_STAGES = frozenset({"won", "lost"})
+
+# Ações válidas que o Claude pode retornar em stage_action.
+# Qualquer valor fora disso é tratado como "hold" (segurança).
+VALID_STAGE_ACTIONS = frozenset({"advance", "hold", "stop"})
+
+
+def _apply_stage_action(
+    client_data,
+    current_stage: str,
+    action: str,
+) -> str:
+    """
+    Aplica ação do funil com proteção de estados terminais.
+
+    Args:
+        client_data: identidade do cliente (ClientIdentity)
+        current_stage: estágio atual da conversa
+        action: ação retornada pelo Claude ("advance", "hold", "stop")
+
+    Returns:
+        Novo estágio da conversa.
+
+    Regras:
+        1. "won" e "lost" são TERMINAIS — nunca mudam.
+        2. "hold" mantém no estágio atual.
+        3. "stop" move pra "lost" (exceto se já terminal).
+        4. "advance" move pro próximo estágio do funil.
+        5. Ação inválida é tratada como "hold" + log de warning.
+    """
+    # ── Validação da action ──
+    if action not in VALID_STAGE_ACTIONS:
+        log.warning(
+            f"Funil | stage_action inválido | "
+            f"action='{action}' | stage={current_stage} | "
+            f"tratando como 'hold'"
+        )
+        return current_stage
+
+    # ── Proteção de estados terminais ──
+    # Won é won. Lost é lost. O Claude não muda isso.
+    if current_stage in TERMINAL_STAGES:
+        if action != "hold":
+            log.warning(
+                f"Funil | tentativa de '{action}' em estado terminal "
+                f"'{current_stage}' | BLOQUEADO | stage mantido"
+            )
+        return current_stage
+
+    # ── Hold: mantém no estágio atual ──
     if action == "hold":
         return current_stage
+
+    # ── Stop: encerra a conversa como perdida ──
     if action == "stop":
+        log.info(f"Funil | {current_stage} → lost | ação=stop")
         return "lost"
+
+    # ── Advance: avança pro próximo estágio do funil ──
     if action == "advance":
         stage_names = [s.name for s in get_stages(client_data)]
-        if current_stage in stage_names:
-            idx = stage_names.index(current_stage)
-            if idx + 1 < len(stage_names):
-                next_stage = stage_names[idx + 1]
-                log.info(f"Funil | {current_stage} → {next_stage}")
-                return next_stage
+
+        if current_stage not in stage_names:
+            log.warning(
+                f"Funil | estágio '{current_stage}' não encontrado "
+                f"na lista de estágios | mantendo"
+            )
+            return current_stage
+
+        idx = stage_names.index(current_stage)
+
+        # Procura o próximo estágio que NÃO seja terminal
+        # Isso garante que mesmo se o funil customizado do dono
+        # colocar "lost" antes de "won", o advance não cai nele
+        next_idx = idx + 1
+        while next_idx < len(stage_names):
+            candidate = stage_names[next_idx]
+            if candidate not in TERMINAL_STAGES or candidate == "won":
+                # Permite avançar pra "won" (é o objetivo do funil)
+                # mas nunca pra "lost" via advance
+                log.info(f"Funil | {current_stage} → {candidate}")
+                return candidate
+            next_idx += 1
+
+        # Se não tem mais estágios pra avançar, mantém
+        log.info(
+            f"Funil | {current_stage} já é o último estágio | mantendo"
+        )
+        return current_stage
+
     return current_stage
 
 
