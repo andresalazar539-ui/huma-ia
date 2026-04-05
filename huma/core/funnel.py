@@ -227,5 +227,25 @@ def build_funnel_prompt(identity: ClientIdentity, current_stage: str) -> str:
         if stage.forbidden_actions:
             prompt += f"\n     PROIBIDO: {stage.forbidden_actions}"
 
-    prompt += '\n\nDECISAO: "stage_action": "advance"|"hold"|"stop". Só "advance" com TODOS dados obrigatórios coletados.'
+  prompt += (
+        '\n\n  DECISAO DE FUNIL:'
+        '\n  "stage_action": "advance" | "hold" | "stop"'
+        '\n'
+        '\n  REGRAS INVIOLÁVEIS:'
+        '\n    - "advance" SOMENTE quando TODOS os dados obrigatórios foram coletados'
+        '\n    - "hold" quando ainda falta informação ou o lead está decidindo'
+        '\n    - "stop" quando o lead desistiu explicitamente (disse que não quer)'
+        '\n'
+        '\n  ESTADOS TERMINAIS (NUNCA mude):'
+        '\n    - Se estiver em [WON]: a venda foi feita. Agradeça, confirme, encante.'
+        '\n      NÃO mande "advance" nem "stop". Mande "hold".'
+        '\n    - Se estiver em [LOST]: conversa encerrada. Porta aberta, sem insistência.'
+        '\n      NÃO mande "advance" nem "stop". Mande "hold".'
+        '\n'
+        '\n  ERROS COMUNS (NUNCA faça):'
+        '\n    - NÃO mande "advance" em "won" — não existe estágio depois de vender'
+        '\n    - NÃO mande "stop" em "won" — o lead JÁ COMPROU, não é "lost"'
+        '\n    - NÃO mande "advance" em "closing" a menos que pagamento ou agendamento'
+        '\n      esteja CONFIRMADO pelo sistema (não por você)'
+    )
     return prompt
