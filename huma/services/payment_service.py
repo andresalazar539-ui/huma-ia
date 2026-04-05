@@ -1,9 +1,14 @@
 # ================================================================
 # huma/services/payment_service.py — Pagamentos inline no WhatsApp
 #
-# v9.5 — Rastreamento completo de pagamentos:
+# v10.0 — Dedup de pagamentos:
+#   - Antes de criar cobrança, verifica se já existe pendente
+#   - Se existe: retorna lembrete amigável, sem criar nova
+#   - Evita 3 links pro mesmo lead na mesma conversa
+#
+# v9.5 (mantido):
 #   - Cada cobrança é salva na tabela `payments` do Supabase
-#   - external_reference contém client_id + phone (pra cruzar no webhook)
+#   - external_reference contém client_id + phone
 #   - notification_url aponta pro endpoint /webhook/mercadopago
 #   - Checkout Pro (cartão) também registra preference_id
 #   - process_payment_notification: recebe IPN, consulta MP, atualiza DB
@@ -204,6 +209,54 @@ async def get_payment_by_external_ref(external_reference: str) -> dict | None:
         return None
 
 
+async def _get_pending_payment(client_id: str, phone: str) -> dict | None:
+    """
+    Busca pagamento PENDENTE do mesmo lead.
+
+    Se já existe uma cobrança pendente (Pix, boleto ou cartão)
+    pro mesmo client_id + phone, retorna o registro.
+    Isso evita criar múltiplas cobranças pro mesmo lead.
+
+    Returns:
+        Registro do pagamento pendente, ou None se não existe.
+    """
+    try:
+        from huma.services.db_service import get_supabase
+
+        supa = get_supabase()
+        if not supa:
+            return None
+
+        clean_phone = "".join(c for c in phone if c.isdigit())
+
+        resp = await run_in_threadpool(
+            lambda: supa.table("payments")
+            .select("*")
+            .eq("client_id", client_id)
+            .eq("phone", clean_phone)
+            .eq("status", "pending")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+        if resp.data:
+            record = resp.data[0]
+            log.info(
+                f"Pending payment encontrado | {clean_phone} | "
+                f"method={record.get('method', '?')} | "
+                f"{_format_brl(record.get('amount_cents', 0))} | "
+                f"ref={record.get('external_reference', '?')}"
+            )
+            return record
+
+        return None
+
+    except Exception as e:
+        log.error(f"Pending payment check erro | {type(e).__name__}: {e}")
+        return None
+
+
 # ================================================================
 # CRIAÇÃO DE COBRANÇAS
 # ================================================================
@@ -212,8 +265,33 @@ async def get_payment_by_external_ref(external_reference: str) -> dict | None:
 async def create_payment(request) -> dict:
     """
     Cria cobrança no método escolhido.
+
+    v10.0 — Dedup: antes de criar, verifica se já existe
+    pagamento pendente pro mesmo lead. Se existe, retorna
+    lembrete amigável sem criar cobrança nova.
+
     request.payment_method: "pix" | "boleto" | "credit_card"
     """
+    # ── Dedup: verifica se já existe pagamento pendente ──
+    existing = await _get_pending_payment(request.client_id, request.phone)
+    if existing:
+        method = existing.get("method", "pix")
+        amount = _format_brl(existing.get("amount_cents", 0))
+        log.info(
+            f"Payment DEDUP | {request.phone} | "
+            f"já existe {method} pendente de {amount} | "
+            f"ref={existing.get('external_reference', '?')}"
+        )
+        return {
+            "status": "duplicate",
+            "method": method,
+            "amount_display": amount,
+            "whatsapp_message": (
+                f"Já enviei o link de pagamento de {amount} ali em cima! "
+                f"Qualquer dúvida sobre o pagamento, me fala."
+            ),
+        }
+
     method = request.payment_method or "pix"
     if method == "pix":
         return await _create_pix(request)
