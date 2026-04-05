@@ -635,7 +635,12 @@ async def _handle_media_action(phone, action, client_data):
 
 
 async def _handle_payment_action(phone, action, client_data):
-    """Gera cobrança e envia no WhatsApp."""
+    """
+    Gera cobrança e envia no WhatsApp.
+
+    v10.0 — Dedup: se já existe pagamento pendente pro mesmo lead,
+    manda lembrete amigável em vez de criar cobrança nova.
+    """
     cid = client_data.client_id
     request = PaymentRequest(
         client_id=cid,
@@ -656,6 +661,15 @@ async def _handle_payment_action(phone, action, client_data):
             await wa.send_text(phone, result.get("whatsapp_message", "Preciso do seu CPF pra gerar o boleto."), client_id=cid)
         else:
             await wa.send_text(phone, "Tive um probleminha pra gerar o pagamento. Pode tentar de novo?", client_id=cid)
+        return
+
+    # Dedup: pagamento já existe, só manda lembrete amigável
+    # Sem criar cobrança nova, sem cobrar billing
+    if result.get("status") == "duplicate":
+        if result.get("whatsapp_message"):
+            await asyncio.sleep(2.0)
+            await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
+        log.info(f"Pagamento dedup | {phone} | {result.get('amount_display', '')}")
         return
 
     method = result.get("method", "pix")
