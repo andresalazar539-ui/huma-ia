@@ -512,6 +512,11 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         if appointment_confirmation:
             await asyncio.sleep(2.0)
             confirm_msg_id = await wa.send_text(phone, appointment_confirmation, client_id=cid)
+            log.info(
+                f"Confirmação agendamento enviada | {phone} | "
+                f"msg_id={confirm_msg_id} | "
+                f"preview={appointment_confirmation[:80]}"
+            )
 
             # Armazena message_id da confirmação pra quoted reply futuro
             # Quando o lead perguntar "que horas era?" o sistema pode citar
