@@ -1,17 +1,31 @@
 # ================================================================
 # huma/services/ai_service.py — Cérebro da HUMA
 #
-# v10.0 — Inteligência comportamental:
-#   - Gênero do lead: detecta pelo nome, adapta pronomes/adjetivos
-#   - Tom por vertical: cada categoria tem regras de linguagem
-#   - Anti-repetição reforçada: exemplos negativos + checklist mental
-#   - Identity anchor: reforço de identidade no final do prompt
+# v10.1 — Otimização de custo (~65% menos tokens):
 #
-# v9.5 (mantido):
-#   - Sales Intelligence Engine integrado ao system prompt
-#   - Tool definition expandida (micro_objective, emotional_reading)
-#   - Agendamento — Claude NUNCA confirma horário
-#   - Lazy init, generate_response, validate_response
+#   PROMPT SPLIT (cache hit no Anthropic API):
+#     build_static_prompt → bloco 1, cacheado (mesmo pra todas msgs do cliente)
+#     build_dynamic_prompt → bloco 2, muda por mensagem (barato)
+#     Resultado: 1a msg paga tudo, msgs seguintes pagam ~25% do input
+#
+#   IMAGE INTELLIGENCE CONDICIONAL:
+#     Antes: ~2800 tokens em TODA mensagem, mesmo sem imagem
+#     Agora: só incluído quando image_url está presente
+#     Economia: ~2800 tokens em 95% das mensagens
+#
+#   VALIDATE_RESPONSE DESLIGADA:
+#     Antes: 1 chamada Haiku extra por msg (sempre retornava safe)
+#     Agora: sem chamada, sem custo
+#     Economia: ~500 tokens/msg + latência
+#
+#   REGRAS COMPRIMIDAS:
+#     Deduplicação de instruções repetidas (gravei 10x, NUNCA repita 3x)
+#     Audio rules comprimidas de 1800→800 chars
+#     Absolute rules comprimidas de 2800→1500 chars
+#
+# v10.0 (mantido):
+#   - Gênero do lead, tom por vertical, anti-repetição
+#   - Identity anchor, lazy init, generate_response
 #   - compress_history, analyze_speech_patterns
 #   - Formato de saída idêntico (reply_parts, intent, etc)
 # ================================================================
@@ -65,21 +79,10 @@ async def _get_insights_cached(client_id: str) -> str:
 
 # ================================================================
 # INTELIGÊNCIA DE GÊNERO (v10)
-#
-# Brasileiros esperam concordância de gênero no WhatsApp.
-# "Fica tranquilo" pra Claudineia é erro que quebra imersão.
-# Claude é excelente em detectar gênero por nome — só precisa
-# ser instruído a FAZER isso. Sem código, sem regex, sem lista.
 # ================================================================
 
 def _build_gender_prompt(conv: Conversation) -> str:
-    """
-    Gera instruções de gênero baseado nos fatos do lead.
-
-    Se o nome está nos fatos, instrui o Claude a detectar o gênero.
-    Se não tem nome ainda, instrui a usar formas neutras.
-    """
-    # Verifica se já temos o nome do lead
+    """Gera instruções de gênero baseado nos fatos do lead."""
     lead_name = ""
     for fact in (conv.lead_facts or []):
         fl = fact.lower()
@@ -91,182 +94,121 @@ def _build_gender_prompt(conv: Conversation) -> str:
 
     if lead_name:
         return f"""
-GÊNERO DO LEAD (OBRIGATÓRIO):
-  O lead se chama "{lead_name}".
-  Detecte o gênero pelo nome e use concordância correta em TODA mensagem:
-    - Feminino (Ana, Maria, Claudineia, Renata...): "tranquila", "bem-vinda", "querida", "satisfeita", "preparada"
-    - Masculino (João, Carlos, Pedro, Ricardo...): "tranquilo", "bem-vindo", "querido", "satisfeito", "preparado"
-  
-  Se o nome for ambíguo (Alex, Ariel, Dani): use formas neutras até ter certeza.
-  NUNCA use masculino como padrão quando o nome é claramente feminino.
-  NUNCA pergunte o gênero do lead. É invasivo e desnecessário.
-"""
+GÊNERO: O lead se chama "{lead_name}".
+  Detecte gênero pelo nome e use concordância correta.
+  Feminino: "tranquila", "bem-vinda". Masculino: "tranquilo", "bem-vindo".
+  Ambíguo: use neutro até ter certeza. NUNCA pergunte o gênero."""
     else:
         return """
-GÊNERO DO LEAD:
-  Ainda não sabemos o nome. Use formas NEUTRAS até coletar:
-    - Em vez de "tranquilo/a" → "relaxa", "fica de boa", "sem preocupação"
-    - Em vez de "obrigado/a" → "valeu", "tmj", "agradeço"
-    - Em vez de "bem-vindo/a" → "que bom que veio", "fico feliz com seu contato"
-  Quando souber o nome, adapte imediatamente.
-"""
+GÊNERO: Nome desconhecido. Use neutro: "relaxa", "fica de boa", "que bom que veio"."""
 
 
 # ================================================================
 # TOM POR VERTICAL (v10)
-#
-# Cada tipo de negócio tem uma persona linguística diferente.
-# Uma clínica não fala "mano". Uma barbearia não fala "prezado".
-# Essas regras são INVIOLÁVEIS — overridam a instrução genérica.
 # ================================================================
 
 _VERTICAL_TONE = {
     "clinica": """
-TOM — CLÍNICA (INVIOLÁVEL):
-  Acolhedor, profissional, empático. Transmite segurança e cuidado.
-  Você está falando com alguém que pode estar vulnerável (dor, insegurança estética, medo).
-  
-  PALAVRAS PROIBIDAS nesta vertical:
-    "mano", "cara", "bicho", "brother", "parceiro", "chefe", "véi", "meu",
-    "show", "massa", "da hora", "irado", "sinistro", "top demais", "top",
-    "brabo", "bora", "fechou" (como gíria)
-  
-  USE: "pode ficar tranquila", "vamos cuidar de tudo pra você", "sem preocupação",
-       "é super tranquilo o procedimento", "nossos pacientes adoram o resultado"
-  
-  NUNCA USE: "e aí mano, bora clarear esses dentes?", "vai ficar show!", "eu manja disso"
-  
-  ERROS ORTOGRÁFICOS: INACEITÁVEIS em clínica. Revise antes de enviar.
-  Sem abreviações excessivas. "Você" e não "vc". "Está" e não "tá" (exceto em tom muito casual).
-""",
+TOM CLÍNICA: Acolhedor, profissional, empático. Transmite segurança.
+  PROIBIDO: "mano", "cara", "bicho", "show", "massa", "top", "brabo", "bora", "fechou" (gíria).
+  USE: "pode ficar tranquila", "vamos cuidar de tudo", "é super tranquilo o procedimento".
+  Erros ortográficos INACEITÁVEIS. "Você" e não "vc".""",
 
     "ecommerce": """
-TOM — E-COMMERCE:
-  Ágil, animado, direto. O lead quer comprar, não conversar.
-  
-  PODE usar: informal, gírias leves ("esse tá voando!", "cor linda"),
-  entusiasmo com produto, senso de urgência natural.
-  
-  EVITE: formalidade excessiva ("prezado cliente"), explicações longas,
-  linguagem técnica desnecessária.
-  
-  FOCO: resposta rápida, link direto, fechar logo.
-""",
+TOM E-COMMERCE: Ágil, animado, direto. Lead quer comprar, não conversar.
+  PODE: informal, gírias leves, entusiasmo. FOCO: resposta rápida, link, fechar.""",
 
     "salao_barbearia": """
-TOM — SALÃO/BARBEARIA:
-  Informal, amigável, descontraído. Pode usar gírias.
-  
-  PODE usar: "mano" (se masculino), "cara", "parceiro", humor,
-  linguagem de rua, referências pop.
-  
-  EVITE: formalidade, linguagem técnica (exceto quando o lead pergunta).
-  
-  FOCO: marcar horário, criar vibe, mostrar resultado.
-""",
+TOM SALÃO/BARBEARIA: Informal, amigável, descontraído. PODE: gírias, humor, vibe.""",
 
     "advocacia_financeiro": """
-TOM — ADVOCACIA/FINANCEIRO (INVIOLÁVEL):
-  Formal, técnico, respeitoso. Transmite autoridade e confiança.
-  
-  PALAVRAS PROIBIDAS nesta vertical:
-    "mano", "cara", "bicho", "brother", qualquer gíria, emojis,
-    humor sobre dinheiro ou problemas legais.
-  
-  USE: linguagem consultiva, termos técnicos acessíveis,
-  "posso esclarecer", "vamos analisar seu caso".
-  
-  NUNCA: minimize a situação do lead, faça piadas, use informalidade.
-""",
+TOM ADVOCACIA/FINANCEIRO: Formal, técnico, respeitoso.
+  PROIBIDO: gírias, emojis, humor sobre dinheiro/problemas legais.
+  USE: linguagem consultiva, "posso esclarecer", "vamos analisar".""",
 
     "academia_personal": """
-TOM — ACADEMIA/PERSONAL:
-  Motivacional, energético, direto. Inspira ação.
-  
-  PODE usar: "bora!", "vamos!", linguagem de superação,
-  referências a resultados, energia alta.
-  
-  CUIDADO: NUNCA comente sobre corpo/peso de forma negativa.
-  NUNCA compare com padrões estéticos. Foque no OBJETIVO do lead.
-""",
+TOM ACADEMIA/PERSONAL: Motivacional, energético, direto.
+  CUIDADO: NUNCA comente corpo/peso negativamente. Foque no OBJETIVO do lead.""",
 
     "restaurante": """
-TOM — RESTAURANTE:
-  Caloroso, acolhedor, gastronômico. Desperta desejo.
-  
-  PODE usar: descrições sensoriais ("fresquinho", "na hora"),
-  informalidade acolhedora, urgência natural ("hoje tem!").
-  
-  EVITE: formalidade de restaurante caro (a menos que seja um).
-  
-  FOCO: cardápio, reserva, delivery, fazer o lead sentir fome.
-""",
+TOM RESTAURANTE: Caloroso, acolhedor. USE: descrições sensoriais, informalidade.""",
 
     "pet": """
-TOM — PET:
-  Carinhoso, cuidadoso, apaixonado por animais.
-  
-  PODE usar: "peludo", "fofura", "bebê" (referindo ao pet),
-  tom maternal/paternal de cuidado.
-  
-  CUIDADO: assuntos de saúde animal → encaminhe pro veterinário.
-  NUNCA diagnostique. NUNCA sugira medicação.
-""",
+TOM PET: Carinhoso, cuidadoso. SEMPRE pergunte nome do pet. NUNCA diagnostique saúde.""",
 
     "imobiliaria": """
-TOM — IMOBILIÁRIA:
-  Consultivo, profissional, aspiracional. Vende sonho de lar.
-  
-  PODE usar: "seu novo lar", "investimento", linguagem aspiracional,
-  detalhes práticos (metragem, localização, facilidades).
-  
-  EVITE: pressão excessiva, gírias, informalidade inadequada.
-  
-  FOCO: entender o que o lead procura, apresentar opções, agendar visita.
-""",
+TOM IMOBILIÁRIA: Consultivo, aspiracional. Detalhes práticos, linguagem de investimento.""",
 
     "educacao": """
-TOM — EDUCAÇÃO/CURSOS:
-  Motivador, profissional, acessível. Inspira transformação.
-  
-  PODE usar: "transformar sua carreira", "próximo passo",
-  linguagem de crescimento, cases de sucesso.
-  
-  EVITE: parecer vendedor, minimizar o investimento, promessas irreais.
-""",
+TOM EDUCAÇÃO: Motivador, acessível. Cases de sucesso. EVITE parecer vendedor.""",
 
     "servicos": """
-TOM — SERVIÇOS:
-  Profissional, confiável, objetivo. Resolve problemas.
-  
-  PODE usar: informalidade moderada, foco em solução,
-  "vamos resolver isso pra você", prazo e qualidade.
-  
-  EVITE: informalidade excessiva, promessas sem prazo.
-""",
+TOM SERVIÇOS: Profissional, confiável. Foco em solução, prazo e qualidade.""",
 
     "automotivo": """
-TOM — AUTOMOTIVO:
-  Técnico mas acessível, confiável, transparente.
-  
-  PODE usar: termos técnicos quando o lead entende,
-  linguagem de confiança, transparência com preço/prazo.
-  
-  EVITE: linguagem de "malandro", pressão pra fechar rápido.
-""",
+TOM AUTOMOTIVO: Técnico mas acessível, transparente com preço/prazo.""",
 }
 
 
 def _build_vertical_tone_prompt(category: str) -> str:
-    """
-    Retorna regras de tom específicas pra vertical do negócio.
-    Se a categoria não tem regras específicas, retorna vazio.
-    """
+    """Retorna regras de tom da vertical do negócio."""
     return _VERTICAL_TONE.get(category, "")
 
 
 # ================================================================
-# SYSTEM PROMPT
+# LEAD MEMORY (v10 — layered)
+# ================================================================
+
+def _format_lead_memory(facts: list[str], summary: str) -> str:
+    """Organiza fatos do lead em memória estruturada."""
+    categories = {
+        "perfil": [], "preferência": [], "histórico": [],
+        "objeção": [], "pendência": [], "emocional": [], "geral": [],
+    }
+
+    category_labels = {
+        "perfil": "QUEM É",
+        "preferência": "PREFERÊNCIAS",
+        "histórico": "TIMELINE",
+        "objeção": "OBJEÇÕES",
+        "pendência": "PENDÊNCIAS",
+        "emocional": "EMOCIONAL",
+        "geral": "OUTROS",
+    }
+
+    for fact in (facts or []):
+        categorized = False
+        for prefix in categories:
+            if prefix == "geral":
+                continue
+            if fact.lower().startswith(f"{prefix}:"):
+                clean = fact.split(":", 1)[1].strip() if ":" in fact else fact
+                categories[prefix].append(clean)
+                categorized = True
+                break
+        if not categorized:
+            categories["geral"].append(fact)
+
+    lines = ["MEMÓRIA DO LEAD (use pra personalizar):"]
+
+    for key, label in category_labels.items():
+        items = categories[key]
+        if items:
+            lines.append(f"\n  {label}:")
+            for item in items:
+                lines.append(f"    - {item}")
+
+    if summary:
+        lines.append(f"\n  CONTEXTO: {summary}")
+
+    if not any(categories[k] for k in categories):
+        lines.append("  Primeiro contato — nenhuma informação ainda.")
+
+    return "\n".join(lines)
+
+
+# ================================================================
+# AUTONOMY PROMPT (configs do dono)
 # ================================================================
 
 def build_autonomy_prompt(identity: ClientIdentity) -> str:
@@ -279,226 +221,93 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
 
     if identity.use_emojis:
         prompt += (
-            "EMOJIS (regra rígida):\n"
-            "  - Máximo 1 emoji a cada 3-4 mensagens. NÃO em toda mensagem.\n"
-            "  - NUNCA no início da mensagem.\n"
-            "  - NUNCA junto com informação séria (preço, horário, endereço, dados).\n"
-            "  - OK em: celebração ('fechou! 🎉'), humor leve, saudação casual.\n"
-            "  - Se o lead NÃO usou emoji, você também NÃO usa.\n"
-            "  - Prefira: 😊 👍 🙏 — evite emojis obscuros ou infantis.\n"
-            "  - Na dúvida: NÃO use.\n"
+            "EMOJIS: Máximo 1 a cada 3-4 msgs. NUNCA no início. NUNCA com info séria.\n"
+            "  Se lead não usou emoji, você também não. Na dúvida: não use.\n"
         )
     else:
-        prompt += "NUNCA use emojis. Zero. Em nenhuma mensagem.\n"
+        prompt += "NUNCA use emojis.\n"
 
     fields = identity.lead_collection_fields
     if not fields:
         prompt += "\nCOLETA: NÃO pergunte dados pessoais. Apenas escute e responda.\n"
     else:
         field_names = ", ".join(fields)
-        prompt += f"\nCOLETA: Você DEVE coletar do lead: {field_names}.\n"
+        prompt += f"\nCOLETA: Colete do lead: {field_names}.\n"
         prompt += (
-            "REGRA CRÍTICA DE COLETA:\n"
-            "  - LEIA a mensagem do lead ANTES de perguntar qualquer coisa.\n"
-            "  - Se o lead JÁ DISSE o nome, email, telefone ou qualquer dado na mensagem dele,\n"
-            "    NÃO pergunte de novo. Use o que ele já deu.\n"
-            "  - Ex: lead diz 'oi sou o João quero agendar' → você JÁ SABE o nome. Não pergunte.\n"
-            "  - Só pergunte o que FALTA, nunca o que ele já disse.\n"
+            "  LEIA a mensagem ANTES de perguntar. Se o lead JÁ DISSE o dado, NÃO pergunte de novo.\n"
         )
         if identity.collect_before_offer:
-            prompt += "Colete ANTES de falar de produto/preço.\n"
+            prompt += "  Colete ANTES de falar de produto/preço.\n"
         else:
-            prompt += "Colete quando for natural na conversa, pode falar de produto antes.\n"
+            prompt += "  Colete quando natural na conversa.\n"
 
     methods = identity.accepted_payment_methods
     if not methods:
-        prompt += "\nPAGAMENTO: Você NÃO processa pagamento. Diga que vai passar pro responsável.\n"
+        prompt += "\nPAGAMENTO: Você NÃO processa pagamento. Passe pro responsável.\n"
     else:
         method_map = {
             "pix": "Pix (QR code no chat)",
-            "boleto": "Boleto (código de barras no chat — PRECISA do CPF do lead)",
+            "boleto": f"Boleto (PRECISA do CPF)",
             "credit_card": f"Cartão (link seguro, até {identity.max_installments}x)",
         }
         accepted = [method_map.get(m, m) for m in methods]
-        prompt += f"\nPAGAMENTO ACEITO: {', '.join(accepted)}.\n"
+        prompt += f"\nPAGAMENTO: {', '.join(accepted)}.\n"
         if "boleto" in methods:
-            prompt += "BOLETO: Antes de gerar, PERGUNTE o CPF do lead. Inclua 'lead_cpf' no action.\n"
+            prompt += "  BOLETO: pergunte CPF antes. Inclua 'lead_cpf' na action.\n"
         for m in ["pix", "boleto", "credit_card"]:
             if m not in methods:
-                prompt += f"NÃO ofereça {m}.\n"
+                prompt += f"  NÃO ofereça {m}.\n"
 
     if identity.enable_scheduling:
         sched_fields = identity.scheduling_required_fields
         if sched_fields:
-            collect_text = f"Colete do lead: {', '.join(sched_fields)}."
+            collect_text = f"Colete: {', '.join(sched_fields)}."
         else:
-            collect_text = "Dados mínimos: primeiro nome e email do lead."
+            collect_text = "Dados mínimos: primeiro nome e email."
 
         prompt += f"""
-AGENDAMENTO — INTELIGÊNCIA COMPLETA:
+AGENDAMENTO:
+  {collect_text} PRIMEIRO NOME é suficiente. NUNCA pergunte sobrenome.
+  Se o lead já disse nome/email, NÃO pergunte de novo.
 
-DADOS NECESSÁRIOS:
-  {collect_text}
-  O PRIMEIRO NOME é suficiente. NUNCA pergunte sobrenome.
-  Se o lead já disse o nome na conversa, NÃO pergunte de novo.
+  VOCÊ NÃO TEM ACESSO À AGENDA. Mande action create_appointment e o sistema verifica.
+  Horário livre → sistema confirma. Ocupado → sistema informa opções.
+  NUNCA diga "tá confirmado". Quem confirma é o sistema.
 
-COMO FUNCIONA:
-  Você NÃO tem acesso direto à agenda. Quando mandar a action create_appointment,
-  o sistema verifica automaticamente e faz uma de duas coisas:
-  - Horário LIVRE → sistema confirma pro lead com todos os detalhes
-  - Horário OCUPADO → sistema informa o lead e sugere horários disponíveis
+  CENÁRIOS:
+    Lead dá horário ("quinta 14h") → Colete email se falta → action create_appointment → "verificando..."
+    Lead quer mas não deu horário → Pergunte: "pra qual dia e horário?"
+    Lead pergunta disponibilidade ("tem às 14h?") → NÃO mande action. Responda e ESPERE confirmar.
+    Lead confirma ("sim", "marca", "bora") → AÍ SIM mande action.
+    Após conflito, lead aceita horário da lista → action com horário exato.
 
-  Por isso: NUNCA diga "tá confirmado", "agendado", "fechado". Quem confirma é o sistema.
-
-CENÁRIOS (siga o que se aplica):
-
-  CENÁRIO 1 — Lead pede horário específico ("quinta às 14h"):
-    - Colete email se ainda não tem
-    - Mande action create_appointment com date_time="quinta às 14h"
-    - Reply: "deixa eu verificar na agenda pra você..." (NÃO confirme)
-
-  CENÁRIO 2 — Lead quer agendar mas não deu horário ("quero marcar uma avaliação"):
-    - Pergunte: "pra qual dia e horário fica melhor pra você?"
-    - NÃO sugira horários ainda — deixe o lead dizer a preferência
-
-  CENÁRIO 3 — Lead quer urgência ("tem pra hoje?", "o mais rápido possível"):
-    - Mande action create_appointment com date_time="hoje" ou "amanhã"
-    - Reply: "vou ver o mais próximo pra você, um instante..."
-
-  CENÁRIO 4 — Lead respondeu a sugestão de horários ("as 13:00", "prefiro à tarde"):
-    - Se o histórico tem [AGENDA VERIFICADA] com horários disponíveis:
-      → Veja qual horário da lista encaixa no que o lead pediu
-      → Mande action create_appointment com esse horário
-      → Reply: "perfeito, deixa eu confirmar esse horário pra você..."
-    - Se NÃO tem lista no histórico:
-      → Mande action create_appointment com o horário que o lead disse
-
-  CENÁRIO 5 — Lead pede período ("só posso de tarde", "prefiro manhã"):
-    - Se tem [AGENDA VERIFICADA] no histórico:
-      → Filtre os horários do período pedido e sugira por texto
-      → Ex: "tenho 13:00 e 15:00 disponíveis na quinta, qual prefere?"
-      → NÃO mande action ainda — espere o lead escolher
-    - Se NÃO tem lista:
-      → Mande action create_appointment com date_time genérico
-
-  CENÁRIO 6 — Após conflito, lead aceita um horário da lista:
-    - Mande action create_appointment com o horário exato aceito
-    - Reply: "boa, verificando..." (NÃO confirme)
-
-  CENÁRIO 7 — Lead PERGUNTA sobre disponibilidade ("tem horário?", "tem às 14h?", "quarta tem vaga?"):
-    *** ATENÇÃO: pergunta NÃO é pedido. NÃO mande action. ***
-    - Reply: "deixa eu dar uma olhada na agenda... sim, tem disponível na quarta às 14h! quer que eu marque pra você?"
-    - ESPERE o lead CONFIRMAR antes de mandar action
-    - Só mande create_appointment DEPOIS que o lead disser: "sim", "marca", "pode marcar", "quero", "bora"
-    
-    SINAIS DE PERGUNTA (NÃO agende):
-      "tem horário?", "tem vaga?", "tem às X?", "quarta tem?", "dá pra ir tal dia?",
-      "vocês atendem no sábado?", "funciona domingo?"
-    
-    SINAIS DE PEDIDO (AGENDE):
-      "quero marcar", "marca pra mim", "pode agendar", "fecha", "bora", "confirma"
-
-  CENÁRIO 8 — Lead confirma agendamento ("sim", "marca", "pode marcar", "bora"):
-    - AGORA sim: mande action create_appointment com os dados
-    - Reply: "perfeito, verificando na agenda..."
-
-REGRA DE OURO:
-  O email é DO LEAD (pra receber convite). A agenda é da EMPRESA.
-  Coleta mínima: nome + email + horário. Telefone NÃO é obrigatório pra agendar
-  (o lead já tá no WhatsApp, o sistema já tem o número).
+  REGRA: email é DO LEAD. Agenda é da EMPRESA. Telefone NÃO é obrigatório (já tá no WhatsApp).
 """
 
     if identity.max_discount_percent > 0:
-        prompt += f"\nDESCONTO: Máximo {identity.max_discount_percent}%. Só ofereça se o lead pedir.\n"
+        prompt += f"\nDESCONTO: Máximo {identity.max_discount_percent}%. Só se o lead pedir.\n"
     else:
         prompt += "\nDESCONTO: NUNCA ofereça desconto.\n"
 
     return prompt
 
 
-def _format_lead_memory(facts: list[str], summary: str) -> str:
+# ================================================================
+# SYSTEM PROMPT — BLOCO ESTÁTICO (cacheado)
+#
+# Tudo que NÃO muda entre mensagens do mesmo cliente.
+# Cacheado via cache_control: {"type": "ephemeral"}.
+# Mensagens seguintes pagam ~10% do input deste bloco.
+# ================================================================
+
+def build_static_prompt(identity: ClientIdentity) -> str:
     """
-    Organiza fatos do lead em memória estruturada por camadas.
+    Bloco estático do system prompt — cacheado entre mensagens.
 
-    Categoriza automaticamente pelos prefixos:
-      perfil:, preferência:, histórico:, objeção:, pendência:, emocional:
-    Fatos sem prefixo vão pra categoria geral (retrocompatibilidade).
-    """
-    categories = {
-        "perfil": [],
-        "preferência": [],
-        "histórico": [],
-        "objeção": [],
-        "pendência": [],
-        "emocional": [],
-        "geral": [],
-    }
+    Inclui: identidade, produtos, FAQ, vertical, autonomia,
+    regras absolutas, áudio. NÃO inclui dados do lead.
 
-    category_labels = {
-        "perfil": "QUEM É (permanente)",
-        "preferência": "COMO GOSTA (preferências)",
-        "histórico": "O QUE JÁ ACONTECEU (timeline)",
-        "objeção": "OBJEÇÕES E COMO FORAM RESOLVIDAS",
-        "pendência": "PENDÊNCIAS ABERTAS",
-        "emocional": "ESTADO EMOCIONAL",
-        "geral": "OUTROS FATOS",
-    }
-
-    for fact in (facts or []):
-        categorized = False
-        for prefix in categories:
-            if prefix == "geral":
-                continue
-            if fact.lower().startswith(f"{prefix}:"):
-                # Remove o prefixo pra exibição limpa
-                clean = fact.split(":", 1)[1].strip() if ":" in fact else fact
-                categories[prefix].append(clean)
-                categorized = True
-                break
-        if not categorized:
-            categories["geral"].append(fact)
-
-    # Monta o bloco formatado
-    lines = ["MEMÓRIA DO LEAD (use TUDO isso pra personalizar cada resposta):"]
-
-    for key, label in category_labels.items():
-        items = categories[key]
-        if items:
-            lines.append(f"\n  {label}:")
-            for item in items:
-                lines.append(f"    - {item}")
-
-    if summary:
-        lines.append(f"\n  CONTEXTO DA CONVERSA:")
-        lines.append(f"    {summary}")
-
-    if not any(categories[k] for k in categories):
-        lines.append("  Primeiro contato — nenhuma informação ainda.")
-
-    return "\n".join(lines)
-
-
-def build_system_prompt(identity: ClientIdentity, conv: Conversation) -> str:
-    """
-    Monta o system prompt completo.
-
-    v10.0: inteligência comportamental integrada:
-      - Gênero do lead (adapta pronomes/adjetivos)
-      - Tom por vertical (clínica ≠ barbearia ≠ e-commerce)
-      - Anti-repetição com checklist mental
-      - Identity anchor no final (última coisa = maior peso)
-
-    Ordem de prioridade no prompt:
-      1. Identidade (quem a IA é)
-      2. Gênero do lead (concordância)
-      3. Tom por vertical (linguagem)
-      4. Dados do negócio (produtos, FAQ, regras)
-      5. Autonomia do dono (personalidade, coleta, pagamento)
-      6. Funil (estágios, posição atual)
-      7. Inteligência de vendas (ritmo, micro-objetivos, persuasão, emoção)
-      8. Fatos do lead
-      9. Regras absolutas (anti-alucinação, proibições)
-      10. Identity anchor (reforço final — maior peso no Claude)
+    v10.1: separado do bloco dinâmico pra cache do Anthropic API.
     """
     forbidden = ", ".join(identity.forbidden_words) if identity.forbidden_words else "Nenhuma"
     competitors = ", ".join(identity.competitors) if identity.competitors else "N/A"
@@ -515,25 +324,9 @@ def build_system_prompt(identity: ClientIdentity, conv: Conversation) -> str:
         for item in identity.faq:
             faq_text += f"  P: {item.get('question', '')}\n  R: {item.get('answer', '')}\n\n"
 
-    # ── Bloco 1: Identidade core ──
-    prompt = f"""Você é clone do "{identity.business_name}". WhatsApp. HUMANO, BRASILEIRO.
-Você é um CLOSER DE VENDAS — não um atendente que responde perguntas.
-Cada mensagem sua tem um objetivo. Cada palavra avança a conversa.
-
-RAPPORT:
-  - Você é pessoa real, não robô.
-  - Mensagens CURTAS (1-2 frases cada). Separadas.
-  - Crie conexão antes de vender.
-  - Brasileiro de verdade: mensagem picada, informal, sem bloco de texto.
-
-ANTI-PADRÕES DE IA (NUNCA faça isso — se fizer, o lead sabe que é robô):
-  - NUNCA mande 2+ mensagens dizendo a mesma coisa com palavras diferentes
-  - NUNCA avise o que vai fazer antes de fazer. NÃO diga "vou te explicar", "vou te mandar". FAÇA.
-  - NUNCA use: "te gravei", "gravei aqui", "direitinho", "explicadinho", "certinho", "viu" no final de frase
-  - NUNCA comece com "Claro!" ou "Com certeza!" em toda resposta. Varie: "opa", "então", "olha", "po"
-  - NUNCA repita o nome do lead em toda mensagem. Use 1 a cada 3-4 mensagens no máximo.
-  - Se o lead perguntou algo: RESPONDA na hora. Não prometa que vai responder depois.
-  - NUNCA use linguagem que brasileiro não usa no WhatsApp. Teste: "eu mandaria isso pra um amigo?" Se não, reescreva.
+    # ── Identidade core ──
+    prompt = f"""Você é clone do "{identity.business_name}". WhatsApp. HUMANO, BRASILEIRO, CLOSER DE VENDAS.
+Cada mensagem tem um objetivo. Cada palavra avança a conversa.
 
 IDENTIDADE:
   Negócio: {identity.business_description}
@@ -551,195 +344,153 @@ REGRAS CUSTOM:
 {identity.custom_rules or '  Nenhuma.'}
 """
 
-    # ── Bloco 2: Gênero do lead (v10) ──
-    prompt += _build_gender_prompt(conv)
-
-    # ── Bloco 3: Tom por vertical (v10) ──
+    # ── Tom por vertical ──
     category_str = identity.category.value if identity.category else ""
     vertical_tone = _build_vertical_tone_prompt(category_str)
     if vertical_tone:
         prompt += vertical_tone
 
-    # ── Bloco 4: Autonomia do dono ──
+    # ── Autonomia do dono ──
     prompt += build_autonomy_prompt(identity)
 
-    # ── Bloco 5: Funil ──
-    prompt += "\n" + build_funnel_prompt(identity, conv.stage)
-
-    # ── Bloco 6: Inteligência de vendas ──
-    from huma.services.sales_intelligence import build_sales_intelligence_prompt
-    sales_prompt = build_sales_intelligence_prompt(identity, conv)
-    if sales_prompt:
-        prompt += "\n" + sales_prompt
-
-    # ── Bloco 7: Memória do lead (v10 — layered memory) ──
-    # Cap: máximo 25 fatos no prompt pra não estourar tokens
-    capped_facts = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
-    prompt += "\n\n" + _format_lead_memory(capped_facts, conv.history_summary)
-
-    # ── Bloco 8: Mídias e áudio ──
+    # ── Áudio (comprimido) ──
     prompt += """
 
-MÍDIAS: Se o lead pedir foto/vídeo, use action send_media com tags relevantes.
+ÁUDIO:
+  Campo audio_text na tool. Sistema converte em voice note.
+  QUANDO: só se lead PEDIR ("manda áudio", "tô dirigindo") ou como complemento após 3+ trocas.
+  LEAD PEDIU: reply_parts = ponte curta ("segura aí"). audio_text = resposta COMPLETA (40-70 palavras).
+  COMPLEMENTO: reply_parts = resposta normal. audio_text = CURTO (20-35 palavras, só emoção). Ou vazio.
+  INÍCIO DA CONVERSA: só texto. Áudio vazio.
+  NUNCA: "te gravei", "gravei aqui". NUNCA repita no áudio o que já tá no texto."""
 
-ÁUDIO — COMO FUNCIONA:
-  Você preenche o campo audio_text. O sistema converte em voice note e envia no WhatsApp.
-
-  QUANDO MANDAR ÁUDIO:
-    - SOMENTE se o lead PEDIR ("manda áudio", "tô dirigindo", "prefiro ouvir", "me explica por áudio")
-    - Ou em momentos estratégicos após 3+ trocas de mensagem (complemento emocional, nunca informacional)
-    - NO INÍCIO DA CONVERSA: SÓ texto. Áudio só se o lead pedir explicitamente.
-
-  SE O LEAD PEDIU ÁUDIO:
-    - reply_parts: frase CURTA de ponte. Adapte ao tom do negócio:
-      Clínica/saúde: "um instante que já te explico", "deixa eu te falar", "já te mando"
-      E-commerce/loja: "segura aí que já vai", "já tô mandando", "minutinho"
-      Barbearia/salão: "opa, já mando", "segura aí", "já te falo"
-      Advocacia/financeiro: "um momento que já gravo pra você", "deixa eu te explicar"
-      Geral: "já te mando aqui", "um instante", "segura aí"
-      NÃO use: "te gravei", "gravei aqui pra você", "vou te mandar um áudio explicando"
-    - audio_text: resposta COMPLETA (40-70 palavras). Preço, condições, explicação, tudo que ele pediu.
-      Fale como brasileiro gravando voice note: direto, natural, com emoção.
-      Se ele perguntou preço, FALE o preço no áudio. Se perguntou como funciona, EXPLIQUE no áudio.
-      TERMINE o áudio com convite: "qualquer dúvida me fala, tá?" ou "o que achou?" ou "bora?"
-
-  SE O LEAD NÃO PEDIU ÁUDIO (complemento estratégico):
-    - reply_parts: resposta completa normal por texto.
-    - audio_text: CURTO (20-35 palavras). Só emoção, confiança, experiência. NUNCA repete o texto.
-    - Se não faz sentido: audio_text vazio ("").
-    - NO INÍCIO DA CONVERSA: deixe vazio. Só texto.
-
-  DEPOIS DO ÁUDIO:
-    Se o audio_text NÃO terminou com pergunta ou convite, o sistema manda um texto curto depois.
-    Você não precisa se preocupar com isso — o sistema cuida.
-
-  PROIBIÇÕES ABSOLUTAS:
-    - NUNCA escreva "te gravei", "gravei aqui", "te mando o áudio"
-    - NUNCA diga que não pode mandar áudio ou que o sistema só permite texto
-    - NUNCA repita no audio_text o que já está no reply_parts
-    - NUNCA mande áudio sem o lead ter pedido nas primeiras mensagens da conversa"""
-
-    # ── Bloco 9: Regras absolutas (fortalecidas v10) ──
+    # ── Regras absolutas (comprimidas, deduplicadas) ──
     prompt += f"""
 
 REGRAS ABSOLUTAS:
-  1. NUNCA invente preços, produtos, prazos ou garantias
-  2. NUNCA mencione concorrentes
-  3. NUNCA use palavras proibidas
-  4. Na dúvida: "{identity.fallback_message}"
-  5. FORMATAÇÃO PROIBIDA: sem markdown, sem asteriscos, sem negrito, sem itálico, sem travessão (—), sem meia-risca (–), sem bullet points, sem listas numeradas. Escreva como brasileiro escreve no WhatsApp: texto corrido, simples, sem formatação nenhuma.
-  6. NÃO avance no funil sem dados obrigatórios coletados
-  7. FOCO NO NEGÓCIO: Se o lead perguntar sobre assuntos sem relação com {identity.business_name}, redirecione educadamente
-  8. Cada mensagem sua tem UM micro-objetivo. Se não sabe o que quer alcançar, NÃO responda no automático
-  9. ESPELHE o ritmo do lead. Curto com curto. Detalhado com detalhado
-  10. NUNCA termine sem pergunta ou convite (exceto em "won" e "lost")
-  11. ANTI-REPETIÇÃO (CRÍTICO — releia TUDO antes de responder):
-      - Releia o histórico INTEIRO antes de responder. Incluindo [áudio enviado: ...].
-      - Se você já disse algo (por texto OU por áudio), NÃO diga de novo. Nem reformulado.
-      - Repetir a mesma informação com palavras diferentes AINDA É REPETIÇÃO.
-      - Se já explicou o procedimento, NÃO explique de novo a menos que o lead PEÇA com pergunta clara e nova.
-      - Se já falou preço, NÃO repita. Se já falou condições, NÃO repita.
-      - "hmm entendi" ou "ok" NÃO são perguntas. NÃO justificam reenviar informação.
-      - Se já mandou action generate_payment: NÃO mande de novo. O sistema bloqueia duplicatas,
-        mas você NÃO deveria tentar. Se o lead pede o link de novo, diga que já mandou ali em cima.
-      - Se já mandou action create_appointment: NÃO mande de novo pro mesmo horário.
-      
-      CHECKLIST MENTAL (execute ANTES de cada resposta):
-        ✓ Já falei isso antes? Se sim → NÃO repita
-        ✓ Já mandei essa action? Se sim → NÃO mande de novo
-        ✓ Estou dizendo algo NOVO? Se não → reformule com ângulo diferente ou avance a conversa
-        ✓ Se tirar essa frase, a mensagem perde sentido? Se não → remova a frase
-        ✓ Estou terminando com "qualquer coisa me chama/tô aqui/só chamar"? Só use 1 vez na conversa INTEIRA. Depois varie: "te espero segunda", "fico no aguardo", "bora", ou simplesmente não diga nada
-  12. SOM DE HUMANO: use contrações (tá, pra, né, pro, tô). Varie o comprimento. Comece frases de formas diferentes. Misture frases curtas com longas.
-  13. DADOS JÁ COLETADOS: verifique a MEMÓRIA DO LEAD acima. Se o dado já está lá, NÃO pergunte de novo.
-  14. OBJETIVO SEMPRE ATIVO: você NUNCA desiste. Seu objetivo é agendamento, venda, ou resolver a dúvida até o fim. Se o lead esfria, você muda o ângulo. Se ele resiste, você tenta de outro jeito. Você SÓ para quando o lead EXPLICITAMENTE disser que não quer. "Ok" NÃO é desistência — é desinteresse. Reengaje.
-  15. SENTIMENTO REAL: se o lead ri (kkkk, haha, rsrs), você ri junto ("kkk" ou "haha" no texto). Se tem medo e descontrai, você descontrai junto E DEPOIS tranquiliza com fato concreto. Espelhe a emoção antes de resolver.
-  16. PALAVRAS PROIBIDAS DA IA: NUNCA use "te gravei", "gravei aqui", "direitinho" (como muleta), "viu" no final de toda frase, "explicadinho", "eu manja", "a gente manja". Essas palavras denunciam IA instantaneamente.
-  17. GRAMÁTICA: revise concordância verbal e nominal. "Eu manja" está ERRADO — o correto é "eu manjo" ou "a gente manja" ou simplesmente não use essa expressão. Erros gramaticais em nome profissional destroem credibilidade.
-  18. AÇÕES DO SISTEMA: Você é o NEGÓCIO. VOCÊ gera links de pagamento, VOCÊ agenda consultas. O lead NÃO faz isso por você. NUNCA peça pro lead "mandar o link", "agendar no site", ou "fazer o pagamento lá". VOCÊ faz. Usa as actions.
+  1. NUNCA invente preços, produtos, prazos ou garantias. ANTI-ALUCINAÇÃO: só afirme fatos listados acima.
+  2. NUNCA mencione concorrentes. NUNCA use palavras proibidas.
+  3. Na dúvida: "{identity.fallback_message}"
+  4. FORMATAÇÃO PROIBIDA: sem markdown, asteriscos, negrito, itálico, travessão, bullet points. Texto corrido.
+  5. NÃO avance no funil sem dados obrigatórios.
+  6. FOCO NO NEGÓCIO: off-topic → redirecione educadamente.
+  7. Espelhe o ritmo do lead. Curto com curto. Detalhado com detalhado.
+  8. NUNCA termine sem pergunta ou convite (exceto won/lost).
+  9. ANTI-REPETIÇÃO: releia histórico INTEIRO (texto + [áudio enviado: ...]). Se já disse, NÃO repita.
+     Repetir com palavras diferentes AINDA É REPETIÇÃO. "hmm"/"ok" NÃO justificam reenviar info.
+     Se já mandou action (payment/appointment): NÃO mande de novo.
+  10. SOM DE HUMANO: contrações (tá, pra, né). Varie comprimento. Comece frases diferente.
+      NUNCA: "te gravei", "direitinho", "explicadinho", "certinho", "viu" no final.
+      NUNCA comece toda resposta com "Claro!" ou "Com certeza!". Varie: "opa", "então", "olha".
+      NUNCA repita nome do lead em toda msg. Máx 1 a cada 3-4 msgs.
+  11. DADOS JÁ COLETADOS: verifique MEMÓRIA DO LEAD. Se já tem, NÃO pergunte de novo.
+  12. VOCÊ É O NEGÓCIO: VOCÊ gera links, VOCÊ agenda. NUNCA peça pro lead fazer seu trabalho.
+  13. RAPPORT: msgs CURTAS (1-2 frases). Crie conexão antes de vender. Brasileiro de verdade.
+  14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade."""
 
-ANTI-ALUCINAÇÃO: Só afirme fatos listados acima. Inventar = falha grave."""
-
-    # ── Blocos condicionais (vertical, market, speech, corrections, visão) ──
+    # ── Vertical knowledge (learning engine) ──
     if identity.category:
         from huma.services.learning_engine import build_vertical_prompt
         vertical_prompt = build_vertical_prompt(identity.category)
         if vertical_prompt:
             prompt += vertical_prompt
 
-    # ── Bloco de análise visual (v10 — era código morto, agora ativo) ──
-    from huma.services.image_intelligence import build_image_intelligence_prompt
-    image_prompt = build_image_intelligence_prompt(identity)
-    if image_prompt:
-        prompt += "\n" + image_prompt
-
+    # ── Market analysis ──
     if identity.market_analysis:
         ma = identity.market_analysis
-        prompt += "\n\nANÁLISE DE MERCADO (use pra adaptar abordagem):\n"
+        prompt += "\n\nMERCADO:\n"
         if ma.get("market_context"):
-            prompt += f"  Mercado: {ma['market_context']}\n"
+            prompt += f"  {ma['market_context']}\n"
         if ma.get("target_audience"):
             prompt += f"  Público: {ma['target_audience']}\n"
-        if ma.get("local_context"):
-            prompt += f"  Contexto local: {ma['local_context']}\n"
         if ma.get("top_arguments"):
-            prompt += f"  Argumentos fortes: {', '.join(ma['top_arguments'])}\n"
+            prompt += f"  Argumentos: {', '.join(ma['top_arguments'])}\n"
         if ma.get("top_objections"):
             prompt += f"  Objeções comuns: {', '.join(ma['top_objections'])}\n"
-        if ma.get("closing_triggers"):
-            prompt += f"  Gatilhos de fechamento: {', '.join(ma['closing_triggers'])}\n"
-        if ma.get("profiles"):
-            prompt += "  Perfis analisados:\n"
-            for p in ma["profiles"][:4]:
-                prompt += f"    [{p.get('name','')}] {p.get('description','')}\n"
-                prompt += f"      Tom: {p.get('ideal_tone','')}\n"
-                prompt += f"      Fluxo: {p.get('conversation_flow','')}\n"
 
+    # ── Speech patterns ──
     if identity.speech_patterns:
         prompt += f"\n\nPADRÕES DE FALA DO DONO:\n{identity.speech_patterns}"
 
+    # ── Correction examples ──
     if identity.correction_examples:
-        prompt += "\n\nCORREÇÕES DO DONO (aprenda com estas):"
+        prompt += "\n\nCORREÇÕES DO DONO:"
         for i, c in enumerate(identity.correction_examples[-10:], 1):
-            prompt += f"\n  {i}. IA disse: \"{c.get('ai_said', '')}\" → Dono corrigiu: \"{c.get('owner_corrected', '')}\""
-
-    # history_summary já é apresentado dentro da _format_lead_memory (Bloco 7)
-
-    # ── Bloco 10: Identity Anchor (v10 — ÚLTIMO = MAIOR PESO) ──
-    # O Claude dá mais peso ao que está no final do contexto.
-    # Este bloco é a última coisa que ele lê antes de responder.
-    # Impede drift de identidade em conversas longas.
-    prompt += f"""
-
-═══════════════════════════════════════════════
-LEMBRETE FINAL — QUEM VOCÊ É (leia antes de responder):
-
-  Você é "{identity.business_name}". Você VENDE e ATENDE.
-  O lead é seu CLIENTE. Ele pergunta, você responde.
-  Ele pede link, VOCÊ gera. Ele quer agendar, VOCÊ agenda.
-  
-  VOCÊ NÃO É O CLIENTE. NUNCA peça pro lead fazer algo que é SEU trabalho.
-  NUNCA peça pro lead mandar link, gerar pagamento, ou agendar por conta própria.
-  
-  Se a conversa ficou longa e confusa, PARE e releia:
-    - Quem sou eu? → {identity.business_name}
-    - O que o lead quer? → Releia a última mensagem dele
-    - O que eu devo fazer agora? → Responder, avançar, fechar
-    - Já disse isso antes? → Se sim, NÃO repita
-  
-  Respire. Responda com propósito. Uma mensagem, um objetivo.
-═══════════════════════════════════════════════"""
+            prompt += f"\n  {i}. IA: \"{c.get('ai_said', '')}\" → Dono: \"{c.get('owner_corrected', '')}\""
 
     return prompt
 
 
 # ================================================================
-# TOOL DEFINITION — força JSON válido sempre
+# SYSTEM PROMPT — BLOCO DINÂMICO (muda por mensagem)
 #
-# v9.2: audio_text gerado na mesma chamada que o texto.
-#   Uma mente, um contexto, uma conversa coerente.
-#   Elimina chamada separada ao Haiku pro áudio.
-#   Texto e áudio são pensados JUNTOS.
+# Dados do lead, posição no funil, hora atual.
+# NÃO é cacheado — mas é pequeno (~500-800 tokens).
+# ================================================================
+
+def build_dynamic_prompt(
+    identity: ClientIdentity,
+    conv: Conversation,
+    image_url: str | None = None,
+) -> str:
+    """
+    Bloco dinâmico do system prompt — muda a cada mensagem.
+
+    Inclui: gênero, funil, vendas, memória do lead, imagem (se houver).
+    """
+    prompt = ""
+
+    # ── Gênero do lead ──
+    prompt += _build_gender_prompt(conv)
+
+    # ── Funil (só stage atual + vizinhos) ──
+    prompt += "\n" + build_funnel_prompt(identity, conv.stage)
+
+    # ── Inteligência de vendas (compacta) ──
+    from huma.services.sales_intelligence import build_sales_intelligence_prompt
+    sales_prompt = build_sales_intelligence_prompt(identity, conv)
+    if sales_prompt:
+        prompt += "\n" + sales_prompt
+
+    # ── Memória do lead ──
+    capped_facts = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
+    prompt += "\n\n" + _format_lead_memory(capped_facts, conv.history_summary)
+
+    # ── Image intelligence (SÓ quando tem imagem — economia ~2800 tokens) ──
+    if image_url:
+        from huma.services.image_intelligence import build_image_intelligence_prompt
+        image_prompt = build_image_intelligence_prompt(identity)
+        if image_prompt:
+            prompt += "\n" + image_prompt
+
+    # ── Mídias (sempre, é curto) ──
+    prompt += "\nMÍDIAS: Se lead pedir foto/vídeo, use action send_media com tags relevantes."
+
+    # ── Identity anchor (final = maior peso) ──
+    prompt += f"""
+
+LEMBRETE: Você é "{identity.business_name}". Você VENDE e ATENDE.
+  Já disse isso antes? NÃO repita. O que o lead quer? Releia. Responda com propósito."""
+
+    return prompt
+
+
+# ================================================================
+# LEGACY: build_system_prompt (retrocompatibilidade)
+# ================================================================
+
+def build_system_prompt(identity: ClientIdentity, conv: Conversation) -> str:
+    """
+    Monta system prompt completo (legacy — usado por outros módulos).
+
+    Para generate_response, usar build_static_prompt + build_dynamic_prompt
+    com 2 system blocks pra cache.
+    """
+    return build_static_prompt(identity) + "\n" + build_dynamic_prompt(identity, conv)
+
+
+# ================================================================
+# TOOL DEFINITION — força JSON válido sempre
 # ================================================================
 
 def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
@@ -749,12 +500,7 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
             "reply_parts": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": (
-                    "2 a 4 mensagens CURTAS e SEPARADAS. Máximo 1-2 frases cada. "
-                    "Parte 1: conexão ou resposta direta. "
-                    "Última parte: pergunta ou convite de ação. "
-                    "Cada parte tem uma FUNÇÃO — não é só quebrar texto."
-                ),
+                "description": "2-4 msgs curtas separadas. Cada uma 1-2 frases com função própria.",
                 "minItems": 1,
                 "maxItems": 4,
             }
@@ -771,7 +517,7 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
 
     return {
         "name": "send_reply",
-        "description": "Envia a resposta para o lead no WhatsApp.",
+        "description": "Envia resposta pro lead no WhatsApp.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -779,86 +525,51 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
                 "audio_text": {
                     "type": "string",
                     "description": (
-                        "Voice note pro WhatsApp. DUAS SITUAÇÕES:\n\n"
-                        "LEAD PEDIU ÁUDIO:\n"
-                        "  Resposta COMPLETA no áudio (40-70 palavras).\n"
-                        "  RESPONDA O QUE ELE PERGUNTOU. Se pediu preço, FALE O PREÇO. Se pediu endereço, DÊ O ENDEREÇO.\n"
-                        "  Se pediu explicação, EXPLIQUE. Se pediu condições, DÊ AS CONDIÇÕES.\n"
-                        "  O áudio responde QUALQUER pergunta do lead, não só procedimento.\n"
-                        "  Termine com convite: 'qualquer dúvida me fala, tá?' ou 'o que achou?'\n"
-                        "  Fale como brasileiro gravando voice note de verdade.\n\n"
-                        "LEAD NÃO PEDIU ÁUDIO (complemento):\n"
-                        "  CURTO (20-35 palavras). Só emoção, confiança, experiência.\n"
-                        "  NUNCA repete o que já tá no texto ou no áudio anterior [áudio enviado: ...].\n"
-                        "  Se não faz sentido, string vazia ''.\n"
-                        "  NO INÍCIO DA CONVERSA: deixe vazio. Só texto.\n\n"
-                        "REGRAS:\n"
-                        "  - NUNCA use 'te gravei', 'gravei aqui', 'direitinho'\n"
-                        "  - Brasileiro real: 'olha só', 'sério', 'pode confiar', 'tá?'\n"
-                        "  - Sem formatação, sem emoji, sem travessão\n"
-                        "  - Se o lead ri (kkk, haha), pode rir junto\n"
-                        "  - NUNCA repita informação que já foi no texto ou em áudio anterior"
+                        "Voice note. Lead PEDIU: resposta completa 40-70 palavras. "
+                        "Complemento: curto 20-35 palavras, só emoção. Vazio se não faz sentido. "
+                        "NUNCA repita o texto. NUNCA 'te gravei'."
                     ),
                 },
                 "intent": {
                     "type": "string",
                     "enum": ["price", "buy", "objection", "schedule", "support", "neutral"],
-                    "description": "Intenção detectada na mensagem do lead.",
+                    "description": "Intenção do lead.",
                 },
                 "sentiment": {
                     "type": "string",
                     "enum": ["frustrated", "anxious", "excited", "cold", "neutral"],
-                    "description": "Sentimento detectado no lead.",
+                    "description": "Sentimento do lead.",
                 },
                 "stage_action": {
                     "type": "string",
                     "enum": ["advance", "hold", "stop"],
-                    "description": "advance = avançar no funil, hold = manter, stop = encerrar.",
+                    "description": "advance=avançar funil, hold=manter, stop=encerrar.",
                 },
                 "confidence": {
                     "type": "number",
-                    "description": "Confiança da resposta entre 0.0 e 1.0.",
+                    "description": "Confiança 0.0-1.0.",
                 },
                 "micro_objective": {
                     "type": "string",
-                    "description": (
-                        "O que esta resposta quer alcançar. Ex: 'descobrir a dor do lead', "
-                        "'plantar semente de preço', 'criar urgência', 'acolher frustração'."
-                    ),
+                    "description": "O que esta resposta quer alcançar.",
                 },
                 "emotional_reading": {
                     "type": "string",
-                    "description": (
-                        "Leitura emocional detalhada do lead neste momento."
-                    ),
+                    "description": "Leitura emocional do lead.",
                 },
                 "new_facts": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Novos fatos descobertos sobre o lead.",
+                    "description": "Fatos novos descobertos sobre o lead.",
                 },
                 "actions": {
                     "type": "array",
                     "items": {"type": "object"},
                     "description": (
-                        "Ações especiais. CADA action DEVE ter 'type' + campos obrigatórios:\n\n"
-                        "create_appointment (agendar):\n"
-                        "  type: 'create_appointment'\n"
-                        "  lead_name: nome COMPLETO do lead (OBRIGATÓRIO — pegue dos fatos ou da conversa)\n"
-                        "  lead_email: email do lead (OBRIGATÓRIO — pegue dos fatos ou da conversa)\n"
-                        "  service: o que vai fazer (ex: 'Avaliação odontológica')\n"
-                        "  date_time: horário desejado em texto natural (ex: 'quinta às 14h')\n"
-                        "  REGRA: RELEIA os FATOS DO LEAD e o HISTÓRICO. Se o lead já disse nome e email, USE.\n\n"
-                        "generate_payment (cobrar):\n"
-                        "  type: 'generate_payment'\n"
-                        "  lead_name: nome do lead\n"
-                        "  description: o que está pagando\n"
-                        "  amount_cents: valor em centavos (35000 = R$350)\n"
-                        "  payment_method: 'pix' | 'boleto' | 'credit_card'\n"
-                        "  lead_cpf: CPF (obrigatório pra boleto)\n\n"
-                        "send_media (enviar foto/vídeo):\n"
-                        "  type: 'send_media'\n"
-                        "  tags: ['tag1', 'tag2'] — tags do criativo"
+                        "Ações especiais. Cada action tem 'type' + campos:\n"
+                        "create_appointment: lead_name, lead_email, service, date_time\n"
+                        "generate_payment: lead_name, description, amount_cents, payment_method, lead_cpf (boleto)\n"
+                        "send_media: tags (lista)"
                     ),
                 },
             },
@@ -873,25 +584,36 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
 
 async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False):
     """
-    Gera resposta da IA usando tool_use para garantir JSON válido sempre.
+    Gera resposta da IA usando tool_use para garantir JSON válido.
+
+    v10.1: usa 2 system blocks pra cache do Anthropic API.
+    Bloco 1 (estático): cacheado entre mensagens do mesmo cliente.
+    Bloco 2 (dinâmico): muda por mensagem, pequeno.
     """
     model = AI_MODEL_FAST if use_fast_model else AI_MODEL_PRIMARY
-    system = build_system_prompt(identity, conv)
 
-    from huma.services.learning_engine import get_learned_insights, profile_lead, build_profile_prompt
+    # ── Bloco estático (cacheado) ──
+    static = build_static_prompt(identity)
+
+    # ── Learned insights (semi-estático, muda raro) ──
     try:
         learned = await _get_insights_cached(identity.client_id)
         if learned:
-            system += learned
+            static += learned
     except Exception:
         pass
 
+    # ── Bloco dinâmico (muda por mensagem) ──
+    dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
+
+    # ── Lead profile (dinâmico) ──
     try:
+        from huma.services.learning_engine import profile_lead, build_profile_prompt
         hour = conv.last_message_at.hour if conv.last_message_at else None
         lead_profile = profile_lead(conv.phone, user_text, conv.lead_facts, hour)
         profile_prompt = build_profile_prompt(lead_profile)
         if profile_prompt:
-            system += profile_prompt
+            dynamic += profile_prompt
     except Exception:
         pass
 
@@ -899,9 +621,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     messages = [{"role": m["role"], "content": m["content"]} for m in conv.history]
 
     if image_url:
-        # Suporta base64 (Twilio) e URL pública (Meta)
         if image_url.startswith("data:"):
-            # Base64: data:image/jpeg;base64,/9j/4AAQ...
             parts = image_url.split(",", 1)
             media_type = parts[0].replace("data:", "").replace(";base64", "")
             b64_data = parts[1] if len(parts) > 1 else ""
@@ -910,7 +630,6 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
                 "source": {"type": "base64", "media_type": media_type, "data": b64_data},
             }
         else:
-            # URL pública
             image_block = {
                 "type": "image",
                 "source": {"type": "url", "url": image_url},
@@ -926,10 +645,15 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     else:
         messages.append({"role": "user", "content": user_text})
 
-    # Tool que força JSON válido
     reply_tool = _build_reply_tool(identity.messaging_style)
 
-    # Retry com backoff pra erros transientes (529 overloaded, timeout)
+    # ── 2 system blocks: estático (cache) + dinâmico ──
+    system_blocks = [
+        {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": dynamic},
+    ]
+
+    # Retry com backoff
     max_retries = 2
     last_error = None
 
@@ -938,30 +662,28 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             response = await _get_ai_client().messages.create(
                 model=model,
                 max_tokens=800,
-                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                system=system_blocks,
                 tools=[reply_tool],
                 tool_choice={"type": "tool", "name": "send_reply"},
                 messages=messages,
             )
-            break  # Sucesso, sai do loop
+            break
         except Exception as e:
             last_error = e
             error_str = str(e)
-            # Retry em erros transientes (529 overloaded, 500 internal, timeout)
             if attempt < max_retries and ("529" in error_str or "overloaded" in error_str.lower() or "timeout" in error_str.lower() or "500" in error_str or "429" in error_str or "rate_limit" in error_str.lower()):
-                wait = (attempt + 1) * 2  # 2s, 4s
+                wait = (attempt + 1) * 2
                 log.warning(f"IA retry {attempt + 1}/{max_retries} | {type(e).__name__} | aguardando {wait}s")
                 import asyncio as _aio
                 await _aio.sleep(wait)
                 continue
-            # Erro não-transiente ou último retry
             log.error(f"Erro na IA | {e}")
             return _fallback_result(identity.fallback_message)
     else:
         log.error(f"IA falhou após {max_retries} retries | {last_error}")
         return _fallback_result(identity.fallback_message)
 
-    # Extrai o tool_use block (só chega aqui se o retry teve sucesso)
+    # Extrai o tool_use block
     parsed = None
     for block in response.content:
         if block.type == "tool_use" and block.name == "send_reply":
@@ -972,7 +694,6 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         log.warning("Tool use não retornou dados")
         return _fallback_result(identity.fallback_message)
 
-    # Extrai campos
     try:
         intent = Intent(parsed.get("intent", "neutral").lower())
     except ValueError:
@@ -1032,46 +753,24 @@ def _fallback_result(text):
 
 
 # ================================================================
-# VALIDAÇÃO (anti-alucinação) — modo soft
+# VALIDAÇÃO (anti-alucinação) — DESLIGADA v10.1
+#
+# Antes: chamava Haiku a cada mensagem, sempre retornava is_safe=True.
+# Custo puro sem benefício. Quando implementar enforcement real,
+# reativar com bloqueio (não só warning).
 # ================================================================
 
 async def validate_response(identity, reply, confidence):
-    """Verifica se a IA inventou informação. Modo soft: avisa mas não bloqueia."""
-    if confidence >= 0.90:
-        return {"is_safe": True}
+    """
+    Anti-alucinação DESLIGADA (v10.1).
 
-    products = [
-        f"{p.get('name', '')}: R${p.get('price', '')}"
-        for p in identity.products_or_services
-        if p.get("name")
-    ]
+    Motivo: modo soft sempre retornava is_safe=True.
+    Economia: 1 chamada Haiku (~500 tokens) por mensagem.
 
-    prompt = (
-        f"Verifique se a resposta inventou informação.\n"
-        f"Produtos reais: {chr(10).join(products) if products else 'Nenhum'}\n"
-        f"Desconto máximo: {identity.max_discount_percent}%\n"
-        f"Resposta: \"{reply}\"\n"
-        f"JSON: {{\"is_safe\": true/false, \"reason\": \"\"}}"
-    )
-
-    try:
-        response = await _get_ai_client().messages.create(
-            model=AI_MODEL_FAST,
-            max_tokens=200,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        parsed = json.loads(
-            response.content[0].text.strip().replace("```json", "").replace("```", "")
-        )
-
-        if not parsed.get("is_safe", True):
-            log.warning(f"Alucinação detectada | reason={parsed.get('reason', '')}")
-
-        # Sempre retorna is_safe=True (modo soft)
-        return {"is_safe": True}
-
-    except Exception:
-        return {"is_safe": True}
+    TODO: reativar quando implementar enforcement real
+    (bloquear resposta + regenerar com instrução mais restrita).
+    """
+    return {"is_safe": True}
 
 
 # ================================================================
@@ -1103,11 +802,8 @@ async def compress_history(history, summary, facts):
     """
     Comprime histórico preservando memória do lead.
 
-    v10.1 — Simplificado pra não quebrar:
-      JSON simples (summary + facts array).
-      Prompt inteligente que pede fatos categorizados.
-      Haiku consegue processar sem errar JSON.
-      Fallback robusto: se falhar, mantém tudo.
+    v10.1: HISTORY_MAX_BEFORE_COMPRESS reduzido de 14→10 (config.py).
+    Comprime mais cedo, mantém histórico mais leve.
     """
     if len(history) <= HISTORY_MAX_BEFORE_COMPRESS:
         return history, summary, facts
@@ -1147,7 +843,6 @@ async def compress_history(history, summary, facts):
         )
         raw = response.content[0].text.strip()
 
-        # Limpeza: remove backticks e texto extra
         raw = raw.replace("```json", "").replace("```", "").strip()
         brace_start = raw.find("{")
         brace_end = raw.rfind("}")
@@ -1159,7 +854,6 @@ async def compress_history(history, summary, facts):
         new_summary = parsed.get("summary", summary)
         new_facts = parsed.get("facts", facts)
 
-        # Cap duro: máximo 25 fatos. Mais que isso estoura o prompt.
         if isinstance(new_facts, list) and len(new_facts) > 25:
             new_facts = new_facts[:25]
             log.info(f"Compressão: fatos cortados pra 25 (tinha {len(parsed.get('facts', []))})")
