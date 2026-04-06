@@ -185,12 +185,15 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             }
             log.warning(f"Limite IA | {phone} | {billing.get_ia_calls_today(phone)}/{max_ia}")
         else:
-            # Roteamento inteligente: Sonnet só pra msgs que precisam de raciocínio
-            # Objeções, negociação, contexto complexo → Sonnet (raciocínio forte)
-            # Compra simples, agendamento, perguntas → Haiku (rápido e barato)
-            sonnet_types = {"objection", "complex", "unknown"}
+            # Roteamento inteligente v10.1:
+            # Sonnet APENAS pra: objeções complexas e msgs que o classifier não entendeu
+            # em estágios avançados. Todo o resto → Haiku (10x mais barato).
+            #
+            # Bug fix: antes, msgs curtas ("sim", "ok", "segunda 14h") em closing/committed
+            # caíam como "unknown" no fallback e iam pro Sonnet. Agora Haiku é o default.
+            sonnet_types = {"objection", "complex"}
             haiku_types = {"buy_intent", "schedule_intent", "price_query", "faq_query",
-                           "hours_query", "location_query", "greeting"}
+                           "hours_query", "location_query", "greeting", "off_topic"}
 
             msg_type = classification.msg_type.value
             if msg_type in sonnet_types:
@@ -198,8 +201,10 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             elif msg_type in haiku_types:
                 use_sonnet = False
             else:
-                # Fallback: conversa longa ou stage avançado → Sonnet
-                use_sonnet = len(conv.history) > 10 or conv.stage in ("closing", "committed")
+                # Fallback: Haiku por padrão. Sonnet só se msg é longa E complexa.
+                # "unknown" em closing/committed geralmente é "sim", "ok", "bora" → Haiku resolve.
+                msg_words = len(unified_text.split())
+                use_sonnet = msg_type == "unknown" and msg_words > 15
 
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
@@ -220,14 +225,10 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         reply_parts = ai_result["reply_parts"]
         actions = ai_result.get("actions", [])
 
-        # Anti-alucinação
-        if ai_result.get("resolved_by") != "rule":
-            validation = await ai.validate_response(client_data, reply, ai_result["confidence"])
-            if not validation.get("is_safe", True):
-                log.warning(f"Bloqueado | {phone} | {validation.get('reason', '')}")
-                reply = validation.get("corrected", client_data.fallback_message)
-                reply_parts = [reply]
-                actions = []
+        # Anti-alucinação v10.1: validate_response DESLIGADA.
+        # Antes: chamava Haiku (~500 tokens) por msg, sempre retornava safe.
+        # Custo puro sem benefício. Reativar quando implementar enforcement real.
+        # Economia: ~$0.0005/msg × milhares = significativo.
 
         force_approval = ai_result["confidence"] < 0.5 and client_data.clone_mode == CloneMode.AUTO
 
