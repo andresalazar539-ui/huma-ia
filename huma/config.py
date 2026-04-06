@@ -1,6 +1,9 @@
 # ================================================================
-# huma/config.py — Configuração central v8
-# Meta Cloud API direto. Sem Z-API. Sem 360dialog.
+# huma/config.py — Configuração central v8.1
+# v8.1: HISTORY_WINDOW 10→6, HISTORY_MAX_BEFORE_COMPRESS 14→10
+#   Compressão já preserva contexto via lead_facts e summary.
+#   6 mensagens recentes são suficientes pro Claude manter o fio.
+#   Economia: ~1000 tokens/chamada de histórico.
 # ================================================================
 
 import os
@@ -53,12 +56,16 @@ RATE_LIMIT_MAX_MSGS = int(os.getenv("RATE_LIMIT_MAX_MSGS", "10"))
 RATE_LIMIT_WINDOW_SEC = int(os.getenv("RATE_LIMIT_WINDOW_SEC", "60"))
 
 # ── Histórico ──
-HISTORY_WINDOW = 10
-HISTORY_MAX_BEFORE_COMPRESS = 14
+# v8.1: reduzido de 10/14 pra 6/10
+# Compressão preserva contexto (lead_facts + summary).
+# 6 msgs recentes = Claude mantém fio da conversa.
+# Economia: ~1000 tokens/chamada.
+HISTORY_WINDOW = 6
+HISTORY_MAX_BEFORE_COMPRESS = 10
 DEDUP_WINDOW_SEC = 30
 
 # ── App ──
-APP_VERSION = "8.0.0"
+APP_VERSION = "8.1.0"
 APP_TITLE = "HUMA IA"
 APP_DESCRIPTION = "Clone inteligente para vendas e atendimento"
 
