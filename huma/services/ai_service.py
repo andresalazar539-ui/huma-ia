@@ -603,8 +603,22 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     except Exception:
         pass
 
-    # ── Bloco dinâmico (muda por mensagem) ──
-    dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
+    # ── Garante tamanho mínimo pro cache funcionar ──
+    # Sonnet: 1024 tokens mínimo. Haiku: 2048 tokens.
+    # ~3.5 chars por token em português.
+    static_tokens_est = len(static) // 4
+    min_tokens = 2048 if use_fast_model else 1024
+    if static_tokens_est < min_tokens:
+        # Move conteúdo do dinâmico pro estático até bater o mínimo
+        # Isso não muda a resposta — só reorganiza pra cache funcionar
+        log.info(f"Cache padding | static_est={static_tokens_est} | min={min_tokens} | movendo dinâmico pro estático")
+        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
+        static = static + "\n" + dynamic
+        dynamic = ""
+    else:
+        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
+
+    log.debug(f"Prompt | static_chars={len(static)} | dynamic_chars={len(dynamic)} | est_tokens={len(static)//4 + len(dynamic)//4}")
 
     # ── Lead profile (dinâmico) ──
     try:
@@ -647,7 +661,10 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
 
     reply_tool = _build_reply_tool(identity.messaging_style)
 
-    # ── 2 system blocks: estático (cache) + dinâmico ──
+    # ── Cache: estático cacheado, dinâmico paga normal ──
+    # cache_control no bloco estático: Anthropic cacheia esse prefixo.
+    # Mínimo 1024 tokens (Sonnet) / 2048 (Haiku) pro cache funcionar.
+    # Bloco dinâmico fica fora do cache — muda por mensagem, é pequeno.
     system_blocks = [
         {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
         {"type": "text", "text": dynamic},
