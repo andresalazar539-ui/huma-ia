@@ -353,7 +353,6 @@ HOURS_PATTERNS = [
 
 def _check_hours_query(text: str, identity: ClientIdentity, lead_name: str) -> Optional[ClassificationResult]:
     """Responde sobre horário de funcionamento."""
-    return None
     is_hours = any(re.search(p, text) for p in HOURS_PATTERNS)
     if not is_hours or not identity.working_hours:
         return None

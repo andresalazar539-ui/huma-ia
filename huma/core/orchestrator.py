@@ -149,13 +149,29 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
         classification = classify_message(unified_text, client_data, conv)
 
-        if classification.can_resolve_without_llm and classification.confidence >= 0.95 and classification.msg_type.value == "greeting":
+        # Tipos que podem ser resolvidos por regra (sem IA, custo zero)
+        # Greeting: saudação simples → "Oi! Como posso te chamar?"
+        # FAQ/preço/horário/localização: dados cadastrados do cliente
+        # Confiança mínima: 0.85 pra FAQ/preço, 0.90 pra horário/local, 0.95 pra greeting
+        rule_thresholds = {
+            "greeting": 0.95,
+            "faq_query": 0.85,
+            "price_query": 0.85,
+            "hours_query": 0.90,
+            "location_query": 0.90,
+        }
+        msg_type_val = classification.msg_type.value
+        rule_threshold = rule_thresholds.get(msg_type_val)
+
+        if (classification.can_resolve_without_llm
+                and rule_threshold is not None
+                and classification.confidence >= rule_threshold):
             ai_result = format_rule_response(classification, client_data, conv)
             asyncio.create_task(
                 log_classification(client_id, phone, unified_text, classification, "rule")
             )
             log.info(
-                f"Regra | {phone} | tipo={classification.msg_type.value} | "
+                f"Regra | {phone} | tipo={msg_type_val} | "
                 f"conf={classification.confidence:.2f} | sem_IA"
             )
         elif ia_limit_reached:
@@ -169,10 +185,21 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             }
             log.warning(f"Limite IA | {phone} | {billing.get_ia_calls_today(phone)}/{max_ia}")
         else:
-            is_complex = classification.msg_type.value in (
-                "objection", "buy_intent", "schedule_intent", "complex", "unknown"
-            )
-            use_sonnet = is_complex
+            # Roteamento inteligente: Sonnet só pra msgs que precisam de raciocínio
+            # Objeções, negociação, contexto complexo → Sonnet (raciocínio forte)
+            # Compra simples, agendamento, perguntas → Haiku (rápido e barato)
+            sonnet_types = {"objection", "complex", "unknown"}
+            haiku_types = {"buy_intent", "schedule_intent", "price_query", "faq_query",
+                           "hours_query", "location_query", "greeting"}
+
+            msg_type = classification.msg_type.value
+            if msg_type in sonnet_types:
+                use_sonnet = True
+            elif msg_type in haiku_types:
+                use_sonnet = False
+            else:
+                # Fallback: conversa longa ou stage avançado → Sonnet
+                use_sonnet = len(conv.history) > 10 or conv.stage in ("closing", "committed")
 
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
