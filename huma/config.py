@@ -56,12 +56,10 @@ RATE_LIMIT_MAX_MSGS = int(os.getenv("RATE_LIMIT_MAX_MSGS", "10"))
 RATE_LIMIT_WINDOW_SEC = int(os.getenv("RATE_LIMIT_WINDOW_SEC", "60"))
 
 # ── Histórico ──
-# v8.1: reduzido de 10/14 pra 6/10
-# Compressão preserva contexto (lead_facts + summary).
-# 6 msgs recentes = Claude mantém fio da conversa.
-# Economia: ~1000 tokens/chamada.
-HISTORY_WINDOW = 6
-HISTORY_MAX_BEFORE_COMPRESS = 10
+# v10.2: reduzido pra 4/6. Compressão preserva contexto via lead_facts + summary.
+# 4 msgs recentes = Claude mantém fio. Economia: ~3000 tokens/chamada.
+HISTORY_WINDOW = 4
+HISTORY_MAX_BEFORE_COMPRESS = 6
 DEDUP_WINDOW_SEC = 30
 
 # ── App ──
