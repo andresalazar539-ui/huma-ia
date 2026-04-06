@@ -1,8 +1,12 @@
 # ================================================================
 # huma/services/date_resolver.py — Resolução de datas naturais
 #
+# v10.1 — Fix: suporte a "15 de abril às 14h30"
+#   Adicionado MONTH_MAP + _try_day_month_name
+#   Bug anterior: 10 falhas consecutivas nos logs pra esse formato
+#
 # A IA manda texto natural ("terça às 10h", "amanhã de manhã",
-# "próxima segunda 14h") e este módulo converte em datetime exato.
+# "15 de abril às 14h30") e este módulo converte em datetime exato.
 #
 # Por que existe: o Claude erra cálculos de dia da semana.
 # Python não erra. Ponto.
@@ -10,6 +14,7 @@
 # Uso:
 #   from huma.services.date_resolver import resolve_date
 #   dt = resolve_date("terça às 10h")  # → datetime(2026, 4, 7, 10, 0)
+#   dt = resolve_date("15 de abril às 14h30")  # → datetime(2026, 4, 15, 14, 30)
 #
 # Suporta:
 #   - "hoje às 14h"
@@ -17,6 +22,7 @@
 #   - "segunda às 10h" / "próxima segunda 14h"
 #   - "depois de amanhã 15h"
 #   - "dia 15 às 10h" / "dia 15/04 às 10h"
+#   - "15 de abril às 14h30" / "3 de maio"  ← NOVO v10.1
 #   - "07/04 às 10h" / "07/04/2026 10:00"
 #   - Formatos ISO: "2026-04-07 10:00"
 # ================================================================
@@ -50,6 +56,23 @@ WEEKDAY_MAP = {
     "domingo": 6,
 }
 
+# Mapa de meses em português → número (v10.1)
+MONTH_MAP = {
+    "janeiro": 1,
+    "fevereiro": 2,
+    "março": 3,
+    "marco": 3,
+    "abril": 4,
+    "maio": 5,
+    "junho": 6,
+    "julho": 7,
+    "agosto": 8,
+    "setembro": 9,
+    "outubro": 10,
+    "novembro": 11,
+    "dezembro": 12,
+}
+
 # Mapa de períodos pra hora default
 PERIOD_MAP = {
     "manhã": 9,
@@ -70,7 +93,7 @@ def resolve_date(text: str) -> datetime | None:
 
     Args:
         text: expressão natural em português. Ex: "terça às 10h",
-              "amanhã de manhã", "07/04 às 10h", "2026-04-07 10:00"
+              "amanhã de manhã", "07/04 às 10h", "15 de abril às 14h30"
 
     Returns:
         datetime com a data/hora resolvida, ou None se não conseguiu parsear.
@@ -102,6 +125,12 @@ def resolve_date(text: str) -> datetime | None:
     result = _try_weekday(normalized, now, hour, minute)
     if result:
         log.info(f"Date resolved (weekday) | '{original}' → {result.strftime('%d/%m/%Y %H:%M')}")
+        return result
+
+    # Tenta "X de mês" (v10.1 — fix pro "15 de abril às 14h30")
+    result = _try_day_month_name(normalized, now, hour, minute)
+    if result:
+        log.info(f"Date resolved (month_name) | '{original}' → {result.strftime('%d/%m/%Y %H:%M')}")
         return result
 
     # Tenta "dia X" ou "dia X/Y"
@@ -237,6 +266,40 @@ def _try_weekday(text: str, now: datetime, hour: int, minute: int) -> datetime |
             return dt.replace(hour=hour, minute=minute, second=0, microsecond=0, tzinfo=None)
 
     return None
+
+
+def _try_day_month_name(text: str, now: datetime, hour: int, minute: int) -> datetime | None:
+    """
+    Resolve "15 de abril", "3 de maio às 10h", "20 de janeiro", etc.
+
+    v10.1 — Fix pra formato que falhava 10x consecutivas nos logs.
+    O lead digita "15 de abril às 14h30" e o sistema não resolvia.
+    """
+    # Padrão: "15 de abril", "3 de maio", "20 de janeiro"
+    match = re.search(r'(\d{1,2})\s+de\s+(\w+)', text)
+    if not match:
+        return None
+
+    day = int(match.group(1))
+    month_name = match.group(2).lower().strip()
+
+    # Remove possíveis sufixos (ex: "abril," → "abril")
+    month_name = month_name.rstrip(".,;:!?")
+
+    month = MONTH_MAP.get(month_name)
+    if not month:
+        return None
+
+    try:
+        dt = datetime(now.year, month, day, hour, minute)
+        # Se a data já passou, assume próximo ano
+        if dt.date() < now.date():
+            dt = dt.replace(year=now.year + 1)
+        return dt
+    except ValueError:
+        # Dia inválido pro mês (ex: 31 de fevereiro)
+        log.warning(f"Data inválida | dia={day} mês={month_name}")
+        return None
 
 
 def _try_day_number(text: str, now: datetime, hour: int, minute: int) -> datetime | None:
