@@ -237,6 +237,189 @@ async def root():
 
 
 # ================================================================
+# PLAYGROUND (teste web + ativação WhatsApp)
+# ================================================================
+
+# Rate limit in-memory (sem Redis) — 20 req/min por IP
+_playground_rate: dict[str, list[float]] = {}
+
+
+@router.post("/api/playground/chat", tags=["Playground"])
+async def playground_chat(request: Request):
+    """
+    Chat direto com Claude pra teste na web.
+    Sem billing, sem buffer, sem Supabase.
+    """
+    import time
+    from huma.config import AI_MODEL_FAST
+
+    # Rate limit: 20 req/min por IP
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    timestamps = _playground_rate.get(ip, [])
+    timestamps = [t for t in timestamps if now - t < 60]
+    if len(timestamps) >= 20:
+        raise HTTPException(429, "Muitas requisições. Aguarde 1 minuto.")
+    timestamps.append(now)
+    _playground_rate[ip] = timestamps
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "JSON inválido")
+
+    system_prompt = (body.get("system_prompt") or "").strip()
+    messages = body.get("messages") or []
+
+    if not system_prompt:
+        raise HTTPException(400, "system_prompt é obrigatório")
+    if not messages:
+        raise HTTPException(400, "messages é obrigatório")
+    if len(system_prompt) > 5000:
+        raise HTTPException(400, "system_prompt muito longo (max 5000 chars)")
+    if len(messages) > 50:
+        raise HTTPException(400, "Máximo 50 mensagens")
+
+    # Limpa mensagens pro formato da API
+    clean_msgs = []
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "").strip()
+        if role in ("user", "assistant") and content:
+            clean_msgs.append({"role": role, "content": content})
+
+    if not clean_msgs:
+        raise HTTPException(400, "Nenhuma mensagem válida")
+
+    try:
+        client = ai._get_ai_client()
+        response = await client.messages.create(
+            model=AI_MODEL_FAST,
+            max_tokens=600,
+            system=system_prompt,
+            messages=clean_msgs,
+        )
+        reply = response.content[0].text.strip()
+        parts = [p.strip() for p in reply.split("\n\n") if p.strip()]
+        if not parts:
+            parts = [reply]
+
+        return {"reply": reply, "reply_parts": parts}
+
+    except Exception as e:
+        log.error(f"Playground chat erro | {type(e).__name__}: {e}")
+        return {"reply": "Ops, tive um probleminha. Tenta de novo!", "reply_parts": ["Ops, tive um probleminha. Tenta de novo!"]}
+
+
+@router.post("/api/playground/activate", tags=["Playground"])
+async def playground_activate(request: Request):
+    """
+    Salva config do playground no Supabase como client_id='default'
+    pra testar via WhatsApp Twilio.
+    """
+    from fastapi.concurrency import run_in_threadpool
+    from huma.core.orchestrator import invalidate_client_cache
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(400, "JSON inválido")
+
+    if not body.get("business_name", "").strip():
+        raise HTTPException(400, "business_name é obrigatório")
+
+    # Parseia products_or_services de texto livre pra lista de objetos
+    products = []
+    raw_products = body.get("products_or_services", "")
+    if isinstance(raw_products, str) and raw_products.strip():
+        for line in raw_products.strip().split("\n"):
+            line = line.strip().lstrip("- •")
+            if not line:
+                continue
+            # Tenta parsear "Nome R$100" ou "Nome: R$100" ou "Nome - R$100"
+            import re
+            match = re.search(r'[Rr]\$\s*([\d.,]+)', line)
+            if match:
+                price_str = match.group(1).replace(".", "").replace(",", ".")
+                name = line[:match.start()].strip().rstrip(":-–—")
+                try:
+                    price = float(price_str)
+                except ValueError:
+                    price = 0
+                products.append({"name": name, "description": "", "price": price})
+            else:
+                products.append({"name": line, "description": "", "price": 0})
+    elif isinstance(raw_products, list):
+        products = raw_products
+
+    # Parseia FAQ de texto livre pra lista de objetos
+    faq = []
+    raw_faq = body.get("faq", "")
+    if isinstance(raw_faq, str) and raw_faq.strip():
+        lines = raw_faq.strip().split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.upper().startswith("P:") or line.startswith("?"):
+                question = line.split(":", 1)[-1].strip() if ":" in line else line.lstrip("? ").strip()
+                answer = ""
+                if i + 1 < len(lines) and (lines[i + 1].strip().upper().startswith("R:") or lines[i + 1].strip().startswith(">")):
+                    answer = lines[i + 1].strip().split(":", 1)[-1].strip() if ":" in lines[i + 1] else lines[i + 1].strip().lstrip("> ").strip()
+                    i += 1
+                if question:
+                    faq.append({"question": question, "answer": answer})
+            i += 1
+    elif isinstance(raw_faq, list):
+        faq = raw_faq
+
+    # Monta update pro Supabase
+    update_data = {
+        "business_name": body.get("business_name", "").strip(),
+        "business_description": body.get("business_description", "").strip(),
+        "category": body.get("category", "outros").strip(),
+        "tone_of_voice": body.get("tone_of_voice", "").strip(),
+        "working_hours": body.get("working_hours", "").strip(),
+        "products_or_services": products,
+        "faq": faq,
+        "custom_rules": body.get("custom_rules", "").strip(),
+        "forbidden_words": body.get("forbidden_words", []),
+        "personality_traits": body.get("personality_traits", ["Acolhedor"]),
+        "use_emojis": body.get("use_emojis", True),
+        "max_discount_percent": body.get("max_discount_percent", 0),
+        "accepted_payment_methods": body.get("accepted_payment_methods", ["pix"]),
+        "max_installments": body.get("max_installments", 12),
+        "onboarding_status": "active",
+    }
+
+    try:
+        supa = db.get_supabase()
+
+        # Atualiza client
+        await run_in_threadpool(
+            lambda: supa.table("clients").update(update_data).eq("client_id", "default").execute()
+        )
+
+        # Limpa conversas anteriores
+        await run_in_threadpool(
+            lambda: supa.table("conversations").delete().eq("client_id", "default").execute()
+        )
+
+        # Invalida cache
+        invalidate_client_cache("default")
+
+        log.info(f"Playground ativado | {update_data['business_name']} | categoria={update_data['category']}")
+
+        return {
+            "status": "activated",
+            "message": "Configuração ativada! Mande uma mensagem no WhatsApp pra testar.",
+        }
+
+    except Exception as e:
+        log.error(f"Playground activate erro | {type(e).__name__}: {e}")
+        return {"status": "error", "message": "Erro ao ativar. Tenta de novo."}
+
+
+# ================================================================
 # WEBHOOK TWILIO (WhatsApp Sandbox)
 # ================================================================
 

@@ -29,7 +29,9 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[
             "http://localhost:3000",
+            "http://localhost:5173",
             "https://app.humaia.com.br",
+            "https://*.up.railway.app",
         ],
         allow_credentials=True,
         allow_methods=["*"],
