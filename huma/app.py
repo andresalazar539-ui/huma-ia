@@ -32,6 +32,7 @@ def create_app() -> FastAPI:
             "http://localhost:5173",
             "https://app.humaia.com.br",
             "https://*.up.railway.app",
+            "https://andresalazar539-ui.github.io",
         ],
         allow_credentials=True,
         allow_methods=["*"],
