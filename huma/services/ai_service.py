@@ -1065,7 +1065,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         except Exception:
             pass
 
-    log.debug(f"Prompt | tier={tier} | static_chars={len(static)} | dynamic_chars={len(dynamic)} | est_tokens={(len(static)+len(dynamic))//4}")
+    log.info(f"Prompt | tier={tier} | static_chars={len(static)} | dynamic_chars={len(dynamic)} | est_static_tokens={len(static)//4} | est_dynamic_tokens={len(dynamic)//4}")
 
     # Monta mensagens
     messages = [{"role": m["role"], "content": m["content"]} for m in conv.history]
@@ -1097,15 +1097,25 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
 
     reply_tool = _build_reply_tool_compact(identity.messaging_style)
 
-    # ── System blocks por tier ──
+    # ── System blocks por tier (v11.2 — cache defensivo) ──
     if tier == 1:
-        # Sem cache, string única
+        # Tier 1 foi eliminado em v11.2. Mantido aqui como fallback defensivo:
+        # se por algum motivo alguém chamar com tier=1, cai em single string.
         system_blocks = static
     else:
-        # Tier 2/3: cache no estático
-        system_blocks = [
-            {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
-        ]
+        # Tier 2/3: cache no estático.
+        # Anthropic cacheia blocos >= 1024 tokens (Haiku) / >= 2048 (Sonnet).
+        # 1 token ≈ 4 chars em português, então precisamos de >= ~4096 chars.
+        static_is_cacheable = len(static) >= 4096
+
+        static_block = {"type": "text", "text": static}
+        if static_is_cacheable:
+            static_block["cache_control"] = {"type": "ephemeral"}
+            log.info(f"Cache | tier={tier} | static ELIGIBLE | chars={len(static)}")
+        else:
+            log.warning(f"Cache | tier={tier} | static TOO SMALL for cache | chars={len(static)} | needed>=4096")
+
+        system_blocks = [static_block]
         if dynamic:
             system_blocks.append({"type": "text", "text": dynamic})
 

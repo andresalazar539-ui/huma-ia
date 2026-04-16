@@ -51,37 +51,26 @@ def _select_tier(classification, conv: Conversation, text: str, image_url) -> tu
     """
     Retorna (tier, use_sonnet) baseado em classificação, stage e conteúdo.
 
-    Regras (SPEC v11.0):
-      - Imagem → Tier 3 + Sonnet
+    v11.2 — Tier 1 eliminado. Ele economizava ~R$0,0003 por mensagem mas
+    causava perda de qualidade (português errado, tom inadequado, preço precoce).
+    Tier 2 com cache ativo fica mais barato que Tier 1 sem cache a partir da 2ª msg.
+
+    Regras:
+      - Imagem → Tier 3 + Sonnet (precisa de image intelligence)
       - objection/complex → Tier 3 + Sonnet
-      - buy_intent/schedule_intent → Tier 2 + Haiku
       - unknown + >15 palavras → Tier 3 + Sonnet
-      - stage in closing/committed/won → mínimo Tier 2 + Haiku
-      - off_topic → Tier 1 + Haiku
-      - msgs ≤15 palavras → Tier 1 + Haiku
-      - default → Tier 2 + Haiku
+      - Tudo mais → Tier 2 + Haiku (com cache)
     """
     msg_type = classification.msg_type.value
     msg_words = len(text.split())
-    stage = conv.stage
 
     if image_url:
         return 3, True
     if msg_type in ("objection", "complex"):
         return 3, True
-    if msg_type in ("buy_intent", "schedule_intent"):
-        return 2, False
     if msg_type == "unknown" and msg_words > 15:
         return 3, True
-    if stage in ("closing", "committed", "won"):
-        return 2, False
-    # Tier 1 só se: conversa nova + discovery + msg curta + sem intent forte
-    _tier1_blocked = {"buy_intent", "schedule_intent", "objection", "complex"}
-    if (msg_words <= 15
-            and stage == "discovery"
-            and len(conv.history) <= 4
-            and msg_type not in _tier1_blocked):
-        return 1, False
+    # Tudo mais: Tier 2 + Haiku. Simples, consistente, cacheável.
     return 2, False
 
 
@@ -532,29 +521,37 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # ENVIO DO TEXTO
         # ============================================================
 
-        # ── MODO AUDIO-FIRST ──
-        if will_send_audio and audio_is_substantial:
-            if len(parts) > 1:
-                await asyncio.sleep(min(2.5 + len(parts[0]) * 0.04, 5.0))
-                await wa.send_text(phone, parts[0], client_id=cid)
-            else:
-                short = reply.split('.')[0].strip()
-                if len(short) > 10:
-                    await asyncio.sleep(min(2.5 + len(short) * 0.04, 5.0))
-                    await wa.send_text(phone, short, client_id=cid)
+        # v11.2 — Quando agendamento foi confirmado no PRE-FLIGHT, suprimir o reply
+        # do Claude (que tipicamente é "Ótimo, vou confirmar..." ou "Deixa eu verificar...")
+        # para evitar duplicação com a mensagem de confirmação real que virá em seguida.
+        suppress_claude_reply = bool(appointment_confirmation)
+        if suppress_claude_reply:
+            log.info(f"Reply suprimido | {phone} | motivo=appointment_confirmed | evita duplicação")
 
-            log.info(f"Audio-first mode | {phone} | text_parts_sent=1 | audio_words={audio_word_count}")
+        if not suppress_claude_reply:
+            # ── MODO AUDIO-FIRST ──
+            if will_send_audio and audio_is_substantial:
+                if len(parts) > 1:
+                    await asyncio.sleep(min(2.5 + len(parts[0]) * 0.04, 5.0))
+                    await wa.send_text(phone, parts[0], client_id=cid)
+                else:
+                    short = reply.split('.')[0].strip()
+                    if len(short) > 10:
+                        await asyncio.sleep(min(2.5 + len(short) * 0.04, 5.0))
+                        await wa.send_text(phone, short, client_id=cid)
 
-        # ── MODO TEXTO-FIRST (padrão) ──
-        else:
-            if len(parts) > 1:
-                for i, part in enumerate(parts):
-                    delay = min(2.5 + len(part) * 0.04, 5.0) if i == 0 else _typing_delay(part)
-                    await asyncio.sleep(delay)
-                    await wa.send_text(phone, part, client_id=cid)
+                log.info(f"Audio-first mode | {phone} | text_parts_sent=1 | audio_words={audio_word_count}")
+
+            # ── MODO TEXTO-FIRST (padrão) ──
             else:
-                await asyncio.sleep(_typing_delay(reply))
-                await wa.send_text(phone, reply, client_id=cid)
+                if len(parts) > 1:
+                    for i, part in enumerate(parts):
+                        delay = min(2.5 + len(part) * 0.04, 5.0) if i == 0 else _typing_delay(part)
+                        await asyncio.sleep(delay)
+                        await wa.send_text(phone, part, client_id=cid)
+                else:
+                    await asyncio.sleep(_typing_delay(reply))
+                    await wa.send_text(phone, reply, client_id=cid)
 
         # ============================================================
         # ACTIONS RESTANTES (mídia, pagamento — agendamento já tratado)
@@ -630,7 +627,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # ============================================================
         # ÁUDIO
         # ============================================================
-        if will_send_audio and audio_text:
+        if will_send_audio and audio_text and not suppress_claude_reply:
             clean_audio = audio_text.replace('—', ',').replace('–', ',')
 
             voice_id = await _select_voice(client_data, phone)
