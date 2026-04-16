@@ -420,7 +420,7 @@ def _check_buy_intent(text: str) -> Optional[ClassificationResult]:
 
 
 SCHEDULE_PATTERNS = [
-    r"(quero|gostaria|posso|como)\s*(marcar|agendar|reservar)",
+    r"(quero|queria|gostaria|posso|como)\s*(marcar|agendar|reservar)",
     r"(tem|há)\s*(horário|horario|vaga|disponibilidade)",
     r"(marcar|agendar)\s*(um|uma)?\s*(consulta|sessão|sessao|reunião|reuniao|visita)",
 ]

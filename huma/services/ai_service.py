@@ -673,6 +673,11 @@ REGRAS CUSTOM:
     capped = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
     prompt += "\n\n" + _format_lead_memory(capped, conv.history_summary)
 
+    # Data/hora (sem isso o Claude inventa datas)
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone(timedelta(hours=-3)))
+    prompt += f"\nDATA/HORA ATUAL: {now.strftime('%A, %d/%m/%Y %H:%M')} (Brasília)\n"
+
     # Regras absolutas comprimidas (~200 tokens)
     prompt += f"""
 

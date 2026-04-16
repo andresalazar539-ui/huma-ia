@@ -75,9 +75,12 @@ def _select_tier(classification, conv: Conversation, text: str, image_url) -> tu
         return 3, True
     if stage in ("closing", "committed", "won"):
         return 2, False
-    if msg_type == "off_topic":
-        return 1, False
-    if msg_words <= 15:
+    # Tier 1 só se: conversa nova + discovery + msg curta + sem intent forte
+    _tier1_blocked = {"buy_intent", "schedule_intent", "objection", "complex"}
+    if (msg_words <= 15
+            and stage == "discovery"
+            and len(conv.history) <= 4
+            and msg_type not in _tier1_blocked):
         return 1, False
     return 2, False
 
