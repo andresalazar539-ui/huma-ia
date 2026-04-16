@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest huma/tests/ -v)",
+      "Bash(where python3:*)",
+      "Bash(where py:*)",
+      "Bash(python3 -m pytest huma/tests/ -v)",
+      "Bash(py -m pytest huma/tests/ -v)",
+      "Read(//c/Users/andre/AppData/Local/Programs/**)",
+      "Bash(ls /c/Python*)",
+      "Bash(pip --version)",
+      "Bash(pip3 --version)",
+      "Bash(python3.12 -m pytest huma/tests/ -v)",
+      "Bash(python3.11 -m pytest huma/tests/ -v)",
+      "Bash(node -e ':*)"
+    ]
+  }
+}
