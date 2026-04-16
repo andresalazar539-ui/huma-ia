@@ -1007,9 +1007,10 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
                     "type": "array",
                     "items": {"type": "object"},
                     "description": (
-                        "create_appointment: lead_name, lead_email, service, date_time | "
-                        "generate_payment: lead_name, description, amount_cents, payment_method, lead_cpf | "
-                        "send_media: tags"
+                        "Ações especiais. Cada item DEVE ter o campo 'type' obrigatório + campos específicos:\n"
+                        "- type='create_appointment': lead_name, lead_email, service, date_time\n"
+                        "- type='generate_payment': lead_name, description, amount_cents, payment_method, lead_cpf (só boleto)\n"
+                        "- type='send_media': tags (lista de strings)"
                     ),
                 },
             },
@@ -1137,6 +1138,20 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     else:
         log.error(f"IA falhou após {max_retries} retries | {last_error}")
         return _fallback_result(identity.fallback_message)
+
+    # Log de cache (v11.1) — instrumenta prompt caching pra validar economia
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            log.info(
+                f"CACHE | tier={tier} | model={model} | "
+                f"input={usage.input_tokens} | output={usage.output_tokens} | "
+                f"cache_read={cache_read} | cache_creation={cache_creation}"
+            )
+    except Exception:
+        pass  # log de métrica não pode quebrar a resposta
 
     # Extrai o tool_use block
     parsed = None

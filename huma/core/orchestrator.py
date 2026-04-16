@@ -410,6 +410,14 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # NÃO bloqueia por stage ou histórico — o lead pode remarcar
         already_scheduled_this_turn = False
 
+        # Log diagnóstico (v11.1) — revela shape das actions que o Claude retornou
+        if actions:
+            try:
+                action_types = [str(a.get("type", "<NO_TYPE>")) if isinstance(a, dict) else f"<NOT_DICT:{type(a).__name__}>" for a in actions]
+                log.info(f"Actions recebidas | {phone} | count={len(actions)} | types={action_types}")
+            except Exception:
+                log.warning(f"Actions recebidas | {phone} | count={len(actions)} | log_failed")
+
         for action in actions:
             action_type = action.get("type", "")
 
