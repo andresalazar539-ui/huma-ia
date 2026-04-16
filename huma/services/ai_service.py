@@ -1034,16 +1034,16 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
 
     # ── Montagem do system prompt por tier ──
     if tier == 1:
-        # Tier 1: string única, sem cache, sem insights, sem profile
+        # Tier 1: micro prompt, sem cache — mantém como está
         static = build_tier1_prompt(identity, conv)
         dynamic = ""
     elif tier == 2:
-        # Tier 2: cache, sem insights, sem profile
-        static = build_tier2_prompt(identity, conv)
-        dynamic = ""
+        # Tier 2: prompt ORIGINAL completo, sem insights e sem profiling
+        static = build_static_prompt(identity)
+        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
     else:
-        # Tier 3 (default — retrocompat): fluxo completo v10.1
-        static = build_tier3_prompt(identity, conv, image_url=image_url)
+        # Tier 3: prompt ORIGINAL + insights + profiling (comportamento pré-tiers)
+        static = build_static_prompt(identity)
 
         try:
             learned = await _get_insights_cached(identity.client_id)
@@ -1052,11 +1052,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         except Exception:
             pass
 
-        static_tokens_est = len(static) // 4
-        min_tokens = 2048 if use_fast_model else 1024
-        if static_tokens_est < min_tokens:
-            log.info(f"Cache padding | static_est={static_tokens_est} | min={min_tokens}")
-        dynamic = ""
+        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
 
         try:
             from huma.services.learning_engine import profile_lead, build_profile_prompt
@@ -1064,11 +1060,11 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             lead_profile = profile_lead(conv.phone, user_text, conv.lead_facts, hour)
             profile_prompt = build_profile_prompt(lead_profile)
             if profile_prompt:
-                static += profile_prompt
+                dynamic += profile_prompt
         except Exception:
             pass
 
-    log.debug(f"Prompt | tier={tier} | static_chars={len(static)} | est_tokens={len(static)//4}")
+    log.debug(f"Prompt | tier={tier} | static_chars={len(static)} | dynamic_chars={len(dynamic)} | est_tokens={(len(static)+len(dynamic))//4}")
 
     # Monta mensagens
     messages = [{"role": m["role"], "content": m["content"]} for m in conv.history]
