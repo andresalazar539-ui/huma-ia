@@ -70,6 +70,13 @@ def _select_tier(classification, conv: Conversation, text: str, image_url) -> tu
         return 3, True
     if msg_type == "unknown" and msg_words > 15:
         return 3, True
+
+    # Conversas longas: Haiku perde aderência após ~12 msgs.
+    # Sonnet mantém qualidade por muito mais tempo.
+    # Custo extra: ~R$0,04/msg. Em conversa de 12+ msgs o lead já está quente — vale o investimento.
+    if len(conv.history) > 12:
+        return (3, True)
+
     # Tudo mais: Tier 2 + Haiku. Simples, consistente, cacheável.
     return 2, False
 
@@ -665,7 +672,12 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     for part in parts[1:]:
                         await asyncio.sleep(_typing_delay(part))
                         await wa.send_text(phone, part, client_id=cid)
-                    log.warning(f"Áudio falhou, fallback texto | {phone}")
+                    log.warning(f"Áudio falhou, fallback texto (multi-part) | {phone}")
+                elif audio_is_substantial and audio_text:
+                    # Lead pediu áudio mas falhou e só tem 1 parte — manda conteúdo como texto
+                    await asyncio.sleep(_typing_delay(audio_text))
+                    await wa.send_text(phone, audio_text, client_id=cid)
+                    log.warning(f"Áudio falhou, fallback texto (audio_text) | {phone}")
                 else:
                     log.warning(f"Áudio falhou na geração | {phone}")
         elif audio_text and not will_send_audio:
@@ -914,6 +926,9 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
             "whatsapp_message": "",
         }
 
+    platform = _resolve_platform(client_data)
+    address = _extract_address(client_data) if platform == "presencial" else ""
+
     request = SchedulingRequest(
         client_id=cid,
         phone=phone,
@@ -922,7 +937,8 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         lead_phone_confirmed=True,
         service=service or "Consulta",
         date_time=date_time,
-        meeting_platform=client_data.scheduling_platform,
+        meeting_platform=platform,
+        location=address,
     )
 
     result = await sched.create_appointment(request)
@@ -951,6 +967,9 @@ async def _handle_appointment_action(phone, action, client_data):
     (ex: status=incomplete ou error).
     """
     cid = client_data.client_id
+    platform = _resolve_platform(client_data)
+    address = _extract_address(client_data) if platform == "presencial" else ""
+
     request = SchedulingRequest(
         client_id=cid,
         phone=phone,
@@ -959,7 +978,8 @@ async def _handle_appointment_action(phone, action, client_data):
         lead_phone_confirmed=True,
         service=action.get("service", ""),
         date_time=action.get("date_time", ""),
-        meeting_platform=client_data.scheduling_platform,
+        meeting_platform=platform,
+        location=address,
     )
 
     result = await sched.create_appointment(request)
@@ -981,6 +1001,44 @@ async def _handle_appointment_action(phone, action, client_data):
 # ================================================================
 # FUNIL v10 — Proteção em múltiplas camadas
 # ================================================================
+
+# Categorias que por natureza são presenciais (avaliação odontológica, corte de cabelo, etc).
+# Se o dono quiser online, pode configurar scheduling_platform explicitamente.
+PRESENCIAL_CATEGORIES = frozenset({"clinica", "salao_barbearia", "pet", "restaurante", "automotivo", "academia_personal"})
+
+
+def _resolve_platform(client_data) -> str:
+    """
+    Determina platform de agendamento baseado na categoria do negócio.
+
+    Categorias presenciais (clínica, salão, pet, etc) → "presencial"
+    Outras categorias → usa scheduling_platform do cliente ou default "google_meet"
+    Dono pode sobrescrever configurando scheduling_platform != "" e != "google_meet".
+    """
+    explicit = client_data.scheduling_platform
+    category = client_data.category.value if client_data.category else ""
+
+    # Se dono configurou explicitamente algo diferente de google_meet, respeita
+    if explicit and explicit not in ("", "google_meet"):
+        return explicit
+
+    # Categorias presenciais por natureza
+    if category in PRESENCIAL_CATEGORIES:
+        return "presencial"
+
+    return explicit or "google_meet"
+
+
+def _extract_address(client_data) -> str:
+    """Extrai endereço do FAQ ou business_description do cliente."""
+    # Busca no FAQ primeiro (onboarding de clínica salva endereço como FAQ)
+    for item in (client_data.faq or []):
+        q = (item.get("question", "") or "").lower()
+        if any(w in q for w in ["endereço", "endereco", "onde fica", "localização", "localizacao"]):
+            return item.get("answer", "") or ""
+
+    return ""
+
 
 # Estados terminais — NENHUMA ação do Claude muda esses estágios.
 TERMINAL_STAGES = frozenset({"won", "lost"})

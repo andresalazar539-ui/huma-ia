@@ -237,6 +237,7 @@ class SchedulingRequest(BaseModel):
     date_time: str = ""
     meeting_platform: str = ""
     notes: str = ""
+    location: str = ""  # Endereço presencial (clínica, salão, etc). Vai pro Google Calendar.
 
 
 # ================================================================

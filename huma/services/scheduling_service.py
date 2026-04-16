@@ -439,15 +439,6 @@ async def _create_google_calendar_event(
                     "timeZone": "America/Sao_Paulo",
                 },
                 "attendees": attendees,
-                "conferenceData": {
-                    "createRequest": {
-                        "requestId": (
-                            f"huma-{request.client_id[:8]}-"
-                            f"{int(datetime.utcnow().timestamp())}"
-                        ),
-                        "conferenceSolutionKey": {"type": "hangoutsMeet"},
-                    }
-                },
                 "reminders": {
                     "useDefault": False,
                     "overrides": [
@@ -457,12 +448,32 @@ async def _create_google_calendar_event(
                 },
             }
 
-            return svc.events().insert(
-                calendarId="primary",
-                body=event,
-                conferenceDataVersion=1,
-                sendUpdates="all",
-            ).execute()
+            # Presencial: adiciona endereço, SEM videochamada
+            # Online: adiciona Google Meet
+            if platform == "presencial":
+                if request.location:
+                    event["location"] = request.location
+            else:
+                event["conferenceData"] = {
+                    "createRequest": {
+                        "requestId": (
+                            f"huma-{request.client_id[:8]}-"
+                            f"{int(datetime.utcnow().timestamp())}"
+                        ),
+                        "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                    }
+                }
+
+            # conferenceDataVersion só quando tem conferenceData
+            insert_kwargs = {
+                "calendarId": "primary",
+                "body": event,
+                "sendUpdates": "all",
+            }
+            if "conferenceData" in event:
+                insert_kwargs["conferenceDataVersion"] = 1
+
+            return svc.events().insert(**insert_kwargs).execute()
 
         result = await run_in_threadpool(_create)
 
