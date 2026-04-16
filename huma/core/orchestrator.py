@@ -71,12 +71,6 @@ def _select_tier(classification, conv: Conversation, text: str, image_url) -> tu
     if msg_type == "unknown" and msg_words > 15:
         return 3, True
 
-    # Conversas longas: Haiku perde aderência após ~12 msgs.
-    # Sonnet mantém qualidade por muito mais tempo.
-    # Custo extra: ~R$0,04/msg. Em conversa de 12+ msgs o lead já está quente — vale o investimento.
-    if len(conv.history) > 12:
-        return (3, True)
-
     # Tudo mais: Tier 2 + Haiku. Simples, consistente, cacheável.
     return 2, False
 
