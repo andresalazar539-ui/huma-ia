@@ -832,6 +832,7 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
 
     NÃO envia nada — só retorna o resultado.
     """
+    log.info(f"Pre-flight START | {phone} | action={action}")
     cid = client_data.client_id
 
     # Dados da action
