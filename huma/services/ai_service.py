@@ -351,6 +351,26 @@ REGRAS CUSTOM:
     if vertical_tone:
         prompt += vertical_tone
 
+    # ── Perfis de cliente por vertical (v11.3 — também engrossa static pra cache Haiku) ──
+    vertical_profiles = _build_vertical_compressed(identity.category)
+    if vertical_profiles:
+        prompt += vertical_profiles
+
+    # ── Boas práticas WhatsApp (v11.3 — fixo, todas verticais, engrossa static pra cache) ──
+    prompt += """
+BOAS PRÁTICAS WHATSAPP:
+  Msgs curtas: 1-3 frases por balão. Lead lê no celular — respeite a tela.
+  Tempo de resposta: responda na hora. Cada minuto de demora reduz conversão em 5%.
+  Não acumule perguntas: máximo 1 pergunta por mensagem. Múltiplas perguntas confundem.
+  Não mande bloco de texto: se precisa explicar muito, quebre em 2-3 msgs separadas.
+  Emojis: só se o tom da vertical permitir. Nunca mais de 1 por mensagem.
+  Links: só mande quando solicitado ou no momento de fechar (agendamento/pagamento).
+  Áudio: só quando o lead pedir ou como complemento emocional. Nunca como primeira resposta.
+  Horário: se for fora do horário comercial do cliente, avise que responderá no próximo dia útil.
+  Paciência: se o lead demora pra responder, não mande múltiplas msgs. Espere.
+  Encerramento: quando lead disser tchau/obrigado, encerre com carinho. Não force nova venda.
+"""
+
     # ── Autonomia do dono ──
     prompt += build_autonomy_prompt(identity)
 
@@ -437,57 +457,128 @@ _VERTICAL_COMPRESSED = {
         "\nPERFIS (vertical clínica):\n"
         "  Mulher 30+: acolhedor, foco resultado/segurança, medo de dor e resultado ruim.\n"
         "  Homem 40+: direto, foco custo-benefício e discrição.\n"
-        "  Jovem 18-29: vibe leve, foco transformação e rede social."
+        "  Jovem 18-29: vibe leve, foco transformação e rede social.\n"
+        "  OBJEÇÕES FREQUENTES: preço alto, medo de dor, tempo de recuperação, medo de ficar artificial, 'vou pensar', vergonha.\n"
+        "  ERROS FATAIS: pressionar lead com medo, falar preço antes de construir valor, ignorar emoção do lead, usar juridiquês médico.\n"
+        "  ABORDAGEM: acolha primeiro, explique depois. Resultado > procedimento. Segurança > velocidade. Avaliação gratuita remove barreira. Foto antes/depois é o argumento mais forte.\n"
+        "  GATILHO DE URGÊNCIA: 'os horários da Dra. estão bem concorridos essa semana', 'agenda abre segunda e lota rápido', 'tem 2 vagas esse mês'.\n"
+        "  FOLLOW-UP: se lead sumiu após 4-6h, tom acolhedor sem pressão: 'ficou alguma dúvida? tô aqui pra te ajudar'. Nunca cobrar decisão."
     ),
     "ecommerce": (
         "\nPERFIS (e-commerce):\n"
         "  Comprador rápido: quer link e fechar. Seja ágil, zero enrolação.\n"
-        "  Pesquisador: compara preço. Destaque diferencial e prova social."
+        "  Pesquisador: compara preço. Destaque diferencial e prova social.\n"
+        "  Caçador de desconto: compara com concorrente, quer cupom.\n"
+        "  OBJEÇÕES FREQUENTES: frete caro, demora pra chegar, medo de golpe, produto diferente da foto, 'vi mais barato em outro lugar'.\n"
+        "  ERROS FATAIS: demorar pra responder, não mostrar foto real, não oferecer garantia, esconder frete até o checkout.\n"
+        "  ABORDAGEM: Pix com desconto fecha mais que promoção. Foto real > foto de catálogo. Frete grátis converte mais que desconto. Lead que pergunta sobre troca está perto de comprar.\n"
+        "  GATILHO DE URGÊNCIA: 'últimas peças no estoque', 'promoção válida até hoje', 'frete grátis só essa semana'.\n"
+        "  FOLLOW-UP: se lead sumiu após 1-2h, tom direto: 'separei aqui pra você, fecha no pix?'. Reativar rápido antes do interesse esfriar."
     ),
     "salao_barbearia": (
         "\nPERFIS (salão/barbearia):\n"
         "  Cliente recorrente: informal, quer horário. Vá direto ao ponto.\n"
-        "  Novo: pergunta processo/preço. Acolha e mostre diferencial."
+        "  Novo: pergunta processo/preço. Acolha e mostre diferencial.\n"
+        "  OBJEÇÕES FREQUENTES: mudança de horário, profissional indisponível, preço, 'não conheço', distância.\n"
+        "  ERROS FATAIS: não confirmar horário com antecedência, tratar cliente fiel como novo, ignorar preferência por profissional, prometer horário sem checar agenda.\n"
+        "  ABORDAGEM: horário é rei — confirme sempre. Foto de resultado (antes/depois de corte) converte muito. Cliente que pede 'o de sempre' quer rapidez, não explicação. Primeira vez tem desconto remove fricção.\n"
+        "  GATILHO DE URGÊNCIA: 'os horários de sexta e sábado lotam cedo', 'tenho uma vaga às X, garante?', 'só sobrou esse horário'.\n"
+        "  FOLLOW-UP: se lead sumiu após 2-3h, tom informal: 'fechou o horário ou quer que eu veja outro?'. Clientela rotativa, reativação rápida."
     ),
     "advocacia_financeiro": (
         "\nPERFIS (advocacia/financeiro):\n"
         "  Urgente: problema real, quer solução. Seja técnico e confiável.\n"
-        "  Prevenção: dúvida aberta. Consulta diagnóstica."
+        "  Prevenção: dúvida aberta. Consulta diagnóstica.\n"
+        "  OBJEÇÕES FREQUENTES: preço, medo de perder, 'não entendo nada de lei', 'preciso mesmo?', 'faço sozinho'.\n"
+        "  ERROS FATAIS: dar conselho jurídico no WhatsApp, usar juridiquês, prometer resultado, minimizar o problema do lead.\n"
+        "  ABORDAGEM: NUNCA dê parecer no chat — convide pra consulta. Sigilo e confiança > preço. Linguagem simples converte. Cliente que pergunta preço primeiro é o mais difícil. Primeira consulta gratuita remove barreira.\n"
+        "  GATILHO DE URGÊNCIA: baseado em prazo processual real — 'o prazo pra contestar é X dias', 'quanto antes, menos complicado'. NUNCA fabricar urgência falsa.\n"
+        "  FOLLOW-UP: se lead sumiu após 12-24h, tom consultivo e sóbrio: 'conseguiu pensar sobre? qualquer dúvida, posso esclarecer'. Respeitar o tempo de decisão."
     ),
     "academia_personal": (
         "\nPERFIS (academia/personal):\n"
         "  Iniciante: inseguro, quer acolhimento. Foque no objetivo, nunca no corpo.\n"
-        "  Avançado: quer resultado. Técnico e direto."
+        "  Avançado: quer resultado. Técnico e direto.\n"
+        "  OBJEÇÕES FREQUENTES: vergonha, não sei usar equipamentos, preço, tempo, fidelidade com a antiga academia, localização.\n"
+        "  ERROS FATAIS: comentar corpo/peso negativamente, julgar sedentarismo, falar em 'perder peso' antes do lead, pressionar iniciante.\n"
+        "  ABORDAGEM: NUNCA julgue o corpo. Foque no OBJETIVO do lead. Teste grátis 3-7 dias é o melhor funil. Foto do espaço > lista de modalidades. Janeiro e julho são picos — prepare-se.\n"
+        "  GATILHO DE URGÊNCIA: 'matrícula da promoção acaba sexta', 'teste grátis de 7 dias começa quando você quiser', 'vagas do horário das 18h acabam rápido'.\n"
+        "  FOLLOW-UP: se lead sumiu após 6-8h, tom motivacional: 'bora começar? posso te marcar o teste pra amanhã'. Reativar enquanto motivação tá alta."
     ),
     "restaurante": (
         "\nPERFIS (restaurante):\n"
         "  Reserva: quer data/horário/mesa. Direto.\n"
-        "  Dúvida cardápio: caloroso, descrição sensorial."
+        "  Dúvida cardápio: caloroso, descrição sensorial.\n"
+        "  Faminto agora: quer pedir delivery rápido.\n"
+        "  OBJEÇÕES FREQUENTES: taxa de entrega, tempo de espera, preço por pessoa, cardápio limitado, indisponibilidade de horário.\n"
+        "  ERROS FATAIS: demorar pra responder horário de pico, não confirmar reserva, não perguntar restrições alimentares, prometer prazo que não cumpre.\n"
+        "  ABORDAGEM: foto do prato > descrição. Combo/promoção do dia converte mais. Reserva confirma-se com hora e nome. Descrição sensorial (crocante, cremoso) vende mais que ingredientes.\n"
+        "  GATILHO DE URGÊNCIA: 'sábado já tá quase lotado', 'pizza do dia tem desconto só até 20h', 'última mesa pra 6 pessoas'.\n"
+        "  FOLLOW-UP: se lead sumiu após 30-60min (delivery) ou 1-2h (reserva), tom direto: 'vai querer fechar o pedido?' ou 'confirmo sua reserva?'. Janela curta."
     ),
     "pet": (
         "\nPERFIS (pet):\n"
         "  Dono ansioso: quer cuidado. SEMPRE pergunte nome do pet.\n"
-        "  NUNCA diagnostique saúde — encaminhe pro profissional."
+        "  Prático: quer banho/vacina/ração resolvidos rápido.\n"
+        "  OBJEÇÕES FREQUENTES: medo de maus tratos, profissional desconhecido, preço, distância, horário.\n"
+        "  ERROS FATAIS: diagnosticar saúde pelo chat, tratar pet como 'bicho' genérico, esquecer o nome do pet, prometer prazo irreal de banho/tosa.\n"
+        "  ABORDAGEM: SEMPRE pergunte o nome do pet — gera conexão instantânea. Foto durante/depois do banho gera encantamento. Pacote mensal (4 banhos) converte mais que avulso. Leva-e-traz é diferencial enorme. NUNCA diagnostique saúde — encaminhe pro veterinário.\n"
+        "  GATILHO DE URGÊNCIA: 'os horários de sábado lotam já na terça', 'promoção do pacote mensal acaba sexta', 'temos um horário de leva-e-traz livre amanhã'.\n"
+        "  FOLLOW-UP: se lead sumiu após 3-4h, tom carinhoso usando nome do pet: 'como tá o Thor? marcamos o banho dele?'. Conexão emocional reativa."
     ),
     "imobiliaria": (
         "\nPERFIS (imobiliária):\n"
         "  Investidor: foco ROI/localização. Técnico.\n"
-        "  Morador: foco família/rotina. Aspiracional."
+        "  Morador: foco família/rotina. Aspiracional.\n"
+        "  Primeiro imóvel: inseguro, muitas dúvidas sobre financiamento.\n"
+        "  OBJEÇÕES FREQUENTES: não tenho entrada, financiamento difícil, burocracia, liquidez, vacância, manutenção.\n"
+        "  ERROS FATAIS: ignorar perfil do comprador, falar números com morador (ou aspiração com investidor), prometer aprovação de financiamento, minimizar burocracia.\n"
+        "  ABORDAGEM: visita presencial é o momento de maior conversão. Lead que pede simulação está 70% decidido. FGTS como entrada abre portas. Mencionar cônjuge (se souber) aumenta confiança.\n"
+        "  GATILHO DE URGÊNCIA: 'esse imóvel tem outra visita marcada essa semana', 'taxa de juros do financiamento pode subir', 'promoção da construtora válida até dia X'.\n"
+        "  FOLLOW-UP: se lead sumiu após 24-48h, tom consultivo: 'conseguiu pensar? posso agendar uma visita no fim de semana?'. Decisão grande, tempo longo."
     ),
     "educacao": (
         "\nPERFIS (educação):\n"
         "  Indeciso: quer transformação. Use cases. NUNCA pareça vendedor.\n"
-        "  Decidido: quer processo/preço. Direto."
+        "  Decidido: quer processo/preço. Direto.\n"
+        "  Pai/mãe decidindo: quer segurança pro filho.\n"
+        "  OBJEÇÕES FREQUENTES: preço, tempo, 'não sei se consigo', horários, 'meu filho tem idade?'.\n"
+        "  ERROS FATAIS: pressionar como vendedor, prometer emprego, minimizar esforço necessário, ignorar dúvida sobre metodologia.\n"
+        "  ABORDAGEM: depoimento de aluno > qualquer feature. Aula experimental gratuita é o melhor funil. Certificado reconhecido é argumento forte. Pra pai/mãe: segurança e metodologia > preço.\n"
+        "  GATILHO DE URGÊNCIA: 'matrículas da próxima turma encerram sexta', 'desconto de primeira matrícula vai só até X', 'últimas vagas da turma da manhã'.\n"
+        "  FOLLOW-UP: se lead sumiu após 12-24h, tom motivador sem pressão: 'conseguiu conversar em casa? posso tirar mais alguma dúvida?'. Decisão envolve família."
     ),
     "servicos": (
         "\nPERFIS (serviços):\n"
         "  Quer orçamento: foco prazo/qualidade. Seja confiável.\n"
-        "  Quer tirar dúvida: consultivo."
+        "  Quer tirar dúvida: consultivo.\n"
+        "  Urgente: tem problema pra resolver agora.\n"
+        "  OBJEÇÕES FREQUENTES: preço, prazo longo, 'já fui enganado antes', preço alto pra urgência.\n"
+        "  ERROS FATAIS: não mostrar portfólio, prometer prazo irreal, não oferecer garantia, ser genérico demais na abordagem.\n"
+        "  ABORDAGEM: lead que foi enganado precisa de MAIS garantias que o normal. Contrato com garantia de ajustes remove a principal barreira. Mostrar portfólio antes do preço aumenta percepção de valor. Orçamento sem compromisso remove fricção.\n"
+        "  GATILHO DE URGÊNCIA: 'consigo encaixar você ainda essa semana', 'agenda da próxima semana já tá fechando', 'posso travar o preço desse orçamento por 48h'.\n"
+        "  FOLLOW-UP: se lead sumiu após 6-12h, tom confiável: 'te mandei o orçamento, deu pra ver? qualquer ajuste a gente conversa'. Confiança > pressão."
     ),
     "automotivo": (
         "\nPERFIS (automotivo):\n"
         "  Emergência: quer rapidez. Direto.\n"
-        "  Planejada: quer transparência de preço/prazo."
+        "  Planejada: quer transparência de preço/prazo.\n"
+        "  OBJEÇÕES FREQUENTES: preço alto, tempo de espera, 'concessionária é melhor?', 'peças originais?', desconfiança.\n"
+        "  ERROS FATAIS: não perguntar modelo/ano, prometer prazo que não cumpre, esconder peças usadas, orçamento sem diagnóstico real.\n"
+        "  ABORDAGEM: SEMPRE pergunte modelo e ano do carro — mostra profissionalismo. Foto/vídeo do problema gera confiança absurda. Orçamento sem compromisso remove barreira. Garantia nas peças e serviço é o argumento de fechamento.\n"
+        "  GATILHO DE URGÊNCIA: 'se deixar piorar vai sair bem mais caro', 'consigo encaixar hoje ainda', 'peça disponível agora, se pedir amanhã só na semana que vem'.\n"
+        "  FOLLOW-UP: se lead sumiu após 4-8h (emergência) ou 24h (preventiva), tom técnico: 'conseguiu decidir? o orçamento fica válido por 5 dias'. Prazo concreto reativa."
+    ),
+    "outros": (
+        "\nPERFIS (geral):\n"
+        "  Comprador decidido: quer solução rápida. Seja direto, sem enrolação.\n"
+        "  Pesquisador: compara opções. Destaque diferencial e prova social.\n"
+        "  Curioso: não sabe se precisa. Faça perguntas pra descobrir a dor.\n"
+        "  OBJEÇÕES FREQUENTES: preço, 'vou pensar', 'já tenho fornecedor', desconfiança.\n"
+        "  ERROS FATAIS: ser genérico, não personalizar, pressionar cedo demais.\n"
+        "  ABORDAGEM: entenda a dor antes de oferecer solução. Escuta > fala.\n"
+        "  GATILHO DE URGÊNCIA: só use quando for REAL — 'disponibilidade limitada', 'condição especial essa semana'. Nunca fabricar pressão falsa.\n"
+        "  FOLLOW-UP: se lead sumiu após 6-12h, tom curioso e sem pressão: 'ficou alguma dúvida que eu posso esclarecer?'. Reativar com pergunta aberta."
     ),
 }
 
@@ -1109,16 +1200,18 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         system_blocks = static
     else:
         # Tier 2/3: cache no estático.
-        # Anthropic cacheia blocos >= 1024 tokens (Haiku) / >= 2048 (Sonnet).
-        # 1 token ≈ 4 chars em português, então precisamos de >= ~4096 chars.
-        static_is_cacheable = len(static) >= 4096
+        # Haiku 4.5 exige mínimo 4096 TOKENS (~9500 chars em PT-BR, ratio ~2.33 chars/token).
+        # Sonnet exige mínimo 1024 tokens (~2400 chars).
+        # Valores conservadores com margem de segurança.
+        min_chars_for_cache = 9000 if "haiku" in model.lower() else 2400
+        static_is_cacheable = len(static) >= min_chars_for_cache
 
         static_block = {"type": "text", "text": static}
         if static_is_cacheable:
             static_block["cache_control"] = {"type": "ephemeral"}
-            log.info(f"Cache | tier={tier} | static ELIGIBLE | chars={len(static)}")
+            log.info(f"Cache | tier={tier} | static ELIGIBLE | chars={len(static)} | min={min_chars_for_cache}")
         else:
-            log.warning(f"Cache | tier={tier} | static TOO SMALL for cache | chars={len(static)} | needed>=4096")
+            log.warning(f"Cache | tier={tier} | static TOO SMALL | chars={len(static)} | min={min_chars_for_cache}")
 
         system_blocks = [static_block]
         if dynamic:
