@@ -44,6 +44,45 @@ log = get_logger("orchestrator")
 
 
 # ================================================================
+# TIERED INTELLIGENCE v11.0 — seleção de tier e modelo
+# ================================================================
+
+def _select_tier(classification, conv: Conversation, text: str, image_url) -> tuple[int, bool]:
+    """
+    Retorna (tier, use_sonnet) baseado em classificação, stage e conteúdo.
+
+    Regras (SPEC v11.0):
+      - Imagem → Tier 3 + Sonnet
+      - objection/complex → Tier 3 + Sonnet
+      - buy_intent/schedule_intent → Tier 2 + Haiku
+      - unknown + >15 palavras → Tier 3 + Sonnet
+      - stage in closing/committed/won → mínimo Tier 2 + Haiku
+      - off_topic → Tier 1 + Haiku
+      - msgs ≤15 palavras → Tier 1 + Haiku
+      - default → Tier 2 + Haiku
+    """
+    msg_type = classification.msg_type.value
+    msg_words = len(text.split())
+    stage = conv.stage
+
+    if image_url:
+        return 3, True
+    if msg_type in ("objection", "complex"):
+        return 3, True
+    if msg_type in ("buy_intent", "schedule_intent"):
+        return 2, False
+    if msg_type == "unknown" and msg_words > 15:
+        return 3, True
+    if stage in ("closing", "committed", "won"):
+        return 2, False
+    if msg_type == "off_topic":
+        return 1, False
+    if msg_words <= 15:
+        return 1, False
+    return 2, False
+
+
+# ================================================================
 # ENTRY POINT (com buffer de mensagens picadas)
 # ================================================================
 
@@ -185,37 +224,25 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             }
             log.warning(f"Limite IA | {phone} | {billing.get_ia_calls_today(phone)}/{max_ia}")
         else:
-            # Roteamento inteligente v10.1:
-            # Sonnet APENAS pra: objeções complexas e msgs que o classifier não entendeu
-            # em estágios avançados. Todo o resto → Haiku (10x mais barato).
-            #
-            # Bug fix: antes, msgs curtas ("sim", "ok", "segunda 14h") em closing/committed
-            # caíam como "unknown" no fallback e iam pro Sonnet. Agora Haiku é o default.
-            sonnet_types = {"objection", "complex"}
-            haiku_types = {"buy_intent", "schedule_intent", "price_query", "faq_query",
-                           "hours_query", "location_query", "greeting", "off_topic"}
-
-            msg_type = classification.msg_type.value
-            if msg_type in sonnet_types:
-                use_sonnet = True
-            elif msg_type in haiku_types:
-                use_sonnet = False
-            else:
-                # Fallback: Haiku por padrão. Sonnet só se msg é longa E complexa.
-                # "unknown" em closing/committed geralmente é "sim", "ok", "bora" → Haiku resolve.
-                msg_words = len(unified_text.split())
-                use_sonnet = msg_type == "unknown" and msg_words > 15
+            # Roteamento Tiered Intelligence v11.0
+            tier, use_sonnet = _select_tier(classification, conv, unified_text, unified_image)
 
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
                 image_url=unified_image,
                 use_fast_model=not use_sonnet,
+                tier=tier,
             )
 
             billing.increment_ia_calls(phone)
             model_type = billing.UsageType.ANTHROPIC_SONNET if use_sonnet else billing.UsageType.ANTHROPIC_HAIKU
             cost = 0.003 if use_sonnet else 0.001
             await billing.log_usage(client_id, model_type, cost_usd=cost)
+
+            log.info(
+                f"IA | {phone} | tier={tier} | modelo={'sonnet' if use_sonnet else 'haiku'} | "
+                f"tipo={classification.msg_type.value} | stage={conv.stage}"
+            )
 
             asyncio.create_task(
                 log_classification(client_id, phone, unified_text, classification, "sonnet" if use_sonnet else "haiku")

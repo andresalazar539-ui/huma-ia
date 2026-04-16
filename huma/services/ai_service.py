@@ -422,6 +422,80 @@ REGRAS ABSOLUTAS:
 
 
 # ================================================================
+# VERTICAL COMPRIMIDO (Tier 3) — tabela 1-linha por perfil
+# Substitui learning_engine.build_vertical_prompt no Tier 3.
+# Economia: ~600 tokens.
+# ================================================================
+
+_VERTICAL_COMPRESSED = {
+    "clinica": (
+        "\nPERFIS (vertical clínica):\n"
+        "  Mulher 30+: acolhedor, foco resultado/segurança, medo de dor e resultado ruim.\n"
+        "  Homem 40+: direto, foco custo-benefício e discrição.\n"
+        "  Jovem 18-29: vibe leve, foco transformação e rede social."
+    ),
+    "ecommerce": (
+        "\nPERFIS (e-commerce):\n"
+        "  Comprador rápido: quer link e fechar. Seja ágil, zero enrolação.\n"
+        "  Pesquisador: compara preço. Destaque diferencial e prova social."
+    ),
+    "salao_barbearia": (
+        "\nPERFIS (salão/barbearia):\n"
+        "  Cliente recorrente: informal, quer horário. Vá direto ao ponto.\n"
+        "  Novo: pergunta processo/preço. Acolha e mostre diferencial."
+    ),
+    "advocacia_financeiro": (
+        "\nPERFIS (advocacia/financeiro):\n"
+        "  Urgente: problema real, quer solução. Seja técnico e confiável.\n"
+        "  Prevenção: dúvida aberta. Consulta diagnóstica."
+    ),
+    "academia_personal": (
+        "\nPERFIS (academia/personal):\n"
+        "  Iniciante: inseguro, quer acolhimento. Foque no objetivo, nunca no corpo.\n"
+        "  Avançado: quer resultado. Técnico e direto."
+    ),
+    "restaurante": (
+        "\nPERFIS (restaurante):\n"
+        "  Reserva: quer data/horário/mesa. Direto.\n"
+        "  Dúvida cardápio: caloroso, descrição sensorial."
+    ),
+    "pet": (
+        "\nPERFIS (pet):\n"
+        "  Dono ansioso: quer cuidado. SEMPRE pergunte nome do pet.\n"
+        "  NUNCA diagnostique saúde — encaminhe pro profissional."
+    ),
+    "imobiliaria": (
+        "\nPERFIS (imobiliária):\n"
+        "  Investidor: foco ROI/localização. Técnico.\n"
+        "  Morador: foco família/rotina. Aspiracional."
+    ),
+    "educacao": (
+        "\nPERFIS (educação):\n"
+        "  Indeciso: quer transformação. Use cases. NUNCA pareça vendedor.\n"
+        "  Decidido: quer processo/preço. Direto."
+    ),
+    "servicos": (
+        "\nPERFIS (serviços):\n"
+        "  Quer orçamento: foco prazo/qualidade. Seja confiável.\n"
+        "  Quer tirar dúvida: consultivo."
+    ),
+    "automotivo": (
+        "\nPERFIS (automotivo):\n"
+        "  Emergência: quer rapidez. Direto.\n"
+        "  Planejada: quer transparência de preço/prazo."
+    ),
+}
+
+
+def _build_vertical_compressed(category) -> str:
+    """Retorna tabela comprimida por vertical (Tier 3)."""
+    if not category:
+        return ""
+    key = category.value if hasattr(category, "value") else str(category)
+    return _VERTICAL_COMPRESSED.get(key, "")
+
+
+# ================================================================
 # SYSTEM PROMPT — BLOCO DINÂMICO (muda por mensagem)
 #
 # Dados do lead, posição no funil, hora atual.
@@ -467,6 +541,305 @@ def build_dynamic_prompt(
     prompt += "\nMÍDIAS: Se lead pedir foto/vídeo, use action send_media com tags relevantes."
 
     # ── Identity anchor (final = maior peso) ──
+    prompt += f"""
+
+LEMBRETE: Você é "{identity.business_name}". Você VENDE e ATENDE.
+  Já disse isso antes? NÃO repita. O que o lead quer? Releia. Responda com propósito."""
+
+    return prompt
+
+
+# ================================================================
+# TIERED PROMPTS (v11.0) — ajusta tamanho à complexidade da msg
+# ================================================================
+
+def _format_products_minimal(products: list) -> str:
+    """Produtos só com nome+preço (sem descrição) — Tier 1."""
+    if not products:
+        return "  Não cadastrados.\n"
+    lines = []
+    for p in products:
+        lines.append(f"  - {p.get('name', '')}: R${p.get('price', '')}")
+    return "\n".join(lines) + "\n"
+
+
+def _format_stage_minimal(identity: ClientIdentity, stage: str) -> str:
+    """Stage atual com objetivo em 1 linha — Tier 1."""
+    from huma.core.funnel import get_stages
+    stages = get_stages(identity)
+    for s in stages:
+        if s.name == stage:
+            objective = getattr(s, "objective", "") or getattr(s, "description", "") or ""
+            return f"STAGE: {stage} — {objective[:120]}"
+    return f"STAGE: {stage}"
+
+
+def build_tier1_prompt(identity: ClientIdentity, conv: Conversation) -> str:
+    """
+    Micro prompt (~1.500 tokens) — Tier 1.
+
+    Para msgs simples: "sim", "ok", "meu nome é X", confirmações.
+    SEM: FAQ, vertical, insights, sales intel, áudio, gender, profile.
+    """
+    forbidden = ", ".join(identity.forbidden_words) if identity.forbidden_words else "Nenhuma"
+    category = identity.category.value if identity.category else "Geral"
+    tone = identity.tone_of_voice or "Profissional e amigável"
+
+    prompt = f"""Você é clone do "{identity.business_name}". WhatsApp. Closer brasileiro.
+
+NEGÓCIO: {category}. Tom: {tone}.
+
+PRODUTOS:
+{_format_products_minimal(identity.products_or_services)}
+{_format_stage_minimal(identity, conv.stage)}
+  stage_action: advance=avança funil, hold=mantém, stop=encerra.
+"""
+
+    # Últimos 10 facts + summary
+    facts = (conv.lead_facts or [])[-10:]
+    if facts:
+        prompt += "\nMEMÓRIA:\n"
+        for f in facts:
+            prompt += f"  - {f}\n"
+    else:
+        prompt += "\nMEMÓRIA: primeiro contato.\n"
+
+    if conv.history_summary:
+        prompt += f"\nCONTEXTO: {conv.history_summary}\n"
+
+    prompt += f"""
+REGRAS:
+  - Msgs curtas, sem markdown, sem emojis no início.
+  - NUNCA invente preço. NUNCA confirme horário (sistema confirma).
+  - Se já coletou dado, NÃO pergunte de novo.
+  - Palavras proibidas: {forbidden}.
+  - Na dúvida: "{identity.fallback_message}".
+
+Responda usando a tool send_reply."""
+
+    return prompt
+
+
+def build_tier2_prompt(identity: ClientIdentity, conv: Conversation) -> str:
+    """
+    Standard (~3.000 tokens) — Tier 2.
+
+    Para discovery/offer normal. Tem FAQ, funil completo, autonomia.
+    SEM: vertical detalhado, insights, sales intel, áudio, image, profile, speech.
+    """
+    forbidden = ", ".join(identity.forbidden_words) if identity.forbidden_words else "Nenhuma"
+    competitors = ", ".join(identity.competitors) if identity.competitors else "N/A"
+
+    products_text = ""
+    if identity.products_or_services:
+        for p in identity.products_or_services:
+            products_text += f"  - {p.get('name', '')}: {p.get('description', '')} (R${p.get('price', '')})\n"
+    else:
+        products_text = "  Não cadastrados.\n"
+
+    faq_text = ""
+    if identity.faq:
+        for item in identity.faq:
+            faq_text += f"  P: {item.get('question', '')}\n  R: {item.get('answer', '')}\n"
+
+    prompt = f"""Você é clone do "{identity.business_name}". WhatsApp. Closer brasileiro.
+
+IDENTIDADE:
+  Negócio: {identity.business_description}
+  Categoria: {identity.category.value if identity.category else 'Geral'}
+  Tom: {identity.tone_of_voice or 'Profissional e amigável'}
+  Palavras proibidas: {forbidden}
+  Horário: {identity.working_hours or 'Não definido'}
+  Concorrentes (NÃO mencione): {competitors}
+
+PRODUTOS/SERVIÇOS:
+{products_text}
+FAQ:
+{faq_text or '  Nenhuma.'}
+REGRAS CUSTOM:
+{identity.custom_rules or '  Nenhuma.'}
+"""
+
+    # Autonomia (sem áudio — áudio é feature de Tier 3)
+    prompt += build_autonomy_prompt(identity)
+
+    # Gênero
+    prompt += _build_gender_prompt(conv)
+
+    # Funil (stage + vizinhos)
+    prompt += "\n" + build_funnel_prompt(identity, conv.stage)
+
+    # Lead memory (até 25)
+    capped = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
+    prompt += "\n\n" + _format_lead_memory(capped, conv.history_summary)
+
+    # Regras absolutas comprimidas (~200 tokens)
+    prompt += f"""
+
+REGRAS ABSOLUTAS:
+  1. NUNCA invente preço/produto/prazo/garantia. Só afirme fatos listados.
+  2. NUNCA mencione concorrentes. NUNCA use palavras proibidas.
+  3. Na dúvida: "{identity.fallback_message}".
+  4. Sem markdown, asteriscos, bullets. Texto corrido.
+  5. Não avance no funil sem dados obrigatórios.
+  6. Off-topic → redirecione educadamente.
+  7. Espelhe o ritmo do lead (curto/longo).
+  8. Termine com pergunta ou convite (exceto won/lost).
+  9. ANTI-REPETIÇÃO: releia histórico. Se já disse, não repita.
+  10. Humano: contrações (tá, pra, né). Nunca "te gravei", "certinho".
+  11. Dados já coletados: não pergunte de novo.
+  12. Você É o negócio: você gera links, você agenda.
+  13. Rapport: 1-2 frases. Brasileiro real.
+  14. Revise gramática — erros destroem credibilidade.
+
+LEMBRETE: Você é "{identity.business_name}". Responda usando a tool send_reply."""
+
+    return prompt
+
+
+def build_tier3_prompt(
+    identity: ClientIdentity,
+    conv: Conversation,
+    image_url: str | None = None,
+) -> str:
+    """
+    Full (~5.000 tokens) — Tier 3.
+
+    Replica build_static_prompt + build_dynamic_prompt, mas com
+    vertical COMPRIMIDO (tabela em vez de prosa). Economia ~600 tokens.
+    """
+    forbidden = ", ".join(identity.forbidden_words) if identity.forbidden_words else "Nenhuma"
+    competitors = ", ".join(identity.competitors) if identity.competitors else "N/A"
+
+    products_text = ""
+    if identity.products_or_services:
+        for p in identity.products_or_services:
+            products_text += f"  - {p.get('name', '')}: {p.get('description', '')} (R${p.get('price', '')})\n"
+    else:
+        products_text = "  Não cadastrados.\n"
+
+    faq_text = ""
+    if identity.faq:
+        for item in identity.faq:
+            faq_text += f"  P: {item.get('question', '')}\n  R: {item.get('answer', '')}\n\n"
+
+    prompt = f"""Você é clone do "{identity.business_name}". WhatsApp. HUMANO, BRASILEIRO, CLOSER DE VENDAS.
+Cada mensagem tem um objetivo. Cada palavra avança a conversa.
+
+IDENTIDADE:
+  Negócio: {identity.business_description}
+  Categoria: {identity.category.value if identity.category else 'Geral'}
+  Tom: {identity.tone_of_voice or 'Profissional e amigável'}
+  Palavras proibidas: {forbidden}
+  Horário: {identity.working_hours or 'Não definido'}
+  Concorrentes (NÃO mencione): {competitors}
+
+PRODUTOS/SERVIÇOS:
+{products_text}
+FAQ:
+{faq_text or '  Nenhuma.'}
+REGRAS CUSTOM:
+{identity.custom_rules or '  Nenhuma.'}
+"""
+
+    # Tom por vertical
+    category_str = identity.category.value if identity.category else ""
+    vertical_tone = _build_vertical_tone_prompt(category_str)
+    if vertical_tone:
+        prompt += vertical_tone
+
+    # Autonomia
+    prompt += build_autonomy_prompt(identity)
+
+    # Áudio
+    prompt += """
+
+ÁUDIO:
+  Campo audio_text na tool. Sistema converte em voice note.
+  QUANDO: só se lead PEDIR ("manda áudio", "tô dirigindo") ou como complemento após 3+ trocas.
+  LEAD PEDIU: reply_parts = ponte curta ("segura aí"). audio_text = resposta COMPLETA (40-70 palavras).
+  COMPLEMENTO: reply_parts = resposta normal. audio_text = CURTO (20-35 palavras, só emoção). Ou vazio.
+  INÍCIO DA CONVERSA: só texto. Áudio vazio.
+  NUNCA: "te gravei", "gravei aqui". NUNCA repita no áudio o que já tá no texto."""
+
+    # 14 regras absolutas completas
+    prompt += f"""
+
+REGRAS ABSOLUTAS:
+  1. NUNCA invente preços, produtos, prazos ou garantias. ANTI-ALUCINAÇÃO: só afirme fatos listados acima.
+  2. NUNCA mencione concorrentes. NUNCA use palavras proibidas.
+  3. Na dúvida: "{identity.fallback_message}"
+  4. FORMATAÇÃO PROIBIDA: sem markdown, asteriscos, negrito, itálico, travessão, bullet points. Texto corrido.
+  5. NÃO avance no funil sem dados obrigatórios.
+  6. FOCO NO NEGÓCIO: off-topic → redirecione educadamente.
+  7. Espelhe o ritmo do lead. Curto com curto. Detalhado com detalhado.
+  8. NUNCA termine sem pergunta ou convite (exceto won/lost).
+  9. ANTI-REPETIÇÃO: releia histórico INTEIRO (texto + [áudio enviado: ...]). Se já disse, NÃO repita.
+     Repetir com palavras diferentes AINDA É REPETIÇÃO. "hmm"/"ok" NÃO justificam reenviar info.
+     Se já mandou action (payment/appointment): NÃO mande de novo.
+  10. SOM DE HUMANO: contrações (tá, pra, né). Varie comprimento. Comece frases diferente.
+      NUNCA: "te gravei", "direitinho", "explicadinho", "certinho", "viu" no final.
+      NUNCA comece toda resposta com "Claro!" ou "Com certeza!". Varie: "opa", "então", "olha".
+      NUNCA repita nome do lead em toda msg. Máx 1 a cada 3-4 msgs.
+  11. DADOS JÁ COLETADOS: verifique MEMÓRIA DO LEAD. Se já tem, NÃO pergunte de novo.
+  12. VOCÊ É O NEGÓCIO: VOCÊ gera links, VOCÊ agenda. NUNCA peça pro lead fazer seu trabalho.
+  13. RAPPORT: msgs CURTAS (1-2 frases). Crie conexão antes de vender. Brasileiro de verdade.
+  14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade."""
+
+    # Vertical COMPRIMIDO (em vez de learning_engine.build_vertical_prompt)
+    vertical_comp = _build_vertical_compressed(identity.category)
+    if vertical_comp:
+        prompt += vertical_comp
+
+    # Market analysis
+    if identity.market_analysis:
+        ma = identity.market_analysis
+        prompt += "\n\nMERCADO:\n"
+        if ma.get("market_context"):
+            prompt += f"  {ma['market_context']}\n"
+        if ma.get("target_audience"):
+            prompt += f"  Público: {ma['target_audience']}\n"
+        if ma.get("top_arguments"):
+            prompt += f"  Argumentos: {', '.join(ma['top_arguments'])}\n"
+        if ma.get("top_objections"):
+            prompt += f"  Objeções comuns: {', '.join(ma['top_objections'])}\n"
+
+    # Speech patterns
+    if identity.speech_patterns:
+        prompt += f"\n\nPADRÕES DE FALA DO DONO:\n{identity.speech_patterns}"
+
+    # Correction examples
+    if identity.correction_examples:
+        prompt += "\n\nCORREÇÕES DO DONO:"
+        for i, c in enumerate(identity.correction_examples[-10:], 1):
+            prompt += f"\n  {i}. IA: \"{c.get('ai_said', '')}\" → Dono: \"{c.get('owner_corrected', '')}\""
+
+    # --- Bloco dinâmico ---
+    prompt += _build_gender_prompt(conv)
+    prompt += "\n" + build_funnel_prompt(identity, conv.stage)
+
+    try:
+        from huma.services.sales_intelligence import build_sales_intelligence_prompt
+        sales_prompt = build_sales_intelligence_prompt(identity, conv)
+        if sales_prompt:
+            prompt += "\n" + sales_prompt
+    except Exception:
+        pass
+
+    capped = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
+    prompt += "\n\n" + _format_lead_memory(capped, conv.history_summary)
+
+    if image_url:
+        try:
+            from huma.services.image_intelligence import build_image_intelligence_prompt
+            image_prompt = build_image_intelligence_prompt(identity)
+            if image_prompt:
+                prompt += "\n" + image_prompt
+        except Exception:
+            pass
+
+    prompt += "\nMÍDIAS: Se lead pedir foto/vídeo, use action send_media com tags relevantes."
+
     prompt += f"""
 
 LEMBRETE: Você é "{identity.business_name}". Você VENDE e ATENDE.
@@ -578,11 +951,72 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
     }
 
 
+def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
+    """
+    Versão compacta de _build_reply_tool — sem descriptions nos campos.
+    Preserva branching SPLIT/SINGLE. Economia ~400 tokens por call.
+    """
+    if messaging_style == MessagingStyle.SPLIT:
+        reply_property = {
+            "reply_parts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 4,
+            }
+        }
+        required_reply = ["reply_parts"]
+    else:
+        reply_property = {"reply": {"type": "string"}}
+        required_reply = ["reply"]
+
+    return {
+        "name": "send_reply",
+        "description": "Envia resposta pro lead no WhatsApp.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **reply_property,
+                "audio_text": {"type": "string"},
+                "intent": {
+                    "type": "string",
+                    "enum": ["price", "buy", "objection", "schedule", "support", "neutral"],
+                },
+                "sentiment": {
+                    "type": "string",
+                    "enum": ["frustrated", "anxious", "excited", "cold", "neutral"],
+                },
+                "stage_action": {
+                    "type": "string",
+                    "enum": ["advance", "hold", "stop"],
+                },
+                "confidence": {"type": "number"},
+                "micro_objective": {"type": "string"},
+                "emotional_reading": {"type": "string"},
+                "new_facts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "actions": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        "create_appointment: lead_name, lead_email, service, date_time | "
+                        "generate_payment: lead_name, description, amount_cents, payment_method, lead_cpf | "
+                        "send_media: tags"
+                    ),
+                },
+            },
+            "required": required_reply + ["intent", "sentiment", "stage_action", "confidence"],
+        },
+    }
+
+
 # ================================================================
 # GERAÇÃO DE RESPOSTA
 # ================================================================
 
-async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False):
+async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False, tier: int = 3):
     """
     Gera resposta da IA usando tool_use para garantir JSON válido.
 
@@ -592,44 +1026,43 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     """
     model = AI_MODEL_FAST if use_fast_model else AI_MODEL_PRIMARY
 
-    # ── Bloco estático (cacheado) ──
-    static = build_static_prompt(identity)
-
-    # ── Learned insights (semi-estático, muda raro) ──
-    try:
-        learned = await _get_insights_cached(identity.client_id)
-        if learned:
-            static += learned
-    except Exception:
-        pass
-
-    # ── Garante tamanho mínimo pro cache funcionar ──
-    # Sonnet: 1024 tokens mínimo. Haiku: 2048 tokens.
-    # ~3.5 chars por token em português.
-    static_tokens_est = len(static) // 4
-    min_tokens = 2048 if use_fast_model else 1024
-    if static_tokens_est < min_tokens:
-        # Move conteúdo do dinâmico pro estático até bater o mínimo
-        # Isso não muda a resposta — só reorganiza pra cache funcionar
-        log.info(f"Cache padding | static_est={static_tokens_est} | min={min_tokens} | movendo dinâmico pro estático")
-        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
-        static = static + "\n" + dynamic
+    # ── Montagem do system prompt por tier ──
+    if tier == 1:
+        # Tier 1: string única, sem cache, sem insights, sem profile
+        static = build_tier1_prompt(identity, conv)
+        dynamic = ""
+    elif tier == 2:
+        # Tier 2: cache, sem insights, sem profile
+        static = build_tier2_prompt(identity, conv)
         dynamic = ""
     else:
-        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
+        # Tier 3 (default — retrocompat): fluxo completo v10.1
+        static = build_tier3_prompt(identity, conv, image_url=image_url)
 
-    log.debug(f"Prompt | static_chars={len(static)} | dynamic_chars={len(dynamic)} | est_tokens={len(static)//4 + len(dynamic)//4}")
+        try:
+            learned = await _get_insights_cached(identity.client_id)
+            if learned:
+                static += learned
+        except Exception:
+            pass
 
-    # ── Lead profile (dinâmico) ──
-    try:
-        from huma.services.learning_engine import profile_lead, build_profile_prompt
-        hour = conv.last_message_at.hour if conv.last_message_at else None
-        lead_profile = profile_lead(conv.phone, user_text, conv.lead_facts, hour)
-        profile_prompt = build_profile_prompt(lead_profile)
-        if profile_prompt:
-            dynamic += profile_prompt
-    except Exception:
-        pass
+        static_tokens_est = len(static) // 4
+        min_tokens = 2048 if use_fast_model else 1024
+        if static_tokens_est < min_tokens:
+            log.info(f"Cache padding | static_est={static_tokens_est} | min={min_tokens}")
+        dynamic = ""
+
+        try:
+            from huma.services.learning_engine import profile_lead, build_profile_prompt
+            hour = conv.last_message_at.hour if conv.last_message_at else None
+            lead_profile = profile_lead(conv.phone, user_text, conv.lead_facts, hour)
+            profile_prompt = build_profile_prompt(lead_profile)
+            if profile_prompt:
+                static += profile_prompt
+        except Exception:
+            pass
+
+    log.debug(f"Prompt | tier={tier} | static_chars={len(static)} | est_tokens={len(static)//4}")
 
     # Monta mensagens
     messages = [{"role": m["role"], "content": m["content"]} for m in conv.history]
@@ -659,16 +1092,19 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     else:
         messages.append({"role": "user", "content": user_text})
 
-    reply_tool = _build_reply_tool(identity.messaging_style)
+    reply_tool = _build_reply_tool_compact(identity.messaging_style)
 
-    # ── Cache: estático cacheado, dinâmico paga normal ──
-    # cache_control no bloco estático: Anthropic cacheia esse prefixo.
-    # Mínimo 1024 tokens (Sonnet) / 2048 (Haiku) pro cache funcionar.
-    # Bloco dinâmico fica fora do cache — muda por mensagem, é pequeno.
-    system_blocks = [
-        {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": dynamic},
-    ]
+    # ── System blocks por tier ──
+    if tier == 1:
+        # Sem cache, string única
+        system_blocks = static
+    else:
+        # Tier 2/3: cache no estático
+        system_blocks = [
+            {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
+        ]
+        if dynamic:
+            system_blocks.append({"type": "text", "text": dynamic})
 
     # Retry com backoff
     max_retries = 2

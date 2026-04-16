@@ -168,6 +168,8 @@ GREETING_PATTERNS = [
     r"^(oi|olá|ola|hey|eai|e ai|fala|bom dia|boa tarde|boa noite|hello|hi)\b",
     r"^(oii+|oie|oiee)\b",
     r"^(tudo bem|tudo bom|como vai|td bem)\b",
+    r"^(oi|ola|hey|eai)\s*(tudo\s*(bem|bom|certo|beleza|blz|tranquilo))\s*\??$",
+    r"^(bom\s*dia|boa\s*tarde|boa\s*noite)\s*(tudo\s*(bem|bom|certo|beleza))?\s*\??$",
 ]
 
 def _check_greeting(text: str, lead_name: str, conv: Conversation) -> Optional[ClassificationResult]:
