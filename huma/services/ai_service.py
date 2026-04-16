@@ -45,6 +45,7 @@ from huma.core.funnel import build_funnel_prompt
 from huma.utils.logger import get_logger
 
 log = get_logger("ai")
+log.info(f"Anthropic SDK version: {anthropic.__version__}")
 
 _client = None
 
@@ -386,7 +387,11 @@ REGRAS ABSOLUTAS:
   11. DADOS JÁ COLETADOS: verifique MEMÓRIA DO LEAD. Se já tem, NÃO pergunte de novo.
   12. VOCÊ É O NEGÓCIO: VOCÊ gera links, VOCÊ agenda. NUNCA peça pro lead fazer seu trabalho.
   13. RAPPORT: msgs CURTAS (1-2 frases). Crie conexão antes de vender. Brasileiro de verdade.
-  14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade."""
+  14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade.
+  15. CTA OBRIGATÓRIO: TODA resposta DEVE terminar com pergunta, convite ou próximo passo que avance a conversa.
+      Mensagem informativa solta é PROIBIDA. Se informou algo, pergunte. Se respondeu dúvida, direcione.
+      Exemplos de final PROIBIDO: "...te explica o que faz sentido pra você."
+      Exemplos de final CORRETO: "...te explica o que faz sentido pra você. Qual dia fica melhor pra gente marcar?\""""
 
     # ── Vertical knowledge (learning engine) ──
     if identity.category:
@@ -1118,6 +1123,15 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         system_blocks = [static_block]
         if dynamic:
             system_blocks.append({"type": "text", "text": dynamic})
+
+    # Diagnóstico de cache v11.2 — loga hash do static pra verificar se muda entre chamadas
+    import hashlib
+    if isinstance(system_blocks, list) and len(system_blocks) > 0:
+        first_block = system_blocks[0]
+        if isinstance(first_block, dict):
+            static_text = first_block.get("text", "")
+            static_hash = hashlib.sha256(static_text.encode()).hexdigest()[:16]
+            log.info(f"Cache debug | tier={tier} | static_hash={static_hash} | static_len={len(static_text)} | blocks_count={len(system_blocks)} | has_cache_control={'cache_control' in first_block}")
 
     # Retry com backoff
     max_retries = 2
