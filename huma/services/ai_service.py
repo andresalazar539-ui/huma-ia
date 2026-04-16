@@ -1260,8 +1260,11 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
 
         static_block = {"type": "text", "text": static}
         if static_is_cacheable:
-            static_block["cache_control"] = {"type": "ephemeral"}
-            log.info(f"Cache | tier={tier} | static ELIGIBLE | chars={len(static)} | min={min_chars_for_cache}")
+            # TTL 1h: write custa 2x ($2/MTok Haiku) vs 1,25x do 5min, mas read
+            # continua 0,1x ($0,10/MTok). Leads no WhatsApp costumam demorar
+            # minutos entre mensagens — 1h garante cache hit em conversas longas.
+            static_block["cache_control"] = {"type": "ephemeral", "ttl": "1h"}
+            log.info(f"Cache | tier={tier} | static ELIGIBLE ttl=1h | chars={len(static)} | min={min_chars_for_cache}")
         else:
             log.warning(f"Cache | tier={tier} | static TOO SMALL | chars={len(static)} | min={min_chars_for_cache}")
 

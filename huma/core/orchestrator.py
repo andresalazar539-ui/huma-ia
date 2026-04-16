@@ -51,24 +51,21 @@ def _select_tier(classification, conv: Conversation, text: str, image_url) -> tu
     """
     Retorna (tier, use_sonnet) baseado em classificação, stage e conteúdo.
 
-    v11.2 — Tier 1 eliminado. Ele economizava ~R$0,0003 por mensagem mas
-    causava perda de qualidade (português errado, tom inadequado, preço precoce).
-    Tier 2 com cache ativo fica mais barato que Tier 1 sem cache a partir da 2ª msg.
+    v11.3 — Removido falso positivo "unknown + >15 palavras" que disparava Sonnet
+    em perguntas simples (endereço, horário). 1 mensagem Sonnet custava ~R$0,19
+    (40% do custo total de uma conversa de 14 msgs). Sonnet agora só em imagem
+    ou objeção/complex explícita pela classificação.
 
     Regras:
       - Imagem → Tier 3 + Sonnet (precisa de image intelligence)
       - objection/complex → Tier 3 + Sonnet
-      - unknown + >15 palavras → Tier 3 + Sonnet
       - Tudo mais → Tier 2 + Haiku (com cache)
     """
     msg_type = classification.msg_type.value
-    msg_words = len(text.split())
 
     if image_url:
         return 3, True
     if msg_type in ("objection", "complex"):
-        return 3, True
-    if msg_type == "unknown" and msg_words > 15:
         return 3, True
 
     # Tudo mais: Tier 2 + Haiku. Simples, consistente, cacheável.
@@ -257,6 +254,12 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         for fact in ai_result["lead_facts"]:
             if fact and fact not in existing_facts:
                 conv.lead_facts.append(fact)
+
+        # Limita a 15 fatos mais recentes — crescimento descontrolado inflava
+        # o dynamic prompt (~60 tokens por fato extra × conversa longa).
+        MAX_LEAD_FACTS = 15
+        if len(conv.lead_facts) > MAX_LEAD_FACTS:
+            conv.lead_facts = conv.lead_facts[-MAX_LEAD_FACTS:]
 
         # Atualiza estágio
         prev_stage = conv.stage
