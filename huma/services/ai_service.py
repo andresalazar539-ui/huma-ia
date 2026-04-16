@@ -609,6 +609,7 @@ PRODUTOS:
 
     prompt += f"""
 REGRAS:
+  - SEMPRE responda em português do Brasil. NUNCA use palavras em inglês.
   - Msgs curtas, sem markdown, sem emojis no início.
   - NUNCA invente preço. NUNCA confirme horário (sistema confirma).
   - Se já coletou dado, NÃO pergunte de novo.
