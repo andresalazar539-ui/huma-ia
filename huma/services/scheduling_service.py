@@ -424,6 +424,12 @@ async def _create_google_calendar_event(
             elif platform == "google_meet":
                 description_lines += ["", "Tipo: Atendimento online via Google Meet"]
 
+            # Contexto da conversa (v12) — o que o lead disse que quer/sente/precisa.
+            # Permite que o dono abra o evento 5min antes e entenda o caso rápido.
+            if request.lead_context:
+                ctx = request.lead_context.strip()[:500]  # Trunca pra não inflar o evento
+                description_lines += ["", "━━━ Contexto da conversa ━━━", ctx]
+
             if request.notes:
                 description_lines += ["", f"Observações: {request.notes}"]
 

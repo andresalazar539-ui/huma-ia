@@ -594,7 +594,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             elif action_type == "create_appointment":
                 # Só executa se NÃO agendou ainda (trava anti-duplicação)
                 if not already_scheduled_this_turn:
-                    await _handle_appointment_action(phone, action, client_data)
+                    await _handle_appointment_action(phone, action, client_data, conv=conv)
                 else:
                     log.info(f"Action create_appointment ignorada | {phone} | já agendado")
 
@@ -836,6 +836,65 @@ async def _handle_payment_action(phone, action, client_data):
     return {"sent": True, "method": method, "amount_display": result.get("amount_display", "")}
 
 
+def _build_lead_context(conv) -> str:
+    """
+    Monta resumo curto da conversa pra aparecer na descrição do evento do Calendar.
+
+    Prioriza fatos categorizados que o dono precisa saber em 30s antes da reunião:
+    perfil (quem é), preferência/interesse (o que quer), emocional (como está),
+    objeção (o que preocupa).
+
+    Returns:
+        String formatada (≤500 chars) ou "" se não há fatos relevantes.
+    """
+    if not conv or not conv.lead_facts:
+        return ""
+
+    try:
+        buckets = {
+            "perfil": [], "preferência": [], "emocional": [],
+            "objeção": [], "pendência": [], "histórico": [], "geral": [],
+        }
+        for fact in conv.lead_facts:
+            if not fact:
+                continue
+            placed = False
+            for prefix in buckets:
+                if prefix == "geral":
+                    continue
+                if fact.lower().startswith(f"{prefix}:"):
+                    clean = fact.split(":", 1)[1].strip() if ":" in fact else fact
+                    buckets[prefix].append(clean)
+                    placed = True
+                    break
+            if not placed:
+                buckets["geral"].append(fact)
+
+        lines = []
+
+        if buckets["perfil"]:
+            lines.append("Quem é: " + "; ".join(buckets["perfil"][:3]))
+        if buckets["preferência"]:
+            lines.append("Quer: " + "; ".join(buckets["preferência"][:3]))
+        if buckets["emocional"]:
+            lines.append("Emocional: " + "; ".join(buckets["emocional"][:2]))
+        if buckets["objeção"]:
+            lines.append("Preocupações: " + "; ".join(buckets["objeção"][:2]))
+        if buckets["geral"] and not lines:
+            lines.append("Contexto: " + "; ".join(buckets["geral"][:3]))
+
+        if conv.history_summary and len("\n".join(lines)) < 350:
+            summary_clean = conv.history_summary.strip()[:150]
+            if summary_clean:
+                lines.append(f"Resumo: {summary_clean}")
+
+        return "\n".join(lines) if lines else ""
+
+    except Exception as e:
+        log.warning(f"Erro montando lead_context | {type(e).__name__}: {e}")
+        return ""
+
+
 async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
     """
     PRE-FLIGHT de agendamento: executa ANTES de enviar qualquer texto.
@@ -936,6 +995,7 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         date_time=date_time,
         meeting_platform=platform,
         location=address,
+        lead_context=_build_lead_context(conv),
     )
 
     result = await sched.create_appointment(request)
@@ -958,7 +1018,7 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
     return result
 
 
-async def _handle_appointment_action(phone, action, client_data):
+async def _handle_appointment_action(phone, action, client_data, conv=None):
     """
     Fallback: trata agendamentos que não passaram pelo pre-flight
     (ex: status=incomplete ou error).
@@ -977,6 +1037,7 @@ async def _handle_appointment_action(phone, action, client_data):
         date_time=action.get("date_time", ""),
         meeting_platform=platform,
         location=address,
+        lead_context=_build_lead_context(conv),
     )
 
     result = await sched.create_appointment(request)
