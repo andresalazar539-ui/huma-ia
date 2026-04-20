@@ -132,6 +132,16 @@ def classify_message(
     if result:
         return result
 
+    # 5.5 Reagendamento (prioridade sobre cancel — lead quer manter compromisso)
+    result = _check_reschedule_intent(normalized, conv)
+    if result:
+        return result
+
+    # 5.6 Cancelamento (só dispara com agendamento ativo)
+    result = _check_cancel_intent(normalized, conv)
+    if result:
+        return result
+
     # 6. Intenção de compra (quero comprar, fechar, pagar)
     result = _check_buy_intent(normalized)
     if result:
@@ -436,6 +446,81 @@ def _check_schedule_intent(text: str) -> Optional[ClassificationResult]:
         confidence=0.85,
         can_resolve_without_llm=False,
         metadata={"intent": "schedule", "priority": "high"},
+    )
+
+
+# ================================================================
+# CANCELAMENTO E REAGENDAMENTO (v12 / 6.B)
+#
+# Só disparam quando conv.active_appointment_event_id != "".
+# Não retornam resposta determinística — apenas classificam.
+# Orchestrator usa a classificação pra incrementar cancel_attempts
+# e injetar marker contextual no histórico antes da IA.
+# ================================================================
+
+CANCEL_PATTERNS = [
+    r"(quero|preciso|vou)\s*(cancelar|desmarcar|desistir)",
+    r"(cancela|desmarca|desmarcar)\s*(meu|minha|o|a)?\s*(agendamento|consulta|sessão|sessao|horário|horario|reserva|visita|reuniao|reunião)?",
+    r"(não|nao)\s*(vou|posso|consigo)\s*(mais|poder)?\s*(ir|comparecer|fazer)",
+    r"(desistir|desisto)\s*(do|da|de)?\s*(agendamento|consulta|horário|horario)?",
+    r"^cancela(r)?!?\s*$",
+    r"^desmarca(r)?!?\s*$",
+    r"(não|nao)\s*quero\s*mais",
+    r"(remove|remover|tira|tirar)\s*(o|a)?\s*(agendamento|consulta|horário|horario)",
+]
+
+RESCHEDULE_PATTERNS = [
+    r"(trocar|mudar|remarcar|reagendar|mover|transferir)\s*(o|a|meu|minha)?\s*(agendamento|consulta|horário|horario|data)?",
+    r"(para|pra)\s*(outro|outra)\s*(dia|data|horário|horario|hora)",
+    r"(posso|dá pra|da pra|tem como)\s*(mudar|trocar|remarcar|alterar)",
+    r"(outro|outra)\s*(dia|horário|horario|data)\s*(seria|fica|é)?\s*(melhor|possível|possivel|bom)?",
+]
+
+
+def _check_reschedule_intent(text: str, conv: Conversation) -> Optional[ClassificationResult]:
+    """
+    Detecta intenção de REAGENDAR — só dispara com agendamento ativo.
+
+    Prioridade sobre _check_cancel_intent: se ambos patterns batem,
+    tratamos como reagendamento (lead quer manter o compromisso, só mudar data).
+    """
+    if not conv.active_appointment_event_id:
+        return None
+
+    is_reschedule = any(re.search(p, text) for p in RESCHEDULE_PATTERNS)
+    if not is_reschedule:
+        return None
+
+    return ClassificationResult(
+        msg_type=MessageType.SCHEDULE_INTENT,
+        confidence=0.85,
+        can_resolve_without_llm=False,
+        metadata={"intent": "reschedule", "priority": "high", "has_active_appointment": True},
+    )
+
+
+def _check_cancel_intent(text: str, conv: Conversation) -> Optional[ClassificationResult]:
+    """
+    Detecta intenção de CANCELAR — só dispara com agendamento ativo.
+
+    Retorna MessageType.OBJECTION pra que _select_tier force Tier 3 + Sonnet
+    (empatia + retenção precisam do modelo grande).
+
+    Não retorna resposta determinística — orchestrator aplica a policy
+    (incrementa contador + injeta marker) antes de chamar o Claude.
+    """
+    if not conv.active_appointment_event_id:
+        return None
+
+    is_cancel = any(re.search(p, text) for p in CANCEL_PATTERNS)
+    if not is_cancel:
+        return None
+
+    return ClassificationResult(
+        msg_type=MessageType.OBJECTION,
+        confidence=0.85,
+        can_resolve_without_llm=False,
+        metadata={"intent": "cancel", "priority": "critical", "has_active_appointment": True},
     )
 
 

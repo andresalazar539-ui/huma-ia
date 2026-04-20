@@ -435,6 +435,7 @@ class Conversation(BaseModel):
     active_appointment_event_id: str = ""  # event_id do Google Calendar do agendamento ativo. Vazio = nenhum ativo.
     active_appointment_datetime: str = ""  # Data/hora do agendamento ativo (string ISO). Pra logs e prompts.
     active_appointment_service: str = ""   # Nome do serviço agendado. Pra logs e prompts.
+    cancel_attempts: int = 0               # v12 (6.B) — policy anti-churn. Conta tentativas do lead de cancelar. 0=nenhuma, 1-2=sinalizações, 3+=insistência. Reset em cancelamento executado ou reagendamento bem-sucedido.
 
 
 # ================================================================

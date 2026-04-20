@@ -119,6 +119,7 @@ Touching any of these requires mapping the full impact before editing:
 - `huma/services/payment_service.py` — Mercado Pago, Pix, boleto
 - `huma/services/conversation_intelligence.py` — deterministic classification (Tier 0)
 - `huma/core/funnel.py` — stage graph and transition rules
+- `huma/core/orchestrator.py::_handle_cancel_appointment_action` — v12 (6.B) stub: atualiza stage=lost + reset cancel_attempts + marker histórico, mas NÃO deleta no Google Calendar. `active_appointment_event_id` é preservado de propósito pra 6.C usar no delete real. Não "limpe" esse campo aqui até a 6.C pousar.
 
 Before editing any of these:
 1. Read the full file first

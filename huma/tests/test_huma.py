@@ -723,3 +723,60 @@ class TestDatetimeParsing:
         from huma.services.scheduling_service import _parse_datetime
         assert _parse_datetime("amanhã 14h") is None
         assert _parse_datetime("lixo") is None
+
+
+# ================================================================
+# TESTES DO ANTI-CHURN POLICY v12 (6.B)
+# ================================================================
+
+class TestAntiChurnPolicy:
+    """Testa policy de retenção em cancelamento/reagendamento."""
+
+    def test_committed_has_antichurn_policy(self, clinica_identity):
+        """Stage committed inclui policy de retenção em 3 tentativas graduadas."""
+        from huma.core.funnel import get_stages
+        stages = get_stages(clinica_identity)
+        committed = [s for s in stages if s.name == "committed"][0]
+        assert "POLICY ANTI-CHURN" in committed.instructions
+        assert "Tentativa 1" in committed.instructions
+        assert "Tentativa 2" in committed.instructions
+        assert "Tentativa 3" in committed.instructions
+        assert "cancel_appointment" in committed.instructions
+        assert "NUNCA emita cancel_appointment na 1ª ou 2ª tentativa" in committed.forbidden_actions
+
+    def test_cancel_pattern_detected_with_active_appointment(self):
+        """Regex CANCEL dispara só com agendamento ativo; no-op sem."""
+        from huma.services.conversation_intelligence import _check_cancel_intent
+        from huma.models.schemas import Conversation
+
+        conv_with = Conversation(client_id="x", phone="123", active_appointment_event_id="evt_abc")
+        conv_without = Conversation(client_id="x", phone="123")
+
+        result_with = _check_cancel_intent("quero cancelar", conv_with)
+        result_without = _check_cancel_intent("quero cancelar", conv_without)
+
+        assert result_with is not None
+        assert result_with.metadata["intent"] == "cancel"
+        assert result_with.metadata["has_active_appointment"] is True
+        assert result_without is None
+
+    def test_reschedule_priority_over_cancel(self):
+        """Reagendamento tem prioridade: patterns de reschedule disparam antes."""
+        from huma.services.conversation_intelligence import (
+            _check_reschedule_intent, _check_cancel_intent,
+        )
+        from huma.models.schemas import Conversation
+
+        conv = Conversation(
+            client_id="x", phone="123",
+            active_appointment_event_id="evt_abc",
+        )
+        text = "preciso remarcar pra outro dia"
+
+        reschedule = _check_reschedule_intent(text, conv)
+        assert reschedule is not None
+        assert reschedule.metadata["intent"] == "reschedule"
+
+        # Sanity: texto puramente de cancel NÃO dispara reschedule
+        cancel_only = _check_reschedule_intent("quero cancelar", conv)
+        assert cancel_only is None

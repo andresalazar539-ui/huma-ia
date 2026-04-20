@@ -217,6 +217,49 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             # Roteamento Tiered Intelligence v11.0
             tier, use_sonnet = _select_tier(classification, conv, unified_text, unified_image)
 
+            # ============================================================
+            # ANTI-CHURN POLICY v12 (6.B) — pré-processamento
+            #
+            # Detecta intenção de cancelar/reagendar via Tier 0 (regex).
+            # - Reschedule: injeta marker contextual (não mexe em contador).
+            # - Cancel: incrementa cancel_attempts + injeta marker graduado.
+            #
+            # Breaker duro fica pra 6.C. Aqui confiamos no Claude respeitar
+            # o prompt da stage committed + marker escalonado no histórico.
+            # ============================================================
+            classification_metadata = classification.metadata or {}
+            classification_intent = classification_metadata.get("intent", "")
+
+            if classification_intent == "reschedule" and classification_metadata.get("has_active_appointment"):
+                try:
+                    conv.history.append({
+                        "role": "assistant",
+                        "content": _build_reschedule_marker(),
+                    })
+                    await db.save_conversation(conv)
+                    log.info(f"Policy reagendamento | {phone} | marker injetado")
+                except Exception as e:
+                    log.error(
+                        f"Erro injetando marker reschedule | {phone} | "
+                        f"{type(e).__name__}: {e}"
+                    )
+
+            elif classification_intent == "cancel" and classification_metadata.get("has_active_appointment"):
+                try:
+                    conv.cancel_attempts = (conv.cancel_attempts or 0) + 1
+                    marker = _build_cancel_marker(conv.cancel_attempts, conv.stage)
+                    conv.history.append({"role": "assistant", "content": marker})
+                    await db.save_conversation(conv)
+                    log.info(
+                        f"Policy cancelamento | {phone} | tentativa={conv.cancel_attempts} | "
+                        f"stage={conv.stage} | marker injetado"
+                    )
+                except Exception as e:
+                    log.error(
+                        f"Erro processando cancel | {phone} | "
+                        f"{type(e).__name__}: {e}"
+                    )
+
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
                 image_url=unified_image,
@@ -591,6 +634,20 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         await db.save_conversation(conv)
                     except Exception as e:
                         log.error(f"Erro salvando pagamento no histórico | {phone} | {e}")
+            elif action_type == "cancel_appointment":
+                # Stub v12 (6.B) — atualiza estado sem tocar no Calendar.
+                # Validação de tentativa mínima: logamos warning se precoce,
+                # mas executamos (confiamos no Sonnet após o prompt da policy).
+                current_attempts = conv.cancel_attempts if conv else 0
+                if current_attempts < 2:
+                    log.warning(
+                        f"cancel_appointment precoce | {phone} | "
+                        f"attempts={current_attempts} | "
+                        f"Claude pulou etapas da policy — stub executa mesmo assim"
+                    )
+                await _handle_cancel_appointment_action(phone, action, client_data, conv)
+                # NÃO suprime reply do Claude — ele responde naturalmente (ex: "Cancelei aqui...")
+                # NÃO faz break — deixa outras actions da mesma resposta rodarem normalmente
             elif action_type == "create_appointment":
                 # Só executa se NÃO agendou ainda (trava anti-duplicação)
                 if not already_scheduled_this_turn:
@@ -1004,16 +1061,19 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
 
     if result.get("status") == "confirmed":
         log.info(f"Agendamento OK (pre-flight) | {result['date_time']}")
-        # Salva o event_id ativo na conversa pra permitir update em reagendamentos futuros
+        # Salva event_id ativo + reseta contador de churn (lead manteve compromisso)
         if conv and result.get("event_id"):
             conv.active_appointment_event_id = result["event_id"]
             conv.active_appointment_datetime = result.get("date_time", "")
             conv.active_appointment_service = result.get("service", "")
+            prev_attempts = conv.cancel_attempts
+            conv.cancel_attempts = 0  # v12 (6.B): reset em qualquer confirmed
             try:
                 await db.save_conversation(conv)
                 log.info(
                     f"Conv atualizada | event_id={result['event_id']} | "
-                    f"is_update={result.get('is_update', False)}"
+                    f"is_update={result.get('is_update', False)} | "
+                    f"cancel_attempts reset ({prev_attempts}→0)"
                 )
             except Exception as e:
                 log.error(f"Erro salvando event_id na conv | {type(e).__name__}: {e}")
@@ -1078,6 +1138,139 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
             f"Agendamento conflito | {result.get('conflicting_event', '')} | "
             f"slots={result.get('available_slots', [])}"
         )
+
+
+# ================================================================
+# ANTI-CHURN POLICY (v12 / 6.B)
+#
+# 6.B entrega: policy de retenção + telemetria.
+# 6.C entregará: delete real no Google Calendar + breaker duro + Sonnet forçado.
+#
+# Stub handler nesta rodada:
+#   - Atualiza estado interno (stage=lost, reset contador, marker histórico)
+#   - NÃO toca no Calendar — dono cancela manualmente até a 6.C pousar
+#   - active_appointment_event_id fica intacto pra 6.C usar no delete real
+# ================================================================
+
+
+def _build_cancel_marker(cancel_attempts: int, stage: str) -> str:
+    """
+    Monta marker contextual pro histórico guiar a IA na policy de retenção.
+
+    Escalação:
+      1 → ofereça alternativa de horário
+      2 → pergunte motivo, tente reter
+      3 → aceite e emita action cancel_appointment
+      4+ → marker enérgico (Claude teimou em reter além do razoável)
+
+    Exceção: stage=won → marker redireciona pra atendimento humano (envolve reembolso).
+    """
+    if stage == "won":
+        return (
+            "[LEAD PAGOU E PEDIU CANCELAMENTO — cancelamento envolve reembolso, "
+            "encaminhe pro atendimento humano. NÃO emita action cancel_appointment. "
+            "Diga que vai passar pro responsável resolver.]"
+        )
+
+    if cancel_attempts == 1:
+        return (
+            "[CANCELAMENTO tentativa 1/3 — o lead está sinalizando que quer cancelar. "
+            "Aplique policy: ofereça trocar pra outro horário antes de aceitar cancelar. "
+            "NÃO emita action cancel_appointment agora.]"
+        )
+    if cancel_attempts == 2:
+        return (
+            "[CANCELAMENTO tentativa 2/3 — o lead insistiu. Pergunte o motivo com empatia, "
+            "tente entender se é algo que você pode resolver. "
+            "NÃO emita action cancel_appointment ainda.]"
+        )
+    if cancel_attempts == 3:
+        return (
+            "[CANCELAMENTO tentativa 3/3 — o lead já resistiu às tentativas de retenção. "
+            "Aceite com elegância, porta aberta, sem insistir mais. "
+            "EMITA action cancel_appointment AGORA.]"
+        )
+    # 4+ — Claude falhou em cooperar nas rodadas anteriores. Breaker duro fica pra 6.C.
+    return (
+        f"[CANCELAMENTO tentativa {cancel_attempts} — LIMITE. "
+        "Pare de tentar reter. EMITA action cancel_appointment IMEDIATAMENTE. "
+        "Responda só 'Cancelei aqui. Qualquer coisa me chama.']"
+    )
+
+
+def _build_reschedule_marker() -> str:
+    """Marker pra reagendamento — lead quer MANTER o compromisso em outra data."""
+    return (
+        "[LEAD QUER REAGENDAR — ele quer manter o compromisso, só em outra data. "
+        "Pergunte qual dia/horário fica melhor. Quando receber a nova data, "
+        "emita action create_appointment com a nova date_time — o sistema move o evento existente.]"
+    )
+
+
+async def _handle_cancel_appointment_action(phone, action, client_data, conv):
+    """
+    Stub handler v12 (6.B) — atualiza estado interno sem tocar no Calendar.
+
+    Comportamento nesta rodada:
+      1. Valida que há agendamento ativo (senão warning + no-op)
+      2. Loga como stub (deixa claro nos logs que 6.B não deleta)
+      3. Injeta marker no histórico indicando pendência de cancelamento manual
+      4. Move stage pra "lost"
+      5. Reseta cancel_attempts
+      6. NÃO limpa active_appointment_event_id (6.C precisa dele pra delete real)
+      7. NÃO suprime reply do Claude — ele já responde naturalmente
+         ("Cancelei aqui, qualquer coisa me chama.")
+
+    Retorna:
+        {executed: bool, reason: str}
+          executed=True → estado interno atualizado, reply do Claude segue normal.
+          executed=False → no-op por falta de agendamento ativo.
+    """
+    cid = client_data.client_id
+
+    if not conv or not conv.active_appointment_event_id:
+        log.warning(
+            f"cancel_appointment stub IGNORADO | {phone} | sem agendamento ativo | "
+            f"conv_exists={bool(conv)} | "
+            f"event_id={conv.active_appointment_event_id if conv else 'N/A'}"
+        )
+        return {"executed": False, "reason": "no_active_appointment"}
+
+    event_id = conv.active_appointment_event_id
+    dt_display = conv.active_appointment_datetime or "(sem data)"
+    service = conv.active_appointment_service or "(sem serviço)"
+    prev_attempts = conv.cancel_attempts
+
+    log.info(
+        f"cancel_appointment recebido (stub — 6.B não deleta Calendar) | {phone} | "
+        f"event_id={event_id} | service={service} | era={dt_display} | "
+        f"attempts={prev_attempts}"
+    )
+
+    try:
+        conv.history.append({
+            "role": "assistant",
+            "content": (
+                f"[AGENDAMENTO CANCELADO PENDENTE — dono precisa deletar no Calendar manualmente | "
+                f"event_id={event_id} | era={dt_display} | service={service}]"
+            ),
+        })
+        conv.stage = "lost"
+        conv.cancel_attempts = 0
+        # NÃO limpa active_appointment_event_id — 6.C usa pra delete real
+        await db.save_conversation(conv)
+        log.info(
+            f"cancel_appointment stub OK | {phone} | stage=lost | "
+            f"cancel_attempts=0 | event_id preservado={event_id}"
+        )
+        return {"executed": True, "reason": "stub_state_updated"}
+
+    except Exception as e:
+        log.error(
+            f"Erro atualizando estado no cancel stub | {phone} | "
+            f"{type(e).__name__}: {e}"
+        )
+        return {"executed": False, "reason": f"save_failed:{type(e).__name__}"}
 
 
 # ================================================================
