@@ -59,95 +59,6 @@ COMMON_QUESTIONS = [
 # PERGUNTAS ESPECÍFICAS POR CATEGORIA
 # ================================================================
 
-CATEGORY_QUESTIONS = {
-    BusinessCategory.CLINICA: [
-        {"id": "specialties", "question": "Quais especialidades/procedimentos e preços?", "field": "products_or_services"},
-        {"id": "hours", "question": "Horários de atendimento?", "field": "working_hours"},
-        {"id": "insurance", "question": "Aceita convênio? Quais?", "field": "custom_rules"},
-        {"id": "location", "question": "Endereço completo da clínica?", "field": "faq"},
-    ],
-
-    BusinessCategory.ECOMMERCE: [
-        {"id": "products", "question": "Principais produtos e preços?", "field": "products_or_services"},
-        {"id": "shipping", "question": "Como funciona o frete? Tem frete grátis?", "field": "faq"},
-        {"id": "returns", "question": "Política de troca e devolução?", "field": "faq"},
-        {"id": "payment", "question": "Formas de pagamento e parcelamento?", "field": "faq"},
-    ],
-
-    BusinessCategory.IMOBILIARIA: [
-        {"id": "types", "question": "Tipos de imóvel e faixa de preço?", "field": "products_or_services"},
-        {"id": "regions", "question": "Quais regiões/bairros atende?", "field": "custom_rules"},
-        {"id": "financing", "question": "Trabalha com financiamento? FGTS?", "field": "faq"},
-    ],
-
-    BusinessCategory.SERVICOS: [
-        {"id": "services", "question": "Quais serviços oferece e preços?", "field": "products_or_services"},
-        {"id": "guarantee", "question": "Oferece garantia? Como funciona?", "field": "faq"},
-        {"id": "portfolio", "question": "Tem portfólio ou cases de sucesso?", "field": "custom_rules"},
-    ],
-
-    BusinessCategory.EDUCACAO: [
-        {"id": "courses", "question": "Quais cursos/aulas e preços?", "field": "products_or_services"},
-        {"id": "modality", "question": "Online, presencial ou híbrido?", "field": "custom_rules"},
-        {"id": "certificate", "question": "Tem certificado? É reconhecido?", "field": "faq"},
-        {"id": "trial", "question": "Oferece aula experimental ou teste grátis?", "field": "faq"},
-    ],
-
-    BusinessCategory.RESTAURANTE: [
-        {"id": "menu", "question": "Pratos principais e preços?", "field": "products_or_services"},
-        {"id": "delivery", "question": "Faz delivery? Quais apps? Taxa?", "field": "faq"},
-        {"id": "hours", "question": "Horário de funcionamento?", "field": "working_hours"},
-        {"id": "reservations", "question": "Aceita reserva? Como funciona?", "field": "faq"},
-    ],
-
-    BusinessCategory.SALAO_BARBEARIA: [
-        {"id": "services", "question": "Quais serviços e preços? (corte, barba, coloração, etc)", "field": "products_or_services"},
-        {"id": "hours", "question": "Horários de funcionamento?", "field": "working_hours"},
-        {"id": "professionals", "question": "Quantos profissionais? Cliente escolhe com quem quer?", "field": "custom_rules"},
-        {"id": "cancellation", "question": "Política de cancelamento/remarcação?", "field": "faq"},
-        {"id": "location", "question": "Endereço?", "field": "faq"},
-    ],
-
-    BusinessCategory.ADVOCACIA_FINANCEIRO: [
-        {"id": "areas", "question": "Quais áreas de atuação? (trabalhista, família, tributário, etc)", "field": "products_or_services"},
-        {"id": "consultation", "question": "Valor da consulta inicial? Tem consulta gratuita?", "field": "faq"},
-        {"id": "hours", "question": "Horários de atendimento?", "field": "working_hours"},
-        {"id": "online", "question": "Atende online (videoconferência)?", "field": "custom_rules"},
-        {"id": "confidentiality", "question": "Algo específico sobre sigilo que o cliente precisa saber?", "field": "custom_rules"},
-    ],
-
-    BusinessCategory.ACADEMIA_PERSONAL: [
-        {"id": "plans", "question": "Quais planos e preços? (mensal, trimestral, anual)", "field": "products_or_services"},
-        {"id": "modalities", "question": "Quais modalidades? (musculação, funcional, pilates, etc)", "field": "products_or_services"},
-        {"id": "trial", "question": "Tem aula experimental gratuita?", "field": "faq"},
-        {"id": "hours", "question": "Horário de funcionamento?", "field": "working_hours"},
-        {"id": "location", "question": "Endereço?", "field": "faq"},
-    ],
-
-    BusinessCategory.PET: [
-        {"id": "services", "question": "Quais serviços? (banho, tosa, consulta, vacina, hotel, etc)", "field": "products_or_services"},
-        {"id": "hours", "question": "Horários de atendimento?", "field": "working_hours"},
-        {"id": "emergency", "question": "Atende emergência? 24h?", "field": "faq"},
-        {"id": "delivery", "question": "Tem delivery de ração/produtos? Leva e traz?", "field": "faq"},
-    ],
-
-    BusinessCategory.AUTOMOTIVO: [
-        {"id": "services", "question": "Quais serviços e preços? (revisão, troca de óleo, funilaria, etc)", "field": "products_or_services"},
-        {"id": "brands", "question": "Atende todas as marcas ou é especializado?", "field": "custom_rules"},
-        {"id": "hours", "question": "Horários de funcionamento?", "field": "working_hours"},
-        {"id": "guarantee", "question": "Garantia dos serviços? Peças originais?", "field": "faq"},
-        {"id": "scheduling", "question": "Precisa agendar ou aceita por ordem de chegada?", "field": "faq"},
-    ],
-
-    BusinessCategory.OUTROS: [
-        {"id": "what", "question": "Descreva seu negócio em detalhes: o que faz, pra quem, como vende.", "field": "business_description"},
-        {"id": "products", "question": "Quais produtos/serviços oferece e preços?", "field": "products_or_services"},
-        {"id": "hours", "question": "Horários de atendimento?", "field": "working_hours"},
-        {"id": "differentials", "question": "O que te diferencia dos concorrentes?", "field": "custom_rules"},
-        {"id": "common_questions", "question": "Quais são as 5 perguntas mais frequentes que seus clientes fazem?", "field": "faq"},
-        {"id": "objections", "question": "Quais são as principais objeções que você ouve? (caro, demora, medo, etc)", "field": "custom_rules"},
-    ],
-}
 
 
 # ================================================================
@@ -201,8 +112,20 @@ FINAL_QUESTION = {
 
 
 def get_onboarding_questions(category: BusinessCategory) -> list[dict]:
-    """Retorna todas as perguntas de onboarding pra uma categoria."""
-    specific = CATEGORY_QUESTIONS.get(category, CATEGORY_QUESTIONS[BusinessCategory.OUTROS])
+    """Retorna todas as perguntas de onboarding pra uma categoria.
+
+    Fonte: huma.categories registry (Fase 1 — Category Packs).
+    Combina perguntas comuns + específicas + autonomia.
+    Fallback: se categoria sem perguntas específicas, usa OUTROS.
+    """
+    from huma.categories import get_onboarding_questions as _pack_questions
+
+    slug = category.value if hasattr(category, "value") else str(category)
+    specific = _pack_questions(category)
+
+    if not specific and slug != "outros":
+        specific = _pack_questions("outros")
+
     return COMMON_QUESTIONS + specific + AUTONOMY_QUESTIONS
 
 
