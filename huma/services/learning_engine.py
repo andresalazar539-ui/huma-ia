@@ -44,13 +44,319 @@ log = get_logger("learning")
 # O dono não precisa ensinar o óbvio.
 # ================================================================
 
-def get_vertical_knowledge(category: BusinessCategory) -> dict:
-    """Retorna base de conhecimento da vertical.
+VERTICAL_KNOWLEDGE = {
+    BusinessCategory.CLINICA: {
+        "perfis": {
+            "mulher_30_plus": {
+                "descricao": "Mulher 30+, preocupada com resultados e segurança",
+                "sinais": ["resultado", "antes e depois", "dói", "seguro", "natural", "recuperação"],
+                "tom_ideal": "Acolhedor, técnico mas acessível. Mostre resultados reais.",
+                "objecoes_comuns": ["dor", "tempo de recuperação", "preço alto", "medo de ficar artificial"],
+                "argumentos_fortes": ["resultados comprovados", "avaliação gratuita", "procedimento seguro", "resultado natural"],
+                "ordem_conversa": "segurança → resultados → preço → agendamento",
+            },
+            "jovem_20_29": {
+                "descricao": "Jovem 20-29, quer preventivo, influenciada por redes sociais",
+                "sinais": ["preventivo", "instagram", "vi no tiktok", "indicação", "harmonização"],
+                "tom_ideal": "Leve, moderno, sem termos técnicos pesados. Use exemplos visuais.",
+                "objecoes_comuns": ["preço", "medo de agulha", "não sei se preciso"],
+                "argumentos_fortes": ["prevenção é mais barato que correção", "procedimento rápido", "resultado sutil", "muita gente da sua idade faz"],
+                "ordem_conversa": "curiosidade → fotos → preço → agenda fácil",
+            },
+            "homem_qualquer_idade": {
+                "descricao": "Homem buscando procedimento, geralmente mais direto",
+                "sinais": ["discreto", "rápido", "quanto custa", "demora quanto"],
+                "tom_ideal": "Direto, objetivo, sem rodeios. Foque em praticidade.",
+                "objecoes_comuns": ["vergonha", "tempo", "preço"],
+                "argumentos_fortes": ["procedimento discreto", "30 minutos", "resultado natural", "muitos homens fazem"],
+                "ordem_conversa": "preço → tempo → agendamento",
+            },
+        },
+        "insights_universais": [
+            "Sempre mencione avaliação gratuita — remove barreira de entrada",
+            "Fotos de antes/depois são o argumento mais forte nessa vertical",
+            "Lead que pergunta sobre dor está perto de comprar — acalme e avance",
+            "Primeiro procedimento estético gera ansiedade — normalize",
+        ],
+    },
 
-    Fonte: huma.categories registry (Fase 1 — Category Packs).
-    """
-    from huma.categories import get_knowledge
-    return get_knowledge(category)
+    BusinessCategory.ECOMMERCE: {
+        "perfis": {
+            "comprador_impulsivo": {
+                "descricao": "Quer comprar rápido, pergunta preço e disponibilidade",
+                "sinais": ["tem", "quanto", "pronta entrega", "manda link", "pix"],
+                "tom_ideal": "Rápido, direto, facilite o caminho até o pagamento.",
+                "objecoes_comuns": ["frete caro", "demora pra chegar"],
+                "argumentos_fortes": ["frete grátis", "entrega rápida", "pix com desconto"],
+                "ordem_conversa": "confirmar produto → preço → pagamento",
+            },
+            "pesquisador_cauteloso": {
+                "descricao": "Compara, pesquisa, medo de golpe ou produto errado",
+                "sinais": ["original", "troca", "garantia", "confiável", "avaliação"],
+                "tom_ideal": "Paciente, forneça provas. Fotos reais, garantias, avaliações.",
+                "objecoes_comuns": ["medo de golpe", "produto diferente da foto", "não servir"],
+                "argumentos_fortes": ["garantia de troca", "fotos reais", "avaliações de clientes", "devolvemos o dinheiro"],
+                "ordem_conversa": "confiança → produto → garantias → pagamento",
+            },
+            "caçador_de_desconto": {
+                "descricao": "Quer o melhor preço, compara com concorrentes",
+                "sinais": ["desconto", "cupom", "vi mais barato", "promoção", "pix tem desconto"],
+                "tom_ideal": "Mostre valor antes de preço. Destaque diferenciais.",
+                "objecoes_comuns": ["mais barato em outro lugar", "muito caro"],
+                "argumentos_fortes": ["produto original", "garantia que outros não dão", "frete incluso", "parcelamento"],
+                "ordem_conversa": "valor → diferencial → condição especial",
+            },
+        },
+        "insights_universais": [
+            "Pix com desconto é o argumento de fechamento mais forte no Brasil",
+            "Foto real do produto > foto de catálogo",
+            "Lead que pergunta sobre troca está perto de comprar",
+            "Frete grátis converte mais que desconto no produto",
+        ],
+    },
+
+    BusinessCategory.SERVICOS: {
+        "perfis": {
+            "urgente": {
+                "descricao": "Precisa resolver um problema agora",
+                "sinais": ["urgente", "pra ontem", "emergência", "quebrou", "não funciona"],
+                "tom_ideal": "Rápido, confiante, mostre disponibilidade imediata.",
+                "objecoes_comuns": ["preço alto pra urgência"],
+                "argumentos_fortes": ["atendemos hoje", "garantia do serviço", "orçamento rápido"],
+                "ordem_conversa": "diagnóstico rápido → preço → agendamento imediato",
+            },
+            "planejador": {
+                "descricao": "Pesquisando com calma, comparando orçamentos",
+                "sinais": ["orçamento", "quanto fica", "prazo", "portfólio", "referências"],
+                "tom_ideal": "Consultivo, detalhado, mostre expertise e cases.",
+                "objecoes_comuns": ["preço", "prazo longo", "já fui enganado"],
+                "argumentos_fortes": ["portfólio comprovado", "contrato com garantia", "parcelamento", "cases de sucesso"],
+                "ordem_conversa": "entender escopo → mostrar capacidade → preço → condições",
+            },
+        },
+        "insights_universais": [
+            "Lead que foi enganado antes precisa de MAIS garantias que o normal",
+            "Contrato com garantia de ajustes remove a principal barreira",
+            "Mostrar portfólio antes do preço aumenta percepção de valor",
+        ],
+    },
+
+    BusinessCategory.EDUCACAO: {
+        "perfis": {
+            "aluno_motivado": {
+                "descricao": "Quer aprender, busca transformação",
+                "sinais": ["quero aprender", "como funciona", "certificado", "mercado de trabalho"],
+                "tom_ideal": "Inspirador, mostre transformação de alunos anteriores.",
+                "objecoes_comuns": ["preço", "tempo", "não sei se consigo"],
+                "argumentos_fortes": ["depoimentos de alunos", "certificado reconhecido", "suporte", "acesso vitalício"],
+                "ordem_conversa": "motivação → conteúdo → resultados de alunos → matrícula",
+            },
+            "pai_mae_decidindo": {
+                "descricao": "Decidindo pelo filho, quer segurança",
+                "sinais": ["meu filho", "minha filha", "criança", "adolescente", "seguro"],
+                "tom_ideal": "Confiável, foque em segurança e desenvolvimento.",
+                "objecoes_comuns": ["preço", "horários", "segurança"],
+                "argumentos_fortes": ["ambiente seguro", "professores qualificados", "flexibilidade de horário"],
+                "ordem_conversa": "segurança → metodologia → flexibilidade → matrícula",
+            },
+        },
+        "insights_universais": [
+            "Depoimento de aluno é mais forte que qualquer feature",
+            "Aula experimental gratuita é o melhor funil de entrada",
+        ],
+    },
+
+    BusinessCategory.RESTAURANTE: {
+        "perfis": {
+            "faminto_agora": {
+                "descricao": "Quer pedir agora, rápido",
+                "sinais": ["cardápio", "entrega", "tempo", "aberto", "delivery"],
+                "tom_ideal": "Rápido, prático, facilite o pedido.",
+                "objecoes_comuns": ["taxa de entrega", "tempo de espera"],
+                "argumentos_fortes": ["entrega grátis", "pronto em X minutos", "combo especial"],
+                "ordem_conversa": "cardápio → pedido → pagamento",
+            },
+            "planejando_evento": {
+                "descricao": "Quer reservar mesa ou encomendar pra evento",
+                "sinais": ["reserva", "aniversário", "grupo", "cardápio especial", "encomenda"],
+                "tom_ideal": "Atencioso, personalize a experiência.",
+                "objecoes_comuns": ["preço por pessoa", "cardápio limitado"],
+                "argumentos_fortes": ["cardápio personalizado", "decoração inclusa", "desconto pra grupos"],
+                "ordem_conversa": "entender evento → opções → preço → reserva",
+            },
+        },
+        "insights_universais": [
+            "Foto do prato é mais forte que descrição do cardápio",
+            "Combo/promoção do dia converte melhor que item individual",
+        ],
+    },
+
+    BusinessCategory.IMOBILIARIA: {
+        "perfis": {
+            "primeiro_imovel": {
+                "descricao": "Primeira compra, inseguro, muitas dúvidas",
+                "sinais": ["primeiro", "financiamento", "entrada", "FGTS", "quanto preciso"],
+                "tom_ideal": "Educativo, paciente, explique cada etapa.",
+                "objecoes_comuns": ["não tenho entrada", "financiamento difícil", "burocracia"],
+                "argumentos_fortes": ["FGTS como entrada", "simulação gratuita", "acompanhamento completo"],
+                "ordem_conversa": "educação → simulação → visita → proposta",
+            },
+            "investidor": {
+                "descricao": "Busca rentabilidade, objetivo e direto",
+                "sinais": ["rentabilidade", "aluguel", "valorização", "retorno", "investimento"],
+                "tom_ideal": "Números, dados, retorno sobre investimento.",
+                "objecoes_comuns": ["liquidez", "vacância", "manutenção"],
+                "argumentos_fortes": ["rentabilidade X%", "região em valorização", "demanda alta pra aluguel"],
+                "ordem_conversa": "números → localização → condições → fechamento",
+            },
+        },
+        "insights_universais": [
+            "Visita presencial é o momento de maior conversão",
+            "Lead que pede simulação está 70% decidido",
+            "Mencionar nome do cônjuge (se souber) aumenta confiança",
+        ],
+    },
+
+    BusinessCategory.SALAO_BARBEARIA: {
+        "perfis": {
+            "cliente_fiel": {
+                "descricao": "Cliente recorrente, já tem profissional preferido",
+                "sinais": ["de sempre", "com fulano", "meu horário", "toda semana"],
+                "tom_ideal": "Familiar, íntimo, trate pelo nome. Já conhece.",
+                "objecoes_comuns": ["mudança de horário", "profissional indisponível"],
+                "argumentos_fortes": ["reservei seu horário", "fulano te espera", "prioridade"],
+                "ordem_conversa": "confirmar horário → profissional → serviço",
+            },
+            "cliente_novo": {
+                "descricao": "Primeira vez, quer conhecer o espaço",
+                "sinais": ["primeira vez", "indicação", "vi no instagram", "perto de mim"],
+                "tom_ideal": "Acolhedor, mostre o ambiente. Convide pra conhecer.",
+                "objecoes_comuns": ["preço", "não conheço", "longe"],
+                "argumentos_fortes": ["avaliação gratuita", "primeira vez tem desconto", "profissionais experientes"],
+                "ordem_conversa": "acolher → serviços → preço → agendar",
+            },
+        },
+        "insights_universais": [
+            "Horário é rei — confirme sempre com antecedência",
+            "Foto do resultado (antes/depois de corte) converte muito",
+            "Cancelamento de última hora é a maior dor — tenha política clara",
+            "Cliente que pede 'o de sempre' quer rapidez, não explicação",
+        ],
+    },
+
+    BusinessCategory.ADVOCACIA_FINANCEIRO: {
+        "perfis": {
+            "urgente_desesperado": {
+                "descricao": "Tem problema jurídico urgente, ansioso",
+                "sinais": ["urgente", "fui processado", "recebi intimação", "prazo", "multa"],
+                "tom_ideal": "Calmo, confiante, transmita segurança. Sem juridiquês.",
+                "objecoes_comuns": ["preço", "medo de perder", "não entendo nada de lei"],
+                "argumentos_fortes": ["já atendemos casos assim", "primeira consulta gratuita", "sigilo total"],
+                "ordem_conversa": "acolher → entender caso → tranquilizar → consulta",
+            },
+            "planejador": {
+                "descricao": "Quer se prevenir, consultoria, planejamento",
+                "sinais": ["consultoria", "preventivo", "contrato", "abertura de empresa", "planejamento"],
+                "tom_ideal": "Consultivo, técnico mas acessível. Mostre expertise.",
+                "objecoes_comuns": ["preço", "preciso mesmo?", "faço sozinho"],
+                "argumentos_fortes": ["prevenir é mais barato que remediar", "segurança jurídica", "economia a longo prazo"],
+                "ordem_conversa": "entender necessidade → mostrar riscos → solução → honorários",
+            },
+        },
+        "insights_universais": [
+            "NUNCA dê conselho jurídico no WhatsApp — convide pra consulta",
+            "Sigilo e confiança são mais importantes que preço nesse segmento",
+            "Cliente que pergunta preço primeiro geralmente é o mais difícil de converter",
+            "Linguagem simples converte mais que juridiquês",
+        ],
+    },
+
+    BusinessCategory.ACADEMIA_PERSONAL: {
+        "perfis": {
+            "iniciante_motivado": {
+                "descricao": "Quer começar, cheio de energia mas inseguro",
+                "sinais": ["quero começar", "nunca treinei", "sedentário", "indicação", "ano novo"],
+                "tom_ideal": "Motivador, acolhedor. Sem julgamento. Normalize o início.",
+                "objecoes_comuns": ["vergonha", "não sei usar equipamentos", "preço", "tempo"],
+                "argumentos_fortes": ["avaliação gratuita", "acompanhamento personalizado", "todo mundo começa de algum lugar"],
+                "ordem_conversa": "motivar → avaliação gratuita → planos → matrícula",
+            },
+            "experiente_trocando": {
+                "descricao": "Já treina, quer trocar de academia ou personal",
+                "sinais": ["troco", "outra academia", "equipamentos", "horário", "estrutura"],
+                "tom_ideal": "Direto, foque em diferenciais. Ele sabe o que quer.",
+                "objecoes_comuns": ["fidelidade com a antiga", "preço", "localização"],
+                "argumentos_fortes": ["estrutura superior", "horários flexíveis", "teste grátis de 7 dias"],
+                "ordem_conversa": "diferenciais → visita → teste → plano",
+            },
+        },
+        "insights_universais": [
+            "Janeiro e julho são picos de matrícula — prepare-se",
+            "Teste grátis de 3-7 dias é o melhor funil de conversão",
+            "Foto do espaço e equipamentos converte mais que lista de modalidades",
+            "Cliente que pergunta sobre personal quer atenção individualizada",
+        ],
+    },
+
+    BusinessCategory.PET: {
+        "perfis": {
+            "pai_mae_de_pet": {
+                "descricao": "Trata o pet como filho, quer o melhor",
+                "sinais": ["meu bebê", "meu filho", "melhor", "premium", "raça"],
+                "tom_ideal": "Carinhoso, trate o pet pelo nome. Mostre cuidado.",
+                "objecoes_comuns": ["medo de maus tratos", "profissional desconhecido"],
+                "argumentos_fortes": ["profissionais certificados", "ambiente monitorado", "fotos durante o banho"],
+                "ordem_conversa": "perguntar nome do pet → serviço → cuidados → agendar",
+            },
+            "pratico": {
+                "descricao": "Quer resolver rápido — banho, vacina, ração",
+                "sinais": ["banho", "tosa", "vacina", "ração", "quanto", "horário"],
+                "tom_ideal": "Direto, prático, facilite.",
+                "objecoes_comuns": ["preço", "distância", "horário"],
+                "argumentos_fortes": ["leva e traz", "pacote mensal com desconto", "agendamento fácil"],
+                "ordem_conversa": "serviço → preço → agendar",
+            },
+        },
+        "insights_universais": [
+            "SEMPRE pergunte o nome do pet — gera conexão instantânea",
+            "Foto do pet durante ou depois do banho gera encantamento",
+            "Pacote mensal (4 banhos) converte muito melhor que avulso",
+            "Leva e traz é diferencial enorme pra quem trabalha",
+        ],
+    },
+
+    BusinessCategory.AUTOMOTIVO: {
+        "perfis": {
+            "urgencia": {
+                "descricao": "Carro quebrou, precisa resolver agora",
+                "sinais": ["quebrou", "não liga", "barulho", "luz no painel", "guincho"],
+                "tom_ideal": "Rápido, confiante. Resolva o problema dele.",
+                "objecoes_comuns": ["preço alto", "tempo de espera"],
+                "argumentos_fortes": ["atendemos hoje", "guincho grátis", "orçamento sem compromisso"],
+                "ordem_conversa": "diagnóstico → orçamento → prazo → aprovação",
+            },
+            "preventivo": {
+                "descricao": "Quer revisão, manutenção programada",
+                "sinais": ["revisão", "troca de óleo", "km", "preventiva", "viagem"],
+                "tom_ideal": "Consultivo, mostre que entende do carro dele.",
+                "objecoes_comuns": ["preço", "concessionária é melhor?", "peças originais?"],
+                "argumentos_fortes": ["peças originais", "garantia 6 meses", "checklist completo"],
+                "ordem_conversa": "modelo do carro → serviço → orçamento → agendar",
+            },
+        },
+        "insights_universais": [
+            "SEMPRE pergunte modelo e ano do carro — mostra profissionalismo",
+            "Foto ou vídeo do problema encontrado gera confiança absurda",
+            "Orçamento sem compromisso remove a barreira de entrada",
+            "Garantia nas peças e serviço é o argumento de fechamento",
+        ],
+    },
+}
+
+
+def get_vertical_knowledge(category: BusinessCategory) -> dict:
+    """Retorna base de conhecimento da vertical."""
+    return VERTICAL_KNOWLEDGE.get(category, {})
 
 
 def build_vertical_prompt(category: BusinessCategory) -> str:

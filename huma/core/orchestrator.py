@@ -1347,6 +1347,11 @@ async def _handle_cancel_appointment_action(phone, action, client_data, conv):
 # FUNIL v10 — Proteção em múltiplas camadas
 # ================================================================
 
+# Categorias que por natureza são presenciais (avaliação odontológica, corte de cabelo, etc).
+# Se o dono quiser online, pode configurar scheduling_platform explicitamente.
+PRESENCIAL_CATEGORIES = frozenset({"clinica", "salao_barbearia", "pet", "restaurante", "automotivo", "academia_personal"})
+
+
 def _resolve_platform(client_data) -> str:
     """
     Determina platform de agendamento baseado na categoria do negócio.
@@ -1354,18 +1359,16 @@ def _resolve_platform(client_data) -> str:
     Categorias presenciais (clínica, salão, pet, etc) → "presencial"
     Outras categorias → usa scheduling_platform do cliente ou default "google_meet"
     Dono pode sobrescrever configurando scheduling_platform != "" e != "google_meet".
-
-    Fonte: huma.categories registry (Fase 1 — Category Packs).
     """
-    from huma.categories import is_presencial
-
     explicit = client_data.scheduling_platform
     category = client_data.category.value if client_data.category else ""
 
+    # Se dono configurou explicitamente algo diferente de google_meet, respeita
     if explicit and explicit not in ("", "google_meet"):
         return explicit
 
-    if is_presencial(category):
+    # Categorias presenciais por natureza
+    if category in PRESENCIAL_CATEGORIES:
         return "presencial"
 
     return explicit or "google_meet"
