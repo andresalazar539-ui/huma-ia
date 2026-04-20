@@ -639,12 +639,49 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                             f"check_availability follow-up enviado | {phone} | "
                             f"reply_len={len(fup_reply)} | parts={len(fup_parts)}"
                         )
+
+                        # Safety net (v12 / fix 7.4) — lead NUNCA fica no vácuo.
+                        # Se o reply do turn 2 não tem dígito (proxy: "não ofereceu horário"),
+                        # Sonnet provavelmente mandou transicional ou re-emitiu action que
+                        # foi descartada. Enviamos os slots reais determinísticamente.
+                        import re as _re_safety
+                        reply_concat = (fup_reply or "") + " " + " ".join(
+                            p for p in (fup_parts or []) if isinstance(p, str)
+                        )
+                        reply_has_digit = bool(_re_safety.search(r"\d", reply_concat))
+                        slots_from_check = check_result.get("slots") or []
+
+                        if not reply_has_digit and slots_from_check:
+                            slots_top = slots_from_check[:3]
+                            slots_formatted = ", ".join(slots_top)
+                            safety_msg = (
+                                f"Verifiquei aqui e tenho esses horários disponíveis: "
+                                f"{slots_formatted}. Qual fica melhor pra você?"
+                            )
+                            await asyncio.sleep(2.0)
+                            await wa.send_text(phone, safety_msg, client_id=cid)
+                            log.warning(
+                                f"check_availability safety net ATIVADO | {phone} | "
+                                f"reply do turn 2 sem dígito (len={len(fup_reply)}) → "
+                                f"enviando slots determinísticos"
+                            )
                     except Exception as e:
                         log.error(
                             f"check_availability follow-up falhou | {phone} | "
                             f"{type(e).__name__}: {e}"
                         )
-                        fallback_msg = "Tô consultando os horários aqui, só um instante."
+                        # Safety net tb no except (v12 / fix 7.4): temos os slots
+                        # do handler, mandamos direto — lead NUNCA fica no vácuo.
+                        slots_from_check = check_result.get("slots") or []
+                        if slots_from_check:
+                            slots_top = slots_from_check[:3]
+                            slots_formatted = ", ".join(slots_top)
+                            fallback_msg = (
+                                f"Verifiquei aqui e tenho esses horários disponíveis: "
+                                f"{slots_formatted}. Qual fica melhor pra você?"
+                            )
+                        else:
+                            fallback_msg = "Tô consultando os horários aqui, só um instante."
                         await asyncio.sleep(_typing_delay(fallback_msg))
                         await wa.send_text(phone, fallback_msg, client_id=cid)
                 else:
