@@ -91,6 +91,9 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             last_message_at=d.get("last_message_at"),
             follow_up_count=d.get("follow_up_count", 0),
             is_outbound=d.get("is_outbound", False),
+            active_appointment_event_id=d.get("active_appointment_event_id", "") or "",
+            active_appointment_datetime=d.get("active_appointment_datetime", "") or "",
+            active_appointment_service=d.get("active_appointment_service", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -108,6 +111,9 @@ async def save_conversation(conv: Conversation):
         "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
         "follow_up_count": conv.follow_up_count,
         "is_outbound": conv.is_outbound,
+        "active_appointment_event_id": conv.active_appointment_event_id,
+        "active_appointment_datetime": conv.active_appointment_datetime,
+        "active_appointment_service": conv.active_appointment_service,
         "updated_at": datetime.utcnow().isoformat(),
     }
     await run_in_threadpool(

@@ -432,6 +432,9 @@ class Conversation(BaseModel):
     is_outbound: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    active_appointment_event_id: str = ""  # event_id do Google Calendar do agendamento ativo. Vazio = nenhum ativo.
+    active_appointment_datetime: str = ""  # Data/hora do agendamento ativo (string ISO). Pra logs e prompts.
+    active_appointment_service: str = ""   # Nome do serviço agendado. Pra logs e prompts.
 
 
 # ================================================================

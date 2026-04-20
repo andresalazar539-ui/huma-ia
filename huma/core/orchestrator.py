@@ -998,10 +998,25 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         lead_context=_build_lead_context(conv),
     )
 
-    result = await sched.create_appointment(request)
+    # Se a conversa já tem um agendamento ativo, passa o event_id pra fazer update
+    existing_event_id = conv.active_appointment_event_id if conv else ""
+    result = await sched.create_appointment(request, existing_event_id=existing_event_id)
 
     if result.get("status") == "confirmed":
         log.info(f"Agendamento OK (pre-flight) | {result['date_time']}")
+        # Salva o event_id ativo na conversa pra permitir update em reagendamentos futuros
+        if conv and result.get("event_id"):
+            conv.active_appointment_event_id = result["event_id"]
+            conv.active_appointment_datetime = result.get("date_time", "")
+            conv.active_appointment_service = result.get("service", "")
+            try:
+                await db.save_conversation(conv)
+                log.info(
+                    f"Conv atualizada | event_id={result['event_id']} | "
+                    f"is_update={result.get('is_update', False)}"
+                )
+            except Exception as e:
+                log.error(f"Erro salvando event_id na conv | {type(e).__name__}: {e}")
     elif result.get("status") == "conflict":
         log.info(
             f"Agendamento conflito (pre-flight) | {phone} | "
@@ -1040,12 +1055,21 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
         lead_context=_build_lead_context(conv),
     )
 
-    result = await sched.create_appointment(request)
+    existing_event_id = conv.active_appointment_event_id if conv else ""
+    result = await sched.create_appointment(request, existing_event_id=existing_event_id)
 
     if result.get("status") == "confirmed":
         await asyncio.sleep(2.0)
         await wa.send_text(phone, result["confirmation_message"], client_id=cid)
         log.info(f"Agendamento OK | {result['date_time']}")
+        if conv and result.get("event_id"):
+            conv.active_appointment_event_id = result["event_id"]
+            conv.active_appointment_datetime = result.get("date_time", "")
+            conv.active_appointment_service = result.get("service", "")
+            try:
+                await db.save_conversation(conv)
+            except Exception as e:
+                log.error(f"Erro salvando event_id na conv | {type(e).__name__}: {e}")
 
     elif result.get("status") == "conflict":
         await asyncio.sleep(1.0)

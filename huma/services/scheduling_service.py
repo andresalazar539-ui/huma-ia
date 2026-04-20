@@ -69,7 +69,7 @@ def _build_google_credentials(scope: str = "https://www.googleapis.com/auth/cale
 # ================================================================
 
 
-async def create_appointment(request) -> dict:
+async def create_appointment(request, existing_event_id: str = "") -> dict:
     """
     Cria agendamento. Valida dados, verifica disponibilidade, cria evento.
 
@@ -78,6 +78,10 @@ async def create_appointment(request) -> dict:
         {"status": "conflict", "whatsapp_message": "...", "available_slots": [...]}
         {"status": "incomplete", "missing_fields": [...]}
         {"status": "error", "detail": "..."}
+
+        Se existing_event_id for fornecido e não-vazio, tenta atualizar o evento existente
+        (mover pra nova data) em vez de criar um novo. Se o update falhar ou o evento não
+        existir mais, cai no fluxo normal de criação.
     """
     missing = []
     if not request.lead_name:
@@ -149,8 +153,28 @@ async def create_appointment(request) -> dict:
             ),
         }
 
-    # ── Cria evento no Google Calendar ──
-    event_result = await _create_google_calendar_event(request, parsed_dt, platform)
+    # ── Cria OU atualiza evento no Google Calendar ──
+    # Se existing_event_id foi passado, tenta atualizar (mover o evento pra nova data).
+    # Se update falhar (evento deletado manualmente no Calendar, por ex), cai no create.
+    event_result = None
+    is_update = False
+    if existing_event_id:
+        event_result = await _update_google_calendar_event(
+            existing_event_id, request, parsed_dt, platform
+        )
+        if event_result.get("calendar_ok"):
+            is_update = True
+            log.info(f"Evento ATUALIZADO | event_id={existing_event_id} | nova_data={parsed_dt}")
+        else:
+            log.warning(
+                f"Update falhou pra event_id={existing_event_id} | "
+                f"caindo no fluxo normal de criação"
+            )
+            event_result = None
+
+    if not event_result:
+        event_result = await _create_google_calendar_event(request, parsed_dt, platform)
+
     event_id = event_result.get("event_id", "")
     calendar_ok = event_result.get("calendar_ok", False)
     meeting_url = event_result.get("meeting_url", "")
@@ -163,9 +187,15 @@ async def create_appointment(request) -> dict:
     date_display = parsed_dt.strftime("%d/%m/%Y às %H:%M")
 
     # ── Mensagem de confirmação (ÚNICA — sem link duplicado) ──
-    confirmation = f"Agendado {request.lead_name}!\n"
-    confirmation += f"Serviço: {request.service}\n"
-    confirmation += f"Data: {date_display}\n"
+    # Texto muda se foi reagendamento (update) ou agendamento novo (create).
+    if is_update:
+        confirmation = f"Reagendado {request.lead_name}!\n"
+        confirmation += f"Serviço: {request.service}\n"
+        confirmation += f"Nova data: {date_display}\n"
+    else:
+        confirmation = f"Agendado {request.lead_name}!\n"
+        confirmation += f"Serviço: {request.service}\n"
+        confirmation += f"Data: {date_display}\n"
 
     if platform == "presencial":
         confirmation += "Atendimento presencial na clínica.\n"
@@ -198,6 +228,7 @@ async def create_appointment(request) -> dict:
         "lead_name": request.lead_name,
         "lead_email": request.lead_email,
         "confirmation_message": confirmation,
+        "is_update": is_update,
         "calendar_ok": calendar_ok,
     }
 
@@ -501,6 +532,95 @@ async def _create_google_calendar_event(
     except Exception as e:
         log.error(f"Google Calendar erro | {type(e).__name__}: {str(e)[:200]}")
         return {"event_id": "", "meeting_url": "", "calendar_ok": False}
+
+
+async def _update_google_calendar_event(
+    event_id: str, request, parsed_dt: datetime, platform: str
+) -> dict:
+    """
+    Atualiza evento existente no Google Calendar via events().patch().
+    Move o evento pra nova data/hora mantendo o mesmo event_id.
+
+    Retorna:
+      {calendar_ok: True, event_id, meeting_url} se OK
+      {calendar_ok: False, ...} se evento não existe ou update falhou.
+    """
+    credentials, owner_email = _build_google_credentials()
+    if not credentials:
+        log.warning("Google Calendar não configurado (update)")
+        return {"event_id": event_id, "meeting_url": "", "calendar_ok": False}
+
+    try:
+        def _patch():
+            from googleapiclient.discovery import build
+
+            svc = build("calendar", "v3", credentials=credentials)
+            end_dt = parsed_dt + timedelta(hours=1)
+
+            # Monta descrição igual ao create (pra manter contexto atualizado)
+            description_lines = [
+                "Agendamento via HUMA IA",
+                "",
+                f"Lead: {request.lead_name}",
+                f"Email: {request.lead_email}",
+                f"Telefone: {request.phone}",
+                f"Serviço: {request.service}",
+            ]
+
+            if platform == "presencial":
+                description_lines += ["", "Tipo: Atendimento presencial"]
+            elif platform == "google_meet":
+                description_lines += ["", "Tipo: Atendimento online via Google Meet"]
+
+            if request.lead_context:
+                ctx = request.lead_context.strip()[:500]
+                description_lines += ["", "━━━ Contexto da conversa ━━━", ctx]
+
+            if request.notes:
+                description_lines += ["", f"Observações: {request.notes}"]
+
+            patch_body = {
+                "summary": f"{request.service} — {request.lead_name}",
+                "description": "\n".join(description_lines),
+                "start": {
+                    "dateTime": parsed_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "timeZone": "America/Sao_Paulo",
+                },
+                "end": {
+                    "dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "timeZone": "America/Sao_Paulo",
+                },
+            }
+
+            if platform == "presencial" and request.location:
+                patch_body["location"] = request.location
+
+            return svc.events().patch(
+                calendarId="primary",
+                eventId=event_id,
+                body=patch_body,
+                sendUpdates="all",
+            ).execute()
+
+        result = await run_in_threadpool(_patch)
+
+        meet_url = ""
+        for ep in result.get("conferenceData", {}).get("entryPoints", []):
+            if ep.get("entryPointType") == "video":
+                meet_url = ep.get("uri", "")
+                break
+        if not meet_url:
+            meet_url = result.get("hangoutLink", "")
+
+        log.info(
+            f"Google Calendar UPDATE OK | event={event_id} | "
+            f"owner={owner_email} | nova_data={parsed_dt}"
+        )
+        return {"event_id": event_id, "meeting_url": meet_url, "calendar_ok": True}
+
+    except Exception as e:
+        log.error(f"Google Calendar update erro | event_id={event_id} | {type(e).__name__}: {str(e)[:200]}")
+        return {"event_id": event_id, "meeting_url": "", "calendar_ok": False}
 
 
 # ================================================================
