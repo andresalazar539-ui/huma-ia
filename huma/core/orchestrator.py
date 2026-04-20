@@ -688,27 +688,20 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         remaining_actions = []
                         break
             elif action_type == "check_availability":
-                # v12 (Cenário 7 + fix 7.1) — IA pediu pra consultar agenda.
+                # v12 (Cenário 7 + fix 7.2) — IA pediu pra consultar agenda.
                 # Handler injeta marker com horários reais.
-                # Se o Claude emitiu SÓ a action sem reply substantivo, re-chamamos
-                # a IA agora pra ela ler o marker e responder com os horários.
-                await _handle_check_availability_action(phone, action, client_data, conv)
+                # SEMPRE re-invocamos a IA após status=ok: o reply do primeiro turn
+                # é transicional por construção (os horários não existiam ainda).
+                # A heurística anterior (len >= 15) classificava transições como
+                # reply substantivo e pulava o follow-up — deixando o lead no vácuo.
+                check_result = await _handle_check_availability_action(
+                    phone, action, client_data, conv
+                )
 
-                # Detecta reply vazio/trivial que deixaria o lead no vácuo
-                reply_text = (ai_result.get("reply") or "").strip()
-                reply_parts_list = ai_result.get("reply_parts") or []
-                has_substantive_reply = False
-
-                if reply_parts_list:
-                    joined = " ".join(p for p in reply_parts_list if isinstance(p, str)).strip()
-                    has_substantive_reply = len(joined) >= 15
-                elif reply_text:
-                    has_substantive_reply = len(reply_text) >= 15
-
-                if not has_substantive_reply:
+                if check_result.get("status") == "ok" and check_result.get("slots"):
                     log.info(
-                        f"check_availability sem reply substantivo | {phone} | "
-                        f"re-invocando IA pra responder com horários reais"
+                        f"check_availability status=ok | {phone} | "
+                        f"re-invocando IA pra entregar horários reais"
                     )
 
                     # Re-carrega conv do DB pra garantir que o marker recém-injetado tá no histórico
@@ -744,7 +737,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                             fup_reply = (followup_result.get("reply") or "").strip()
                             fup_parts = followup_result.get("reply_parts") or []
 
-                            # Envia o follow-up imediatamente com delay humano
                             if fup_parts and len(fup_parts) > 1:
                                 for i, part in enumerate(fup_parts):
                                     if not isinstance(part, str) or not part.strip():
@@ -770,10 +762,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                                 f"check_availability follow-up falhou | {phone} | "
                                 f"{type(e).__name__}: {e}"
                             )
-                            # Fallback: manda mensagem neutra pra lead não ficar no vácuo
-                            fallback_msg = (
-                                "Tô consultando os horários aqui, só um instante."
-                            )
+                            fallback_msg = "Tô consultando os horários aqui, só um instante."
                             await asyncio.sleep(_typing_delay(fallback_msg))
                             await wa.send_text(phone, fallback_msg, client_id=cid)
                     else:

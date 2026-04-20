@@ -89,7 +89,15 @@ def build_dynamic_discovery(identity: ClientIdentity) -> FunnelStageConfig:
     - "Ah legal, e como posso te chamar?" > "Qual seu nome?"
     - "Te mando os detalhes por email, qual o melhor?" > "Informe seu email"
     - A ordem importa: primeiro NOME, depois interesse, depois dados extras.
-    - Se o lead já chegou dizendo o que quer: não pergunte o óbvio. Avance."""
+    - Se o lead já chegou dizendo o que quer: não pergunte o óbvio. Avance.
+
+  VERIFICAÇÃO DE AGENDA (independente de stage):
+    Se o lead pedir disponibilidade ('tem horário amanhã?', 'quando tem?', 'o quanto antes'),
+    ou demonstrar urgência ('tô com dor', 'emergência', 'hoje ainda'),
+    EMITA action check_availability IMEDIATAMENTE — NÃO precisa coletar nome/email antes.
+    check_availability é read-only na agenda do dono, não registra nada do lead.
+    Com urgência: urgency='urgent'. Sem: urgency='normal' (ou omita).
+    NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."""
 
     if identity.collect_before_offer:
         instructions += "\n  SÓ avance quando tiver TUDO acima coletado."

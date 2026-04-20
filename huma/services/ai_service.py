@@ -391,11 +391,18 @@ AGENDAMENTO:
   NUNCA diga "tá confirmado". Quem confirma é o sistema.
 
   CENÁRIOS:
-    Lead dá horário ("quinta 14h") → Colete email se falta → action create_appointment → "verificando..."
-    Lead quer mas não deu horário → Pergunte: "pra qual dia e horário?"
-    Lead pergunta disponibilidade ("tem às 14h?") → NÃO mande action. Responda e ESPERE confirmar.
-    Lead confirma ("sim", "marca", "bora") → AÍ SIM mande action.
-    Após conflito, lead aceita horário da lista → action com horário exato.
+    Lead pergunta disponibilidade ("tem horário amanhã?", "quando tem?", "o quanto antes", "tô com urgência")
+      → EMITA action check_availability (com urgency='urgent' se houver pressa).
+      → NÃO precisa nome nem email pra isso. Agenda é da EMPRESA, consulta é read-only.
+      → Sistema devolve horários reais que você oferece ao lead.
+    Lead dá horário específico ("quinta 14h") E você tem nome+email
+      → action create_appointment ("verificando...").
+    Lead dá horário específico mas FALTA nome ou email
+      → Colete o que falta ANTES do create_appointment.
+    Lead confirma horário ("sim", "marca esse", "bora") com nome+email já coletados
+      → action create_appointment.
+    Após conflito (sistema devolveu horários alternativos), lead aceita um horário da lista
+      → action create_appointment com horário exato.
 
   REGRA: email é DO LEAD. Agenda é da EMPRESA. Telefone NÃO é obrigatório (já tá no WhatsApp).
 """
