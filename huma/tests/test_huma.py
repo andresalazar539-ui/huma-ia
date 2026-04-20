@@ -827,3 +827,77 @@ class TestAntiChurnPolicy:
         assert isinstance(CANCEL_HARD_BREAKER_THRESHOLD, int)
         assert CANCEL_HARD_BREAKER_THRESHOLD >= 3
         assert CANCEL_HARD_BREAKER_THRESHOLD <= 10
+
+
+# ================================================================
+# TESTES DO OUTPUT SANITIZER (v12 / Fix travessão)
+# ================================================================
+
+class TestOutputSanitizer:
+    """Garante que caracteres unicode ricos nunca saiam pro WhatsApp."""
+
+    def test_sanitize_em_dash_in_reply(self):
+        """Travessão em reply vira vírgula."""
+        from huma.services.ai_service import _sanitize_response_dict
+        result = {
+            "reply": "Oi João \u2014 tudo bem? \u2014 vou te ajudar",
+            "reply_parts": [],
+            "audio_text": "",
+        }
+        out = _sanitize_response_dict(result)
+        assert "\u2014" not in out["reply"]
+        assert out["reply"] == "Oi João, tudo bem?, vou te ajudar"
+
+    def test_sanitize_em_dash_in_reply_parts(self):
+        """Travessão em reply_parts vira vírgula em cada parte."""
+        from huma.services.ai_service import _sanitize_response_dict
+        result = {
+            "reply": "",
+            "reply_parts": [
+                "Oi \u2014 tudo bem?",
+                "Temos \u2014 avaliação gratuita.",
+            ],
+            "audio_text": "",
+        }
+        out = _sanitize_response_dict(result)
+        assert all("\u2014" not in p for p in out["reply_parts"])
+        assert out["reply_parts"][0] == "Oi, tudo bem?"
+
+    def test_sanitize_ellipsis_and_smart_quotes(self):
+        """Ellipsis e aspas curvas são normalizadas."""
+        from huma.services.ai_service import _sanitize_response_dict
+        result = {
+            "reply": "Ah\u2026entendi. Você disse \u201coi\u201d né",
+            "reply_parts": [],
+            "audio_text": "",
+        }
+        out = _sanitize_response_dict(result)
+        assert "\u2026" not in out["reply"]
+        assert "\u201c" not in out["reply"]
+        assert "..." in out["reply"]
+        assert '"oi"' in out["reply"]
+
+    def test_sanitize_fast_path_clean_text(self):
+        """Texto já limpo passa sem alteração (fast path)."""
+        from huma.services.ai_service import _sanitize_response_dict
+        clean = "Oi, tudo bem? Vou te ajudar!"
+        result = {"reply": clean, "reply_parts": [clean], "audio_text": clean}
+        out = _sanitize_response_dict(result)
+        assert out["reply"] == clean
+        assert out["reply_parts"][0] == clean
+        assert out["audio_text"] == clean
+
+    def test_sanitize_handles_empty_and_missing_fields(self):
+        """Campos ausentes ou vazios não quebram o sanitizer."""
+        from huma.services.ai_service import _sanitize_response_dict
+        # Dict mínimo
+        out = _sanitize_response_dict({"reply": ""})
+        assert out["reply"] == ""
+        # Dict sem reply_parts
+        out = _sanitize_response_dict({"reply": "oi"})
+        assert out["reply"] == "oi"
+        # reply_parts com item não-string (defensivo)
+        out = _sanitize_response_dict({"reply": "", "reply_parts": ["oi", None, 123]})
+        assert out["reply_parts"][0] == "oi"
+        assert out["reply_parts"][1] is None
+        assert out["reply_parts"][2] == 123

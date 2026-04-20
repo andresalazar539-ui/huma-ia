@@ -31,6 +31,7 @@
 # ================================================================
 
 import json
+import re
 
 import anthropic
 
@@ -48,6 +49,82 @@ log = get_logger("ai")
 log.info(f"Anthropic SDK version: {anthropic.__version__}")
 
 _client = None
+
+
+# ================================================================
+# OUTPUT SANITIZER (v12 / Fix travessão)
+#
+# Modelos (Haiku e Sonnet) ocasionalmente emitem caracteres "ricos"
+# que não têm lugar em WhatsApp BR, apesar do prompt proibir:
+#   — (em-dash U+2014)   → vira ", "
+#   – (en-dash U+2013)   → vira ", "
+#   … (ellipsis U+2026)  → vira "..."
+#   " " (smart quotes)   → vira aspas normais
+#
+# Este sanitizer é a ÚLTIMA linha de defesa. Aplicado no dict de
+# resposta completo antes do orchestrator receber.
+# ================================================================
+
+_SANITIZER_MAP = {
+    "\u2014": ", ",   # em-dash —
+    "\u2013": ", ",   # en-dash –
+    "\u2026": "...",  # ellipsis …
+    "\u201c": '"',    # left double quote
+    "\u201d": '"',    # right double quote
+    "\u2018": "'",    # left single quote
+    "\u2019": "'",    # right single quote
+}
+
+
+def _sanitize_text(text: str) -> str:
+    """
+    Substitui caracteres unicode "ricos" por equivalentes ASCII simples.
+    Colapsa whitespace ao redor de dashes (— e –) pra evitar ", ," e " , ".
+    Não altera nada se o texto já estiver limpo (fast path).
+    """
+    if not text or not any(c in text for c in _SANITIZER_MAP):
+        return text
+
+    # Dashes: colapsa whitespace antes/depois antes de substituir
+    # Evita "Oi — tudo" virar "Oi , tudo" (com espaços extras).
+    text = re.sub(r"\s*\u2014\s*", ", ", text)
+    text = re.sub(r"\s*\u2013\s*", ", ", text)
+
+    # Outros caracteres: substituição simples
+    for bad, good in _SANITIZER_MAP.items():
+        if bad in ("\u2014", "\u2013"):
+            continue  # já tratados acima
+        text = text.replace(bad, good)
+
+    return text
+
+
+def _sanitize_response_dict(result: dict) -> dict:
+    """
+    Aplica _sanitize_text em todos os campos de texto do dict de resposta.
+    Muta o dict recebido e retorna ele.
+
+    Campos sanitizados:
+      - reply (string)
+      - reply_parts (lista de strings)
+      - audio_text (string)
+
+    Outros campos (intent, sentiment, stage_action, etc) são enums ou
+    estruturados — não passam pelo sanitizer.
+    """
+    if isinstance(result.get("reply"), str):
+        result["reply"] = _sanitize_text(result["reply"])
+
+    if isinstance(result.get("reply_parts"), list):
+        result["reply_parts"] = [
+            _sanitize_text(p) if isinstance(p, str) else p
+            for p in result["reply_parts"]
+        ]
+
+    if isinstance(result.get("audio_text"), str):
+        result["audio_text"] = _sanitize_text(result["audio_text"])
+
+    return result
 
 
 def _get_ai_client():
@@ -1387,6 +1464,10 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         f"stage={parsed.get('stage_action','hold')} | actions={len(result['actions'])} | "
         f"objective={result['micro_objective'][:50]}"
     )
+
+    # Sanitiza caracteres ricos antes de devolver (defesa em profundidade vs prompt)
+    result = _sanitize_response_dict(result)
+
     return result
 
 
