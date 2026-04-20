@@ -233,7 +233,15 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "        EMITA action cancel_appointment (item no array actions com type='cancel_appointment').\n"
         "        O sistema cuida do resto.\n"
         "\n"
-        "    NUNCA invente que cancelou sem emitir a action — quem processa o cancelamento é o sistema."
+        "    NUNCA invente que cancelou sem emitir a action — quem processa o cancelamento é o sistema.\n"
+        "\n"
+        "  CORREÇÃO DE DADOS (email/nome errado após agendamento feito):\n"
+        "    Se o lead corrigir email ou nome depois do agendamento confirmado:\n"
+        "      - EMITA action create_appointment com os MESMOS date_time e service do evento ativo,\n"
+        "        alterando APENAS o campo corrigido (ex: lead_email novo).\n"
+        "      - O sistema detecta que é atualização do evento existente e corrige no Calendar\n"
+        "        (não cria duplicado, não sugere outros horários).\n"
+        "      - NUNCA diga 'anotei' ou 'corrigi' sem emitir a action. A action é o que atualiza."
     )
 
     return [

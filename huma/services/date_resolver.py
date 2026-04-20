@@ -210,12 +210,18 @@ def _try_structured_formats(text: str) -> datetime | None:
         "%Y-%m-%d %H:%M",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M",
+        # v12 / fix 2B — ISO com timezone offset (ex: 2026-04-21T12:00:00-03:00)
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M%z",
     ]
 
     clean = text.strip()
     for fmt in formats:
         try:
             dt = datetime.strptime(clean, fmt)
+            # Descarta tzinfo se houver — resto do pipeline usa datetime naïve local.
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
             # Se não tem ano (formatos %d/%m), assume ano atual
             if dt.year == 1900:
                 now = datetime.now(BR_TZ)

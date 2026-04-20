@@ -412,6 +412,14 @@ AGENDAMENTO:
     else:
         prompt += "\nDESCONTO: NUNCA ofereça desconto.\n"
 
+    # v12 / fix 2A — anti-alucinação
+    prompt += (
+        "\nANTI-ALUCINAÇÃO: NUNCA diga que fez algo (agendou, cancelou, atualizou, "
+        "corrigi, anotei) sem emitir a action correspondente. Se você disser 'anotei' "
+        "ou 'corrigi' em texto, DEVE vir acompanhado da action no mesmo turn. Dizer que "
+        "fez sem emitir a action é mentir pro lead — o sistema não registra nada.\n"
+    )
+
     return prompt
 
 

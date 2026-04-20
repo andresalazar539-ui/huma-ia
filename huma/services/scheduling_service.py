@@ -114,7 +114,23 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
     # ── Verifica disponibilidade ANTES de criar ──
     availability = await _check_availability(parsed_dt)
 
-    if not availability["available"]:
+    # v12 / fix 2A: se o único conflito é o PRÓPRIO evento do lead
+    # (caso típico: lead corrigindo email/nome no mesmo horário), pula
+    # o bloco de conflict e vai direto pro update. Sem esse skip, o
+    # pre-flight sugere "outros horários" em vez de atualizar.
+    conflicting_ids = availability.get("conflicting_event_ids", [])
+    is_self_only_conflict = (
+        bool(existing_event_id)
+        and len(conflicting_ids) == 1
+        and conflicting_ids[0] == existing_event_id
+    )
+    if is_self_only_conflict:
+        log.info(
+            f"Pre-flight | conflito é SELF | event_id={existing_event_id} | "
+            f"pulando conflict check → indo direto pro update"
+        )
+
+    if not availability["available"] and not is_self_only_conflict:
         conflicting = availability.get("conflicting_event", "compromisso")
         suggestions = availability.get("suggestions", [])
 
@@ -298,10 +314,18 @@ async def _check_availability(dt: datetime, duration_minutes: int = 60) -> dict:
             log.debug(f"Horário livre | {dt.strftime('%d/%m %H:%M')}")
             return {"available": True}
 
-        # Pega nome do evento conflitante
+        # Pega nome + IDs dos eventos conflitantes (v12 / fix 2A)
+        # IDs são usados pelo create_appointment pra detectar "conflito é self"
+        # quando o lead está corrigindo dados do próprio agendamento.
         events = result.get("events", [])
         conflicting = events[0].get("summary", "compromisso") if events else "compromisso"
-        log.info(f"Conflito | {dt.strftime('%d/%m %H:%M')} | evento={conflicting}")
+        conflicting_event_ids = [
+            e.get("id", "") for e in events if e.get("id")
+        ]
+        log.info(
+            f"Conflito | {dt.strftime('%d/%m %H:%M')} | evento={conflicting} | "
+            f"ids={conflicting_event_ids}"
+        )
 
         # Busca alternativas (reutiliza mesmas credentials)
         # 6 slots pra cobrir manhã E tarde — lead escolhe o período
@@ -310,6 +334,7 @@ async def _check_availability(dt: datetime, duration_minutes: int = 60) -> dict:
         return {
             "available": False,
             "conflicting_event": conflicting,
+            "conflicting_event_ids": conflicting_event_ids,
             "suggestions": suggestions,
         }
 
@@ -592,6 +617,13 @@ async def _update_google_calendar_event(
                 },
             }
 
+            # v12 / fix 2A: atualiza attendees no patch.
+            # Sem isso, correção de email não propaga pro convite do Calendar
+            # (o evento muda na descrição mas o convite continua indo pro email errado).
+            # Google Calendar SUBSTITUI a lista ao receber attendees no patch.
+            if request.lead_email:
+                patch_body["attendees"] = [{"email": request.lead_email}]
+
             if platform == "presencial" and request.location:
                 patch_body["location"] = request.location
 
@@ -691,6 +723,9 @@ def _parse_datetime(dt_str: str) -> datetime | None:
         "%Y-%m-%d %H:%M",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M",
+        # v12 / fix 2B — ISO com timezone offset (ex: 2026-04-21T12:00:00-03:00)
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M%z",
         "%d/%m/%Y %H:%M",
         "%d/%m/%Y às %Hh",
         "%d/%m/%Y %Hh",
@@ -700,7 +735,9 @@ def _parse_datetime(dt_str: str) -> datetime | None:
     ]
     for fmt in formats:
         try:
-            return datetime.strptime(dt_str.strip(), fmt)
+            dt = datetime.strptime(dt_str.strip(), fmt)
+            # Descarta tzinfo — resto do pipeline usa datetime naïve local.
+            return dt.replace(tzinfo=None) if dt.tzinfo else dt
         except ValueError:
             continue
     return None
