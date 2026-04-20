@@ -901,3 +901,49 @@ class TestOutputSanitizer:
         assert out["reply_parts"][0] == "oi"
         assert out["reply_parts"][1] is None
         assert out["reply_parts"][2] == 123
+
+
+# ================================================================
+# TESTES DO CHECK_AVAILABILITY (v12 / Cenário 7)
+# ================================================================
+
+class TestCheckAvailability:
+    """Testa a action check_availability e seu handler."""
+
+    def test_check_availability_in_tool_description(self):
+        """Tool description inclui check_availability (structural contract)."""
+        from huma.services.ai_service import _build_reply_tool_compact
+        from huma.models.schemas import MessagingStyle
+
+        tool = _build_reply_tool_compact(MessagingStyle.SPLIT)
+        actions_desc = tool["input_schema"]["properties"]["actions"]["description"]
+
+        assert "check_availability" in actions_desc
+        assert "urgency" in actions_desc
+        # Não regride as outras actions
+        assert "create_appointment" in actions_desc
+        assert "cancel_appointment" in actions_desc
+        assert "generate_payment" in actions_desc
+        assert "send_media" in actions_desc
+
+    def test_offer_instructions_mention_check_availability(self, clinica_identity):
+        """Stage offer instrui IA a emitir check_availability."""
+        from huma.core.funnel import get_stages
+        stages = get_stages(clinica_identity)
+        offer = [s for s in stages if s.name == "offer"][0]
+        assert "check_availability" in offer.instructions
+        assert "VERIFICAÇÃO DE AGENDA" in offer.instructions
+        assert 'NUNCA diga "vou verificar e te retorno"' in offer.instructions
+
+    def test_find_next_available_slots_no_credentials(self, monkeypatch):
+        """Sem credenciais Google, retorna no_credentials graciosamente."""
+        import asyncio
+        from huma.services import scheduling_service as sched
+
+        # Mock _build_google_credentials pra retornar (None, None)
+        monkeypatch.setattr(sched, "_build_google_credentials", lambda: (None, None))
+
+        result = asyncio.run(sched.find_next_available_slots(slots_to_find=5))
+        assert result["status"] == "no_credentials"
+        assert result["slots"] == []
+        assert result["count"] == 0

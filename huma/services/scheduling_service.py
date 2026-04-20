@@ -782,3 +782,78 @@ async def cancel_appointment(event_id: str) -> dict:
         return {"status": "confirmed", "detail": result.get("detail", "")}
 
     return {"status": "error", "detail": result.get("detail", "unknown")}
+
+
+# ================================================================
+# BUSCA DE PRÓXIMOS HORÁRIOS LIVRES (v12 / Cenário 7)
+# ================================================================
+
+
+async def find_next_available_slots(
+    slots_to_find: int = 5,
+    duration_minutes: int = 60,
+    urgency: str = "normal",
+) -> dict:
+    """
+    Busca os próximos N horários livres no Google Calendar, ordenados cronologicamente.
+
+    Usada pela action check_availability quando o lead pergunta disponibilidade
+    sem sugerir horário específico ("tem vaga amanhã?", "quando tem livre?",
+    "o quanto antes").
+
+    Args:
+        slots_to_find: quantos slots retornar (default 5).
+        duration_minutes: duração da consulta (default 60).
+        urgency: "urgent" prioriza hoje/amanhã, "normal" olha próximos 7 dias.
+
+    Returns:
+        {
+            "status": "ok",
+            "slots": ["21/04/2026 09:00", "21/04/2026 14:00", ...],
+            "count": 5,
+        }
+        {"status": "no_credentials", "slots": [], "count": 0}
+        {"status": "error", "slots": [], "count": 0, "detail": "..."}
+        {"status": "empty", "slots": [], "count": 0}  # nenhum horário livre em 7 dias
+
+    Reutiliza _find_available_slots que já existe no módulo.
+    """
+    credentials, owner_email = _build_google_credentials()
+    if not credentials:
+        log.warning("check_availability: Google Calendar não configurado")
+        return {"status": "no_credentials", "slots": [], "count": 0}
+
+    try:
+        # Ponto de partida: agora + 1h (não sugere horário que já passou ou tá em cima)
+        now = datetime.now()
+        start_from = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+
+        # Pra urgente, começa de hoje. Pra normal, pode começar de amanhã.
+        # Aqui sempre começamos de agora+1h — _find_available_slots cuida do resto.
+        slots = await _find_available_slots(
+            original_dt=start_from,
+            duration_minutes=duration_minutes,
+            slots_to_find=slots_to_find,
+            credentials=credentials,
+        )
+
+        if not slots:
+            log.info(f"check_availability: nenhum horário livre em 7 dias | urgency={urgency}")
+            return {"status": "empty", "slots": [], "count": 0}
+
+        slots_formatted = [s.strftime("%d/%m/%Y %H:%M") for s in slots]
+        log.info(
+            f"check_availability OK | urgency={urgency} | count={len(slots_formatted)} | "
+            f"primeiro={slots_formatted[0]}"
+        )
+
+        return {
+            "status": "ok",
+            "slots": slots_formatted,
+            "count": len(slots_formatted),
+        }
+
+    except Exception as e:
+        err_type = type(e).__name__
+        log.error(f"check_availability erro | {err_type}: {str(e)[:200]}")
+        return {"status": "error", "slots": [], "count": 0, "detail": f"{err_type}: {str(e)[:100]}"}

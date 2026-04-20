@@ -133,7 +133,17 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Se ele tem 3 opções, recomende 1 com justificativa.\n"
         "    - Após preço: PARE. Deixe ele processar. Não justifique o preço antes dele reclamar.\n"
         "    - Use prova social: 'é o mais pedido', 'nossos clientes adoram'.\n"
-        "    - Se tem promoção/condição: mencione como escassez natural, não como desconto desesperado."
+        "    - Se tem promoção/condição: mencione como escassez natural, não como desconto desesperado.\n"
+        "\n"
+        "  VERIFICAÇÃO DE AGENDA:\n"
+        "    Se o lead pedir disponibilidade ('tem vaga amanhã?', 'quando tem?', 'o quanto antes',\n"
+        "    'qualquer horário', 'o mais cedo possível'), ou demonstrar urgência ('tô com dor',\n"
+        "    'emergência', 'hoje ainda'), EMITA action check_availability.\n"
+        "      - Com urgência: inclua urgency='urgent' na action.\n"
+        "      - Sem urgência específica: urgency='normal' (ou omita).\n"
+        "      - NUNCA diga \"vou verificar e te retorno\" sem emitir a action. O sistema consulta\n"
+        "        o Calendar e injeta os horários reais pra você oferecer na próxima mensagem.\n"
+        "      - NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."
     )
 
     # ── Closing: facilitar, não pressionar ──
@@ -166,7 +176,17 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - PRESUMA O SIM. 'Pra quando quer agendar?' (não 'quer agendar?')\n"
         "    - Dê opções concretas: 'terça ou quinta fica melhor?' (não 'qual dia?')\n"
         "    - Se o lead hesitar: não pressione. Pergunte o que falta.\n"
-        "    - Silêncio depois do preço é NORMAL. Não quebre com mais argumentos."
+        "    - Silêncio depois do preço é NORMAL. Não quebre com mais argumentos.\n"
+        "\n"
+        "  VERIFICAÇÃO DE AGENDA:\n"
+        "    Se o lead pedir disponibilidade ('tem vaga amanhã?', 'quando tem?', 'o quanto antes',\n"
+        "    'qualquer horário', 'o mais cedo possível'), ou demonstrar urgência ('tô com dor',\n"
+        "    'emergência', 'hoje ainda'), EMITA action check_availability.\n"
+        "      - Com urgência: inclua urgency='urgent' na action.\n"
+        "      - Sem urgência específica: urgency='normal' (ou omita).\n"
+        "      - NUNCA diga \"vou verificar e te retorno\" sem emitir a action. O sistema consulta\n"
+        "        o Calendar e injeta os horários reais pra você oferecer na próxima mensagem.\n"
+        "      - NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."
     )
 
     committed_instructions = (

@@ -687,6 +687,10 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         appointment_override = cancel_exec["message"]
                         remaining_actions = []
                         break
+            elif action_type == "check_availability":
+                # v12 (Cenário 7) — IA pediu pra consultar agenda.
+                # Handler injeta marker com horários reais; IA responde na próxima turn.
+                await _handle_check_availability_action(phone, action, client_data, conv)
             elif action_type == "create_appointment":
                 # Só executa se NÃO agendou ainda (trava anti-duplicação)
                 if not already_scheduled_this_turn:
@@ -1341,6 +1345,97 @@ async def _handle_cancel_appointment_action(phone, action, client_data, conv):
             f"{type(e).__name__}: {e}"
         )
         return {"executed": True, "message": "", "reason": f"save_failed_but_calendar_ok:{type(e).__name__}"}
+
+
+# ================================================================
+# CHECK AVAILABILITY (v12 / Cenário 7)
+# ================================================================
+
+
+async def _handle_check_availability_action(phone, action, client_data, conv):
+    """
+    Handler da action check_availability.
+
+    Consulta Google Calendar, obtém próximos horários livres, e injeta
+    um marker no histórico pra IA saber quais horários oferecer.
+
+    Esse handler NÃO envia mensagem pro lead — ele apenas prepara o
+    contexto. A próxima chamada da IA (ou a mesma, se houver follow-up
+    automático) vai ler o marker e responder com os horários reais.
+
+    Como o orchestrator chama a IA uma vez por mensagem do lead, esse
+    handler é tipicamente processado JUNTO com o reply. Se a IA emitiu
+    check_availability + reply (tipo "deixa eu ver os horários"), o marker
+    vai pra próxima mensagem. Se a IA emitiu SÓ check_availability, o
+    sistema re-injeta e a IA responde com os horários.
+
+    Returns:
+        {"executed": bool, "slots": [...], "status": str}
+    """
+    cid = client_data.client_id
+
+    urgency = action.get("urgency", "normal")
+    slots_to_find = int(action.get("slots_to_find", 5))
+
+    # Limites defensivos
+    if slots_to_find < 1:
+        slots_to_find = 3
+    if slots_to_find > 10:
+        slots_to_find = 10
+
+    log.info(
+        f"check_availability iniciando | {phone} | urgency={urgency} | "
+        f"slots_to_find={slots_to_find}"
+    )
+
+    result = await sched.find_next_available_slots(
+        slots_to_find=slots_to_find,
+        urgency=urgency,
+    )
+
+    status = result.get("status", "error")
+    slots = result.get("slots", [])
+
+    if status == "ok" and slots:
+        # Marker no histórico — a IA vai ler e usar os horários reais
+        slots_text = ", ".join(slots)
+        marker = (
+            f"[AGENDA CONSULTADA — próximos horários LIVRES (use APENAS estes na resposta): "
+            f"{slots_text}. "
+            f"NÃO invente outros horários. Ofereça 2-3 opções ao lead, priorizando os mais próximos.]"
+        )
+    elif status == "empty":
+        marker = (
+            "[AGENDA CONSULTADA — sem horários livres nos próximos 7 dias. "
+            "Informe o lead que a agenda tá cheia essa semana e pergunte se ele pode na próxima.]"
+        )
+    elif status == "no_credentials":
+        marker = (
+            "[AGENDA NÃO CONFIGURADA — consulta ao Calendar falhou por falta de credencial. "
+            "Peça ao lead que sugira 2-3 horários que funcionem pra ele, que você confirma depois.]"
+        )
+    else:
+        # erro genérico
+        marker = (
+            "[AGENDA INDISPONÍVEL — consulta falhou por instabilidade. "
+            "Peça ao lead que sugira horário que prefere, você confirma quando voltar.]"
+        )
+        log.warning(
+            f"check_availability fallback | {phone} | status={status} | "
+            f"detail={result.get('detail', '')}"
+        )
+
+    try:
+        conv.history.append({"role": "assistant", "content": marker})
+        await db.save_conversation(conv)
+        log.info(f"check_availability marker injetado | {phone} | status={status} | slots={len(slots)}")
+    except Exception as e:
+        log.error(
+            f"Erro salvando marker check_availability | {phone} | "
+            f"{type(e).__name__}: {e}"
+        )
+
+    return {"executed": True, "slots": slots, "status": status}
 
 
 # ================================================================

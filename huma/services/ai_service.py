@@ -1190,7 +1190,7 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
     Versão compacta de _build_reply_tool — sem descriptions nos campos.
     Preserva branching SPLIT/SINGLE. Economia ~400 tokens por call.
 
-    v12 (6.C): adiciona cancel_appointment na description de actions
+    v12 (Cenário 7): adiciona check_availability na description de actions
     (structural — ver CLAUDE.md §1).
     """
     if messaging_style == MessagingStyle.SPLIT:
@@ -1245,7 +1245,8 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
                     "items": {"type": "object"},
                     "description": (
                         "Ações especiais. Cada item DEVE ter o campo 'type' obrigatório + campos específicos:\n"
-                        "- type='create_appointment': lead_name, lead_email, service, date_time\n"
+                        "- type='check_availability': (campos opcionais: urgency='urgent'|'normal', slots_to_find=5). Emita quando o lead pedir pra saber horários disponíveis, demonstrar urgência, ou pedir o próximo horário livre. O sistema consulta o Calendar e injeta os horários reais no próximo turn — você NÃO precisa dizer 'vou verificar', apenas emita a action.\n"
+                        "- type='create_appointment': lead_name, lead_email, service, date_time. Emita quando o lead escolher um horário específico e você tiver nome+email.\n"
                         "- type='cancel_appointment': (sem campos — só emita quando lead insistiu em cancelar após você oferecer alternativa E perguntar motivo; sistema deleta o evento no Calendar)\n"
                         "- type='generate_payment': lead_name, description, amount_cents, payment_method, lead_cpf (só boleto)\n"
                         "- type='send_media': tags (lista de strings)"
