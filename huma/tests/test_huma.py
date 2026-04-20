@@ -962,6 +962,7 @@ class TestCheckAvailability:
         conv = Conversation(client_id="x", phone="123")
         client_data = MagicMock(spec=ClientIdentity)
         client_data.client_id = "x"
+        client_data.business_schedule = None  # v12 / fix 7.6 — default compat
 
         fake_result = {
             "status": "ok",
@@ -1007,6 +1008,7 @@ class TestCheckAvailability:
         conv = Conversation(client_id="x", phone="123")
         client_data = MagicMock(spec=ClientIdentity)
         client_data.client_id = "x"
+        client_data.business_schedule = None  # v12 / fix 7.6 — default compat
 
         fake_result = {
             "status": "ok",
@@ -1044,6 +1046,7 @@ class TestCheckAvailability:
         conv = Conversation(client_id="x", phone="123")
         client_data = MagicMock(spec=ClientIdentity)
         client_data.client_id = "x"
+        client_data.business_schedule = None  # v12 / fix 7.6 — default compat
 
         fake_empty = {"status": "empty", "slots": [], "count": 0}
 
@@ -1242,6 +1245,7 @@ class TestWeekdayGrounding:
         conv = Conversation(client_id="x", phone="123")
         client_data = MagicMock(spec=ClientIdentity)
         client_data.client_id = "x"
+        client_data.business_schedule = None  # v12 / fix 7.6 — default compat
 
         fake_result = {
             "status": "ok",
@@ -1268,3 +1272,164 @@ class TestWeekdayGrounding:
         assert "VERDADE do calendário" in marker
         # Deve instruir a avisar lead quando o dia pedido não tem vaga
         assert "AVISE" in marker or "avise" in marker
+
+
+# ================================================================
+# TESTES DE HORÁRIO DE FUNCIONAMENTO (v12 / fix 7.6)
+# ================================================================
+
+class TestBusinessSchedule:
+    """Testa horário estruturado + feriados + validação pre-flight."""
+
+    def test_fallback_preserves_current_behavior(self):
+        """Config None → janelas seg-sex 8-18, sáb/dom vazias (fallback histórico)."""
+        from datetime import date
+        from huma.services.scheduling_service import _get_effective_windows
+
+        # Seg-Sex: 1 janela 08:00-18:00
+        # date(2026, 4, 20) é segunda (20/04/2026)
+        mon = _get_effective_windows(None, date(2026, 4, 20))
+        assert len(mon) == 1
+        assert mon[0].start == "08:00"
+        assert mon[0].end == "18:00"
+
+        # Sábado (25/04/2026) fechado
+        sat = _get_effective_windows(None, date(2026, 4, 25))
+        assert sat == []
+
+        # Domingo (26/04/2026) fechado
+        sun = _get_effective_windows(None, date(2026, 4, 26))
+        assert sun == []
+
+    def test_lunch_break_in_config(self):
+        """Config com pausa 12-14 retorna 2 janelas no dia."""
+        from datetime import date
+        from huma.models.schemas import BusinessScheduleConfig, TimeWindow
+        from huma.services.scheduling_service import _get_effective_windows
+
+        config = BusinessScheduleConfig(
+            weekly=[
+                [TimeWindow(start="08:00", end="12:00"), TimeWindow(start="14:00", end="18:00")],
+                [], [], [], [], [], [],
+            ]
+        )
+        # Segunda (20/04/2026) — 2 janelas
+        windows = _get_effective_windows(config, date(2026, 4, 20))
+        assert len(windows) == 2
+        assert windows[0].end == "12:00"
+        assert windows[1].start == "14:00"
+
+    def test_holiday_closes_day(self):
+        """Holiday com closed=True retorna [] mesmo que weekday normal tenha janela."""
+        from datetime import date
+        from huma.models.schemas import BusinessScheduleConfig, HolidayRule, TimeWindow
+        from huma.services.scheduling_service import _get_effective_windows
+
+        config = BusinessScheduleConfig(
+            weekly=[[TimeWindow(start="08:00", end="18:00")]] * 5 + [[], []],
+            holidays=[HolidayRule(date="2026-04-21", closed=True, reason="Tiradentes")],
+        )
+        # 21/04/2026 é terça — normalmente abre, mas é feriado
+        result = _get_effective_windows(config, date(2026, 4, 21))
+        assert result == []
+
+    def test_holiday_half_day_override(self):
+        """Holiday com windows sobrescreve (meio-período)."""
+        from datetime import date
+        from huma.models.schemas import BusinessScheduleConfig, HolidayRule, TimeWindow
+        from huma.services.scheduling_service import _get_effective_windows
+
+        config = BusinessScheduleConfig(
+            weekly=[[TimeWindow(start="08:00", end="18:00")]] * 5 + [[], []],
+            holidays=[HolidayRule(
+                date="2026-04-21",
+                closed=False,
+                windows=[TimeWindow(start="08:00", end="12:00")],
+                reason="véspera de feriado",
+            )],
+        )
+        result = _get_effective_windows(config, date(2026, 4, 21))
+        assert len(result) == 1
+        assert result[0].end == "12:00"
+
+    def test_is_within_business_hours_accepts_in_window(self):
+        """dt=10:00 seg com fallback (8-18) → OK."""
+        from datetime import datetime
+        from huma.services.scheduling_service import _is_within_business_hours
+
+        dt = datetime(2026, 4, 20, 10, 0)  # segunda 10h
+        ok, reason = _is_within_business_hours(None, dt, duration_minutes=60)
+        assert ok is True
+        assert reason == ""
+
+    def test_is_within_business_hours_rejects_21h(self):
+        """dt=21:00 seg com fallback (fecha 18) → rejeita."""
+        from datetime import datetime
+        from huma.services.scheduling_service import _is_within_business_hours
+
+        dt = datetime(2026, 4, 20, 21, 0)  # segunda 21h
+        ok, reason = _is_within_business_hours(None, dt, duration_minutes=60)
+        assert ok is False
+        assert "fora do horário" in reason.lower() or "atendimento" in reason.lower()
+
+    def test_is_within_business_hours_rejects_saturday(self):
+        """Sábado com fallback (fechado) → rejeita."""
+        from datetime import datetime
+        from huma.services.scheduling_service import _is_within_business_hours
+
+        dt = datetime(2026, 4, 25, 10, 0)  # sábado
+        ok, reason = _is_within_business_hours(None, dt, duration_minutes=60)
+        assert ok is False
+
+    def test_is_within_business_hours_rejects_holiday(self):
+        """Holiday configurado rejeita agendamento mesmo em weekday aberto."""
+        from datetime import datetime
+        from huma.models.schemas import BusinessScheduleConfig, HolidayRule, TimeWindow
+        from huma.services.scheduling_service import _is_within_business_hours
+
+        config = BusinessScheduleConfig(
+            weekly=[[TimeWindow(start="08:00", end="18:00")]] * 5 + [[], []],
+            holidays=[HolidayRule(date="2026-04-21", closed=True, reason="Tiradentes")],
+        )
+        dt = datetime(2026, 4, 21, 10, 0)  # terça 10h mas é feriado
+        ok, reason = _is_within_business_hours(config, dt, duration_minutes=60)
+        assert ok is False
+        assert "feriado" in reason.lower() or "tiradentes" in reason.lower()
+
+    def test_format_schedule_summary_fallback(self):
+        """Summary do fallback lista todos os dias com status."""
+        from huma.services.scheduling_service import _format_schedule_summary
+
+        summary = _format_schedule_summary(None)
+        # Contém todos os dias
+        assert "Segunda-feira" in summary
+        assert "Sábado" in summary
+        assert "Domingo" in summary
+        # Fallback: seg-sex 8-18, sáb/dom fechado
+        assert "08:00-18:00" in summary
+        assert "fechado" in summary
+
+    def test_schema_accepts_empty_business_schedule(self):
+        """ClientIdentity aceita business_schedule=None (default)."""
+        from huma.models.schemas import ClientIdentity
+        ci = ClientIdentity(client_id="x")
+        assert ci.business_schedule is None
+
+    def test_schema_accepts_populated_business_schedule(self):
+        """ClientIdentity aceita business_schedule preenchido."""
+        from huma.models.schemas import (
+            ClientIdentity, BusinessScheduleConfig, TimeWindow, HolidayRule,
+        )
+        config = BusinessScheduleConfig(
+            weekly=[
+                [TimeWindow(start="08:00", end="12:00"), TimeWindow(start="14:00", end="18:00")],
+                [], [], [], [], [], [],
+            ],
+            holidays=[HolidayRule(date="2026-04-21", closed=True, reason="Tiradentes")],
+            appointment_duration_minutes=30,
+        )
+        ci = ClientIdentity(client_id="x", business_schedule=config)
+        assert ci.business_schedule is not None
+        assert ci.business_schedule.appointment_duration_minutes == 30
+        assert len(ci.business_schedule.weekly) == 7
+        assert len(ci.business_schedule.holidays) == 1

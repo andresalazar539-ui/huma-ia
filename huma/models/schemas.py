@@ -219,6 +219,49 @@ class MediaAsset(BaseModel):
 
 
 # ================================================================
+# HORÁRIO DE FUNCIONAMENTO (v12 / fix 7.6)
+# ================================================================
+
+class TimeWindow(BaseModel):
+    """Janela de atendimento. Ex: start='08:00', end='12:00'."""
+    start: str  # "HH:MM"
+    end: str    # "HH:MM"
+
+
+class HolidayRule(BaseModel):
+    """
+    Exceção a um dia específico (feriado, férias, dia especial).
+    - closed=True + windows vazio: dia totalmente fechado.
+    - closed=False + windows preenchido: dia tem janelas diferentes (ex: meio-período).
+    """
+    date: str                              # "YYYY-MM-DD"
+    closed: bool = True
+    reason: str = ""                       # Ex: "Tiradentes"
+    windows: list[TimeWindow] = Field(default_factory=list)
+
+
+class BusinessScheduleConfig(BaseModel):
+    """
+    Horário semanal + feriados. Todos os campos opcionais.
+
+    weekly: lista de 7 posições (0=seg ... 6=dom); cada posição é uma lista
+    de janelas abertas. Lista vazia = fechado naquele dia-da-semana.
+    Ex (seg-sex 8-12 / 14-18, sáb 8-12, dom fechado):
+      [
+        [{"start":"08:00","end":"12:00"},{"start":"14:00","end":"18:00"}],  # seg
+        [...], [...], [...], [...],
+        [{"start":"08:00","end":"12:00"}],                                   # sáb
+        []                                                                   # dom
+      ]
+
+    Se weekly não tem 7 itens, sistema usa fallback seg-sex 8h-18h.
+    """
+    weekly: list[list[TimeWindow]] = Field(default_factory=list)
+    holidays: list[HolidayRule] = Field(default_factory=list)
+    appointment_duration_minutes: int = 60
+
+
+# ================================================================
 # AGENDAMENTO (v6.1.0)
 # ================================================================
 
@@ -239,6 +282,7 @@ class SchedulingRequest(BaseModel):
     notes: str = ""
     location: str = ""  # Endereço presencial (clínica, salão, etc). Vai pro Google Calendar.
     lead_context: str = ""  # Resumo do que o lead quer / dor / perfil. Vai pra descrição do evento.
+    schedule_config: Optional[BusinessScheduleConfig] = None  # v12 (fix 7.6) — passa config do dono pra validação
 
 
 # ================================================================
@@ -411,6 +455,18 @@ class ClientIdentity(BaseModel):
             "Análise de mercado gerada pela IA no onboarding. "
             "Contém: contexto de mercado, público-alvo, perfis de cliente, "
             "objeções, argumentos, estratégia de vendas."
+        ),
+    )
+
+    # v12 / fix 7.6 — estrutura completa de horário (opcional)
+    # Se None, sistema usa fallback seg-sex 8h-18h (comportamento atual).
+    # Dono preenche via UI depois com weekly[7] + holidays.
+    business_schedule: Optional[BusinessScheduleConfig] = Field(
+        default=None,
+        description=(
+            "Horário estruturado: weekly[7] (janelas por dia-da-semana) + "
+            "holidays (exceções por data) + appointment_duration_minutes. "
+            "None = fallback seg-sex 8h-18h. Dono preenche via API."
         ),
     )
 

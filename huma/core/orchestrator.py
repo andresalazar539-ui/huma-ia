@@ -500,6 +500,18 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     log.info(f"Pre-flight CONFLITO | {phone} | descartando reply do Claude")
                     break
 
+                elif result.get("status") == "outside_hours":
+                    # v12 / fix 7.6 — lead pediu horário fora do expediente.
+                    # Mesmo tratamento do conflict: descarta reply do Claude,
+                    # envia mensagem explicativa, não agenda, não avança stage.
+                    appointment_override = result["whatsapp_message"]
+                    remaining_actions = []
+                    log.info(
+                        f"Pre-flight FORA DO HORÁRIO | {phone} | "
+                        f"detail={result.get('detail', '')}"
+                    )
+                    break
+
                 elif result.get("status") == "confirmed":
                     appointment_confirmation = result["confirmation_message"]
                     already_scheduled_this_turn = True  # Impede duplicação no mesmo ciclo
@@ -1244,6 +1256,7 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         meeting_platform=platform,
         location=address,
         lead_context=_build_lead_context(conv),
+        schedule_config=client_data.business_schedule,  # v12 / fix 7.6
     )
 
     # Se a conversa já tem um agendamento ativo, passa o event_id pra fazer update
@@ -1304,6 +1317,7 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
         meeting_platform=platform,
         location=address,
         lead_context=_build_lead_context(conv),
+        schedule_config=client_data.business_schedule,  # v12 / fix 7.6
     )
 
     existing_event_id = conv.active_appointment_event_id if conv else ""
@@ -1539,6 +1553,7 @@ async def _handle_check_availability_action(phone, action, client_data, conv):
     result = await sched.find_next_available_slots(
         slots_to_find=slots_to_find,
         urgency=urgency,
+        schedule_config=client_data.business_schedule,  # v12 / fix 7.6
     )
 
     status = result.get("status", "error")

@@ -942,6 +942,21 @@ REGRAS CUSTOM:
     _dia_semana_pt = _WEEKDAY_PT[now.weekday()]
     prompt += f"\nDATA/HORA ATUAL: {_dia_semana_pt}, {now.strftime('%d/%m/%Y %H:%M')} (Brasília)\n"
 
+    # v12 / fix 7.6 — horário de funcionamento estruturado (obriga IA a respeitar)
+    from huma.services.scheduling_service import _format_schedule_summary, _upcoming_holidays
+    _schedule_summary = _format_schedule_summary(identity.business_schedule)
+    prompt += f"\nHORÁRIO DE FUNCIONAMENTO (siga à risca — só agenda dentro dessas janelas):\n{_schedule_summary}\n"
+    _upcoming = _upcoming_holidays(identity.business_schedule, days=14)
+    if _upcoming:
+        prompt += "\nPRÓXIMOS DIAS ESPECIAIS (avise o lead se ele pedir um destes):\n"
+        for h in _upcoming:
+            prompt += f"  - {h}\n"
+    prompt += (
+        "\nREGRA DE HORÁRIO: se lead pedir fora das janelas (ex: 21h quando fecha 18h), "
+        "INFORME o horário correto e ofereça um dentro. Se o dia for feriado listado acima, "
+        "avise o lead e ofereça outro dia. NUNCA agende fora das janelas.\n"
+    )
+
     # Regras absolutas comprimidas (~200 tokens)
     prompt += f"""
 

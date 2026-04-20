@@ -11,7 +11,7 @@
 # ================================================================
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as date_type
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -21,9 +21,151 @@ from huma.config import (
     GOOGLE_CALENDAR_ID,
     ZOOM_API_KEY,
 )
+from huma.models.schemas import BusinessScheduleConfig, TimeWindow
 from huma.utils.logger import get_logger
 
 log = get_logger("scheduling")
+
+
+# ================================================================
+# HORÁRIO DE FUNCIONAMENTO (v12 / fix 7.6)
+#
+# Fallback = comportamento histórico (seg-sex 8-18, sáb/dom fechado).
+# Se cliente não preenche business_schedule, tudo continua como antes.
+# ================================================================
+
+_FALLBACK_WEEKLY: list[list[TimeWindow]] = [
+    [TimeWindow(start="08:00", end="18:00")],  # seg
+    [TimeWindow(start="08:00", end="18:00")],  # ter
+    [TimeWindow(start="08:00", end="18:00")],  # qua
+    [TimeWindow(start="08:00", end="18:00")],  # qui
+    [TimeWindow(start="08:00", end="18:00")],  # sex
+    [],                                         # sáb fechado
+    [],                                         # dom fechado
+]
+
+_WEEKDAY_NAMES_PT = [
+    "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+    "sexta-feira", "sábado", "domingo",
+]
+
+
+def _get_effective_windows(
+    config: BusinessScheduleConfig | None,
+    the_date: date_type,
+) -> list[TimeWindow]:
+    """
+    Retorna as janelas de atendimento efetivas pra uma data.
+    Holiday override tem prioridade sobre weekly.
+    Config None ou weekly inválido → fallback seg-sex 8-18.
+    """
+    # 1. Holiday tem prioridade
+    if config and config.holidays:
+        iso = the_date.isoformat()
+        for h in config.holidays:
+            if h.date == iso:
+                if h.closed and not h.windows:
+                    return []  # totalmente fechado
+                return h.windows  # meio-período ou override
+
+    # 2. Weekly normal
+    weekly = config.weekly if (config and len(config.weekly) == 7) else _FALLBACK_WEEKLY
+    return weekly[the_date.weekday()]
+
+
+def _holiday_reason(
+    config: BusinessScheduleConfig | None,
+    the_date: date_type,
+) -> str:
+    """Retorna motivo do holiday naquela data, ou vazio."""
+    if not config or not config.holidays:
+        return ""
+    iso = the_date.isoformat()
+    for h in config.holidays:
+        if h.date == iso and h.closed:
+            return f"feriado: {h.reason}" if h.reason else "fechado (exceção configurada)"
+    return ""
+
+
+def _is_within_business_hours(
+    config: BusinessScheduleConfig | None,
+    dt: datetime,
+    duration_minutes: int = 60,
+) -> tuple[bool, str]:
+    """
+    Valida se [dt, dt+duration] cabe inteiro em alguma janela aberta.
+    Returns (ok, reason_if_not_ok).
+    """
+    windows = _get_effective_windows(config, dt.date())
+    if not windows:
+        reason = _holiday_reason(config, dt.date()) or "fechado nesse dia-da-semana"
+        return False, reason
+
+    start_min = dt.hour * 60 + dt.minute
+    end_min = start_min + duration_minutes
+
+    for w in windows:
+        wh, wm = map(int, w.start.split(":"))
+        eh, em = map(int, w.end.split(":"))
+        window_start = wh * 60 + wm
+        window_end = eh * 60 + em
+        if start_min >= window_start and end_min <= window_end:
+            return True, ""
+
+    windows_str = ", ".join(f"{w.start}-{w.end}" for w in windows)
+    return False, f"fora do horário de atendimento (aberto: {windows_str})"
+
+
+def _format_schedule_summary(config: BusinessScheduleConfig | None) -> str:
+    """
+    Resumo legível do horário pra incluir no prompt e em respostas ao lead.
+    Ex: 'Seg-Sex: 08:00-18:00. Sáb/Dom: fechado.'
+    """
+    weekly = config.weekly if (config and len(config.weekly) == 7) else _FALLBACK_WEEKLY
+
+    # Agrupa dias com janelas idênticas pra resumir
+    lines = []
+    for i, day_windows in enumerate(weekly):
+        if not day_windows:
+            lines.append(f"  {_WEEKDAY_NAMES_PT[i].capitalize()}: fechado")
+        else:
+            windows_str = " e ".join(f"{w.start}-{w.end}" for w in day_windows)
+            lines.append(f"  {_WEEKDAY_NAMES_PT[i].capitalize()}: {windows_str}")
+    return "\n".join(lines)
+
+
+def _upcoming_holidays(
+    config: BusinessScheduleConfig | None,
+    days: int = 7,
+) -> list[str]:
+    """
+    Lista holidays nos próximos N dias, formatados pra prompt.
+    Ex: ['21/04 (terça-feira): fechado — Tiradentes']
+    """
+    if not config or not config.holidays:
+        return []
+    now = datetime.now().date()
+    limit = now + timedelta(days=days)
+    results = []
+    for h in config.holidays:
+        try:
+            h_date = datetime.strptime(h.date, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if now <= h_date <= limit:
+            weekday_name = _WEEKDAY_NAMES_PT[h_date.weekday()]
+            br_date = h_date.strftime("%d/%m")
+            if h.closed and not h.windows:
+                status = f"fechado — {h.reason}" if h.reason else "fechado"
+            elif h.windows:
+                windows_str = " e ".join(f"{w.start}-{w.end}" for w in h.windows)
+                status = f"horário especial {windows_str}"
+                if h.reason:
+                    status += f" — {h.reason}"
+            else:
+                continue
+            results.append(f"{br_date} ({weekday_name}): {status}")
+    return results
 
 
 # ================================================================
@@ -111,8 +253,51 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
         log.warning(f"Data/hora inválida | input='{request.date_time}'")
         return {"status": "error", "detail": "Data/hora inválida"}
 
+    # ── v12 / fix 7.6 — Valida horário de funcionamento ANTES de checar Calendar ──
+    # Se lead pediu 21h e clínica fecha 18h, OU dia é feriado configurado,
+    # sistema recusa antes de tocar no Calendar. Lead recebe mensagem explicativa.
+    schedule_config = getattr(request, "schedule_config", None)
+    effective_duration = 60
+    if schedule_config and schedule_config.appointment_duration_minutes:
+        effective_duration = schedule_config.appointment_duration_minutes
+
+    hours_ok, hours_reason = _is_within_business_hours(
+        schedule_config, parsed_dt, effective_duration,
+    )
+    if not hours_ok:
+        windows_today = _get_effective_windows(schedule_config, parsed_dt.date())
+        if windows_today:
+            windows_str = " e ".join(f"{w.start}-{w.end}" for w in windows_today)
+            msg = (
+                f"Nesse dia a gente atende {windows_str}. "
+                f"Qual horário dentro disso fica bom pra você?"
+            )
+        else:
+            holiday = _holiday_reason(schedule_config, parsed_dt.date())
+            if holiday:
+                msg = (
+                    f"Nesse dia a gente não abre ({holiday}). "
+                    f"Tem outro dia que funciona pra você?"
+                )
+            else:
+                msg = (
+                    "A gente não atende nesse dia-da-semana. "
+                    "Qual outro dia funciona pra você?"
+                )
+        log.info(
+            f"Fora do horário | {request.lead_name} | "
+            f"horario={parsed_dt.strftime('%d/%m %H:%M')} | reason={hours_reason}"
+        )
+        return {
+            "status": "outside_hours",
+            "detail": hours_reason,
+            "whatsapp_message": msg,
+        }
+
     # ── Verifica disponibilidade ANTES de criar ──
-    availability = await _check_availability(parsed_dt)
+    availability = await _check_availability(
+        parsed_dt, effective_duration, schedule_config=schedule_config,
+    )
 
     # v12 / fix 2A: se o único conflito é o PRÓPRIO evento do lead
     # (caso típico: lead corrigindo email/nome no mesmo horário), pula
@@ -254,7 +439,11 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
 # ================================================================
 
 
-async def _check_availability(dt: datetime, duration_minutes: int = 60) -> dict:
+async def _check_availability(
+    dt: datetime,
+    duration_minutes: int = 60,
+    schedule_config: BusinessScheduleConfig | None = None,
+) -> dict:
     """
     Verifica se o horário está livre na agenda do dono.
 
@@ -329,7 +518,10 @@ async def _check_availability(dt: datetime, duration_minutes: int = 60) -> dict:
 
         # Busca alternativas (reutiliza mesmas credentials)
         # 6 slots pra cobrir manhã E tarde — lead escolhe o período
-        suggestions = await _find_available_slots(dt, duration_minutes, slots_to_find=6, credentials=credentials)
+        suggestions = await _find_available_slots(
+            dt, duration_minutes, slots_to_find=6,
+            credentials=credentials, schedule_config=schedule_config,
+        )
 
         return {
             "available": False,
@@ -349,9 +541,17 @@ async def _find_available_slots(
     duration_minutes: int = 60,
     slots_to_find: int = 3,
     credentials=None,
+    schedule_config: BusinessScheduleConfig | None = None,
 ) -> list[datetime]:
     """
     Encontra horários disponíveis próximos ao original.
+
+    v12 / fix 7.6 — respeita schedule_config se fornecido:
+      - Usa janelas configuradas por dia-da-semana (pode ter pausa pra almoço).
+      - Pula dias sem janelas (fechado).
+      - Pula holidays fechados.
+      - Usa appointment_duration_minutes da config se presente.
+    Se config None, cai no fallback seg-sex 8-18 (comportamento histórico).
 
     Reutiliza credentials já autenticadas do _check_availability
     pra evitar erro de authorization com scope diferente.
@@ -360,6 +560,11 @@ async def _find_available_slots(
         credentials, _ = _build_google_credentials()
     if not credentials:
         return []
+
+    # Usa duration da config se passada (e config for válida)
+    effective_duration = duration_minutes
+    if schedule_config and schedule_config.appointment_duration_minutes:
+        effective_duration = schedule_config.appointment_duration_minutes
 
     try:
         available: list[datetime] = []
@@ -372,14 +577,20 @@ async def _find_available_slots(
 
             current_date = check_date + timedelta(days=day_offset)
 
-            # Pula fim de semana
-            if current_date.weekday() >= 5:
-                continue
+            # v12 / fix 7.6 — usa janelas efetivas do dia (weekly + holiday override)
+            windows = _get_effective_windows(schedule_config, current_date)
+            if not windows:
+                continue  # dia fechado (seja por weekday ou holiday)
 
-            day_start = datetime.combine(current_date, datetime.min.time()).replace(hour=8)
-            day_end = datetime.combine(current_date, datetime.min.time()).replace(hour=18)
+            # Limites do dia pra query do Calendar: do início da 1ª janela até o fim da última
+            first_start = windows[0]
+            last_end = windows[-1]
+            fh, fm = map(int, first_start.start.split(":"))
+            lh, lm = map(int, last_end.end.split(":"))
+            day_start_query = datetime.combine(current_date, datetime.min.time()).replace(hour=fh, minute=fm)
+            day_end_query = datetime.combine(current_date, datetime.min.time()).replace(hour=lh, minute=lm)
 
-            def _query_day(ds=day_start, de=day_end):
+            def _query_day(ds=day_start_query, de=day_end_query):
                 from googleapiclient.discovery import build
 
                 svc = build("calendar", "v3", credentials=credentials)
@@ -408,27 +619,39 @@ async def _find_available_slots(
                 except (ValueError, KeyError):
                     pass
 
-            # Testa cada hora
-            candidate = day_start
-            while candidate.hour < 18 and len(available) < slots_to_find:
-                candidate_end = candidate + timedelta(minutes=duration_minutes)
+            # Testa cada hora DENTRO de cada janela aberta do dia
+            for window in windows:
+                if len(available) >= slots_to_find:
+                    break
+                wh, wm = map(int, window.start.split(":"))
+                eh, em = map(int, window.end.split(":"))
+                window_start = datetime.combine(current_date, datetime.min.time()).replace(hour=wh, minute=wm)
+                window_end = datetime.combine(current_date, datetime.min.time()).replace(hour=eh, minute=em)
 
-                # Não sugere passado nem o horário original com conflito
-                if candidate <= now or candidate == original_dt:
-                    candidate += timedelta(hours=1)
-                    continue
+                candidate = window_start
+                while candidate < window_end and len(available) < slots_to_find:
+                    candidate_end = candidate + timedelta(minutes=effective_duration)
 
-                # Verifica conflito
-                is_free = True
-                for bs, be in busy_parsed:
-                    if candidate < be and candidate_end > bs:
-                        is_free = False
+                    # Slot só é válido se cabe inteiro na janela
+                    if candidate_end > window_end:
                         break
 
-                if is_free:
-                    available.append(candidate)
+                    # Não sugere passado nem o horário original com conflito
+                    if candidate <= now or candidate == original_dt:
+                        candidate += timedelta(hours=1)
+                        continue
 
-                candidate += timedelta(hours=1)
+                    # Verifica conflito com eventos ocupados
+                    is_free = True
+                    for bs, be in busy_parsed:
+                        if candidate < be and candidate_end > bs:
+                            is_free = False
+                            break
+
+                    if is_free:
+                        available.append(candidate)
+
+                    candidate += timedelta(hours=1)
 
         return available
 
@@ -830,6 +1053,7 @@ async def find_next_available_slots(
     slots_to_find: int = 5,
     duration_minutes: int = 60,
     urgency: str = "normal",
+    schedule_config: BusinessScheduleConfig | None = None,
 ) -> dict:
     """
     Busca os próximos N horários livres no Google Calendar, ordenados cronologicamente.
@@ -872,6 +1096,7 @@ async def find_next_available_slots(
             duration_minutes=duration_minutes,
             slots_to_find=slots_to_find,
             credentials=credentials,
+            schedule_config=schedule_config,
         )
 
         if not slots:
