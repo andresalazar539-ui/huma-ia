@@ -931,9 +931,16 @@ REGRAS CUSTOM:
     prompt += "\n\n" + _format_lead_memory(capped, conv.history_summary)
 
     # Data/hora (sem isso o Claude inventa datas)
+    # v12 / fix 7.5 — usa mapa pt-br manual em vez de %A (que depende de locale
+    # do container; no Railway Linux sem pt_BR.UTF-8 instalado, %A vira inglês).
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone(timedelta(hours=-3)))
-    prompt += f"\nDATA/HORA ATUAL: {now.strftime('%A, %d/%m/%Y %H:%M')} (Brasília)\n"
+    _WEEKDAY_PT = [
+        "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+        "sexta-feira", "sábado", "domingo",
+    ]
+    _dia_semana_pt = _WEEKDAY_PT[now.weekday()]
+    prompt += f"\nDATA/HORA ATUAL: {_dia_semana_pt}, {now.strftime('%d/%m/%Y %H:%M')} (Brasília)\n"
 
     # Regras absolutas comprimidas (~200 tokens)
     prompt += f"""

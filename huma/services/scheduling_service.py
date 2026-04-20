@@ -878,7 +878,17 @@ async def find_next_available_slots(
             log.info(f"check_availability: nenhum horário livre em 7 dias | urgency={urgency}")
             return {"status": "empty", "slots": [], "count": 0}
 
-        slots_formatted = [s.strftime("%d/%m/%Y %H:%M") for s in slots]
+        # v12 / fix 7.5 — CRÍTICO: inclui dia da semana em pt-br em cada slot.
+        # Sem isso, Claude vê "21/04/2026 08:00" e não cruza com o calendário real
+        # — alucina "quarta" quando o lead pediu quarta mesmo o dia sendo terça.
+        _WEEKDAY_NAMES_PT = [
+            "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+            "sexta-feira", "sábado", "domingo",
+        ]
+        slots_formatted = [
+            f"{s.strftime('%d/%m/%Y')} ({_WEEKDAY_NAMES_PT[s.weekday()]}) {s.strftime('%H:%M')}"
+            for s in slots
+        ]
         log.info(
             f"check_availability OK | urgency={urgency} | count={len(slots_formatted)} | "
             f"primeiro={slots_formatted[0]}"

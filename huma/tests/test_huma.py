@@ -1191,3 +1191,80 @@ class TestParserTimezone:
         assert dt.year == 2026
         assert dt.hour == 12
         assert dt.tzinfo is None
+
+
+# ================================================================
+# TESTES DE DIA DA SEMANA — ANTI-ALUCINAÇÃO (v12 / fix 7.5)
+# ================================================================
+
+class TestWeekdayGrounding:
+    """Testa que slots/prompt/marker entregam dia-da-semana ao Claude
+    pra impedir alucinação (ex: confundir 21/04 terça com quarta)."""
+
+    def test_slots_include_weekday_in_pt_br(self):
+        """find_next_available_slots retorna slots com dia da semana em pt-br."""
+        import inspect
+        from huma.services import scheduling_service as sched
+        src = inspect.getsource(sched.find_next_available_slots)
+        # Novo formato: 'dd/mm/YYYY (dia-da-semana) HH:MM'
+        assert "terça-feira" in src or "_WEEKDAY_NAMES_PT" in src
+        assert "weekday()" in src
+
+    def test_dynamic_prompt_weekday_is_portuguese(self, clinica_identity):
+        """build_dynamic_prompt usa dia-da-semana em pt-br (não %A localizado)."""
+        from huma.services.ai_service import build_dynamic_prompt
+        from huma.models.schemas import Conversation
+        conv = Conversation(client_id="x", phone="123")
+        prompt = build_dynamic_prompt(clinica_identity, conv)
+        # Deve conter um dia-da-semana em português (qualquer dos 7)
+        weekdays_pt = [
+            "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+            "sexta-feira", "sábado", "domingo",
+        ]
+        assert any(d in prompt for d in weekdays_pt), (
+            f"Nenhum dia-da-semana em pt-br encontrado no prompt. "
+            f"Ainda está usando %A localizado?"
+        )
+        # Não deve ter nomes em inglês (indicaria %A com locale não-pt)
+        english_weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday",
+                            "Friday", "Saturday", "Sunday"]
+        assert not any(d in prompt for d in english_weekdays), (
+            "Prompt contém dia-da-semana em inglês — %A ainda está ativo?"
+        )
+
+    def test_check_availability_marker_has_weekday_warning(self):
+        """Marker instrui Claude a respeitar dia-da-semana do slot (CRÍTICO)."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from huma.core.orchestrator import _handle_check_availability_action
+        from huma.models.schemas import Conversation, ClientIdentity
+
+        conv = Conversation(client_id="x", phone="123")
+        client_data = MagicMock(spec=ClientIdentity)
+        client_data.client_id = "x"
+
+        fake_result = {
+            "status": "ok",
+            "slots": ["21/04/2026 (terça-feira) 08:00"],
+            "count": 1,
+        }
+
+        with patch("huma.core.orchestrator.sched.find_next_available_slots",
+                   new=AsyncMock(return_value=fake_result)), \
+             patch("huma.core.orchestrator.db.save_conversation",
+                   new=AsyncMock(return_value=None)):
+            asyncio.run(
+                _handle_check_availability_action(
+                    "123", {"type": "check_availability"}, client_data, conv
+                )
+            )
+
+        marker = next(
+            m["content"] for m in conv.history
+            if isinstance(m.get("content"), str) and "[AGENDA CONSULTADA" in m["content"]
+        )
+        # Marker deve conter instrução sobre dia-da-semana
+        assert "DIA DA SEMANA" in marker
+        assert "VERDADE do calendário" in marker
+        # Deve instruir a avisar lead quando o dia pedido não tem vaga
+        assert "AVISE" in marker or "avise" in marker

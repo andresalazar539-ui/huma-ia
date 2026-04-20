@@ -1554,7 +1554,12 @@ async def _handle_check_availability_action(phone, action, client_data, conv):
             f"{slots_text}. "
             f"NÃO invente outros horários. Ofereça 2-3 opções ao lead, priorizando os mais próximos. "
             f"Você JÁ acolheu o lead e JÁ disse que ia verificar no turn anterior — NÃO repita "
-            f"empatia nem perguntas de diagnóstico. Vá direto aos horários em 1-2 mensagens curtas.]"
+            f"empatia nem perguntas de diagnóstico. Vá direto aos horários em 1-2 mensagens curtas. "
+            f"CRÍTICO: cada slot tem o DIA DA SEMANA entre parênteses (ex: 'terça-feira'). "
+            f"Se o lead pediu um dia específico (ex: 'quarta') e NENHUM slot disponível é desse dia, "
+            f"AVISE o lead que não tem vaga nesse dia e ofereça o que tem. "
+            f"NUNCA chame 21/04 de 'quarta' se os slots dizem 'terça-feira'. "
+            f"O dia da semana no slot é a VERDADE do calendário — nunca contradiga.]"
         )
     elif status == "empty":
         marker = (
