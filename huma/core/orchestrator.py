@@ -548,6 +548,117 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             return
 
         # ============================================================
+        # CHECK_AVAILABILITY (v12 / fix 7.3) — processa ANTES do texto
+        #
+        # Motivo da reordenação: o reply do turn 1 é transicional por
+        # construção (horários não existiam quando Claude compôs). Se
+        # deixarmos o texto sair antes do handler rodar, o lead recebe
+        # uma sequência duplicada (empatia + vou verificar + pergunta
+        # no turn 1, depois empatia repetida + horários + pergunta
+        # repetida no turn 2).
+        #
+        # Nova ordem: handler roda → se status=ok, re-invoca IA e envia
+        # horários reais → suprime o texto do turn 1. Se status!=ok,
+        # texto do turn 1 sai normalmente como fallback.
+        # ============================================================
+        suppress_claude_reply_for_check = False
+        check_availability_actions = [
+            a for a in remaining_actions
+            if isinstance(a, dict) and a.get("type") == "check_availability"
+        ]
+        if check_availability_actions:
+            # Remove TODAS as check_availability do loop posterior
+            # (impede re-invocação duplicada; só a primeira é processada)
+            remaining_actions = [
+                a for a in remaining_actions
+                if not (isinstance(a, dict) and a.get("type") == "check_availability")
+            ]
+
+            first_check_action = check_availability_actions[0]
+            check_result = await _handle_check_availability_action(
+                phone, first_check_action, client_data, conv
+            )
+
+            if check_result.get("status") == "ok" and check_result.get("slots"):
+                suppress_claude_reply_for_check = True
+                log.info(
+                    f"check_availability status=ok | {phone} | "
+                    f"suprimindo reply do turn 1 | re-invocando IA"
+                )
+
+                # Re-carrega conv do DB pra garantir que o marker tá no histórico
+                try:
+                    fresh_conv = await db.get_conversation(cid, phone)
+                except Exception as e:
+                    log.error(
+                        f"Erro recarregando conv pós check_availability | {phone} | "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    fresh_conv = conv
+
+                # Última mensagem do lead que disparou tudo isso
+                last_user_text = ""
+                for msg in reversed(fresh_conv.history):
+                    if msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            last_user_text = content
+                            break
+
+                if last_user_text:
+                    try:
+                        followup_result = await ai.generate_response(
+                            client_data,
+                            fresh_conv,
+                            last_user_text,
+                            image_url=None,
+                            use_fast_model=False,
+                            tier=3,
+                        )
+
+                        fup_reply = (followup_result.get("reply") or "").strip()
+                        fup_parts = followup_result.get("reply_parts") or []
+
+                        if fup_parts and len(fup_parts) > 1:
+                            for i, part in enumerate(fup_parts):
+                                if not isinstance(part, str) or not part.strip():
+                                    continue
+                                delay = min(2.5 + len(part) * 0.04, 5.0) if i == 0 else _typing_delay(part)
+                                await asyncio.sleep(delay)
+                                await wa.send_text(phone, part, client_id=cid)
+                        elif fup_reply:
+                            await asyncio.sleep(_typing_delay(fup_reply))
+                            await wa.send_text(phone, fup_reply, client_id=cid)
+                        elif fup_parts and isinstance(fup_parts[0], str):
+                            single = fup_parts[0].strip()
+                            if single:
+                                await asyncio.sleep(_typing_delay(single))
+                                await wa.send_text(phone, single, client_id=cid)
+
+                        log.info(
+                            f"check_availability follow-up enviado | {phone} | "
+                            f"reply_len={len(fup_reply)} | parts={len(fup_parts)}"
+                        )
+                    except Exception as e:
+                        log.error(
+                            f"check_availability follow-up falhou | {phone} | "
+                            f"{type(e).__name__}: {e}"
+                        )
+                        fallback_msg = "Tô consultando os horários aqui, só um instante."
+                        await asyncio.sleep(_typing_delay(fallback_msg))
+                        await wa.send_text(phone, fallback_msg, client_id=cid)
+                else:
+                    log.warning(
+                        f"check_availability sem user text pra re-invocar | {phone}"
+                    )
+            else:
+                # status != ok → NÃO suprime; turn-1 vai sair como fallback
+                log.info(
+                    f"check_availability status={check_result.get('status')} | {phone} | "
+                    f"reply do turn 1 continua saindo como fallback"
+                )
+
+        # ============================================================
         # ÁUDIO DECISION
         # ============================================================
         audio_text = ai_result.get("audio_text", "").strip()
@@ -600,9 +711,13 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # v11.2 — Quando agendamento foi confirmado no PRE-FLIGHT, suprimir o reply
         # do Claude (que tipicamente é "Ótimo, vou confirmar..." ou "Deixa eu verificar...")
         # para evitar duplicação com a mensagem de confirmação real que virá em seguida.
-        suppress_claude_reply = bool(appointment_confirmation)
+        suppress_claude_reply = bool(appointment_confirmation) or suppress_claude_reply_for_check
         if suppress_claude_reply:
-            log.info(f"Reply suprimido | {phone} | motivo=appointment_confirmed | evita duplicação")
+            reason = (
+                "appointment_confirmed" if appointment_confirmation
+                else "check_availability_ok"
+            )
+            log.info(f"Reply suprimido | {phone} | motivo={reason} | evita duplicação")
 
         if not suppress_claude_reply:
             # ── MODO AUDIO-FIRST ──
@@ -687,88 +802,6 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         appointment_override = cancel_exec["message"]
                         remaining_actions = []
                         break
-            elif action_type == "check_availability":
-                # v12 (Cenário 7 + fix 7.2) — IA pediu pra consultar agenda.
-                # Handler injeta marker com horários reais.
-                # SEMPRE re-invocamos a IA após status=ok: o reply do primeiro turn
-                # é transicional por construção (os horários não existiam ainda).
-                # A heurística anterior (len >= 15) classificava transições como
-                # reply substantivo e pulava o follow-up — deixando o lead no vácuo.
-                check_result = await _handle_check_availability_action(
-                    phone, action, client_data, conv
-                )
-
-                if check_result.get("status") == "ok" and check_result.get("slots"):
-                    log.info(
-                        f"check_availability status=ok | {phone} | "
-                        f"re-invocando IA pra entregar horários reais"
-                    )
-
-                    # Re-carrega conv do DB pra garantir que o marker recém-injetado tá no histórico
-                    try:
-                        fresh_conv = await db.get_conversation(cid, phone)
-                    except Exception as e:
-                        log.error(
-                            f"Erro recarregando conv pós check_availability | {phone} | "
-                            f"{type(e).__name__}: {e}"
-                        )
-                        fresh_conv = conv
-
-                    # Última mensagem do lead que disparou tudo isso
-                    last_user_text = ""
-                    for msg in reversed(fresh_conv.history):
-                        if msg.get("role") == "user":
-                            content = msg.get("content", "")
-                            if isinstance(content, str):
-                                last_user_text = content
-                                break
-
-                    if last_user_text:
-                        try:
-                            followup_result = await ai.generate_response(
-                                client_data,
-                                fresh_conv,
-                                last_user_text,
-                                image_url=None,
-                                use_fast_model=False,
-                                tier=3,
-                            )
-
-                            fup_reply = (followup_result.get("reply") or "").strip()
-                            fup_parts = followup_result.get("reply_parts") or []
-
-                            if fup_parts and len(fup_parts) > 1:
-                                for i, part in enumerate(fup_parts):
-                                    if not isinstance(part, str) or not part.strip():
-                                        continue
-                                    delay = min(2.5 + len(part) * 0.04, 5.0) if i == 0 else _typing_delay(part)
-                                    await asyncio.sleep(delay)
-                                    await wa.send_text(phone, part, client_id=cid)
-                            elif fup_reply:
-                                await asyncio.sleep(_typing_delay(fup_reply))
-                                await wa.send_text(phone, fup_reply, client_id=cid)
-                            elif fup_parts and isinstance(fup_parts[0], str):
-                                single = fup_parts[0].strip()
-                                if single:
-                                    await asyncio.sleep(_typing_delay(single))
-                                    await wa.send_text(phone, single, client_id=cid)
-
-                            log.info(
-                                f"check_availability follow-up enviado | {phone} | "
-                                f"reply_len={len(fup_reply)} | parts={len(fup_parts)}"
-                            )
-                        except Exception as e:
-                            log.error(
-                                f"check_availability follow-up falhou | {phone} | "
-                                f"{type(e).__name__}: {e}"
-                            )
-                            fallback_msg = "Tô consultando os horários aqui, só um instante."
-                            await asyncio.sleep(_typing_delay(fallback_msg))
-                            await wa.send_text(phone, fallback_msg, client_id=cid)
-                    else:
-                        log.warning(
-                            f"check_availability sem user text pra re-invocar | {phone}"
-                        )
             elif action_type == "create_appointment":
                 # Só executa se NÃO agendou ainda (trava anti-duplicação)
                 if not already_scheduled_this_turn:
@@ -1475,12 +1508,16 @@ async def _handle_check_availability_action(phone, action, client_data, conv):
     slots = result.get("slots", [])
 
     if status == "ok" and slots:
-        # Marker no histórico — a IA vai ler e usar os horários reais
+        # Marker no histórico — a IA vai ler e usar os horários reais.
+        # Anti-redundância (v12 / fix 7.3): explicita que a IA já acolheu o lead
+        # no turn anterior, pra não repetir empatia/pergunta no turn 2.
         slots_text = ", ".join(slots)
         marker = (
             f"[AGENDA CONSULTADA — próximos horários LIVRES (use APENAS estes na resposta): "
             f"{slots_text}. "
-            f"NÃO invente outros horários. Ofereça 2-3 opções ao lead, priorizando os mais próximos.]"
+            f"NÃO invente outros horários. Ofereça 2-3 opções ao lead, priorizando os mais próximos. "
+            f"Você JÁ acolheu o lead e JÁ disse que ia verificar no turn anterior — NÃO repita "
+            f"empatia nem perguntas de diagnóstico. Vá direto aos horários em 1-2 mensagens curtas.]"
         )
     elif status == "empty":
         marker = (

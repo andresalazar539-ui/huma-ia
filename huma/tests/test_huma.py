@@ -996,3 +996,71 @@ class TestCheckAvailability:
         )
         assert "21/04/2026 08:00" in marker_content
         assert "NÃO invente outros horários" in marker_content
+
+    def test_marker_has_anti_redundancy_instruction(self):
+        """Marker de status=ok instrui Sonnet a não repetir empatia/pergunta."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from huma.core.orchestrator import _handle_check_availability_action
+        from huma.models.schemas import Conversation, ClientIdentity
+
+        conv = Conversation(client_id="x", phone="123")
+        client_data = MagicMock(spec=ClientIdentity)
+        client_data.client_id = "x"
+
+        fake_result = {
+            "status": "ok",
+            "slots": ["21/04/2026 08:00", "21/04/2026 12:00"],
+            "count": 2,
+        }
+
+        with patch("huma.core.orchestrator.sched.find_next_available_slots",
+                   new=AsyncMock(return_value=fake_result)), \
+             patch("huma.core.orchestrator.db.save_conversation",
+                   new=AsyncMock(return_value=None)):
+            asyncio.run(
+                _handle_check_availability_action(
+                    "123", {"type": "check_availability"}, client_data, conv
+                )
+            )
+
+        marker_content = next(
+            m["content"] for m in conv.history
+            if isinstance(m.get("content"), str) and "[AGENDA CONSULTADA" in m["content"]
+        )
+        assert "JÁ acolheu" in marker_content
+        assert "NÃO repita" in marker_content
+        assert "empatia" in marker_content.lower()
+
+    def test_check_availability_marker_empty_does_not_mention_redundancy(self):
+        """Markers de fallback (empty/no_credentials/error) NÃO incluem anti-redundância
+        — esses caminhos não disparam follow-up, então o reply do turn 1 precisa sair
+        e acolher normalmente."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from huma.core.orchestrator import _handle_check_availability_action
+        from huma.models.schemas import Conversation, ClientIdentity
+
+        conv = Conversation(client_id="x", phone="123")
+        client_data = MagicMock(spec=ClientIdentity)
+        client_data.client_id = "x"
+
+        fake_empty = {"status": "empty", "slots": [], "count": 0}
+
+        with patch("huma.core.orchestrator.sched.find_next_available_slots",
+                   new=AsyncMock(return_value=fake_empty)), \
+             patch("huma.core.orchestrator.db.save_conversation",
+                   new=AsyncMock(return_value=None)):
+            asyncio.run(
+                _handle_check_availability_action(
+                    "123", {"type": "check_availability"}, client_data, conv
+                )
+            )
+
+        marker_content = next(
+            m["content"] for m in conv.history
+            if isinstance(m.get("content"), str) and "[AGENDA" in m["content"]
+        )
+        # Marker do empty NÃO deve instruir anti-redundância
+        # (o turn 1 vai sair como fallback)
+        assert "JÁ acolheu" not in marker_content
