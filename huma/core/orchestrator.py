@@ -688,9 +688,98 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         remaining_actions = []
                         break
             elif action_type == "check_availability":
-                # v12 (Cenário 7) — IA pediu pra consultar agenda.
-                # Handler injeta marker com horários reais; IA responde na próxima turn.
+                # v12 (Cenário 7 + fix 7.1) — IA pediu pra consultar agenda.
+                # Handler injeta marker com horários reais.
+                # Se o Claude emitiu SÓ a action sem reply substantivo, re-chamamos
+                # a IA agora pra ela ler o marker e responder com os horários.
                 await _handle_check_availability_action(phone, action, client_data, conv)
+
+                # Detecta reply vazio/trivial que deixaria o lead no vácuo
+                reply_text = (ai_result.get("reply") or "").strip()
+                reply_parts_list = ai_result.get("reply_parts") or []
+                has_substantive_reply = False
+
+                if reply_parts_list:
+                    joined = " ".join(p for p in reply_parts_list if isinstance(p, str)).strip()
+                    has_substantive_reply = len(joined) >= 15
+                elif reply_text:
+                    has_substantive_reply = len(reply_text) >= 15
+
+                if not has_substantive_reply:
+                    log.info(
+                        f"check_availability sem reply substantivo | {phone} | "
+                        f"re-invocando IA pra responder com horários reais"
+                    )
+
+                    # Re-carrega conv do DB pra garantir que o marker recém-injetado tá no histórico
+                    try:
+                        fresh_conv = await db.get_conversation(cid, phone)
+                    except Exception as e:
+                        log.error(
+                            f"Erro recarregando conv pós check_availability | {phone} | "
+                            f"{type(e).__name__}: {e}"
+                        )
+                        fresh_conv = conv
+
+                    # Última mensagem do lead que disparou tudo isso
+                    last_user_text = ""
+                    for msg in reversed(fresh_conv.history):
+                        if msg.get("role") == "user":
+                            content = msg.get("content", "")
+                            if isinstance(content, str):
+                                last_user_text = content
+                                break
+
+                    if last_user_text:
+                        try:
+                            followup_result = await ai.generate_response(
+                                client_data,
+                                fresh_conv,
+                                last_user_text,
+                                image_url=None,
+                                use_fast_model=False,
+                                tier=3,
+                            )
+
+                            fup_reply = (followup_result.get("reply") or "").strip()
+                            fup_parts = followup_result.get("reply_parts") or []
+
+                            # Envia o follow-up imediatamente com delay humano
+                            if fup_parts and len(fup_parts) > 1:
+                                for i, part in enumerate(fup_parts):
+                                    if not isinstance(part, str) or not part.strip():
+                                        continue
+                                    delay = min(2.5 + len(part) * 0.04, 5.0) if i == 0 else _typing_delay(part)
+                                    await asyncio.sleep(delay)
+                                    await wa.send_text(phone, part, client_id=cid)
+                            elif fup_reply:
+                                await asyncio.sleep(_typing_delay(fup_reply))
+                                await wa.send_text(phone, fup_reply, client_id=cid)
+                            elif fup_parts and isinstance(fup_parts[0], str):
+                                single = fup_parts[0].strip()
+                                if single:
+                                    await asyncio.sleep(_typing_delay(single))
+                                    await wa.send_text(phone, single, client_id=cid)
+
+                            log.info(
+                                f"check_availability follow-up enviado | {phone} | "
+                                f"reply_len={len(fup_reply)} | parts={len(fup_parts)}"
+                            )
+                        except Exception as e:
+                            log.error(
+                                f"check_availability follow-up falhou | {phone} | "
+                                f"{type(e).__name__}: {e}"
+                            )
+                            # Fallback: manda mensagem neutra pra lead não ficar no vácuo
+                            fallback_msg = (
+                                "Tô consultando os horários aqui, só um instante."
+                            )
+                            await asyncio.sleep(_typing_delay(fallback_msg))
+                            await wa.send_text(phone, fallback_msg, client_id=cid)
+                    else:
+                        log.warning(
+                            f"check_availability sem user text pra re-invocar | {phone}"
+                        )
             elif action_type == "create_appointment":
                 # Só executa se NÃO agendou ainda (trava anti-duplicação)
                 if not already_scheduled_this_turn:

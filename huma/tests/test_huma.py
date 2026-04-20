@@ -947,3 +947,52 @@ class TestCheckAvailability:
         assert result["status"] == "no_credentials"
         assert result["slots"] == []
         assert result["count"] == 0
+
+    def test_check_availability_produces_marker_for_next_turn(self):
+        """
+        Documenta: handler de check_availability injeta marker que a IA lerá
+        no próximo turn. Testa a presença do marker no histórico da conv.
+        Teste de integração real (com Calendar) fica por smoke test em produção.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from huma.core.orchestrator import _handle_check_availability_action
+        from huma.models.schemas import Conversation, ClientIdentity
+
+        conv = Conversation(client_id="x", phone="123")
+        client_data = MagicMock(spec=ClientIdentity)
+        client_data.client_id = "x"
+
+        fake_result = {
+            "status": "ok",
+            "slots": ["21/04/2026 08:00", "21/04/2026 09:00", "21/04/2026 14:00"],
+            "count": 3,
+        }
+
+        with patch("huma.core.orchestrator.sched.find_next_available_slots",
+                   new=AsyncMock(return_value=fake_result)), \
+             patch("huma.core.orchestrator.db.save_conversation",
+                   new=AsyncMock(return_value=None)):
+            result = asyncio.run(
+                _handle_check_availability_action(
+                    "123", {"type": "check_availability", "urgency": "urgent"},
+                    client_data, conv
+                )
+            )
+
+        assert result["executed"] is True
+        assert result["status"] == "ok"
+        assert len(result["slots"]) == 3
+
+        # Marker foi injetado no histórico
+        assert any(
+            "[AGENDA CONSULTADA" in (m.get("content", "") if isinstance(m.get("content"), str) else "")
+            for m in conv.history
+        )
+        # Horários reais estão no marker
+        marker_content = next(
+            m["content"] for m in conv.history
+            if isinstance(m.get("content"), str) and "[AGENDA CONSULTADA" in m["content"]
+        )
+        assert "21/04/2026 08:00" in marker_content
+        assert "NÃO invente outros horários" in marker_content
