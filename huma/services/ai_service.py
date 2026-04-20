@@ -83,15 +83,24 @@ async def _get_insights_cached(client_id: str) -> str:
 # ================================================================
 
 def _build_gender_prompt(conv: Conversation) -> str:
-    """Gera instruções de gênero baseado nos fatos do lead."""
+    """
+    Gera instruções de gênero baseado nos fatos do lead.
+
+    Aceita apenas facts canônicos ("nome:" estrito) e descarta placeholders
+    genéricos salvos erroneamente pelo Haiku ("Nome", "Lead", etc.).
+    """
+    GENERIC_PLACEHOLDERS = {"nome", "lead", "cliente", "usuario", "user", "pessoa", ""}
     lead_name = ""
     for fact in (conv.lead_facts or []):
-        fl = fact.lower()
-        if "nome" in fl:
+        fl = fact.lower().strip()
+        if fl.startswith("nome:") or fl.startswith("nome do lead:") or fl.startswith("nome do cliente:"):
             parts = fact.split(":", 1)
             if len(parts) > 1:
-                lead_name = parts[1].strip()
-                break
+                candidate = parts[1].strip()
+                first_token = candidate.split()[0] if candidate.split() else ""
+                if first_token and first_token.lower() not in GENERIC_PLACEHOLDERS:
+                    lead_name = candidate
+                    break
 
     if lead_name:
         return f"""

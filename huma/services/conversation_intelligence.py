@@ -652,12 +652,24 @@ def _normalize(text: str) -> str:
 
 
 def _extract_name_from_facts(facts: list[str]) -> str:
-    """Extrai primeiro nome dos fatos do lead."""
+    """
+    Extrai primeiro nome dos fatos do lead.
+
+    Aceita apenas facts que COMEÇAM com "nome:" (formato canônico).
+    Ignora placeholders genéricos ("nome", "lead", "cliente") que o Haiku
+    pode ter salvo incorretamente — evita bug "Oi Nome," na resposta.
+    """
+    GENERIC_PLACEHOLDERS = {"nome", "lead", "cliente", "usuario", "user", "pessoa", ""}
     for fact in facts:
-        if "nome" in fact.lower():
+        fl = fact.lower().strip()
+        if fl.startswith("nome:") or fl.startswith("nome do lead:") or fl.startswith("nome do cliente:"):
             parts = fact.split(":", 1)
             if len(parts) > 1:
-                return parts[1].strip().split()[0]
+                tokens = parts[1].strip().split()
+                if tokens:
+                    candidate = tokens[0]
+                    if candidate.lower() not in GENERIC_PLACEHOLDERS:
+                        return candidate
     return ""
 
 
