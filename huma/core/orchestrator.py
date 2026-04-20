@@ -247,12 +247,41 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             elif classification_intent == "cancel" and classification_metadata.get("has_active_appointment"):
                 try:
                     conv.cancel_attempts = (conv.cancel_attempts or 0) + 1
-                    marker = _build_cancel_marker(conv.cancel_attempts, conv.stage)
+                    attempts = conv.cancel_attempts
+                    stage_for_marker = conv.stage
+
+                    # ── BREAKER DURO (v12 / 6.C) ──
+                    # Claude falhou em cooperar em 5+ sinalizações consecutivas.
+                    # Pula IA, cancela direto com mensagem fixa.
+                    # Só aciona fora do stage 'won' (won tem fluxo especial).
+                    if attempts >= CANCEL_HARD_BREAKER_THRESHOLD and stage_for_marker != "won":
+                        log.warning(
+                            f"Cancel BREAKER DURO | {phone} | attempts={attempts} | "
+                            f"forçando cancelamento sem IA"
+                        )
+                        cancel_result = await _handle_cancel_appointment_action(
+                            phone, {"type": "cancel_appointment"}, client_data, conv
+                        )
+                        if cancel_result.get("executed"):
+                            forced_msg = "Cancelei aqui. Qualquer coisa me chama."
+                            await asyncio.sleep(_typing_delay(forced_msg))
+                            await wa.send_text(phone, forced_msg, client_id=client_id)
+                        else:
+                            # Calendar falhou no breaker — manda msg de instabilidade
+                            fail_msg = cancel_result.get("message") or (
+                                "Vou processar seu cancelamento. Já te confirmo."
+                            )
+                            await asyncio.sleep(_typing_delay(fail_msg))
+                            await wa.send_text(phone, fail_msg, client_id=client_id)
+                        return  # Encerra o processamento — não chama a IA
+
+                    # ── FLUXO NORMAL — injeta marker graduado ──
+                    marker = _build_cancel_marker(attempts, stage_for_marker)
                     conv.history.append({"role": "assistant", "content": marker})
                     await db.save_conversation(conv)
                     log.info(
-                        f"Policy cancelamento | {phone} | tentativa={conv.cancel_attempts} | "
-                        f"stage={conv.stage} | marker injetado"
+                        f"Policy cancelamento | {phone} | tentativa={attempts} | "
+                        f"stage={stage_for_marker} | marker injetado"
                     )
                 except Exception as e:
                     log.error(
@@ -635,19 +664,29 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     except Exception as e:
                         log.error(f"Erro salvando pagamento no histórico | {phone} | {e}")
             elif action_type == "cancel_appointment":
-                # Stub v12 (6.B) — atualiza estado sem tocar no Calendar.
-                # Validação de tentativa mínima: logamos warning se precoce,
-                # mas executamos (confiamos no Sonnet após o prompt da policy).
+                # v12 (6.C) — executa delete real no Google Calendar.
+                # Confiamos no Sonnet respeitar a policy. Cancelamentos prematuros
+                # (attempts < 2) são logados como warning pra auditoria.
                 current_attempts = conv.cancel_attempts if conv else 0
                 if current_attempts < 2:
                     log.warning(
                         f"cancel_appointment precoce | {phone} | "
-                        f"attempts={current_attempts} | "
-                        f"Claude pulou etapas da policy — stub executa mesmo assim"
+                        f"attempts={current_attempts} | Claude pulou etapas da policy"
                     )
-                await _handle_cancel_appointment_action(phone, action, client_data, conv)
-                # NÃO suprime reply do Claude — ele responde naturalmente (ex: "Cancelei aqui...")
-                # NÃO faz break — deixa outras actions da mesma resposta rodarem normalmente
+                cancel_exec = await _handle_cancel_appointment_action(phone, action, client_data, conv)
+                if cancel_exec.get("executed"):
+                    # Sucesso — NÃO suprime reply do Claude. Ele responde naturalmente
+                    # algo como "Cancelei aqui, qualquer coisa me chama". O usuário vê
+                    # a mensagem humana, o sistema apagou o evento silenciosamente.
+                    pass
+                else:
+                    # Falha do Calendar — substitui o reply do Claude pela mensagem
+                    # de instabilidade. Evita o lead achar que cancelou enquanto
+                    # o Calendar ainda tem o evento.
+                    if cancel_exec.get("message"):
+                        appointment_override = cancel_exec["message"]
+                        remaining_actions = []
+                        break
             elif action_type == "create_appointment":
                 # Só executa se NÃO agendou ainda (trava anti-duplicação)
                 if not already_scheduled_this_turn:
@@ -1153,6 +1192,11 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
 # ================================================================
 
 
+# Acima desse limite, sistema força cancelamento sem chamar a IA.
+# Protege contra loop da IA teimando em reter além do razoável.
+CANCEL_HARD_BREAKER_THRESHOLD = 5
+
+
 def _build_cancel_marker(cancel_attempts: int, stage: str) -> str:
     """
     Monta marker contextual pro histórico guiar a IA na policy de retenção.
@@ -1209,32 +1253,34 @@ def _build_reschedule_marker() -> str:
 
 async def _handle_cancel_appointment_action(phone, action, client_data, conv):
     """
-    Stub handler v12 (6.B) — atualiza estado interno sem tocar no Calendar.
+    Handler v12 (6.C) — executa cancelamento real no Google Calendar.
 
-    Comportamento nesta rodada:
+    Fluxo:
       1. Valida que há agendamento ativo (senão warning + no-op)
-      2. Loga como stub (deixa claro nos logs que 6.B não deleta)
-      3. Injeta marker no histórico indicando pendência de cancelamento manual
-      4. Move stage pra "lost"
-      5. Reseta cancel_attempts
-      6. NÃO limpa active_appointment_event_id (6.C precisa dele pra delete real)
-      7. NÃO suprime reply do Claude — ele já responde naturalmente
-         ("Cancelei aqui, qualquer coisa me chama.")
+      2. Chama sched.cancel_appointment(event_id) → delete real
+      3. Se OK: limpa active_appointment_*, reseta cancel_attempts, stage=lost,
+         injeta marker de cancelamento executado no histórico, salva conv
+      4. Se falha: log.error, mantém estado intacto pra permitir retry,
+         retorna mensagem de instabilidade pro lead
 
     Retorna:
-        {executed: bool, reason: str}
-          executed=True → estado interno atualizado, reply do Claude segue normal.
-          executed=False → no-op por falta de agendamento ativo.
+        {executed: bool, message: str, reason: str}
+          executed=True → delete OK no Calendar + estado limpo.
+          executed=False → delete falhou OU sem agendamento ativo.
+          message → texto pra enviar ao lead (só preenchido em falha de rede).
+
+    Idempotência: 404/410 do Calendar são tratados como sucesso (evento
+    já não existe = estado final desejado).
     """
     cid = client_data.client_id
 
     if not conv or not conv.active_appointment_event_id:
         log.warning(
-            f"cancel_appointment stub IGNORADO | {phone} | sem agendamento ativo | "
+            f"cancel_appointment IGNORADO | {phone} | sem agendamento ativo | "
             f"conv_exists={bool(conv)} | "
             f"event_id={conv.active_appointment_event_id if conv else 'N/A'}"
         )
-        return {"executed": False, "reason": "no_active_appointment"}
+        return {"executed": False, "message": "", "reason": "no_active_appointment"}
 
     event_id = conv.active_appointment_event_id
     dt_display = conv.active_appointment_datetime or "(sem data)"
@@ -1242,35 +1288,59 @@ async def _handle_cancel_appointment_action(phone, action, client_data, conv):
     prev_attempts = conv.cancel_attempts
 
     log.info(
-        f"cancel_appointment recebido (stub — 6.B não deleta Calendar) | {phone} | "
+        f"cancel_appointment iniciando (6.C) | {phone} | "
         f"event_id={event_id} | service={service} | era={dt_display} | "
         f"attempts={prev_attempts}"
     )
 
+    # Chama delete real no Google Calendar
+    result = await sched.cancel_appointment(event_id)
+
+    if result.get("status") != "confirmed":
+        # Falha do Calendar — NÃO limpa estado, permite retry
+        log.error(
+            f"cancel_appointment FALHOU (6.C) | {phone} | event_id={event_id} | "
+            f"detail={result.get('detail', '')}"
+        )
+        return {
+            "executed": False,
+            "message": (
+                "Tô com uma instabilidade pra processar o cancelamento agora. "
+                "Já anotei seu pedido aqui e confirmo com você em alguns minutos."
+            ),
+            "reason": f"calendar_failed:{result.get('detail', 'unknown')}",
+        }
+
+    # Delete OK — limpa estado completo
     try:
+        prev_event = conv.active_appointment_event_id
+        prev_dt = conv.active_appointment_datetime
+        conv.active_appointment_event_id = ""
+        conv.active_appointment_datetime = ""
+        conv.active_appointment_service = ""
+        conv.cancel_attempts = 0
+        conv.stage = "lost"
         conv.history.append({
             "role": "assistant",
             "content": (
-                f"[AGENDAMENTO CANCELADO PENDENTE — dono precisa deletar no Calendar manualmente | "
-                f"event_id={event_id} | era={dt_display} | service={service}]"
+                f"[AGENDAMENTO CANCELADO — event_id={prev_event} | era={prev_dt} | "
+                f"service={service} | stage→lost]"
             ),
         })
-        conv.stage = "lost"
-        conv.cancel_attempts = 0
-        # NÃO limpa active_appointment_event_id — 6.C usa pra delete real
         await db.save_conversation(conv)
         log.info(
-            f"cancel_appointment stub OK | {phone} | stage=lost | "
-            f"cancel_attempts=0 | event_id preservado={event_id}"
+            f"cancel_appointment OK (6.C) | {phone} | event={prev_event} | "
+            f"era={prev_dt} | stage=lost | cancel_attempts=0 | estado limpo"
         )
-        return {"executed": True, "reason": "stub_state_updated"}
+        return {"executed": True, "message": "", "reason": "calendar_deleted"}
 
     except Exception as e:
+        # Delete já aconteceu no Calendar, mas save falhou — log crítico
         log.error(
-            f"Erro atualizando estado no cancel stub | {phone} | "
+            f"Erro salvando estado pós-cancel (Calendar já deletou!) | {phone} | "
             f"{type(e).__name__}: {e}"
         )
-        return {"executed": False, "reason": f"save_failed:{type(e).__name__}"}
+        return {"executed": True, "message": "", "reason": f"save_failed_but_calendar_ok:{type(e).__name__}"}
 
 
 # ================================================================

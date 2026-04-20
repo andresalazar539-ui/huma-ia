@@ -780,3 +780,50 @@ class TestAntiChurnPolicy:
         # Sanity: texto puramente de cancel NÃO dispara reschedule
         cancel_only = _check_reschedule_intent("quero cancelar", conv)
         assert cancel_only is None
+
+    def test_cancel_marker_escalates(self):
+        """Marker de cancelamento escala conforme tentativas."""
+        from huma.core.orchestrator import _build_cancel_marker
+
+        m1 = _build_cancel_marker(1, "committed")
+        m2 = _build_cancel_marker(2, "committed")
+        m3 = _build_cancel_marker(3, "committed")
+        m5 = _build_cancel_marker(5, "committed")
+        m_won = _build_cancel_marker(1, "won")
+
+        assert "tentativa 1/3" in m1
+        assert "NÃO emita" in m1
+        assert "tentativa 2/3" in m2
+        assert "motivo" in m2.lower()
+        assert "EMITA action cancel_appointment" in m3
+        assert "LIMITE" in m5
+        assert "humano" in m_won.lower()
+
+    def test_reschedule_marker_format(self):
+        """Marker de reagendamento instrui ação correta."""
+        from huma.core.orchestrator import _build_reschedule_marker
+
+        marker = _build_reschedule_marker()
+        assert "REAGENDAR" in marker
+        assert "create_appointment" in marker
+        assert "date_time" in marker
+
+    def test_cancel_appointment_in_tool_description(self):
+        """Tool description inclui cancel_appointment (structural contract)."""
+        from huma.services.ai_service import _build_reply_tool_compact
+        from huma.models.schemas import MessagingStyle
+
+        tool = _build_reply_tool_compact(MessagingStyle.SPLIT)
+        actions_desc = tool["input_schema"]["properties"]["actions"]["description"]
+
+        assert "cancel_appointment" in actions_desc
+        assert "create_appointment" in actions_desc  # não regride 6.A
+        assert "generate_payment" in actions_desc    # não regride pagamento
+        assert "send_media" in actions_desc          # não regride mídia
+
+    def test_hard_breaker_constant_set(self):
+        """Breaker duro existe e tem valor razoável."""
+        from huma.core.orchestrator import CANCEL_HARD_BREAKER_THRESHOLD
+        assert isinstance(CANCEL_HARD_BREAKER_THRESHOLD, int)
+        assert CANCEL_HARD_BREAKER_THRESHOLD >= 3
+        assert CANCEL_HARD_BREAKER_THRESHOLD <= 10

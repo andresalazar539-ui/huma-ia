@@ -119,7 +119,8 @@ Touching any of these requires mapping the full impact before editing:
 - `huma/services/payment_service.py` — Mercado Pago, Pix, boleto
 - `huma/services/conversation_intelligence.py` — deterministic classification (Tier 0)
 - `huma/core/funnel.py` — stage graph and transition rules
-- `huma/core/orchestrator.py::_handle_cancel_appointment_action` — v12 (6.B) stub: atualiza stage=lost + reset cancel_attempts + marker histórico, mas NÃO deleta no Google Calendar. `active_appointment_event_id` é preservado de propósito pra 6.C usar no delete real. Não "limpe" esse campo aqui até a 6.C pousar.
+- `huma/core/orchestrator.py::_handle_cancel_appointment_action` — v12 (6.C): executa delete REAL no Google Calendar via `sched.cancel_appointment(event_id)`. Limpa `active_appointment_*` + reset `cancel_attempts` + stage=lost APENAS em sucesso do delete. Em falha de rede: mantém estado intacto pra permitir retry, retorna mensagem de instabilidade. 404/410 são idempotentes (tratados como sucesso).
+- `huma/services/scheduling_service.py::cancel_appointment` — entry point pro delete. Nunca propaga exception: sempre retorna dict `{status, detail}`. Erros HTTP 404/410 são considerados sucesso (evento já não existe = estado final desejado).
 
 Before editing any of these:
 1. Read the full file first

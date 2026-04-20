@@ -704,3 +704,81 @@ def _parse_datetime(dt_str: str) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+# ================================================================
+# CANCELAMENTO (v12 / 6.C)
+# ================================================================
+
+
+async def _delete_google_calendar_event(event_id: str) -> dict:
+    """
+    Deleta evento no Google Calendar via events().delete().
+    Envia notificação aos participantes (sendUpdates=all) cancelando o convite.
+
+    Args:
+        event_id: ID do evento no Calendar. Vazio retorna {ok: False}.
+
+    Returns:
+        {ok: bool, detail: str}
+          ok=True → deletado OU já não existia (idempotente).
+          ok=False → credentials ausentes, event_id vazio, ou erro da API.
+
+    Idempotência: erros 404/410 (evento já deletado) são tratados como sucesso.
+    O estado final é o desejado: evento não existe mais.
+    """
+    if not event_id:
+        return {"ok": False, "detail": "empty_event_id"}
+
+    credentials, owner_email = _build_google_credentials()
+    if not credentials:
+        log.warning("Google Calendar não configurado (delete)")
+        return {"ok": False, "detail": "no_credentials"}
+
+    try:
+        def _delete():
+            from googleapiclient.discovery import build
+
+            svc = build("calendar", "v3", credentials=credentials)
+            return svc.events().delete(
+                calendarId="primary",
+                eventId=event_id,
+                sendUpdates="all",
+            ).execute()
+
+        await run_in_threadpool(_delete)
+        log.info(f"Google Calendar DELETE OK | event={event_id} | owner={owner_email}")
+        return {"ok": True, "detail": "deleted"}
+
+    except Exception as e:
+        err_type = type(e).__name__
+        err_str = str(e)[:200]
+        # 404/410: evento já não existe — idempotente, trata como sucesso
+        if "404" in err_str or "410" in err_str or "notFound" in err_str or "deleted" in err_str.lower():
+            log.info(f"Google Calendar DELETE já removido | event={event_id} | {err_str[:80]}")
+            return {"ok": True, "detail": "already_deleted"}
+        log.error(f"Google Calendar delete erro | event_id={event_id} | {err_type}: {err_str}")
+        return {"ok": False, "detail": f"{err_type}: {err_str[:100]}"}
+
+
+async def cancel_appointment(event_id: str) -> dict:
+    """
+    Entry point pra cancelamento. Delega ao delete do Calendar.
+
+    Args:
+        event_id: ID do evento no Google Calendar.
+
+    Returns:
+        {status: "confirmed" | "error", detail: str}
+          status=confirmed → delete OK (ou 404/410 idempotente).
+          status=error → delete falhou, mantém estado pra permitir retry.
+    """
+    if not event_id:
+        return {"status": "error", "detail": "empty_event_id"}
+
+    result = await _delete_google_calendar_event(event_id)
+
+    if result.get("ok"):
+        return {"status": "confirmed", "detail": result.get("detail", "")}
+
+    return {"status": "error", "detail": result.get("detail", "unknown")}
