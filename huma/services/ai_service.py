@@ -407,6 +407,19 @@ AGENDAMENTO:
   REGRA: email é DO LEAD. Agenda é da EMPRESA. Telefone NÃO é obrigatório (já tá no WhatsApp).
 """
 
+    # v12 / fix 2A (reforço) — CORREÇÃO DE DADOS transversal a todos os stages
+    prompt += (
+        "\nCORREÇÃO DE DADOS (email/nome errado após agendamento):\n"
+        "Se o lead já agendou e depois corrigir email ou nome (ex: 'errei o email', "
+        "'meu email certo é X', 'na verdade meu nome é Y'):\n"
+        "  - EMITA action create_appointment com os MESMOS date_time e service do agendamento "
+        "ativo, alterando APENAS o campo corrigido (ex: lead_email novo ou lead_name novo).\n"
+        "  - O sistema detecta que é atualização do evento existente e corrige no Google Calendar "
+        "(self-conflict skip já implementado).\n"
+        "  - NUNCA diga 'anotei' ou 'corrigi' em texto sem emitir a action. A action é o que "
+        "realmente atualiza o Calendar.\n"
+    )
+
     if identity.max_discount_percent > 0:
         prompt += f"\nDESCONTO: Máximo {identity.max_discount_percent}%. Só se o lead pedir.\n"
     else:
