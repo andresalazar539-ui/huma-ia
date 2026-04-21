@@ -95,6 +95,9 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             active_appointment_datetime=d.get("active_appointment_datetime", "") or "",
             active_appointment_service=d.get("active_appointment_service", "") or "",
             cancel_attempts=d.get("cancel_attempts", 0) or 0,
+            lead_email=d.get("lead_email", "") or "",
+            lead_name_canonical=d.get("lead_name_canonical", "") or "",
+            lead_cpf=d.get("lead_cpf", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -116,6 +119,9 @@ async def save_conversation(conv: Conversation):
         "active_appointment_datetime": conv.active_appointment_datetime,
         "active_appointment_service": conv.active_appointment_service,
         "cancel_attempts": conv.cancel_attempts,
+        "lead_email": conv.lead_email,
+        "lead_name_canonical": conv.lead_name_canonical,
+        "lead_cpf": conv.lead_cpf,
         "updated_at": datetime.utcnow().isoformat(),
     }
     await run_in_threadpool(

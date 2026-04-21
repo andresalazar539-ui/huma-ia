@@ -1433,3 +1433,103 @@ class TestBusinessSchedule:
         assert ci.business_schedule.appointment_duration_minutes == 30
         assert len(ci.business_schedule.weekly) == 7
         assert len(ci.business_schedule.holidays) == 1
+
+
+# ================================================================
+# TESTES DE MEMÓRIA ESTÁVEL DO LEAD (v12 / fix 8)
+# ================================================================
+
+class TestStableLeadMemory:
+    """Email/nome/CPF ficam em campos do banco, não comprimidos."""
+
+    def test_schema_accepts_empty_stable_fields(self):
+        """Conversation aceita campos vazios por default."""
+        from huma.models.schemas import Conversation
+        c = Conversation(client_id="x", phone="123")
+        assert c.lead_email == ""
+        assert c.lead_name_canonical == ""
+        assert c.lead_cpf == ""
+
+    def test_update_stable_saves_valid_email(self):
+        """Email válido é salvo no campo."""
+        from huma.core.orchestrator import _update_stable_lead_data
+        from huma.models.schemas import Conversation
+
+        c = Conversation(client_id="x", phone="123")
+        changed = _update_stable_lead_data(c, email="teste@exemplo.com")
+        assert changed is True
+        assert c.lead_email == "teste@exemplo.com"
+
+    def test_update_stable_rejects_invalid_email(self):
+        """Email inválido não sobrescreve."""
+        from huma.core.orchestrator import _update_stable_lead_data
+        from huma.models.schemas import Conversation
+
+        c = Conversation(client_id="x", phone="123", lead_email="ok@valido.com")
+        changed = _update_stable_lead_data(c, email="lixo sem arroba")
+        assert changed is False
+        assert c.lead_email == "ok@valido.com"  # preservou
+
+    def test_update_stable_extracts_first_name(self):
+        """Nome composto é armazenado só com primeiro nome."""
+        from huma.core.orchestrator import _update_stable_lead_data
+        from huma.models.schemas import Conversation
+
+        c = Conversation(client_id="x", phone="123")
+        _update_stable_lead_data(c, name="André Salazar da Silva")
+        assert c.lead_name_canonical == "André"
+
+    def test_update_stable_cpf_strips_formatting(self):
+        """CPF com pontuação é armazenado só com dígitos."""
+        from huma.core.orchestrator import _update_stable_lead_data
+        from huma.models.schemas import Conversation
+
+        c = Conversation(client_id="x", phone="123")
+        _update_stable_lead_data(c, cpf="123.456.789-00")
+        assert c.lead_cpf == "12345678900"
+
+
+# ================================================================
+# TESTES DE ANTI-REPETIÇÃO DETERMINÍSTICA (v12 / fix 8)
+# ================================================================
+
+class TestAntiRepetition:
+    """Bigram overlap detecta mensagens quase idênticas."""
+
+    def test_detects_near_identical(self):
+        """Mensagem praticamente idêntica é detectada."""
+        from huma.core.orchestrator import _is_redundant_reply
+
+        history = [
+            {"role": "assistant", "content": "Tá tudo certo pra quinta. A gente se vê lá, André!"},
+        ]
+        candidate = "Tá tudo certo pra quinta. A gente se vê lá, André."
+        assert _is_redundant_reply(candidate, history) is True
+
+    def test_allows_new_content(self):
+        """Mensagem com conteúdo realmente novo passa."""
+        from huma.core.orchestrator import _is_redundant_reply
+
+        history = [
+            {"role": "assistant", "content": "Tá tudo certo pra quinta. A gente se vê lá."},
+        ]
+        candidate = "Perfeito! Vou gerar o link de pagamento pra você agora."
+        assert _is_redundant_reply(candidate, history) is False
+
+    def test_ignores_structural_markers(self):
+        """Markers estruturais ([...]) no histórico não contam como repetição."""
+        from huma.core.orchestrator import _is_redundant_reply
+
+        history = [
+            {"role": "assistant", "content": "[AGENDAMENTO CONFIRMADO] quinta às 10h"},
+        ]
+        candidate = "Agendamento confirmado pra quinta às 10h. Te vejo lá."
+        # Mesmo com overlap textual, marker não conta
+        assert _is_redundant_reply(candidate, history) is False
+
+    def test_ignores_short_messages(self):
+        """Mensagens curtas (<20 chars) não disparam filtro."""
+        from huma.core.orchestrator import _is_redundant_reply
+
+        history = [{"role": "assistant", "content": "ok"}]
+        assert _is_redundant_reply("ok", history) is False

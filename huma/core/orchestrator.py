@@ -204,9 +204,12 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 f"conf={classification.confidence:.2f} | sem_IA"
             )
         elif ia_limit_reached:
+            # v12 (fix 8) — template sem business_name.split() que quebrava
+            # gramática ("Vou pedir pro Clínica te atender...").
+            _fallback_text = "Vou te passar pra alguém da equipe, tá? Respondem em breve!"
             ai_result = {
-                "reply": f"Vou pedir pro {client_data.business_name.split()[0]} te atender pessoalmente, tá? Ele te responde em breve!",
-                "reply_parts": [f"Vou pedir pro {client_data.business_name.split()[0]} te atender pessoalmente, tá? Ele te responde em breve!"],
+                "reply": _fallback_text,
+                "reply_parts": [_fallback_text],
                 "intent": "neutral", "sentiment": "neutral",
                 "stage_action": "hold", "confidence": 1.0,
                 "lead_facts": [], "actions": [],
@@ -768,6 +771,22 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             )
             log.info(f"Reply suprimido | {phone} | motivo={reason} | evita duplicação")
 
+        # v12 (fix 8) — anti-repetição determinística
+        # Filtra parts que repetem quase 100% as últimas 3 msgs do assistant.
+        # Resolve loop "até quinta, tá tudo certo, até quinta..."
+        if not suppress_claude_reply and parts and len(conv.history) > 2:
+            filtered = []
+            for p in parts:
+                if isinstance(p, str) and _is_redundant_reply(p, conv.history):
+                    log.info(f"Parte redundante omitida | {phone} | preview='{p[:60]}'")
+                    continue
+                filtered.append(p)
+            # Só aplica o filtro se sobrou ao menos 1 parte — nunca zera a resposta
+            if filtered:
+                parts = filtered
+                if len(parts) == 1:
+                    reply = parts[0] if isinstance(parts[0], str) else reply
+
         if not suppress_claude_reply:
             # ── MODO AUDIO-FIRST ──
             if will_send_audio and audio_is_substantial:
@@ -802,7 +821,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             if action_type == "send_media":
                 await _handle_media_action(phone, action, client_data)
             elif action_type == "generate_payment":
-                pay_result = await _handle_payment_action(phone, action, client_data)
+                pay_result = await _handle_payment_action(phone, action, client_data, conv=conv)
                 # Marca no histórico — impede IA de tentar gerar de novo
                 if pay_result and (pay_result.get("sent") or pay_result.get("reason") == "dedup"):
                     try:
@@ -1004,7 +1023,7 @@ async def _handle_media_action(phone, action, client_data):
     log.info(f"Mídia enviada | {len(assets)} assets | tags={tags}")
 
 
-async def _handle_payment_action(phone, action, client_data):
+async def _handle_payment_action(phone, action, client_data, conv=None):
     """
     Gera cobrança e envia no WhatsApp.
 
@@ -1012,6 +1031,8 @@ async def _handle_payment_action(phone, action, client_data):
       - Se já existe pagamento pendente, manda lembrete com referência
       - Armazena message_id do link pra futuro quoted reply (Meta Cloud API)
       - Twilio: reply_to ignorado, mas infra pronta
+
+    v12 (fix 8) — conv opcional: salva lead_cpf/lead_name estáveis se válidos.
     """
     cid = client_data.client_id
     request = PaymentRequest(
@@ -1024,6 +1045,14 @@ async def _handle_payment_action(phone, action, client_data):
         installments=action.get("installments", 1),
         lead_cpf=action.get("lead_cpf", ""),
     )
+
+    # v12 (fix 8) — persiste dados estáveis quando aparecem
+    if conv is not None:
+        _update_stable_lead_data(
+            conv,
+            name=request.lead_name,
+            cpf=request.lead_cpf,
+        )
 
     result = await pay.create_payment(request)
 
@@ -1094,6 +1123,113 @@ async def _handle_payment_action(phone, action, client_data):
     await billing.log_usage(cid, billing.UsageType.PAYMENT)
     log.info(f"Pagamento enviado | {method} | {result.get('amount_display', '')}")
     return {"sent": True, "method": method, "amount_display": result.get("amount_display", "")}
+
+
+# ================================================================
+# MEMÓRIA ESTÁVEL DO LEAD (v12 / fix 8)
+#
+# Email, nome e CPF são campos do banco, não dependem de compressão.
+# Populados quando Claude emite action com dado válido.
+# Injetados no prompt como VERDADE — impossível alucinar.
+# ================================================================
+
+import re as _re_stable_data
+
+
+def _update_stable_lead_data(conv, *, email: str = "", name: str = "", cpf: str = "") -> bool:
+    """
+    Atualiza campos estáveis do lead quando Claude confirma dados válidos.
+
+    Validação defensiva:
+      - email: precisa ter @ e ponto depois do @
+      - name: ≥2 chars e pelo menos 1 letra (usa só o primeiro nome)
+      - cpf: ≥11 dígitos (limpo)
+
+    Retorna True se algo mudou (pra log ou save condicional).
+    """
+    if not conv:
+        return False
+
+    changed = False
+    email = (email or "").strip()
+    if email and "@" in email:
+        domain = email.split("@", 1)[1] if "@" in email else ""
+        if "." in domain and len(email) >= 6:
+            if email != conv.lead_email:
+                conv.lead_email = email
+                changed = True
+
+    name = (name or "").strip()
+    if name and len(name) >= 2 and any(c.isalpha() for c in name):
+        first_name = name.split()[0]
+        if first_name and first_name != conv.lead_name_canonical:
+            conv.lead_name_canonical = first_name
+            changed = True
+
+    cpf_digits = _re_stable_data.sub(r"\D", "", cpf or "")
+    if len(cpf_digits) >= 11:
+        if cpf_digits != conv.lead_cpf:
+            conv.lead_cpf = cpf_digits
+            changed = True
+
+    return changed
+
+
+# ================================================================
+# ANTI-REPETIÇÃO DETERMINÍSTICA (v12 / fix 8)
+#
+# Sem chamada LLM. Compara bigrams de palavras com últimas 3 msgs
+# do assistant. Se overlap > 70%, omite a parte redundante.
+# Resolve o caso "até quinta, até quinta, até quinta..."
+# ================================================================
+
+
+def _bigram_set(text: str) -> set:
+    """Conjunto de bigrams de palavras (palavras > 2 chars) pra comparação."""
+    words = [w for w in text.lower().split() if len(w) > 2]
+    return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
+
+
+def _is_redundant_reply(candidate: str, history: list[dict], threshold: float = 0.7) -> bool:
+    """
+    True se candidate tem overlap de bigrams > threshold com alguma das
+    últimas 3 mensagens reais do assistant no history.
+
+    Zero custo LLM. Só string match.
+    Ignora markers estruturais (texto entre [] no histórico).
+    Ignora mensagens curtas (<20 chars) — não faz sentido filtrar "ok", "tá".
+    """
+    candidate = (candidate or "").strip()
+    if len(candidate) < 20:
+        return False
+
+    cand_bigrams = _bigram_set(candidate)
+    if len(cand_bigrams) < 3:
+        return False
+
+    recent_assistant = []
+    for m in history[-10:]:
+        if m.get("role") != "assistant":
+            continue
+        content = m.get("content", "")
+        if not isinstance(content, str):
+            continue
+        stripped = content.strip()
+        # ignora markers estruturais — são pro Claude, não mensagens enviadas
+        if stripped.startswith("[") and stripped.endswith("]"):
+            continue
+        if len(stripped) < 20:
+            continue
+        recent_assistant.append(stripped)
+
+    for past in recent_assistant[-3:]:
+        past_bigrams = _bigram_set(past)
+        if not past_bigrams:
+            continue
+        overlap = len(cand_bigrams & past_bigrams) / max(len(cand_bigrams), 1)
+        if overlap >= threshold:
+            return True
+    return False
 
 
 def _build_lead_context(conv) -> str:
@@ -1259,6 +1395,9 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         schedule_config=client_data.business_schedule,  # v12 / fix 7.6
     )
 
+    # v12 (fix 8) — salva dados estáveis assim que Claude digita (antes do pre-flight)
+    _update_stable_lead_data(conv, email=request.lead_email, name=request.lead_name)
+
     # Se a conversa já tem um agendamento ativo, passa o event_id pra fazer update
     existing_event_id = conv.active_appointment_event_id if conv else ""
     result = await sched.create_appointment(request, existing_event_id=existing_event_id)
@@ -1319,6 +1458,9 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
         lead_context=_build_lead_context(conv),
         schedule_config=client_data.business_schedule,  # v12 / fix 7.6
     )
+
+    # v12 (fix 8) — salva dados estáveis assim que Claude digita (antes do pre-flight)
+    _update_stable_lead_data(conv, email=request.lead_email, name=request.lead_name)
 
     existing_event_id = conv.active_appointment_event_id if conv else ""
     result = await sched.create_appointment(request, existing_event_id=existing_event_id)

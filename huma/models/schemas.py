@@ -493,6 +493,13 @@ class Conversation(BaseModel):
     active_appointment_service: str = ""   # Nome do serviço agendado. Pra logs e prompts.
     cancel_attempts: int = 0               # v12 (6.B) — policy anti-churn. Conta tentativas do lead de cancelar. 0=nenhuma, 1-2=sinalizações, 3+=insistência. Reset em cancelamento executado ou reagendamento bem-sucedido.
 
+    # v12 (fix 8) — dados do lead que NUNCA podem ser perdidos por compressão.
+    # Populados quando Claude confirma create_appointment ou generate_payment.
+    # Injetados no prompt como VERDADE — resolve alucinação de email/nome.
+    lead_email: str = ""
+    lead_name_canonical: str = ""
+    lead_cpf: str = ""
+
 
 # ================================================================
 # APROVAÇÃO PENDENTE

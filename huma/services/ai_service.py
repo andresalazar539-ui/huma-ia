@@ -863,12 +863,24 @@ PRODUTOS:
     if conv.history_summary:
         prompt += f"\nCONTEXTO: {conv.history_summary}\n"
 
+    # v12 (fix 8) — dados estáveis do lead (VERDADE)
+    _stable_t1 = []
+    if getattr(conv, "lead_name_canonical", ""):
+        _stable_t1.append(f"Nome={conv.lead_name_canonical}")
+    if getattr(conv, "lead_email", ""):
+        _stable_t1.append(f"Email={conv.lead_email}")
+    if getattr(conv, "lead_cpf", ""):
+        _stable_t1.append(f"CPF={conv.lead_cpf}")
+    if _stable_t1:
+        prompt += f"\nDADOS DO LEAD (VERDADE, nunca invente outros): {' | '.join(_stable_t1)}\n"
+
     prompt += f"""
 REGRAS:
   - SEMPRE responda em português do Brasil. NUNCA use palavras em inglês.
   - Msgs curtas, sem markdown, sem emojis no início.
   - NUNCA invente preço. NUNCA confirme horário (sistema confirma).
   - Se já coletou dado, NÃO pergunte de novo.
+  - Vocativos: só primeiro nome ou nada. NUNCA "grande", "parceiro", "amigão", "chefia".
   - Palavras proibidas: {forbidden}.
   - Na dúvida: "{identity.fallback_message}".
 
@@ -957,6 +969,23 @@ REGRAS CUSTOM:
         "avise o lead e ofereça outro dia. NUNCA agende fora das janelas.\n"
     )
 
+    # v12 (fix 8) — dados estáveis do lead (VERDADE, nunca comprimido)
+    # Campos do banco, populados quando Claude confirma dados via action.
+    # Resolvem alucinação: impossível inventar email/nome se está aqui explícito.
+    _stable_lines = []
+    if getattr(conv, "lead_name_canonical", ""):
+        _stable_lines.append(f"  Nome: {conv.lead_name_canonical}")
+    if getattr(conv, "lead_email", ""):
+        _stable_lines.append(f"  Email: {conv.lead_email}")
+    if getattr(conv, "lead_cpf", ""):
+        _stable_lines.append(f"  CPF: {conv.lead_cpf}")
+    if _stable_lines:
+        prompt += (
+            "\nDADOS DO LEAD (VERDADE — use EXATAMENTE esses valores, NUNCA invente outros):\n"
+            + "\n".join(_stable_lines)
+            + "\n"
+        )
+
     # Regras absolutas comprimidas (~200 tokens)
     prompt += f"""
 
@@ -975,6 +1004,7 @@ REGRAS ABSOLUTAS:
   12. Você É o negócio: você gera links, você agenda.
   13. Rapport: 1-2 frases. Brasileiro real.
   14. Revise gramática — erros destroem credibilidade.
+  15. Vocativos: use só o primeiro nome do lead ou nada. NUNCA "grande", "parceiro", "amigão", "chefia", "mano", "meu". Saudação = "Oi {{nome}}" ou direto ao ponto.
 
 LEMBRETE: Você é "{identity.business_name}". Responda usando a tool send_reply."""
 
@@ -1068,7 +1098,8 @@ REGRAS ABSOLUTAS:
   11. DADOS JÁ COLETADOS: verifique MEMÓRIA DO LEAD. Se já tem, NÃO pergunte de novo.
   12. VOCÊ É O NEGÓCIO: VOCÊ gera links, VOCÊ agenda. NUNCA peça pro lead fazer seu trabalho.
   13. RAPPORT: msgs CURTAS (1-2 frases). Crie conexão antes de vender. Brasileiro de verdade.
-  14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade."""
+  14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade.
+  15. VOCATIVOS: use só o primeiro nome do lead ou nada. NUNCA "grande", "parceiro", "amigão", "chefia", "mano", "meu". Saudação = "Oi {nome}" ou direto ao ponto."""
 
     # Vertical COMPRIMIDO (em vez de learning_engine.build_vertical_prompt)
     vertical_comp = _build_vertical_compressed(identity.category)
@@ -1112,6 +1143,21 @@ REGRAS ABSOLUTAS:
 
     capped = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
     prompt += "\n\n" + _format_lead_memory(capped, conv.history_summary)
+
+    # v12 (fix 8) — dados estáveis do lead (VERDADE, após lead_memory pra ficar visível)
+    _stable_t3 = []
+    if getattr(conv, "lead_name_canonical", ""):
+        _stable_t3.append(f"  Nome: {conv.lead_name_canonical}")
+    if getattr(conv, "lead_email", ""):
+        _stable_t3.append(f"  Email: {conv.lead_email}")
+    if getattr(conv, "lead_cpf", ""):
+        _stable_t3.append(f"  CPF: {conv.lead_cpf}")
+    if _stable_t3:
+        prompt += (
+            "\n\nDADOS DO LEAD (VERDADE — use EXATAMENTE esses valores, NUNCA invente outros):\n"
+            + "\n".join(_stable_t3)
+            + "\n"
+        )
 
     if image_url:
         try:
