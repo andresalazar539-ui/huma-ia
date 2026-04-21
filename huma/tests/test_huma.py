@@ -1533,3 +1533,42 @@ class TestAntiRepetition:
 
         history = [{"role": "assistant", "content": "ok"}]
         assert _is_redundant_reply("ok", history) is False
+
+
+# ================================================================
+# TESTES DE TOM POR VERTICAL (v12 / fix 9)
+# ================================================================
+
+class TestVerticalTone:
+    """Garante que tom de clinica/advocacia/etc entra nos tiers 1, 2 e 3."""
+
+    def test_tier2_clinica_includes_forbidden_slangs(self, clinica_identity):
+        """Tier 2 pra clinica deve conter lista de girias proibidas."""
+        from huma.services.ai_service import build_tier2_prompt
+        from huma.models.schemas import Conversation
+
+        conv = Conversation(client_id="x", phone="123")
+        prompt = build_tier2_prompt(clinica_identity, conv)
+        # Palavras da lista proibida da clinica
+        assert "TOM CLÍNICA" in prompt or "TOM CLINICA" in prompt
+        assert "mano" in prompt.lower()
+        assert "cara" in prompt.lower()
+        assert "ortografia" in prompt.lower()
+
+    def test_tier1_clinica_includes_vertical_tone(self, clinica_identity):
+        """Tier 1 (micro) tambem inclui regras da vertical."""
+        from huma.services.ai_service import build_tier1_prompt
+        from huma.models.schemas import Conversation
+
+        conv = Conversation(client_id="x", phone="123")
+        prompt = build_tier1_prompt(clinica_identity, conv)
+        assert "TOM CLÍNICA" in prompt or "TOM CLINICA" in prompt
+
+    def test_tier3_clinica_still_has_vertical_tone(self, clinica_identity):
+        """Nao-regressao: tier 3 continua com tom (ja tinha antes)."""
+        from huma.services.ai_service import build_tier3_prompt
+        from huma.models.schemas import Conversation
+
+        conv = Conversation(client_id="x", phone="123")
+        prompt = build_tier3_prompt(clinica_identity, conv)
+        assert "TOM CLÍNICA" in prompt or "TOM CLINICA" in prompt

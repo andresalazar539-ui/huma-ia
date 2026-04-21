@@ -863,6 +863,13 @@ PRODUTOS:
     if conv.history_summary:
         prompt += f"\nCONTEXTO: {conv.history_summary}\n"
 
+    # v12 (fix 9) — tom por vertical (bolha de tom da categoria).
+    # Mesmo em tier 1 (micro), garante que Haiku ve as regras de tom da clinica/advocacia/etc.
+    _cat_t1 = identity.category.value if identity.category else ""
+    _vt_t1 = _build_vertical_tone_prompt(_cat_t1)
+    if _vt_t1:
+        prompt += _vt_t1
+
     # v12 (fix 8) — dados estáveis do lead (VERDADE)
     _stable_t1 = []
     if getattr(conv, "lead_name_canonical", ""):
@@ -928,6 +935,15 @@ FAQ:
 REGRAS CUSTOM:
 {identity.custom_rules or '  Nenhuma.'}
 """
+
+    # v12 (fix 9) — tom por vertical (bolha de tom da categoria).
+    # Tier 2 (Haiku) eh ~80% das msgs; sem esse bloco o Claude usava "bom senso"
+    # generico e as vezes escapava girias em clinica ("Grande, Andre").
+    # ~400 tokens no prompt cacheado, custo desprezivel.
+    category_str = identity.category.value if identity.category else ""
+    _vt = _build_vertical_tone_prompt(category_str)
+    if _vt:
+        prompt += _vt
 
     # Autonomia (sem áudio — áudio é feature de Tier 3)
     prompt += build_autonomy_prompt(identity)
@@ -1099,7 +1115,7 @@ REGRAS ABSOLUTAS:
   12. VOCÊ É O NEGÓCIO: VOCÊ gera links, VOCÊ agenda. NUNCA peça pro lead fazer seu trabalho.
   13. RAPPORT: msgs CURTAS (1-2 frases). Crie conexão antes de vender. Brasileiro de verdade.
   14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade.
-  15. VOCATIVOS: use só o primeiro nome do lead ou nada. NUNCA "grande", "parceiro", "amigão", "chefia", "mano", "meu". Saudação = "Oi {nome}" ou direto ao ponto."""
+  15. VOCATIVOS: use só o primeiro nome do lead ou nada. NUNCA "grande", "parceiro", "amigão", "chefia", "mano", "meu". Saudação = "Oi {{nome}}" ou direto ao ponto."""
 
     # Vertical COMPRIMIDO (em vez de learning_engine.build_vertical_prompt)
     vertical_comp = _build_vertical_compressed(identity.category)
