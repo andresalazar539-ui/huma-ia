@@ -228,6 +228,37 @@ async def list_stuck_conversations(
     return resp.data or []
 
 
+async def list_active_appointments(limit: int = 300) -> list[dict]:
+    """
+    Sprint 6 / itens 24, 28 — busca conversas com agendamento ativo
+    pra os jobs de lembrete pré-consulta e NPS pós-atendimento.
+
+    Filtragem por janela de tempo é feita em Python (active_appointment_datetime
+    é string em formato livre). Limite alto pra cobrir muitos clientes.
+
+    Returns:
+        Lista de dicts com client_id, phone, active_appointment_event_id,
+        active_appointment_datetime, active_appointment_service,
+        lead_name_canonical, stage.
+    """
+    def query():
+        return (
+            get_supabase()
+            .table("conversations")
+            .select(
+                "client_id,phone,active_appointment_event_id,"
+                "active_appointment_datetime,active_appointment_service,"
+                "lead_name_canonical,stage"
+            )
+            .neq("active_appointment_event_id", "")
+            .limit(limit)
+            .execute()
+        )
+
+    resp = await run_in_threadpool(query)
+    return resp.data or []
+
+
 async def get_conversation_metrics(client_id: str) -> dict:
     """Métricas de conversas por estágio."""
     resp = await run_in_threadpool(

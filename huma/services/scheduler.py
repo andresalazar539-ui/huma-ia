@@ -134,12 +134,154 @@ async def _run_followup_job() -> None:
     )
 
 
+# ================================================================
+# JOB: lembrete pré-consulta (Sprint 6 / item 24)
+# ================================================================
+
+# Janelas de tempo (em horas) pra mandar lembrete:
+#   12h antes do appointment ± 15min de tolerância (job roda a cada 30min)
+#   2h antes do appointment ± 15min
+# Tolerância é metade do intervalo do job (30min) pra cobrir todo o gap.
+_REMINDER_WINDOWS = [
+    ("12h", 11.75, 12.25),  # 11h45 a 12h15 antes
+    ("2h", 1.75, 2.25),     # 1h45 a 2h15 antes
+]
+
+
+def _format_reminder_message(window_label: str, lead_name: str, service: str, dt) -> str:
+    """Formata mensagem de lembrete. Templates fixos por janela."""
+    nome = (lead_name or "").split()[0] if lead_name else "tudo bem"
+    servico = service or "sua consulta"
+    hora_str = dt.strftime("%d/%m às %Hh%M") if dt else "no horário marcado"
+
+    if window_label == "12h":
+        return (
+            f"Oi {nome}! Passando pra lembrar da sua {servico} "
+            f"agendada pra {hora_str}. Te espero!"
+        )
+    # 2h antes
+    return (
+        f"Oi {nome}! Faltam ~2h pra sua {servico} "
+        f"({hora_str}). Tudo certo?"
+    )
+
+
+async def _run_pre_appointment_reminder_job() -> None:
+    """
+    Roda a cada 30min. Verifica appointments ativos e manda lembrete
+    quando estiverem em janela 12h-antes ou 2h-antes.
+
+    Idempotência via Redis flag `reminder_sent:{event_id}:{label}` com TTL
+    24h — garante que cada (appointment, janela) recebe lembrete só uma vez.
+    """
+    from huma.services import db_service as db
+    from huma.services import whatsapp_service as wa
+    from huma.services.scheduling_service import _parse_datetime
+    from huma.core.orchestrator import _is_silent_hours
+
+    appts = await db.list_active_appointments(limit=300)
+    if not appts:
+        log.info("reminder | nenhum appointment ativo")
+        return
+
+    now = datetime.utcnow()
+    sent = 0
+    skipped_silent = 0
+    skipped_dedup = 0
+    skipped_out_of_window = 0
+    errors = 0
+
+    for row in appts:
+        client_id = row.get("client_id", "")
+        phone = row.get("phone", "")
+        event_id = row.get("active_appointment_event_id", "")
+        dt_str = row.get("active_appointment_datetime", "")
+
+        if not all([client_id, phone, event_id, dt_str]):
+            continue
+
+        try:
+            dt = _parse_datetime(dt_str)
+            if not dt:
+                continue
+
+            hours_until = (dt - now).total_seconds() / 3600.0
+
+            # Determina qual janela aplica (se alguma)
+            window_label = None
+            for label, lo, hi in _REMINDER_WINDOWS:
+                if lo <= hours_until <= hi:
+                    window_label = label
+                    break
+
+            if window_label is None:
+                skipped_out_of_window += 1
+                continue
+
+            # Dedup: já mandou esse lembrete pra esse appointment?
+            flag_key = f"reminder_sent:{event_id}:{window_label}"
+            if await cache.exists(flag_key):
+                skipped_dedup += 1
+                continue
+
+            client_data = await db.get_client(client_id)
+            if not client_data or not client_data.business_name:
+                continue
+
+            if _is_silent_hours(client_data):
+                skipped_silent += 1
+                continue
+
+            lead_name = row.get("lead_name_canonical", "")
+            service = row.get("active_appointment_service", "")
+            msg = _format_reminder_message(window_label, lead_name, service, dt)
+
+            await wa.send_text(phone, msg, client_id=client_id)
+
+            # Marca dedup com TTL 24h (mais que suficiente — janela passa em 30min)
+            await cache.set_with_ttl(flag_key, "1", ttl=86400)
+
+            # Notifica dono se opt-in (reusa padrão Sprint 5)
+            try:
+                if (
+                    getattr(client_data, "notify_owner_on_appointment", True)
+                    and client_data.owner_phone
+                ):
+                    owner_msg = (
+                        f"⏰ Lembrete enviado ({window_label} antes)\n"
+                        f"Lead: {lead_name or phone}\n"
+                        f"Serviço: {service or '(não informado)'}\n"
+                        f"Quando: {dt.strftime('%d/%m às %Hh%M')}"
+                    )
+                    await wa.notify_owner(client_data.owner_phone, owner_msg, client_id=client_id)
+            except Exception as e:
+                log.debug(f"notify_owner reminder | {client_id} | {type(e).__name__}: {e}")
+
+            sent += 1
+            await asyncio.sleep(0.2)
+
+        except Exception as e:
+            errors += 1
+            log.warning(
+                f"reminder | {client_id} | {phone} | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    log.info(
+        f"reminder | sent={sent} | dedup={skipped_dedup} | silent={skipped_silent} | "
+        f"out_of_window={skipped_out_of_window} | errors={errors} | "
+        f"total_active={len(appts)}"
+    )
+
+
 # Jobs registrados. Tupla: (nome, fn_async, intervalo_segundos, ttl_lock_segundos)
 # - intervalo_segundos: de quanto em quanto tempo a task acorda
 # - ttl_lock_segundos: lock cluster TTL (deve ser maior que duração esperada do job)
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     # Item 19 — follow-up: roda a cada 1h, lock vale 30min
     ("followup", _run_followup_job, 3600, 1800),
+    # Item 24 — lembrete pré-consulta: a cada 30min, lock 15min
+    ("pre_appointment_reminder", _run_pre_appointment_reminder_job, 1800, 900),
 ]
 
 

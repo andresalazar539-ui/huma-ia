@@ -2599,6 +2599,168 @@ class TestSprint5OwnerNotifications:
         # Silent hours = nada enviado
         assert len(send_calls) == 0, f"esperava 0 envios, foi {len(send_calls)}"
 
+    def test_reminder_job_registered(self):
+        """Estrutural: job de lembrete pré-consulta registrado em _jobs."""
+        from huma.services import scheduler
+        job_names = [j[0] for j in scheduler._jobs]
+        assert "pre_appointment_reminder" in job_names
+
+    def test_reminder_message_format_12h(self):
+        """Funcional: mensagem 12h tem nome, serviço e data formatada."""
+        from datetime import datetime
+        from huma.services.scheduler import _format_reminder_message
+
+        dt = datetime(2026, 4, 27, 14, 30)
+        msg = _format_reminder_message("12h", "Camila Silva", "Avaliação", dt)
+        assert "Camila" in msg
+        assert "Silva" not in msg  # só primeiro nome
+        assert "Avaliação" in msg
+        assert "27/04" in msg
+        assert "14h30" in msg
+        assert "lembrar" in msg.lower()
+
+    def test_reminder_message_format_2h(self):
+        """Funcional: mensagem 2h é diferente da 12h."""
+        from datetime import datetime
+        from huma.services.scheduler import _format_reminder_message
+
+        dt = datetime(2026, 4, 27, 14, 30)
+        msg = _format_reminder_message("2h", "André", "Botox", dt)
+        assert "André" in msg
+        assert "Botox" in msg
+        assert "2h" in msg
+        assert "Faltam" in msg or "faltam" in msg.lower()
+
+    def test_reminder_message_handles_missing_data(self):
+        """Funcional: nome/serviço vazios não geram placeholders na msg."""
+        from datetime import datetime
+        from huma.services.scheduler import _format_reminder_message
+
+        dt = datetime(2026, 4, 27, 14, 30)
+        msg = _format_reminder_message("12h", "", "", dt)
+        assert "{" not in msg
+        assert "}" not in msg
+
+    def test_reminder_job_skips_appointment_outside_window(self):
+        """
+        Funcional: appointment muito longe (1 semana) ou já passou não dispara.
+        Janela é 12h ± 15min e 2h ± 15min.
+        """
+        import asyncio
+        from datetime import datetime, timedelta
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        # 1 semana no futuro — fora de qualquer janela
+        future_dt = (datetime.utcnow() + timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
+
+        fake_appt = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "active_appointment_event_id": "evt_123",
+            "active_appointment_datetime": future_dt,
+            "active_appointment_service": "Avaliação",
+            "lead_name_canonical": "Camila",
+            "stage": "committed",
+        }
+
+        send_calls = []
+
+        async def fake_send(*args, **kwargs):
+            send_calls.append((args, kwargs))
+            return "msg_id"
+
+        with patch("huma.services.db_service.list_active_appointments", new=AsyncMock(return_value=[fake_appt])), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.redis_service.set_with_ttl", new=AsyncMock()):
+            asyncio.run(scheduler._run_pre_appointment_reminder_job())
+
+        assert len(send_calls) == 0, "appointment fora da janela não deveria ter enviado"
+
+    def test_reminder_job_sends_when_in_12h_window(self):
+        """Funcional: appointment exatamente 12h no futuro dispara lembrete."""
+        import asyncio
+        from datetime import datetime, timedelta
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        # Exatamente 12h no futuro
+        future_dt = (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M")
+
+        fake_appt = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "active_appointment_event_id": "evt_456",
+            "active_appointment_datetime": future_dt,
+            "active_appointment_service": "Avaliação",
+            "lead_name_canonical": "Camila Silva",
+            "stage": "committed",
+        }
+
+        fake_client = MagicMock()
+        fake_client.business_name = "Clínica X"
+        fake_client.products_or_services = []
+        fake_client.owner_phone = ""
+        fake_client.notify_owner_on_appointment = False
+
+        send_calls = []
+
+        async def fake_send(phone, msg, client_id="", **kwargs):
+            send_calls.append({"phone": phone, "msg": msg})
+            return "sid"
+
+        flag_set = []
+
+        async def fake_set_with_ttl(key, value, ttl=86400):
+            flag_set.append(key)
+
+        with patch("huma.services.db_service.list_active_appointments", new=AsyncMock(return_value=[fake_appt])), \
+             patch("huma.services.db_service.get_client", new=AsyncMock(return_value=fake_client)), \
+             patch("huma.core.orchestrator._is_silent_hours", return_value=False), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.redis_service.set_with_ttl", new=fake_set_with_ttl):
+            asyncio.run(scheduler._run_pre_appointment_reminder_job())
+
+        assert len(send_calls) == 1, f"esperava 1 envio, foi {len(send_calls)}"
+        assert "Camila" in send_calls[0]["msg"]
+        # Flag dedup foi setada
+        assert any("reminder_sent:evt_456:12h" in k for k in flag_set)
+
+    def test_reminder_job_dedup_via_redis_flag(self):
+        """Funcional: se flag dedup existe, NÃO manda de novo."""
+        import asyncio
+        from datetime import datetime, timedelta
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        future_dt = (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M")
+
+        fake_appt = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "active_appointment_event_id": "evt_dedup",
+            "active_appointment_datetime": future_dt,
+            "active_appointment_service": "X",
+            "lead_name_canonical": "Camila",
+            "stage": "committed",
+        }
+
+        send_calls = []
+
+        async def fake_send(*args, **kwargs):
+            send_calls.append((args, kwargs))
+            return "sid"
+
+        with patch("huma.services.db_service.list_active_appointments", new=AsyncMock(return_value=[fake_appt])), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=True)), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send):
+            asyncio.run(scheduler._run_pre_appointment_reminder_job())
+
+        # Flag existe → skip
+        assert len(send_calls) == 0
+
     def test_followup_job_sends_when_not_silent(self):
         """Funcional: fora de silent_hours, envia follow-up + incrementa count."""
         import asyncio
