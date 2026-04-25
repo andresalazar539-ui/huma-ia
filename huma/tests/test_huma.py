@@ -2423,6 +2423,35 @@ class TestSprint5OwnerNotifications:
         assert "27/04/2026" in msg
         assert phone in msg
 
+    def test_pix_qr_base64_never_passed_to_send_image(self):
+        """
+        Regressão (fix de bug funcional): orchestrator NÃO pode passar
+        qr_code_base64 (base64 puro do MP) pra wa.send_image — Twilio media_url
+        só aceita URL HTTP, base64 cru é rejeitado silenciosamente.
+
+        Lead recebe só o copia e cola via send_text. Quando migrar pra Meta
+        Cloud API ou hospedar o QR num bucket, este teste pode ser ajustado.
+        """
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+
+        # NÃO pode passar qr_code_base64 pra send_image
+        forbidden = 'send_image(phone, result["qr_code_base64"]'
+        assert forbidden not in src, (
+            f"BUG VOLTOU: orchestrator está passando qr_code_base64 pra send_image. "
+            f"Twilio rejeita silenciosamente. Lead nunca recebe o QR."
+        )
+
+        # Mensagem do Pix NÃO pode mais mencionar "Escaneie o QR" (lead não recebe a imagem)
+        from huma.services import payment_service
+        pay_src = inspect.getsource(payment_service)
+        # Pega só o trecho de _create_pix
+        assert "Escaneie o QR" not in pay_src, (
+            "whatsapp_message do Pix promete QR mas lead só recebe copia/cola. "
+            "Atualizar mensagem ou implementar envio de imagem real."
+        )
+
     def test_image_url_never_persisted_in_history(self):
         """
         Regressão (fix de custo): orchestrator NUNCA pode colocar data: URI ou

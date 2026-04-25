@@ -1184,20 +1184,19 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
         payment_msg_id = await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
 
     if method == "pix":
-        # qr_code_base64 é base64 PURA (sem prefixo data:). Twilio media_url só
-        # aceita URL HTTP — passar base64 cru falha silenciosamente. Mantido aqui
-        # pra não mudar comportamento; quando Twilio rejeita, lead recebe só o
-        # qr_code_text (copia e cola), que sempre funciona.
-        # TODO(pix-qr): hospedar QR base64 e mandar URL real pra renderizar imagem.
-        if result.get("qr_code_base64"):
-            await asyncio.sleep(1.5)
-            qr_msg_id = await wa.send_image(phone, result["qr_code_base64"], caption="QR Code Pix", client_id=cid)
-            # QR code é a mensagem mais relevante pra citar no dedup
-            if qr_msg_id:
-                payment_msg_id = qr_msg_id
+        # qr_code_base64 do MP é base64 PURA (sem prefixo data:). Twilio media_url
+        # só aceita URL HTTP — não dá pra renderizar como imagem direto. Tentar
+        # send_image(base64) falhava silenciosamente: lead nunca recebia o QR,
+        # só o copia e cola.
+        # TODO(pix-qr): quando migrar pra Meta Cloud API OU subir o QR pra um host
+        # (Supabase Storage / Cloudinary / S3), reativar envio do QR como imagem.
+        # Por ora: copia e cola é suficiente — funciona em qualquer banco.
         if result.get("qr_code_text"):
-            await asyncio.sleep(1.0)
-            await wa.send_text(phone, result["qr_code_text"], client_id=cid)
+            await asyncio.sleep(1.5)
+            qr_text_msg_id = await wa.send_text(phone, result["qr_code_text"], client_id=cid)
+            # QR text é a mensagem mais relevante pra citar no dedup
+            if qr_text_msg_id:
+                payment_msg_id = qr_text_msg_id
 
     elif method == "boleto":
         if result.get("barcode"):

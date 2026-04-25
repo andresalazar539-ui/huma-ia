@@ -373,7 +373,7 @@ async def _create_pix(req) -> dict:
             "qr_code_base64": pix.get("qr_code_base64", ""),
             "qr_code_text": pix.get("qr_code", ""),
             "whatsapp_message": (
-                f"Pix de {amount} gerado! Escaneie o QR code ou use o copia e cola abaixo. "
+                f"Pix de {amount} gerado! Use o copia e cola abaixo no app do seu banco. "
                 f"Válido por 30 minutos."
             ),
         }
