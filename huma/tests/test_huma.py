@@ -1817,3 +1817,65 @@ class TestSprint2DistributedCache:
         src = inspect.getsource(orchestrator.handle_message)
         assert "check_rate_limit_client" in src
         assert "client_rate_limited" in src
+
+    def test_update_client_invalidates_cache_structurally(self):
+        """
+        Verificação estrutural: db.update_client menciona invalidate_client_cache.
+        """
+        import inspect
+        from huma.services import db_service
+        src = inspect.getsource(db_service.update_client)
+        assert "invalidate_client_cache" in src
+
+    def test_invalidate_client_cache_clears_memory_synchronously(self):
+        """
+        Validação FUNCIONAL: invalidate_client_cache realmente limpa o cache memória.
+        Antes: bug deixava dado velho até 5min.
+        Agora: pop é síncrono, próxima leitura busca fresh.
+        """
+        from huma.core.orchestrator import (
+            _client_cache_mem, _plan_cache_mem, invalidate_client_cache,
+        )
+
+        # Popula manualmente (simula cache hit anterior)
+        _client_cache_mem["test_xxx"] = ("fake_client_data", 9999999999)
+        _plan_cache_mem["test_xxx"] = ({"plan": "starter"}, 9999999999)
+
+        assert "test_xxx" in _client_cache_mem
+        assert "test_xxx" in _plan_cache_mem
+
+        # Invalida
+        invalidate_client_cache("test_xxx")
+
+        # Memória local foi limpa imediatamente
+        assert "test_xxx" not in _client_cache_mem
+        assert "test_xxx" not in _plan_cache_mem
+
+    def test_update_client_actually_calls_invalidate(self):
+        """
+        Validação FUNCIONAL end-to-end: chamar db.update_client realmente
+        dispara invalidate_client_cache. Mocka Supabase, popula cache,
+        chama update_client, verifica que cache foi limpo.
+        """
+        import asyncio
+        from unittest.mock import patch, MagicMock
+        from huma.services import db_service
+        from huma.core.orchestrator import _client_cache_mem, _plan_cache_mem
+
+        # Popula cache pra cliente "fake_id"
+        _client_cache_mem["fake_id"] = ("data_velha", 9999999999)
+        _plan_cache_mem["fake_id"] = ({"old": True}, 9999999999)
+
+        async def run_test():
+            # Mock do Supabase (não queremos hit real)
+            mock_supa = MagicMock()
+            mock_supa.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
+
+            with patch("huma.services.db_service.get_supabase", return_value=mock_supa):
+                await db_service.update_client("fake_id", {"clone_mode": "auto"})
+
+        asyncio.run(run_test())
+
+        # Validação: cache memória foi limpo
+        assert "fake_id" not in _client_cache_mem, "client_cache não foi invalidado!"
+        assert "fake_id" not in _plan_cache_mem, "plan_cache não foi invalidado!"

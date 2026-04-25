@@ -65,11 +65,25 @@ async def get_client(client_id: str) -> ClientIdentity | None:
 
 
 async def update_client(client_id: str, updates: dict):
-    """Atualiza campos de um cliente."""
+    """
+    Atualiza campos de um cliente.
+
+    Sprint 2 (fix) — invalida cache automaticamente.
+    Antes: cache de 5min ficava com dado velho até expirar.
+    Agora: qualquer update_client invalida o cache na hora.
+    Import tardio pra evitar ciclo (orchestrator importa db_service).
+    """
     await run_in_threadpool(
         lambda: get_supabase().table("clients").update(updates).eq("client_id", client_id).execute()
     )
     log.info(f"Cliente atualizado | {client_id} | fields={list(updates.keys())}")
+
+    # Invalida cache (Redis + memória local). Import tardio pra quebrar ciclo.
+    try:
+        from huma.core.orchestrator import invalidate_client_cache
+        invalidate_client_cache(client_id)
+    except Exception as e:
+        log.warning(f"Cache invalidation falhou | {client_id} | {type(e).__name__}: {e}")
 
 
 async def get_conversation(client_id: str, phone: str) -> Conversation:
