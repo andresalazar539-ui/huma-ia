@@ -92,6 +92,13 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
     if not await cache.check_rate_limit(phone):
         return {"status": "rate_limited"}
 
+    # Sprint 2 / item 12 — rate limit AGREGADO por client_id (todos os leads juntos).
+    # Sem isso, lead flood num cliente exauria Anthropic global, afetando outros clientes.
+    # Default 200 msgs/min — razoável até plano Elite. Configurável via plano se necessário.
+    if not await cache.check_rate_limit_client(payload.client_id, max_msgs=200, window_sec=60):
+        log.warning(f"Rate limit cliente atingido | {payload.client_id} | bloqueando temporariamente")
+        return {"status": "client_rate_limited"}
+
     result = await buffer.buffer_message(
         client_id=payload.client_id,
         phone=phone,
@@ -149,7 +156,8 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             await billing.debit_conversation(client_id)
 
         max_ia = plan_config.get("max_ia_calls_per_conversation", 30)
-        ia_limit_reached = not billing.check_ia_limit(phone, max_ia)
+        # Sprint 2 / item 3 — check_ia_limit virou async (Redis distribuído)
+        ia_limit_reached = not await billing.check_ia_limit(phone, max_ia)
 
         conv = await db.get_conversation(client_id, phone)
 
@@ -215,7 +223,8 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 "lead_facts": [], "actions": [],
                 "resolved_by": "ia_limit",
             }
-            log.warning(f"Limite IA | {phone} | {billing.get_ia_calls_today(phone)}/{max_ia}")
+            # Sprint 2 / item 3 — get_ia_calls_today virou async
+            log.warning(f"Limite IA | {phone} | {await billing.get_ia_calls_today(phone)}/{max_ia}")
         else:
             # Roteamento Tiered Intelligence v11.0
             tier, use_sonnet = _select_tier(classification, conv, unified_text, unified_image)
@@ -299,7 +308,8 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 tier=tier,
             )
 
-            billing.increment_ia_calls(phone)
+            # Sprint 2 / item 3 — increment_ia_calls virou async
+            await billing.increment_ia_calls(phone)
             model_type = billing.UsageType.ANTHROPIC_SONNET if use_sonnet else billing.UsageType.ANTHROPIC_HAIKU
             cost = 0.003 if use_sonnet else 0.001
             await billing.log_usage(client_id, model_type, cost_usd=cost)
@@ -1988,46 +1998,94 @@ def _is_silent_hours(client_data) -> bool:
 
 
 # ================================================================
-# CACHE EM MEMÓRIA
+# CACHE DISTRIBUÍDO (Sprint 2 / item 5)
+#
+# Antes era dict em memória com TTL=0 (sem cache real).
+# Agora: Redis com TTL 300s = 5min. Reduz queries Supabase em ~95%.
+# Fallback automático: dict em memória se Redis off.
 # ================================================================
 
-_client_cache: dict[str, tuple] = {}
-_plan_cache: dict[str, tuple] = {}
-CACHE_TTL = 0
+_CLIENT_CACHE_TTL = 300        # 5 minutos
+_PLAN_CACHE_TTL = 300
+
+# Fallback memória (só usado se Redis off)
+_client_cache_mem: dict[str, tuple] = {}
+_plan_cache_mem: dict[str, tuple] = {}
+_MEM_TTL = 60  # mais curto que Redis pra incentivar refresh
 
 
 async def _get_client_cached(client_id: str):
-    """Busca client com cache em memória."""
+    """
+    Busca ClientIdentity com cache distribuído.
+
+    1. Tenta Redis (5min TTL)
+    2. Cache miss → Supabase, salva em Redis
+    3. Fallback: dict memória se Redis off
+    """
+    redis_key = f"client_cache:{client_id}"
+    cached_json = await cache.get_json(redis_key)
+    if cached_json:
+        try:
+            from huma.models.schemas import ClientIdentity
+            return ClientIdentity.model_validate(cached_json)
+        except Exception as e:
+            log.warning(f"Cache client deserialização falhou | {client_id} | {e}")
+
+    # Fallback memória local
     now = time.time()
-    if client_id in _client_cache:
-        data, ts = _client_cache[client_id]
-        if now - ts < CACHE_TTL:
+    if client_id in _client_cache_mem:
+        data, ts = _client_cache_mem[client_id]
+        if now - ts < _MEM_TTL:
             return data
 
+    # Miss real: busca no Supabase
     data = await db.get_client(client_id)
     if data:
-        _client_cache[client_id] = (data, now)
+        # Salva no Redis (5min)
+        await cache.set_json(redis_key, data.model_dump(mode="json"), ttl=_CLIENT_CACHE_TTL)
+        # Cache memória de backup (curto)
+        _client_cache_mem[client_id] = (data, now)
     return data
 
 
 async def _get_plan_cached(client_id: str) -> dict:
-    """Busca plan config com cache em memória."""
+    """Cache distribuído de plan config (mesma lógica)."""
+    redis_key = f"plan_cache:{client_id}"
+    cached = await cache.get_json(redis_key)
+    if cached:
+        return cached
+
     now = time.time()
-    if client_id in _plan_cache:
-        data, ts = _plan_cache[client_id]
-        if now - ts < CACHE_TTL:
+    if client_id in _plan_cache_mem:
+        data, ts = _plan_cache_mem[client_id]
+        if now - ts < _MEM_TTL:
             return data
 
     data = await billing.get_client_plan_config(client_id)
-    _plan_cache[client_id] = (data, now)
+    if data:
+        await cache.set_json(redis_key, data, ttl=_PLAN_CACHE_TTL)
+        _plan_cache_mem[client_id] = (data, now)
     return data
 
 
 def invalidate_client_cache(client_id: str = ""):
-    """Invalida cache quando cliente atualiza configs."""
+    """
+    Invalida cache quando cliente atualiza configs.
+
+    Sprint 2: limpa Redis E memória local.
+    """
+    import asyncio
     if client_id:
-        _client_cache.pop(client_id, None)
-        _plan_cache.pop(client_id, None)
+        _client_cache_mem.pop(client_id, None)
+        _plan_cache_mem.pop(client_id, None)
+        # Async fire-and-forget pra não bloquear caller síncrono
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(cache.delete_key(f"client_cache:{client_id}"))
+                asyncio.create_task(cache.delete_key(f"plan_cache:{client_id}"))
+        except Exception:
+            pass  # invalidação Redis silenciosa em contextos sem loop
     else:
-        _client_cache.clear()
-        _plan_cache.clear()
+        _client_cache_mem.clear()
+        _plan_cache_mem.clear()

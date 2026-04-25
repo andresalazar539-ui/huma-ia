@@ -28,6 +28,7 @@ from enum import Enum
 
 from fastapi.concurrency import run_in_threadpool
 
+from huma.services import redis_service as cache
 from huma.services.db_service import get_supabase
 from huma.utils.logger import get_logger
 
@@ -266,17 +267,36 @@ async def debit_conversation(client_id: str) -> bool:
 
 
 async def check_conversations(client_id: str) -> dict:
-    """Middleware. Cache 60s."""
+    """
+    Middleware. Cache 60s.
+
+    Sprint 2 / item 4 — cache distribuído via Redis.
+    Fallback automático: dict em memória se Redis off (preserva dev).
+    """
     import time as _t
+
+    redis_key = f"wallet_bal:{client_id}"
+
+    # ── 1. Tenta Redis primeiro ──
+    cached = await cache.get_int(redis_key)
+    if cached >= 0:  # >= 0 = hit válido (saldo zerado é resposta válida)
+        return {"has_conversations": cached >= 1, "balance": cached}
+
+    # ── 2. Fallback: cache em memória local (legacy, só usado se Redis off) ──
     cache_key = f"_convs_{client_id}"
     now = _t.time()
-
     if hasattr(check_conversations, '_cache') and cache_key in check_conversations._cache:
         balance, ts = check_conversations._cache[cache_key]
         if now - ts < 60:
             return {"has_conversations": balance >= 1, "balance": balance}
 
+    # ── 3. Cache miss: busca no Supabase ──
     balance = await get_balance(client_id)
+
+    # Salva no Redis com TTL 60s (set_with_ttl é no-op se Redis off)
+    await cache.set_with_ttl(redis_key, str(balance), ttl=60)
+
+    # Fallback memória (preservar comportamento atual mesmo se Redis cair em runtime)
     if not hasattr(check_conversations, '_cache'):
         check_conversations._cache = {}
     check_conversations._cache[cache_key] = (balance, now)
@@ -305,8 +325,15 @@ async def purchase_extra_pack(client_id: str, pack_id: str) -> dict:
 
 # ================================================================
 # CONTROLE DE CHAMADAS IA POR CONVERSA (janela 24h)
+#
+# Sprint 2 / item 3 — distribuído via Redis com TTL automático (25h).
+# Antes era dict em memória local: 2 containers = 2 contadores.
+# Restart do container = perdia contadores (limite virava 30 por restart).
+#
+# Fallback automático: se Redis off, usa dict em memória (dev).
 # ================================================================
 
+# Fallback em memória (só usado se Redis off)
 _ia_call_counts: dict[str, int] = {}
 
 
@@ -315,20 +342,48 @@ def _ia_key(phone: str) -> str:
     return f"{phone}_{today}"
 
 
-def check_ia_limit(phone: str, max_calls: int = 30) -> bool:
+def _ia_redis_key(phone: str) -> str:
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    return f"ia_calls:{phone}:{today}"
+
+
+async def check_ia_limit(phone: str, max_calls: int = 30) -> bool:
+    """
+    Async (Sprint 2): consulta Redis com fallback memória.
+    Returns True se ainda dentro do limite.
+    """
+    count = await cache.get_int(_ia_redis_key(phone))
+    if count >= 0:  # Redis OK (>=0 inclui zero como hit válido)
+        return count < max_calls
+    # Fallback memória (Redis off)
     return _ia_call_counts.get(_ia_key(phone), 0) < max_calls
 
 
-def increment_ia_calls(phone: str):
-    key = _ia_key(phone)
-    _ia_call_counts[key] = _ia_call_counts.get(key, 0) + 1
+async def increment_ia_calls(phone: str):
+    """
+    Async (Sprint 2): INCR atômico no Redis com TTL 25h.
+    TTL maior que 24h garante que conta hoje sobreviva até cleanup do dia seguinte.
+    Fallback: dict memória se Redis off.
+    """
+    new_val = await cache.incr_with_ttl(_ia_redis_key(phone), ttl=25 * 3600)
+    if new_val < 0:  # Redis off, usa fallback
+        key = _ia_key(phone)
+        _ia_call_counts[key] = _ia_call_counts.get(key, 0) + 1
 
 
-def get_ia_calls_today(phone: str) -> int:
+async def get_ia_calls_today(phone: str) -> int:
+    """Async (Sprint 2): consulta Redis com fallback memória."""
+    count = await cache.get_int(_ia_redis_key(phone))
+    if count >= 0:
+        return count
     return _ia_call_counts.get(_ia_key(phone), 0)
 
 
 def cleanup_ia_counts():
+    """
+    Limpa fallback memória de chaves antigas.
+    Sprint 2: Redis tem TTL automático, então essa função só atua no fallback.
+    """
     today = datetime.utcnow().strftime("%Y-%m-%d")
     for k in [k for k in _ia_call_counts if today not in k]:
         del _ia_call_counts[k]

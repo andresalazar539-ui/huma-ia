@@ -1717,3 +1717,103 @@ class TestSprint1Security:
         # Como pode estar setado em dev, só validamos que existe a flag
         assert hasattr(config, "PLAYGROUND_ENABLED")
         assert hasattr(config, "PLAYGROUND_TOKEN")
+
+
+# ================================================================
+# TESTES DO SPRINT 2 — Cache distribuído (Redis)
+# ================================================================
+
+class TestSprint2DistributedCache:
+    """Cache distribuído via Redis com fallback memória."""
+
+    def test_ia_calls_async_signature(self):
+        """check_ia_limit, increment_ia_calls, get_ia_calls_today são async (Sprint 2)."""
+        import inspect
+        from huma.services import billing_service
+        assert inspect.iscoroutinefunction(billing_service.check_ia_limit)
+        assert inspect.iscoroutinefunction(billing_service.increment_ia_calls)
+        assert inspect.iscoroutinefunction(billing_service.get_ia_calls_today)
+
+    def test_ia_calls_falls_back_to_memory_without_redis(self, monkeypatch):
+        """Sem Redis, contador continua funcionando via dict memória."""
+        import asyncio
+        from huma.services import billing_service, redis_service
+
+        # Força Redis off
+        monkeypatch.setattr(redis_service, "_client", None)
+        # Limpa fallback memória
+        billing_service._ia_call_counts.clear()
+
+        async def go():
+            assert await billing_service.check_ia_limit("test_phone", max_calls=5) is True
+            await billing_service.increment_ia_calls("test_phone")
+            await billing_service.increment_ia_calls("test_phone")
+            count = await billing_service.get_ia_calls_today("test_phone")
+            assert count == 2
+            assert await billing_service.check_ia_limit("test_phone", max_calls=5) is True
+            assert await billing_service.check_ia_limit("test_phone", max_calls=2) is False
+
+        asyncio.run(go())
+
+    def test_ia_redis_key_format(self):
+        """Chave Redis tem formato esperado pra TTL automático funcionar."""
+        from huma.services.billing_service import _ia_redis_key
+        from datetime import datetime
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        assert _ia_redis_key("5511999") == f"ia_calls:5511999:{today}"
+
+    def test_redis_helpers_safe_when_off(self, monkeypatch):
+        """Helpers novos retornam fallback sentinel quando Redis off."""
+        import asyncio
+        from huma.services import redis_service
+        monkeypatch.setattr(redis_service, "_client", None)
+
+        async def go():
+            assert await redis_service.incr_with_ttl("k", 60) == -1
+            assert await redis_service.get_int("k") == -1
+            assert await redis_service.get_json("k") is None
+            assert await redis_service.set_json("k", {"a": 1}) is False
+            await redis_service.delete_key("k")  # no-op
+            assert await redis_service.check_rate_limit_client("cli") is True
+
+        asyncio.run(go())
+
+    def test_check_rate_limit_client_function_exists(self):
+        """check_rate_limit_client existe com assinatura esperada."""
+        import inspect
+        from huma.services import redis_service
+        assert hasattr(redis_service, "check_rate_limit_client")
+        sig = inspect.signature(redis_service.check_rate_limit_client)
+        assert "client_id" in sig.parameters
+        assert "max_msgs" in sig.parameters
+        assert "window_sec" in sig.parameters
+
+    def test_orchestrator_uses_redis_cache_for_client(self):
+        """_get_client_cached usa Redis (cache:client_cache:*)."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator._get_client_cached)
+        assert "client_cache:" in src
+        assert "cache.get_json" in src or "cache.set_json" in src
+
+    def test_orchestrator_uses_redis_cache_for_plan(self):
+        """_get_plan_cached usa Redis (plan_cache:*)."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator._get_plan_cached)
+        assert "plan_cache:" in src
+
+    def test_invalidate_cache_clears_redis_too(self):
+        """invalidate_client_cache deleta do Redis também."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator.invalidate_client_cache)
+        assert "delete_key" in src or "client_cache:" in src
+
+    def test_handle_message_has_client_rate_limit(self):
+        """handle_message inclui rate limit por client_id."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator.handle_message)
+        assert "check_rate_limit_client" in src
+        assert "client_rate_limited" in src
