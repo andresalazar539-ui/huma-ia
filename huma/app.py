@@ -86,6 +86,13 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def startup():
         log.info(f"HUMA IA v{APP_VERSION} iniciando...")
+        # Sprint 6 — scheduler de jobs periódicos (follow-up, lembrete, NPS).
+        # Falha silenciosa: se scheduler quebrar, app continua subindo.
+        try:
+            from huma.services import scheduler
+            await scheduler.start()
+        except Exception as e:
+            log.error(f"Scheduler start falhou | {type(e).__name__}: {e}")
 
     # Sprint 3 / item 16 — Graceful shutdown.
     # Quando Railway envia SIGTERM (deploy/restart), o uvicorn dispara este handler.
@@ -98,7 +105,15 @@ def create_app() -> FastAPI:
     # Restart automático Railway + reentregas do WhatsApp cobrem o residual.
     @app.on_event("shutdown")
     async def shutdown():
-        log.info("Shutdown iniciado — aguardando tasks em voo...")
+        log.info("Shutdown iniciado — parando scheduler...")
+        # Sprint 6 — para scheduler ANTES do grace pra não disparar novo job
+        # durante shutdown. stop() cancela tasks e aguarda até 2s.
+        try:
+            from huma.services import scheduler
+            await scheduler.stop()
+        except Exception as e:
+            log.warning(f"Scheduler stop erro | {type(e).__name__}: {e}")
+        log.info("Shutdown — aguardando tasks em voo...")
         try:
             await asyncio.sleep(5)
         except asyncio.CancelledError:

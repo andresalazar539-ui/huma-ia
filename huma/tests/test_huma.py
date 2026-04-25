@@ -2423,6 +2423,107 @@ class TestSprint5OwnerNotifications:
         assert "27/04/2026" in msg
         assert phone in msg
 
+    def test_scheduler_module_exists_with_required_functions(self):
+        """Estrutural: scheduler.py existe e exporta start/stop/is_running."""
+        from huma.services import scheduler
+        assert hasattr(scheduler, "start")
+        assert hasattr(scheduler, "stop")
+        assert hasattr(scheduler, "is_running")
+        assert hasattr(scheduler, "_try_run_job")
+        assert hasattr(scheduler, "_periodic_loop")
+
+    def test_scheduler_start_stop_idempotent(self):
+        """Funcional: start e stop podem ser chamados multiplas vezes sem erro."""
+        import asyncio
+        from huma.services import scheduler
+
+        async def run():
+            # Estado limpo antes do teste
+            scheduler._running = False
+            scheduler._tasks = []
+
+            await scheduler.start()
+            running_after_start = scheduler.is_running()
+
+            # Chamar de novo é no-op (loga warning mas não levanta)
+            await scheduler.start()
+
+            await scheduler.stop()
+            running_after_stop = scheduler.is_running()
+
+            # Stop sem tasks não levanta
+            await scheduler.stop()
+
+            return running_after_start, running_after_stop
+
+        running_after_start, running_after_stop = asyncio.run(run())
+        assert running_after_start is True
+        assert running_after_stop is False
+
+    def test_try_run_job_acquires_lock_and_runs(self):
+        """Funcional: _try_run_job adquire lock, executa fn e libera lock."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        executed = {"flag": False}
+
+        async def fake_fn():
+            executed["flag"] = True
+
+        with patch("huma.services.scheduler.cache.acquire_lock", new=AsyncMock(return_value=True)) as mock_acq, \
+             patch("huma.services.scheduler.cache.release_lock", new=AsyncMock()) as mock_rel:
+            asyncio.run(scheduler._try_run_job("test_job", fake_fn, ttl=60))
+
+        assert executed["flag"] is True
+        mock_acq.assert_awaited_once()
+        mock_rel.assert_awaited_once()
+
+    def test_try_run_job_skips_when_lock_busy(self):
+        """Funcional: se outra replica já tem o lock, fn não executa."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        executed = {"flag": False}
+
+        async def fake_fn():
+            executed["flag"] = True
+
+        with patch("huma.services.scheduler.cache.acquire_lock", new=AsyncMock(return_value=False)), \
+             patch("huma.services.scheduler.cache.release_lock", new=AsyncMock()) as mock_rel:
+            asyncio.run(scheduler._try_run_job("test_job", fake_fn, ttl=60))
+
+        # Não executou
+        assert executed["flag"] is False
+        # Não chamou release (porque não adquiriu)
+        mock_rel.assert_not_awaited()
+
+    def test_try_run_job_swallows_fn_exception(self):
+        """Funcional: se fn levanta, lock é liberado e exception não propaga."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        async def fail_fn():
+            raise RuntimeError("boom")
+
+        with patch("huma.services.scheduler.cache.acquire_lock", new=AsyncMock(return_value=True)), \
+             patch("huma.services.scheduler.cache.release_lock", new=AsyncMock()) as mock_rel:
+            # Não pode levantar
+            asyncio.run(scheduler._try_run_job("failing_job", fail_fn, ttl=60))
+
+        # Lock liberado mesmo com exception
+        mock_rel.assert_awaited_once()
+
+    def test_app_startup_starts_scheduler(self):
+        """Estrutural: app.py startup chama scheduler.start()."""
+        import inspect
+        from huma import app as app_module
+        src = inspect.getsource(app_module.create_app)
+        assert "scheduler.start()" in src
+        assert "scheduler.stop()" in src
+
     def test_pix_qr_base64_never_passed_to_send_image(self):
         """
         Regressão (fix de bug funcional): orchestrator NÃO pode passar
