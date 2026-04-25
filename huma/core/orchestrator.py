@@ -39,6 +39,7 @@ from huma.services import scheduling_service as sched
 from huma.services import billing_service as billing
 from huma.services import message_buffer as buffer
 from huma.utils.logger import get_logger
+from huma.utils.log_masking import mask_email, mask_name
 
 log = get_logger("orchestrator")
 
@@ -1368,11 +1369,11 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
                             break
 
         if lead_name or lead_email:
-            log.info(f"Pre-flight enriquecido | name={lead_name} | email={lead_email}")
+            log.info(f"Pre-flight enriquecido | name={mask_name(lead_name)} | email={mask_email(lead_email)}")
 
     # Trava: sem email, não agenda. Retorna incomplete pro Claude pedir.
     if not lead_email or "@" not in lead_email:
-        log.info(f"Pre-flight BLOQUEADO | {phone} | email ausente | name={lead_name}")
+        log.info(f"Pre-flight BLOQUEADO | {phone} | email ausente | name={mask_name(lead_name)}")
         return {
             "status": "incomplete",
             "missing_fields": ["email"],
@@ -1381,7 +1382,7 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
 
     # Trava: sem nome, não agenda
     if not lead_name:
-        log.info(f"Pre-flight BLOQUEADO | {phone} | nome ausente | email={lead_email}")
+        log.info(f"Pre-flight BLOQUEADO | {phone} | nome ausente | email={mask_email(lead_email)}")
         return {
             "status": "incomplete",
             "missing_fields": ["nome"],

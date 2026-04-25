@@ -23,6 +23,7 @@ from huma.config import (
 )
 from huma.models.schemas import BusinessScheduleConfig, TimeWindow
 from huma.utils.logger import get_logger
+from huma.utils.log_masking import mask_name
 
 log = get_logger("scheduling")
 
@@ -285,7 +286,7 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
                     "Qual outro dia funciona pra você?"
                 )
         log.info(
-            f"Fora do horário | {request.lead_name} | "
+            f"Fora do horário | {mask_name(request.lead_name)} | "
             f"horario={parsed_dt.strftime('%d/%m %H:%M')} | reason={hours_reason}"
         )
         return {
@@ -336,7 +337,7 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
             slots_text = "\n".join(parts) if parts else ""
 
         log.info(
-            f"Conflito de agenda | {request.lead_name} | "
+            f"Conflito de agenda | {mask_name(request.lead_name)} | "
             f"horario={parsed_dt.strftime('%d/%m %H:%M')} | conflito={conflicting} | "
             f"sugestoes={len(suggestions)}"
         )
@@ -413,7 +414,7 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
 
     appointment_id = f"apt_{request.client_id[:8]}_{int(datetime.utcnow().timestamp())}"
     log.info(
-        f"Agendado | {appointment_id} | {request.lead_name} | "
+        f"Agendado | {appointment_id} | {mask_name(request.lead_name)} | "
         f"{date_display} | {platform} | calendar={'OK' if calendar_ok else 'fallback'}"
     )
 

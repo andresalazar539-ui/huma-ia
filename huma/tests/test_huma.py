@@ -2067,3 +2067,88 @@ class TestSprint3Resilience:
         assert "version" in data
         assert "redis" in data
         assert "db" in data
+
+
+# ================================================================
+# SPRINT 4 — Item 13: mascaramento LGPD em logs
+# ================================================================
+
+class TestSprint4LogMasking:
+    """
+    Sprint 4 / item 13 — mascarar dados sensíveis em logs antes de
+    enviar pra Railway/Datadog. Compliance LGPD.
+    """
+
+    def test_mask_email_keeps_first_letter_and_domain(self):
+        from huma.utils.log_masking import mask_email
+        assert mask_email("camila.silva@gmail.com") == "c***@gmail.com"
+        assert mask_email("a@b.com") == "a***@b.com"
+
+    def test_mask_email_safe_with_invalid_input(self):
+        from huma.utils.log_masking import mask_email
+        assert mask_email("") == ""
+        assert mask_email(None) == ""
+        assert mask_email("nao-eh-email") == ""
+        assert mask_email("@nodomain.com") == "***@nodomain.com"
+
+    def test_mask_name_first_name_plus_initials(self):
+        from huma.utils.log_masking import mask_name
+        assert mask_name("Camila Silva Santos") == "Camila S. S."
+        assert mask_name("Camila Silva") == "Camila S."
+        assert mask_name("Camila") == "Camila"
+
+    def test_mask_name_safe_with_invalid_input(self):
+        from huma.utils.log_masking import mask_name
+        assert mask_name("") == ""
+        assert mask_name(None) == ""
+        assert mask_name("   ") == ""
+
+    def test_mask_cpf_keeps_last_two_digits(self):
+        from huma.utils.log_masking import mask_cpf
+        assert mask_cpf("12345678990") == "***.***.***-90"
+        assert mask_cpf("123.456.789-90") == "***.***.***-90"
+
+    def test_mask_cpf_safe_with_invalid_input(self):
+        from huma.utils.log_masking import mask_cpf
+        assert mask_cpf("") == ""
+        assert mask_cpf(None) == ""
+        assert mask_cpf("ab") == "***"  # sem dígitos
+
+    def test_mask_phone_keeps_country_ddd_and_last_4(self):
+        from huma.utils.log_masking import mask_phone
+        # 13 dígitos: país (55) + DDD (11) + 9 + 8 dígitos
+        assert mask_phone("5511999998888") == "5511*****8888"
+        # 11 dígitos: DDD + número (sem código país)
+        assert mask_phone("11999998888") == "11*****8888"
+
+    def test_mask_phone_safe_with_invalid_input(self):
+        from huma.utils.log_masking import mask_phone
+        assert mask_phone("") == ""
+        assert mask_phone(None) == ""
+        assert mask_phone("123") == "***"  # curto demais
+
+    def test_orchestrator_preflight_logs_use_masking(self):
+        """
+        Estrutural: pre-flight no orchestrator usa mask_name e mask_email.
+        Garante que ninguém remova o masking sem perceber.
+        """
+        import inspect
+        from huma.core import orchestrator
+        # Função _preflight_appointment é onde estão os logs
+        src = inspect.getsource(orchestrator)
+        assert "mask_name(lead_name)" in src
+        assert "mask_email(lead_email)" in src
+
+    def test_scheduling_service_logs_use_masking(self):
+        """Estrutural: scheduling_service usa mask_name nos logs de lead_name."""
+        import inspect
+        from huma.services import scheduling_service
+        src = inspect.getsource(scheduling_service)
+        assert "mask_name(request.lead_name)" in src
+        # Não pode haver log com lead_name cru
+        for line in src.split("\n"):
+            if "log." in line and "lead_name" in line and "mask_name" not in line:
+                # Permite linhas que mencionam lead_name como parâmetro/atributo
+                # mas não logam — distinção: f-string com {request.lead_name} sem mask
+                if "{request.lead_name}" in line and "mask_name" not in line:
+                    raise AssertionError(f"log com lead_name não-mascarado: {line.strip()}")
