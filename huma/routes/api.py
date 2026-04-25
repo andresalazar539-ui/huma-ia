@@ -231,6 +231,19 @@ async def health():
     }
 
 
+@router.get("/api/admin/loop-stats/{client_id}", tags=["Sistema"])
+async def loop_stats(client_id: str, _=Depends(verify_api_key)):
+    """
+    Sprint 4 / item 34 — stats do detector de loop por cliente.
+
+    Retorna contadores da hora atual: turns processados vs safety nets
+    acionados. Ratio > 0.20 com >= 10 turns indica bug — mesmo critério
+    que dispara o alerta CRITICAL no log.
+    """
+    from huma.services import loop_detector
+    return await loop_detector.get_stats(client_id)
+
+
 @router.get("/health/deep", tags=["Sistema"])
 async def health_deep():
     """

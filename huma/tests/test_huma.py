@@ -2152,3 +2152,159 @@ class TestSprint4LogMasking:
                 # mas não logam — distinção: f-string com {request.lead_name} sem mask
                 if "{request.lead_name}" in line and "mask_name" not in line:
                     raise AssertionError(f"log com lead_name não-mascarado: {line.strip()}")
+
+
+# ================================================================
+# SPRINT 4 — Item 34: detector de loop interno
+# ================================================================
+
+class TestSprint4LoopDetector:
+    """
+    Sprint 4 / item 34 — detector de loop via safety_net/turns ratio.
+
+    Cobre: increment, threshold, cooldown, get_stats e hooks no orchestrator.
+    """
+
+    def test_loop_detector_records_turn_and_safety_net(self):
+        """
+        Funcional: contadores incrementam corretamente. Mocka cache pra
+        ser rápido e determinístico (não depende de Redis real).
+        """
+        import asyncio
+        from unittest.mock import patch
+        from huma.services import loop_detector
+
+        # Estado em memória simulando Redis
+        state = {}
+
+        async def fake_incr(key, ttl):
+            state[key] = state.get(key, 0) + 1
+            return state[key]
+
+        async def fake_get_int(key):
+            return state.get(key, 0)
+
+        with patch("huma.services.loop_detector.cache.incr_with_ttl", new=fake_incr), \
+             patch("huma.services.loop_detector.cache.get_int", new=fake_get_int):
+
+            async def run():
+                await loop_detector.record_turn("c1")
+                await loop_detector.record_turn("c1")
+                await loop_detector.record_safety_net("c1")
+                return await loop_detector.get_stats("c1")
+
+            stats = asyncio.run(run())
+
+        assert stats["turns"] == 2
+        assert stats["safety_net"] == 1
+        assert stats["ratio"] == 0.5
+        assert stats["redis_available"] is True
+
+    def test_loop_alert_silent_below_threshold(self):
+        """Funcional: volume <10 não alerta mesmo com ratio alto."""
+        import asyncio
+        from unittest.mock import patch
+        from huma.services import loop_detector
+
+        async def fake_get_int(key):
+            if "loop:turns" in key:
+                return 5  # volume insuficiente
+            if "loop:safety_net" in key:
+                return 1  # ratio 20% mas volume <10
+            return 0
+
+        async def fake_exists(key):
+            return False
+
+        with patch("huma.services.loop_detector.cache.get_int", new=fake_get_int), \
+             patch("huma.services.loop_detector.cache.exists", new=fake_exists):
+            result = asyncio.run(loop_detector.check_loop_alert("c2"))
+
+        assert result is None
+
+    def test_loop_alert_fires_above_threshold(self):
+        """
+        Funcional: ratio > 20% com volume >=10 dispara alerta com cooldown.
+        Mocka cache.get_int e cache.exists (não depende de Redis real rodando).
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import loop_detector
+
+        client_id = "test_loop_alert"
+
+        # Estado simulado: 10 turns, 3 safety nets, ainda não alertou
+        alerted_state = {"flag": False}
+
+        async def fake_get_int(key):
+            if "loop:turns" in key:
+                return 10
+            if "loop:safety_net" in key:
+                return 3
+            return 0
+
+        async def fake_exists(key):
+            return alerted_state["flag"]
+
+        async def fake_set_with_ttl(key, value, ttl):
+            if "loop:alerted" in key:
+                alerted_state["flag"] = True
+
+        with patch("huma.services.loop_detector.cache.get_int", new=fake_get_int), \
+             patch("huma.services.loop_detector.cache.exists", new=fake_exists), \
+             patch("huma.services.loop_detector.cache.set_with_ttl", new=fake_set_with_ttl):
+
+            first = asyncio.run(loop_detector.check_loop_alert(client_id))
+            second = asyncio.run(loop_detector.check_loop_alert(client_id))
+
+        assert first is not None, "esperava alerta na 1a chamada"
+        assert first["turns"] == 10
+        assert first["safety_net"] == 3
+        assert first["ratio"] == 0.3
+        assert second is None, "cooldown não funcionou — alertou 2x"
+
+    def test_get_stats_with_no_data(self):
+        """Funcional: get_stats sem dados retorna shape válido."""
+        import asyncio
+        from unittest.mock import patch
+        from huma.services import loop_detector
+
+        async def fake_get_int(key):
+            return 0  # nenhum contador setado
+
+        with patch("huma.services.loop_detector.cache.get_int", new=fake_get_int):
+            stats = asyncio.run(loop_detector.get_stats("c3"))
+
+        assert stats["client_id"] == "c3"
+        assert stats["turns"] == 0
+        assert stats["safety_net"] == 0
+        assert stats["ratio"] == 0.0
+        assert "hour" in stats
+
+    def test_orchestrator_calls_record_turn_at_end(self):
+        """Estrutural: orchestrator chama loop_detector.record_turn ao final do turn."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+        assert "loop_detector.record_turn" in src
+        assert "loop_detector.check_loop_alert" in src
+
+    def test_orchestrator_calls_record_safety_net(self):
+        """Estrutural: orchestrator chama record_safety_net no warning de safety net."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+        # Pelo menos 2 ocorrências (try + except)
+        assert src.count("loop_detector.record_safety_net") >= 2
+
+    def test_loop_stats_endpoint_exists_and_protected(self):
+        """Funcional: endpoint /api/admin/loop-stats existe e exige auth."""
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        client = TestClient(app)
+        # Sem auth → deve dar 401 ou 403
+        resp = client.get("/api/admin/loop-stats/test_xxx")
+        assert resp.status_code in (401, 403), (
+            f"endpoint deveria exigir auth, retornou {resp.status_code}"
+        )

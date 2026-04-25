@@ -38,6 +38,7 @@ from huma.services import payment_service as pay
 from huma.services import scheduling_service as sched
 from huma.services import billing_service as billing
 from huma.services import message_buffer as buffer
+from huma.services import loop_detector
 from huma.utils.logger import get_logger
 from huma.utils.log_masking import mask_email, mask_name
 
@@ -396,6 +397,14 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         elapsed = int((time.time() - start) * 1000)
         log.info(f"OK | {client_id} | {phone} | {elapsed}ms | stage={conv.stage} ")
 
+        # Sprint 4 / item 34 — registra turn + checa loop. Falha silenciosa
+        # se Redis off (helpers retornam early). Não pode quebrar o turn real.
+        try:
+            await loop_detector.record_turn(client_id)
+            await loop_detector.check_loop_alert(client_id)
+        except Exception as e:
+            log.debug(f"loop_detector falhou silencioso | {type(e).__name__}: {e}")
+
     finally:
         await cache.release_lock(phone)
 
@@ -691,6 +700,11 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                                 f"reply do turn 2 sem dígito (len={len(fup_reply)}) → "
                                 f"enviando slots determinísticos"
                             )
+                            # Item 34: registra pra detector de loop. Silent fail.
+                            try:
+                                await loop_detector.record_safety_net(cid)
+                            except Exception:
+                                pass
                     except Exception as e:
                         log.error(
                             f"check_availability follow-up falhou | {phone} | "
@@ -710,6 +724,11 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                             fallback_msg = "Tô consultando os horários aqui, só um instante."
                         await asyncio.sleep(_typing_delay(fallback_msg))
                         await wa.send_text(phone, fallback_msg, client_id=cid)
+                        # Item 34: safety net no except também é loop indicator.
+                        try:
+                            await loop_detector.record_safety_net(cid)
+                        except Exception:
+                            pass
                 else:
                     log.warning(
                         f"check_availability sem user text pra re-invocar | {phone}"
