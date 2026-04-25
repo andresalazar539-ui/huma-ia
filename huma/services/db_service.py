@@ -181,6 +181,53 @@ async def get_outbound_campaign(campaign_id: str) -> OutboundCampaign | None:
     )
 
 
+async def list_stuck_conversations(
+    hours_silent_min: int = 4,
+    hours_silent_max: int = 72,
+    max_follow_ups: int = 2,
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Sprint 6 / item 19 — busca conversas paradas pra follow-up.
+
+    Retorna conversas com:
+      - last_message_at entre [hours_silent_max, hours_silent_min] atrás (em horas)
+      - stage não-terminal e fora de committed (lead já decidiu)
+      - follow_up_count < max_follow_ups
+      - active_appointment_event_id vazio (já agendou = não fazer follow-up)
+
+    Limitada em N pra não estourar memória em escala.
+
+    Returns:
+        Lista de dicts com client_id, phone, last_message_at, stage,
+        follow_up_count, lead_name_canonical, products_or_services_hint.
+    """
+    from datetime import timedelta
+    now = datetime.utcnow()
+    cutoff_min = (now - timedelta(hours=hours_silent_min)).isoformat()
+    cutoff_max = (now - timedelta(hours=hours_silent_max)).isoformat()
+
+    def query():
+        return (
+            get_supabase()
+            .table("conversations")
+            .select(
+                "client_id,phone,last_message_at,stage,follow_up_count,"
+                "lead_name_canonical,active_appointment_event_id"
+            )
+            .lte("last_message_at", cutoff_min)
+            .gte("last_message_at", cutoff_max)
+            .in_("stage", ["discovery", "offer", "closing"])
+            .lt("follow_up_count", max_follow_ups)
+            .or_("active_appointment_event_id.is.null,active_appointment_event_id.eq.")
+            .limit(limit)
+            .execute()
+        )
+
+    resp = await run_in_threadpool(query)
+    return resp.data or []
+
+
 async def get_conversation_metrics(client_id: str) -> dict:
     """Métricas de conversas por estágio."""
     resp = await run_in_threadpool(

@@ -2524,6 +2524,131 @@ class TestSprint5OwnerNotifications:
         assert "scheduler.start()" in src
         assert "scheduler.stop()" in src
 
+    def test_followup_job_registered(self):
+        """Estrutural: job de follow-up está registrado em _jobs."""
+        from huma.services import scheduler
+        job_names = [j[0] for j in scheduler._jobs]
+        assert "followup" in job_names
+
+    def test_followup_message_personalization(self):
+        """Funcional: mensagem de follow-up usa primeiro nome + serviço."""
+        from huma.services.scheduler import _format_followup_message
+
+        msg = _format_followup_message("Camila Silva Santos", "Avaliação Estética", attempt=0)
+        assert "Camila" in msg
+        assert "Silva" not in msg  # só primeiro nome
+        # 1ª tentativa não menciona serviço (template 0)
+
+        msg2 = _format_followup_message("André", "Botox", attempt=1)
+        assert "André" in msg2
+        assert "Botox" in msg2  # template 1 menciona serviço
+
+    def test_followup_message_handles_missing_data(self):
+        """Funcional: mensagem segura quando faltam nome/serviço."""
+        from huma.services.scheduler import _format_followup_message
+
+        msg = _format_followup_message("", "", attempt=0)
+        # Não pode ter "{nome}" ou "{servico}" literais
+        assert "{nome}" not in msg
+        assert "{servico}" not in msg
+        # Fallback genérico
+        assert "tudo bem" in msg or "Oi" in msg
+
+    def test_followup_attempt_overflow_uses_last_template(self):
+        """Funcional: attempt > len(templates) usa último template (não crasha)."""
+        from huma.services.scheduler import _format_followup_message
+
+        msg = _format_followup_message("Teste", "X", attempt=10)
+        assert msg  # não levanta
+        assert "{" not in msg  # placeholders preenchidos
+
+    def test_followup_job_skips_when_silent_hours(self):
+        """
+        Funcional: se cliente está em silent_hours, follow-up é skipado.
+        Mocka db.list_stuck_conversations e _is_silent_hours.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        fake_conv = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "last_message_at": "2026-04-25T10:00:00",
+            "stage": "discovery",
+            "follow_up_count": 0,
+            "lead_name_canonical": "Camila",
+        }
+
+        fake_client = MagicMock()
+        fake_client.business_name = "Test"
+        fake_client.products_or_services = [{"name": "X"}]
+
+        send_calls = []
+
+        async def fake_send(*args, **kwargs):
+            send_calls.append((args, kwargs))
+            return "msg_id"
+
+        with patch("huma.services.db_service.list_stuck_conversations", new=AsyncMock(return_value=[fake_conv])), \
+             patch("huma.services.db_service.get_client", new=AsyncMock(return_value=fake_client)), \
+             patch("huma.core.orchestrator._is_silent_hours", return_value=True), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send):
+            asyncio.run(scheduler._run_followup_job())
+
+        # Silent hours = nada enviado
+        assert len(send_calls) == 0, f"esperava 0 envios, foi {len(send_calls)}"
+
+    def test_followup_job_sends_when_not_silent(self):
+        """Funcional: fora de silent_hours, envia follow-up + incrementa count."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        fake_conv = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "last_message_at": "2026-04-25T10:00:00",
+            "stage": "discovery",
+            "follow_up_count": 0,
+            "lead_name_canonical": "Camila Silva",
+        }
+
+        fake_client = MagicMock()
+        fake_client.business_name = "Clínica X"
+        fake_client.products_or_services = [{"name": "Avaliação"}]
+
+        send_calls = []
+
+        async def fake_send(phone, msg, client_id="", **kwargs):
+            send_calls.append({"phone": phone, "msg": msg, "client_id": client_id})
+            return "sid_xyz"
+
+        update_calls = []
+
+        def fake_supabase():
+            class FakeQuery:
+                def table(self, t): return self
+                def update(self, data):
+                    update_calls.append(data)
+                    return self
+                def eq(self, col, val): return self
+                def execute(self): return MagicMock()
+            return FakeQuery()
+
+        with patch("huma.services.db_service.list_stuck_conversations", new=AsyncMock(return_value=[fake_conv])), \
+             patch("huma.services.db_service.get_client", new=AsyncMock(return_value=fake_client)), \
+             patch("huma.services.db_service.get_supabase", new=fake_supabase), \
+             patch("huma.core.orchestrator._is_silent_hours", return_value=False), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send):
+            asyncio.run(scheduler._run_followup_job())
+
+        assert len(send_calls) == 1
+        assert "Camila" in send_calls[0]["msg"]
+        assert send_calls[0]["phone"] == "5511999998888"
+        # Update incrementou follow_up_count
+        assert any(u.get("follow_up_count") == 1 for u in update_calls)
+
     def test_pix_qr_base64_never_passed_to_send_image(self):
         """
         Regressão (fix de bug funcional): orchestrator NÃO pode passar

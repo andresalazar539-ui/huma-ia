@@ -33,9 +33,114 @@ _tasks: list[asyncio.Task] = []
 _running: bool = False
 
 
-# Jobs serão preenchidos por commits futuros do Sprint 6.
-# Tupla: (nome, fn_async, intervalo_segundos, ttl_lock_segundos)
-_jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = []
+# ================================================================
+# JOB: follow-up automático (Sprint 6 / item 19)
+# ================================================================
+
+# Mensagens fixas (sem LLM, custo zero). Variações leves pra não parecer robotizado.
+_FOLLOWUP_MESSAGES = [
+    "Oi {nome}! Tô passando pra ver se você ainda tá querendo conversar. Tô por aqui.",
+    "Oi {nome}! Lembrei de você aqui. Ainda quer falar sobre {servico}? Me chama.",
+    "Oi {nome}! Sumiu. Tudo bem? Se quiser dar continuidade, é só me responder.",
+]
+
+
+def _format_followup_message(lead_name: str, service_hint: str, attempt: int) -> str:
+    """Escolhe template baseado no nº da tentativa pra não repetir."""
+    template = _FOLLOWUP_MESSAGES[min(attempt, len(_FOLLOWUP_MESSAGES) - 1)]
+    nome = (lead_name or "").split()[0] if lead_name else "tudo bem"
+    servico = service_hint or "o que conversamos"
+    return template.format(nome=nome, servico=servico)
+
+
+async def _run_followup_job() -> None:
+    """
+    Roda 1x/hora. Busca conversas paradas há 4-72h e manda follow-up fixo.
+    Respeita silent_hours do cliente. Throttle 200ms entre sends.
+    """
+    from huma.services import db_service as db
+    from huma.services import whatsapp_service as wa
+    from huma.core.orchestrator import _is_silent_hours
+
+    stuck = await db.list_stuck_conversations(
+        hours_silent_min=4,
+        hours_silent_max=72,
+        max_follow_ups=2,
+        limit=200,
+    )
+    if not stuck:
+        log.info("followup | nenhuma conversa stuck")
+        return
+
+    sent = 0
+    skipped_silent = 0
+    errors = 0
+
+    for conv_row in stuck:
+        client_id = conv_row.get("client_id", "")
+        phone = conv_row.get("phone", "")
+        if not client_id or not phone:
+            continue
+
+        try:
+            client_data = await db.get_client(client_id)
+            if not client_data or not client_data.business_name:
+                continue
+
+            # Respeita silent hours — não disparar 3h da manhã
+            if _is_silent_hours(client_data):
+                skipped_silent += 1
+                continue
+
+            # Pega 1º produto como hint de serviço
+            service_hint = ""
+            if client_data.products_or_services:
+                service_hint = client_data.products_or_services[0].get("name", "")
+
+            attempt = conv_row.get("follow_up_count", 0)
+            lead_name = conv_row.get("lead_name_canonical", "")
+            msg = _format_followup_message(lead_name, service_hint, attempt)
+
+            await wa.send_text(phone, msg, client_id=client_id)
+
+            # Atualiza follow_up_count via direto na tabela (evita race com conversa ativa)
+            from fastapi.concurrency import run_in_threadpool
+            new_count = attempt + 1
+
+            def update():
+                return (
+                    db.get_supabase()
+                    .table("conversations")
+                    .update({"follow_up_count": new_count})
+                    .eq("client_id", client_id)
+                    .eq("phone", phone)
+                    .execute()
+                )
+            await run_in_threadpool(update)
+
+            sent += 1
+            await asyncio.sleep(0.2)  # throttle pra não estourar Twilio/Meta
+
+        except Exception as e:
+            errors += 1
+            log.warning(
+                f"followup | {client_id} | {phone} | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    log.info(
+        f"followup | sent={sent} | skipped_silent={skipped_silent} | "
+        f"errors={errors} | total_stuck={len(stuck)}"
+    )
+
+
+# Jobs registrados. Tupla: (nome, fn_async, intervalo_segundos, ttl_lock_segundos)
+# - intervalo_segundos: de quanto em quanto tempo a task acorda
+# - ttl_lock_segundos: lock cluster TTL (deve ser maior que duração esperada do job)
+_jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
+    # Item 19 — follow-up: roda a cada 1h, lock vale 30min
+    ("followup", _run_followup_job, 3600, 1800),
+]
 
 
 async def _try_run_job(
