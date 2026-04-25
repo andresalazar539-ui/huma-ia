@@ -490,6 +490,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # ============================================================
         appointment_override = None
         appointment_confirmation = None
+        appointment_meta = None  # Sprint 5 / item 20 — dados estruturados pra notif dono
         appointment_slots = []
         remaining_actions = []
 
@@ -537,6 +538,14 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
 
                 elif result.get("status") == "confirmed":
                     appointment_confirmation = result["confirmation_message"]
+                    # Sprint 5 / item 20 — dados pra notificação do dono
+                    appointment_meta = {
+                        "date_time": result.get("date_time", ""),
+                        "service": result.get("service", ""),
+                        "lead_name": action.get("lead_name", "") or (
+                            conv.lead_name_canonical if conv else ""
+                        ),
+                    }
                     already_scheduled_this_turn = True  # Impede duplicação no mesmo ciclo
 
                 elif result.get("status") in ("incomplete", "error"):
@@ -886,12 +895,38 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         f"cancel_appointment precoce | {phone} | "
                         f"attempts={current_attempts} | Claude pulou etapas da policy"
                     )
+                # Sprint 5 / item 22 — captura dados ANTES do cancel pra notif do dono
+                # (após executed, conv.active_appointment_* fica vazio)
+                pre_cancel_dt = conv.active_appointment_datetime if conv else ""
+                pre_cancel_service = conv.active_appointment_service if conv else ""
+                pre_cancel_name = (conv.lead_name_canonical if conv else "") or ""
+
                 cancel_exec = await _handle_cancel_appointment_action(phone, action, client_data, conv)
                 if cancel_exec.get("executed"):
                     # Sucesso — NÃO suprime reply do Claude. Ele responde naturalmente
                     # algo como "Cancelei aqui, qualquer coisa me chama". O usuário vê
                     # a mensagem humana, o sistema apagou o evento silenciosamente.
-                    pass
+
+                    # Sprint 5 / item 22 — notifica dono.
+                    if (
+                        getattr(client_data, "notify_owner_on_cancellation", True)
+                        and client_data.owner_phone
+                    ):
+                        try:
+                            owner_msg = (
+                                f"❌ Agendamento cancelado\n"
+                                f"Lead: {pre_cancel_name or phone}\n"
+                                f"Era: {pre_cancel_dt or '(sem data)'}\n"
+                                f"Serviço: {pre_cancel_service or '(sem serviço)'}\n"
+                                f"Telefone: {phone}"
+                            )
+                            await wa.notify_owner(client_data.owner_phone, owner_msg, client_id=cid)
+                            log.info(f"Dono notificado (cancela) | {cid} | lead={phone}")
+                        except Exception as e:
+                            log.warning(
+                                f"notify_owner cancel falhou | {cid} | {phone} | "
+                                f"{type(e).__name__}: {e}"
+                            )
                 else:
                     # Falha do Calendar — substitui o reply do Claude pela mensagem
                     # de instabilidade. Evita o lead achar que cancelou enquanto
@@ -926,6 +961,29 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     confirm_msg_id,
                     ttl=86400,
                 )
+
+            # Sprint 5 / item 20 — notifica dono. Try/except pra não bloquear
+            # caminho do lead se notificação falhar.
+            if (
+                getattr(client_data, "notify_owner_on_appointment", True)
+                and client_data.owner_phone
+                and appointment_meta
+            ):
+                try:
+                    owner_msg = (
+                        f"📅 Agendamento confirmado!\n"
+                        f"Lead: {appointment_meta['lead_name'] or phone}\n"
+                        f"Serviço: {appointment_meta['service'] or '(não informado)'}\n"
+                        f"Quando: {appointment_meta['date_time'] or '(sem data)'}\n"
+                        f"Telefone: {phone}"
+                    )
+                    await wa.notify_owner(client_data.owner_phone, owner_msg, client_id=cid)
+                    log.info(f"Dono notificado (agenda) | {cid} | lead={phone}")
+                except Exception as e:
+                    log.warning(
+                        f"notify_owner agenda falhou | {cid} | {phone} | "
+                        f"{type(e).__name__}: {e}"
+                    )
 
             # Marca no histórico — impede duplicação em mensagens futuras
             try:

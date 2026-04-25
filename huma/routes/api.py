@@ -747,10 +747,14 @@ async def _process_mp_payment(mp_payment_id: str):
             except Exception as e:
                 log.error(f"Erro atualizando funil | {phone} | {e}")
 
-            # 3. Notifica dono do negócio
+            # 3. Notifica dono do negócio (Sprint 5 / item 21 — respeita opt-in)
             try:
                 client_data = await db.get_client(client_id)
-                if client_data and client_data.owner_phone:
+                if (
+                    client_data
+                    and client_data.owner_phone
+                    and getattr(client_data, "notify_owner_on_payment", True)
+                ):
                     owner_msg = (
                         f"💰 Venda confirmada!\n"
                         f"Lead: {lead_name or phone}\n"
@@ -763,6 +767,7 @@ async def _process_mp_payment(mp_payment_id: str):
                         owner_msg,
                         client_id=client_id,
                     )
+                    log.info(f"Dono notificado (pagamento) | {client_id} | lead={phone}")
             except Exception as e:
                 log.error(f"Erro notificando dono | {e}")
 

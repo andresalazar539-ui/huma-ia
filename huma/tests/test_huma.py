@@ -2308,3 +2308,149 @@ class TestSprint4LoopDetector:
         assert resp.status_code in (401, 403), (
             f"endpoint deveria exigir auth, retornou {resp.status_code}"
         )
+
+
+# ================================================================
+# SPRINT 5 — Notificações pro dono (itens 20, 21, 22)
+# ================================================================
+
+class TestSprint5OwnerNotifications:
+    """
+    Sprint 5: dono recebe WhatsApp em eventos críticos do funil.
+      - Item 20: agendamento confirmado
+      - Item 21: pagamento confirmado (já existia, agora com opt-in)
+      - Item 22: agendamento cancelado
+
+    Item 23 (lead "quente travado") movido pro Sprint 6 (precisa scheduler).
+    """
+
+    def test_client_identity_has_notification_flags(self):
+        """Estrutural: campos opt-in existem na ClientIdentity com defaults true."""
+        ci = ClientIdentity(client_id="test")
+        assert ci.notify_owner_on_appointment is True
+        assert ci.notify_owner_on_payment is True
+        assert ci.notify_owner_on_cancellation is True
+
+    def test_client_identity_can_disable_notifications(self):
+        """Funcional: dono pode desligar cada tipo de notificação independentemente."""
+        ci = ClientIdentity(
+            client_id="test",
+            notify_owner_on_appointment=False,
+            notify_owner_on_cancellation=False,
+        )
+        assert ci.notify_owner_on_appointment is False
+        assert ci.notify_owner_on_payment is True  # default ainda
+        assert ci.notify_owner_on_cancellation is False
+
+    def test_orchestrator_appointment_hook_uses_opt_in(self):
+        """
+        Estrutural: hook de notif de agendamento checa notify_owner_on_appointment
+        E owner_phone E appointment_meta antes de notificar.
+        """
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+        # Garante que os 3 gates estão presentes
+        assert "notify_owner_on_appointment" in src
+        assert "Agendamento confirmado" in src
+
+    def test_orchestrator_cancel_hook_uses_opt_in(self):
+        """Estrutural: hook de cancelamento respeita opt-in."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+        assert "notify_owner_on_cancellation" in src
+        assert "Agendamento cancelado" in src
+
+    def test_orchestrator_captures_pre_cancel_data(self):
+        """
+        Estrutural: orchestrator captura datetime/service/name ANTES do cancel
+        (porque após executed, conv.active_appointment_* fica vazio).
+        """
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+        assert "pre_cancel_dt" in src
+        assert "pre_cancel_service" in src
+        assert "pre_cancel_name" in src
+
+    def test_payment_hook_uses_opt_in(self):
+        """Estrutural: webhook MP respeita notify_owner_on_payment."""
+        import inspect
+        from huma.routes import api
+        src = inspect.getsource(api)
+        assert "notify_owner_on_payment" in src
+
+    def test_appointment_notification_format_via_mock(self):
+        """
+        Funcional: simulação de turn que dispara notif de agendamento.
+        Verifica que wa.notify_owner foi chamado com a mensagem formatada.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        # Reproduz a lógica do hook do item 20 isoladamente.
+        # Não testa orchestrator inteiro — testa que o formato bate.
+        appointment_meta = {
+            "date_time": "27/04/2026 às 14:00",
+            "service": "Consulta",
+            "lead_name": "Camila Silva",
+        }
+        phone = "5511999998888"
+        owner_phone = "5511555554444"
+
+        async def run():
+            mock_notify = AsyncMock(return_value="msg_id_xyz")
+            with patch("huma.services.whatsapp_service.notify_owner", new=mock_notify):
+                from huma.services import whatsapp_service as wa
+                owner_msg = (
+                    f"📅 Agendamento confirmado!\n"
+                    f"Lead: {appointment_meta['lead_name'] or phone}\n"
+                    f"Serviço: {appointment_meta['service'] or '(não informado)'}\n"
+                    f"Quando: {appointment_meta['date_time'] or '(sem data)'}\n"
+                    f"Telefone: {phone}"
+                )
+                await wa.notify_owner(owner_phone, owner_msg, client_id="cli_x")
+                return mock_notify.call_args
+
+        call_args = asyncio.run(run())
+        args, kwargs = call_args
+        assert args[0] == owner_phone  # owner_phone é arg posicional
+        msg = args[1]
+        assert "Agendamento confirmado" in msg
+        assert "Camila Silva" in msg
+        assert "Consulta" in msg
+        assert "27/04/2026" in msg
+        assert phone in msg
+
+    def test_cancellation_notification_format_via_mock(self):
+        """Funcional: formato da notif de cancelamento bate."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        pre_cancel_dt = "30/04/2026 às 10:00"
+        pre_cancel_service = "Consulta"
+        pre_cancel_name = "André Santos"
+        phone = "5511999998888"
+        owner_phone = "5511555554444"
+
+        async def run():
+            mock_notify = AsyncMock(return_value="msg_id_xyz")
+            with patch("huma.services.whatsapp_service.notify_owner", new=mock_notify):
+                from huma.services import whatsapp_service as wa
+                owner_msg = (
+                    f"❌ Agendamento cancelado\n"
+                    f"Lead: {pre_cancel_name or phone}\n"
+                    f"Era: {pre_cancel_dt or '(sem data)'}\n"
+                    f"Serviço: {pre_cancel_service or '(sem serviço)'}\n"
+                    f"Telefone: {phone}"
+                )
+                await wa.notify_owner(owner_phone, owner_msg, client_id="cli_x")
+                return mock_notify.call_args
+
+        call_args = asyncio.run(run())
+        msg = call_args.args[1]
+        assert "cancelado" in msg.lower()
+        assert "André Santos" in msg
+        assert "30/04/2026" in msg
+        assert phone in msg

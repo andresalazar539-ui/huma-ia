@@ -391,6 +391,20 @@ class ClientIdentity(BaseModel):
         default="",
         description="Telefone do dono pra notificações (saldo, alertas).",
     )
+    # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe
+    # tudo até desligar conscientemente. notify_on_payment já era enviado.
+    notify_owner_on_appointment: bool = Field(
+        default=True,
+        description="Sprint 5 / item 20 — notificar dono quando lead agenda.",
+    )
+    notify_owner_on_payment: bool = Field(
+        default=True,
+        description="Sprint 5 / item 21 — notificar dono quando lead paga.",
+    )
+    notify_owner_on_cancellation: bool = Field(
+        default=True,
+        description="Sprint 5 / item 22 — notificar dono quando lead cancela.",
+    )
     plan: str = Field(
         default="starter",
         description="Plano: starter, pro, scale, elite.",
