@@ -1184,9 +1184,14 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
         payment_msg_id = await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
 
     if method == "pix":
-        if result.get("qr_code_url"):
+        # qr_code_base64 é base64 PURA (sem prefixo data:). Twilio media_url só
+        # aceita URL HTTP — passar base64 cru falha silenciosamente. Mantido aqui
+        # pra não mudar comportamento; quando Twilio rejeita, lead recebe só o
+        # qr_code_text (copia e cola), que sempre funciona.
+        # TODO(pix-qr): hospedar QR base64 e mandar URL real pra renderizar imagem.
+        if result.get("qr_code_base64"):
             await asyncio.sleep(1.5)
-            qr_msg_id = await wa.send_image(phone, result["qr_code_url"], caption="QR Code Pix", client_id=cid)
+            qr_msg_id = await wa.send_image(phone, result["qr_code_base64"], caption="QR Code Pix", client_id=cid)
             # QR code é a mensagem mais relevante pra citar no dedup
             if qr_msg_id:
                 payment_msg_id = qr_msg_id

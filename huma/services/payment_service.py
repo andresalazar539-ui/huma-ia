@@ -364,7 +364,13 @@ async def _create_pix(req) -> dict:
             "status": "pending",
             "method": "pix",
             "amount_display": amount,
-            "qr_code_url": pix.get("qr_code_base64", ""),
+            # qr_code_base64: string base64 PURA (sem prefixo data:). Twilio media_url
+            # NÃO aceita data URI nem base64 cru — só URL HTTP. Pra renderizar o QR no
+            # WhatsApp via Twilio, é preciso subir o base64 pra um host (S3/Supabase
+            # Storage/Cloudinary) e mandar a URL. Quando Twilio rejeita silenciosamente,
+            # o lead recebe só o qr_code_text (copia e cola). Field renomeado de
+            # qr_code_url (nome enganoso) pra qr_code_base64 pra refletir o conteúdo.
+            "qr_code_base64": pix.get("qr_code_base64", ""),
             "qr_code_text": pix.get("qr_code", ""),
             "whatsapp_message": (
                 f"Pix de {amount} gerado! Escaneie o QR code ou use o copia e cola abaixo. "
