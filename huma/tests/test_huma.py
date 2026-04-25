@@ -2423,6 +2423,30 @@ class TestSprint5OwnerNotifications:
         assert "27/04/2026" in msg
         assert phone in msg
 
+    def test_image_url_never_persisted_in_history(self):
+        """
+        Regressão (fix de custo): orchestrator NUNCA pode colocar data: URI ou
+        base64 no conv.history. Bug causou 70k tokens extras por foto durante
+        ~4 turns (até a imagem cair pra fora dos history[-HISTORY_WINDOW:]).
+
+        A imagem real chega pro Claude via image_url no _call_ai (image block
+        estruturado, ~1500 tokens nativos). O history só precisa de um marker.
+        """
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+
+        # NÃO pode mais existir o padrão antigo
+        assert 'f"[imagem: {unified_image}]' not in src, (
+            "BUG VOLTOU: orchestrator está colocando unified_image (data URI base64) "
+            "no content do history. Toda foto custará ~70k tokens extras por turn."
+        )
+
+        # Marker deve estar presente (evidência do fix)
+        assert "[imagem enviada pelo lead]" in src, (
+            "marker [imagem enviada pelo lead] removido — Claude pode perder contexto"
+        )
+
     def test_cancellation_notification_format_via_mock(self):
         """Funcional: formato da notif de cancelamento bate."""
         import asyncio

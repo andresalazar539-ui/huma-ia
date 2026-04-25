@@ -359,10 +359,15 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 analyze_completed_conversation(client_id, conv, conv.stage)
             )
 
-        # Salva no histórico
+        # Salva no histórico.
+        # IMPORTANTE: nunca colocar a URL da imagem (especialmente data: URI base64)
+        # no content. O base64 chegou a virar 70k tokens extras por mensagem nos
+        # próximos 4 turns. A imagem real vai pro Claude via image_url no _call_ai
+        # (vira image block estruturado, ~1500 tokens nativos).
+        # O marker abaixo só sinaliza que houve imagem pro Claude não perder contexto.
         user_content = unified_text
         if unified_image:
-            user_content = f"[imagem: {unified_image}] {unified_text}".strip()
+            user_content = f"[imagem enviada pelo lead] {unified_text}".strip()
 
         conv.history.append({"role": "user", "content": user_content})
 
