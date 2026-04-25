@@ -35,6 +35,24 @@ async def ping() -> bool:
         return False
 
 
+async def close():
+    """
+    Sprint 3 / item 16 — Fecha conexão Redis em graceful shutdown.
+
+    Idempotente: chamar várias vezes não falha. Loga e ignora se já fechado.
+    """
+    global _client
+    if not _client:
+        return
+    try:
+        await _client.aclose()
+        log.info("Redis conexão fechada")
+    except Exception as e:
+        log.warning(f"Erro fechando Redis | {type(e).__name__}: {e}")
+    finally:
+        _client = None
+
+
 async def check_rate_limit(phone: str, max_msgs: int = RATE_LIMIT_MAX_MSGS, window_sec: int = RATE_LIMIT_WINDOW_SEC) -> bool:
     if not _client:
         return True

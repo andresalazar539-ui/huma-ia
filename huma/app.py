@@ -2,6 +2,7 @@
 # huma/app.py — Entry point do FastAPI
 # ================================================================
 
+import asyncio
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
@@ -11,6 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from huma.config import APP_TITLE, APP_VERSION, APP_DESCRIPTION
 from huma.routes.api import router
+from huma.services import redis_service as cache
 from huma.utils.logger import get_logger
 
 log = get_logger("app")
@@ -84,6 +86,25 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def startup():
         log.info(f"HUMA IA v{APP_VERSION} iniciando...")
+
+    # Sprint 3 / item 16 — Graceful shutdown.
+    # Quando Railway envia SIGTERM (deploy/restart), o uvicorn dispara este handler.
+    # 1) Loga início pra confirmar que recebemos o sinal.
+    # 2) asyncio.sleep(5) — grace period pras tasks fire-and-forget terminarem
+    #    (envios WhatsApp via _send_with_human_delay, learning, logging).
+    #    Railway dá ~10s entre SIGTERM e SIGKILL — 5s é seguro.
+    # 3) Fecha conexão Redis explicitamente.
+    # Limitação aceita: tasks com sleep interno >5s podem ainda ser cortadas.
+    # Restart automático Railway + reentregas do WhatsApp cobrem o residual.
+    @app.on_event("shutdown")
+    async def shutdown():
+        log.info("Shutdown iniciado — aguardando tasks em voo...")
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            log.warning("Shutdown grace period cancelado")
+        await cache.close()
+        log.info("Shutdown concluído")
 
     return app
 

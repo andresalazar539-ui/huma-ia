@@ -231,6 +231,64 @@ async def health():
     }
 
 
+@router.get("/health/deep", tags=["Sistema"])
+async def health_deep():
+    """
+    Sprint 3 / item 17 — Health check profundo pra observabilidade.
+
+    Diferente de /health (usado pelo Railway, precisa ser rápido), este endpoint
+    reporta saúde de cada dependência. Não faz chamadas externas pagas — apenas:
+      - Pings baratos onde já existe (Redis, Supabase)
+      - Checagem de presença de credencial (Anthropic, Twilio, MP, ElevenLabs, GCal)
+
+    Não retorna valores de credenciais. HTTP 200 sempre — o monitor lê o campo
+    `overall` (ok|degraded|down) pra decidir alerta.
+    """
+    from huma.config import (
+        ANTHROPIC_API_KEY, MERCADOPAGO_ACCESS_TOKEN, MERCADOPAGO_WEBHOOK_SECRET,
+        ELEVENLABS_API_KEY, GOOGLE_CALENDAR_CREDENTIALS,
+        TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+        META_APP_ID, META_APP_SECRET,
+    )
+
+    services: dict[str, str] = {}
+
+    # Críticos — checagem real de conexão
+    try:
+        services["redis"] = "ok" if await cache.ping() else "unavailable"
+    except Exception:
+        services["redis"] = "unavailable"
+
+    try:
+        services["supabase"] = "ok" if await db.ping() else "unavailable"
+    except Exception:
+        services["supabase"] = "unavailable"
+
+    # APIs externas — só checagem de presença de credencial (zero custo)
+    services["anthropic"] = "configured" if ANTHROPIC_API_KEY else "not_configured"
+    services["twilio"] = "configured" if (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN) else "not_configured"
+    services["meta"] = "configured" if (META_APP_ID and META_APP_SECRET) else "not_configured"
+    services["mercadopago"] = "configured" if MERCADOPAGO_ACCESS_TOKEN else "not_configured"
+    services["mercadopago_webhook"] = "configured" if MERCADOPAGO_WEBHOOK_SECRET else "not_configured"
+    services["elevenlabs"] = "configured" if ELEVENLABS_API_KEY else "not_configured"
+    services["google_calendar"] = "configured" if GOOGLE_CALENDAR_CREDENTIALS else "not_configured"
+
+    # Overall: down se algum crítico off, degraded se Redis off, ok caso contrário
+    if services["supabase"] == "unavailable":
+        overall = "down"
+    elif services["redis"] == "unavailable" or services["anthropic"] == "not_configured":
+        overall = "degraded"
+    else:
+        overall = "ok"
+
+    return {
+        "status": "running",
+        "overall": overall,
+        "version": APP_VERSION,
+        "services": services,
+    }
+
+
 @router.get("/", tags=["Sistema"])
 async def root():
     return {"service": "HUMA IA", "version": APP_VERSION}

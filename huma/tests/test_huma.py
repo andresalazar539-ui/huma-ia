@@ -1879,3 +1879,136 @@ class TestSprint2DistributedCache:
         # Validação: cache memória foi limpo
         assert "fake_id" not in _client_cache_mem, "client_cache não foi invalidado!"
         assert "fake_id" not in _plan_cache_mem, "plan_cache não foi invalidado!"
+
+
+# ================================================================
+# SPRINT 3 — Resiliência (itens 16, 17)
+# ================================================================
+
+class TestSprint3Resilience:
+    """
+    Sprint 3:
+      - Item 16: graceful shutdown — handler @app.on_event("shutdown") + cache.close()
+      - Item 17: /health/deep — endpoint de observabilidade sem custo de API externa
+    """
+
+    def test_shutdown_handler_registered_in_app(self):
+        """Estrutural: app.py tem handler de shutdown registrado."""
+        import inspect
+        from huma import app as app_module
+        src = inspect.getsource(app_module.create_app)
+        assert '@app.on_event("shutdown")' in src
+        assert "cache.close" in src
+
+    def test_redis_close_function_exists_and_is_async(self):
+        """Estrutural: redis_service.close existe e é coroutine."""
+        import inspect
+        from huma.services import redis_service
+        assert hasattr(redis_service, "close")
+        assert inspect.iscoroutinefunction(redis_service.close)
+
+    def test_redis_close_calls_aclose_and_clears_client(self):
+        """
+        Funcional: cache.close() chama aclose() no client e zera _client.
+        Sem isso, conexão Redis fica pendurada após shutdown.
+
+        Nota: substituímos _client direto (não via patch context manager),
+        porque close() seta _client=None via `global` e queremos verificar
+        esse efeito após o close.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock
+        from huma.services import redis_service
+
+        fake_client = AsyncMock()
+        fake_client.aclose = AsyncMock()
+
+        original = redis_service._client
+        redis_service._client = fake_client
+        try:
+            asyncio.run(redis_service.close())
+            fake_client.aclose.assert_awaited_once()
+            # close() zerou _client
+            assert redis_service._client is None
+            # Chamar de novo não pode falhar (idempotência)
+            asyncio.run(redis_service.close())
+        finally:
+            # Restaura pra não afetar outros testes
+            redis_service._client = original
+
+    def test_redis_close_idempotent_when_client_none(self):
+        """Funcional: close() é seguro quando _client já é None."""
+        import asyncio
+        from unittest.mock import patch
+        from huma.services import redis_service
+
+        with patch.object(redis_service, "_client", None):
+            # Não deve levantar
+            asyncio.run(redis_service.close())
+
+    def test_health_deep_endpoint_returns_expected_shape(self):
+        """
+        Funcional: /health/deep retorna estrutura esperada com overall + services.
+        """
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        client = TestClient(app)
+        resp = client.get("/health/deep")
+
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert "status" in data
+        assert "overall" in data
+        assert "version" in data
+        assert "services" in data
+
+        # overall deve ser um dos valores válidos
+        assert data["overall"] in ("ok", "degraded", "down")
+
+        # services deve cobrir as deps esperadas
+        services = data["services"]
+        for key in ("redis", "supabase", "anthropic", "twilio", "meta",
+                    "mercadopago", "elevenlabs", "google_calendar"):
+            assert key in services, f"chave {key} ausente em /health/deep"
+
+    def test_health_deep_does_not_leak_credentials(self):
+        """
+        Segurança: /health/deep nunca retorna valores de credenciais.
+        Apenas 'configured' / 'not_configured' / 'ok' / 'unavailable'.
+        """
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        client = TestClient(app)
+        resp = client.get("/health/deep")
+        data = resp.json()
+        body = json.dumps(data).lower()
+
+        # Strings que nunca podem aparecer
+        for forbidden in ("sk-", "bearer ", "secret", "token=", "key="):
+            assert forbidden not in body, f"vaza credencial: '{forbidden}' em {body}"
+
+        # Cada service value deve ser um dos status esperados
+        valid_states = {"ok", "unavailable", "configured", "not_configured"}
+        for svc, state in data["services"].items():
+            assert state in valid_states, f"{svc}={state} fora do enum"
+
+    def test_health_endpoint_unchanged(self):
+        """
+        Regressão: /health (usado pelo Railway) mantém formato antigo.
+        Não pode ter quebrado adicionando /health/deep.
+        """
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        client = TestClient(app)
+        resp = client.get("/health")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "running"
+        assert "version" in data
+        assert "redis" in data
+        assert "db" in data
