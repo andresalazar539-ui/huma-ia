@@ -16,8 +16,8 @@ Auditoria pré-GA antes do 1º cliente pago, com foco em robustez para 500 usuá
 |---|---|---|---|
 | 1 | Segurança crítica | ✅ aplicado | `f8d0f8d` |
 | 2 | Cache distribuído | ✅ aplicado | `daeaf7f` |
-| 3 | Resiliência | 🔨 em andamento | — |
-| 4 | Observabilidade | ⏳ pendente | — |
+| 3 | Resiliência | 🟡 parcial (16+17) | `d7da0a0` |
+| 4 | Observabilidade | 🟡 parcial (13, 18, 34) | `4368a15`, `6380ecb`, `a4296db` |
 | 5 | Notificações pro dono | ⏳ pendente | — |
 | 6 | Scheduler ativo | ⏳ pendente | — |
 | 7 | Dashboard WhatsApp | ⏳ pendente | — |
@@ -42,15 +42,15 @@ Auditoria pré-GA antes do 1º cliente pago, com foco em robustez para 500 usuá
 ## ⚠️ PROBLEMAS IMPORTANTES (semanas 1-2)
 
 - [ ] **9. Assinatura Meta Cloud API** — quando migrar do Twilio
-- [ ] **10. Retry com backoff em chamadas externas** — Sprint 3 (cuidado: `generate_response` já tem retry interno)
-- [ ] **11. Compressão assíncrona** — Sprint 3 (trade-off de qualidade)
+- [ ] **10. Retry com backoff em chamadas externas** — Sprint 3 (cuidado: `generate_response` já tem retry interno) — **adiado: pós-GA com volume real**
+- [ ] **11. Compressão assíncrona** — Sprint 3 (trade-off de qualidade) — **adiado: smoke prod primeiro**
 - [x] **12. Rate limit agregado por `client_id`** — Sprint 2
-- [ ] **13. Mascarar dados sensíveis em logs (LGPD)** — Sprint 4
+- [x] **13. Mascarar dados sensíveis em logs (LGPD)** — Sprint 4 (`4368a15`)
 - [x] **14. Restringir CORS `allow_methods`** — Sprint 1
 - [x] **15. Handler de erro respeita `HTTPException`** — Sprint 1
-- [ ] **16. Graceful shutdown** — Sprint 3
-- [ ] **17. Health check profundo** — Sprint 3
-- [ ] **18. Resolver os 8 testes que falham no baseline** — Sprint 4
+- [x] **16. Graceful shutdown** — Sprint 3 (`d7da0a0`)
+- [x] **17. Health check profundo** — Sprint 3 (`d7da0a0`)
+- [x] **18. Resolver os 8 testes que falham no baseline** — Sprint 4 (`6380ecb`)
 - [ ] **19. Scheduler ativo de follow-up** — Sprint 6
 
 ---
@@ -73,10 +73,10 @@ Auditoria pré-GA antes do 1º cliente pago, com foco em robustez para 500 usuá
 
 ## 📊 OBSERVABILIDADE
 
-- [ ] **31. Métrica de latência p95 por turn agregada** — Sprint 4
-- [ ] **32. Dashboard de erros por serviço externo** — Sprint 4
-- [ ] **33. Alerta de conversa travada há >2h** — Sprint 4
-- [ ] **34. Detector de loop interno** — Sprint 4
+- [ ] **31. Métrica de latência p95 por turn agregada** — **adiado: Railway logs cobrem pré-GA**
+- [ ] **32. Dashboard de erros por serviço externo** — **adiado: grep logs cobre pré-GA**
+- [ ] **33. Alerta de conversa travada há >2h** — **movido pro Sprint 6** (precisa scheduler)
+- [x] **34. Detector de loop interno** — Sprint 4 (`a4296db`)
 
 ---
 
