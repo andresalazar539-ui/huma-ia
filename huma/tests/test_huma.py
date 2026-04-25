@@ -2761,6 +2761,167 @@ class TestSprint5OwnerNotifications:
         # Flag existe → skip
         assert len(send_calls) == 0
 
+    def test_nps_job_registered(self):
+        """Estrutural: job de NPS pós-atendimento registrado em _jobs."""
+        from huma.services import scheduler
+        job_names = [j[0] for j in scheduler._jobs]
+        assert "nps" in job_names
+
+    def test_nps_message_format(self):
+        """Funcional: mensagem NPS pede nota de 1 a 5 + tem nome + serviço."""
+        from huma.services.scheduler import _format_nps_message
+
+        msg = _format_nps_message("Camila Silva", "Avaliação")
+        assert "Camila" in msg
+        assert "Silva" not in msg
+        assert "Avaliação" in msg
+        assert "1 a 5" in msg or "1-5" in msg
+
+    def test_nps_job_skips_appointment_too_recent(self):
+        """Funcional: appointment <24h atrás NÃO dispara NPS."""
+        import asyncio
+        from datetime import datetime, timedelta
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        recent_dt = (datetime.utcnow() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+
+        fake_appt = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "active_appointment_event_id": "evt_recent",
+            "active_appointment_datetime": recent_dt,
+            "active_appointment_service": "Avaliação",
+            "lead_name_canonical": "Camila",
+            "stage": "won",
+        }
+
+        send_calls = []
+
+        async def fake_send(*args, **kwargs):
+            send_calls.append((args, kwargs))
+            return "sid"
+
+        with patch("huma.services.db_service.list_active_appointments", new=AsyncMock(return_value=[fake_appt])), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send):
+            asyncio.run(scheduler._run_nps_job())
+
+        assert len(send_calls) == 0, "appointment muito recente não deveria disparar NPS"
+
+    def test_nps_job_skips_appointment_too_old(self):
+        """Funcional: appointment >48h atrás também é ignorado."""
+        import asyncio
+        from datetime import datetime, timedelta
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        old_dt = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M")
+
+        fake_appt = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "active_appointment_event_id": "evt_old",
+            "active_appointment_datetime": old_dt,
+            "active_appointment_service": "X",
+            "lead_name_canonical": "Y",
+            "stage": "won",
+        }
+
+        send_calls = []
+
+        async def fake_send(*args, **kwargs):
+            send_calls.append((args, kwargs))
+            return "sid"
+
+        with patch("huma.services.db_service.list_active_appointments", new=AsyncMock(return_value=[fake_appt])), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send):
+            asyncio.run(scheduler._run_nps_job())
+
+        assert len(send_calls) == 0
+
+    def test_nps_job_sends_in_window(self):
+        """Funcional: appointment 30h atrás (dentro de 24-48h) dispara NPS."""
+        import asyncio
+        from datetime import datetime, timedelta
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        target_dt = (datetime.utcnow() - timedelta(hours=30)).strftime("%Y-%m-%d %H:%M")
+
+        fake_appt = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "active_appointment_event_id": "evt_nps",
+            "active_appointment_datetime": target_dt,
+            "active_appointment_service": "Avaliação",
+            "lead_name_canonical": "Camila Silva",
+            "stage": "won",
+        }
+
+        fake_client = MagicMock()
+        fake_client.business_name = "Clínica X"
+        fake_client.products_or_services = []
+
+        send_calls = []
+
+        async def fake_send(phone, msg, client_id="", **kwargs):
+            send_calls.append({"phone": phone, "msg": msg})
+            return "sid"
+
+        flag_set = []
+
+        async def fake_set_with_ttl(key, value, ttl):
+            flag_set.append({"key": key, "ttl": ttl})
+
+        with patch("huma.services.db_service.list_active_appointments", new=AsyncMock(return_value=[fake_appt])), \
+             patch("huma.services.db_service.get_client", new=AsyncMock(return_value=fake_client)), \
+             patch("huma.core.orchestrator._is_silent_hours", return_value=False), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.redis_service.set_with_ttl", new=fake_set_with_ttl):
+            asyncio.run(scheduler._run_nps_job())
+
+        assert len(send_calls) == 1
+        assert "Camila" in send_calls[0]["msg"]
+        assert "1 a 5" in send_calls[0]["msg"] or "1-5" in send_calls[0]["msg"]
+        # Flag setada com TTL de 7 dias
+        assert any("nps_sent:evt_nps" in f["key"] for f in flag_set)
+        assert any(f["ttl"] == 604800 for f in flag_set)
+
+    def test_nps_job_dedup(self):
+        """Funcional: se flag nps_sent já existe, NÃO manda de novo."""
+        import asyncio
+        from datetime import datetime, timedelta
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        target_dt = (datetime.utcnow() - timedelta(hours=30)).strftime("%Y-%m-%d %H:%M")
+
+        fake_appt = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "active_appointment_event_id": "evt_dup",
+            "active_appointment_datetime": target_dt,
+            "active_appointment_service": "X",
+            "lead_name_canonical": "Y",
+            "stage": "won",
+        }
+
+        send_calls = []
+
+        async def fake_send(*args, **kwargs):
+            send_calls.append((args, kwargs))
+            return "sid"
+
+        with patch("huma.services.db_service.list_active_appointments", new=AsyncMock(return_value=[fake_appt])), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=True)), \
+             patch("huma.services.whatsapp_service.send_text", new=fake_send):
+            asyncio.run(scheduler._run_nps_job())
+
+        assert len(send_calls) == 0  # dedup funcionou
+
     def test_followup_job_sends_when_not_silent(self):
         """Funcional: fora de silent_hours, envia follow-up + incrementa count."""
         import asyncio

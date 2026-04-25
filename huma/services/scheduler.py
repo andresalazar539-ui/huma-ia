@@ -274,6 +274,115 @@ async def _run_pre_appointment_reminder_job() -> None:
     )
 
 
+# ================================================================
+# JOB: NPS pós-atendimento (Sprint 6 / item 28)
+# ================================================================
+
+# Janela: appointments cujo datetime passou entre 24h e 48h atrás.
+# Por que 24-48h: dia seguinte da consulta. Pessoa lembra do atendimento mas
+# não tá no quente (resposta mais sincera).
+_NPS_HOURS_AGO_MIN = 24
+_NPS_HOURS_AGO_MAX = 48
+
+
+def _format_nps_message(lead_name: str, service: str) -> str:
+    """Mensagem fixa de NPS — sem LLM."""
+    nome = (lead_name or "").split()[0] if lead_name else "tudo bem"
+    servico = service or "o atendimento"
+    return (
+        f"Oi {nome}! Como foi {servico} ontem? "
+        f"Adoraria saber sua impressão. Pode dar uma nota de 1 a 5? "
+        f"Sua resposta ajuda a gente a melhorar."
+    )
+
+
+async def _run_nps_job() -> None:
+    """
+    Roda a cada 6h. Pra cada appointment que passou há 24-48h, manda
+    pergunta de NPS. Dedup via Redis flag pra não enviar 2x.
+
+    Em escala, esses leads acabam respondendo pela conversa normal — o
+    Claude trata a resposta como qualquer outra mensagem (intent positivo
+    vai pro learning_engine, negativo vira sinal de detrator).
+    """
+    from huma.services import db_service as db
+    from huma.services import whatsapp_service as wa
+    from huma.services.scheduling_service import _parse_datetime
+    from huma.core.orchestrator import _is_silent_hours
+
+    appts = await db.list_active_appointments(limit=300)
+    if not appts:
+        log.info("nps | nenhum appointment ativo")
+        return
+
+    now = datetime.utcnow()
+    sent = 0
+    skipped_silent = 0
+    skipped_dedup = 0
+    skipped_out_of_window = 0
+    errors = 0
+
+    for row in appts:
+        client_id = row.get("client_id", "")
+        phone = row.get("phone", "")
+        event_id = row.get("active_appointment_event_id", "")
+        dt_str = row.get("active_appointment_datetime", "")
+
+        if not all([client_id, phone, event_id, dt_str]):
+            continue
+
+        try:
+            dt = _parse_datetime(dt_str)
+            if not dt:
+                continue
+
+            hours_ago = (now - dt).total_seconds() / 3600.0
+
+            # Só janela 24-48h atrás
+            if not (_NPS_HOURS_AGO_MIN <= hours_ago <= _NPS_HOURS_AGO_MAX):
+                skipped_out_of_window += 1
+                continue
+
+            flag_key = f"nps_sent:{event_id}"
+            if await cache.exists(flag_key):
+                skipped_dedup += 1
+                continue
+
+            client_data = await db.get_client(client_id)
+            if not client_data or not client_data.business_name:
+                continue
+
+            if _is_silent_hours(client_data):
+                skipped_silent += 1
+                continue
+
+            lead_name = row.get("lead_name_canonical", "")
+            service = row.get("active_appointment_service", "")
+            msg = _format_nps_message(lead_name, service)
+
+            await wa.send_text(phone, msg, client_id=client_id)
+
+            # TTL 7 dias — appointment vai sair da janela em 24h, mas mantém
+            # flag por mais tempo pra evitar repetição se houver remarcações.
+            await cache.set_with_ttl(flag_key, "1", ttl=604800)
+
+            sent += 1
+            await asyncio.sleep(0.2)
+
+        except Exception as e:
+            errors += 1
+            log.warning(
+                f"nps | {client_id} | {phone} | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    log.info(
+        f"nps | sent={sent} | dedup={skipped_dedup} | silent={skipped_silent} | "
+        f"out_of_window={skipped_out_of_window} | errors={errors} | "
+        f"total_active={len(appts)}"
+    )
+
+
 # Jobs registrados. Tupla: (nome, fn_async, intervalo_segundos, ttl_lock_segundos)
 # - intervalo_segundos: de quanto em quanto tempo a task acorda
 # - ttl_lock_segundos: lock cluster TTL (deve ser maior que duração esperada do job)
@@ -282,6 +391,8 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("followup", _run_followup_job, 3600, 1800),
     # Item 24 — lembrete pré-consulta: a cada 30min, lock 15min
     ("pre_appointment_reminder", _run_pre_appointment_reminder_job, 1800, 900),
+    # Item 28 — NPS pós-atendimento: a cada 6h, lock 30min
+    ("nps", _run_nps_job, 21600, 1800),
 ]
 
 
