@@ -4,9 +4,10 @@
 
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from huma.config import APP_TITLE, APP_VERSION, APP_DESCRIPTION
 from huma.routes.api import router
@@ -24,7 +25,7 @@ def create_app() -> FastAPI:
         description=APP_DESCRIPTION,
     )
 
-    # CORS
+    # CORS — Sprint 1 / item 14: restringido (antes era "*")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -35,8 +36,16 @@ def create_app() -> FastAPI:
             "https://andresalazar539-ui.github.io",
         ],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-Webhook-Secret",
+            "X-Twilio-Signature",
+            "x-signature",
+            "x-request-id",
+            "X-Playground-Token",
+        ],
     )
 
     # Request ID middleware
@@ -47,10 +56,22 @@ def create_app() -> FastAPI:
         response.headers["X-Request-ID"] = request.state.request_id
         return response
 
-    # Error handler global
+    # Sprint 1 / item 15 — handler dedicado pra HTTPException antes do generic.
+    # Antes o handler genérico engolia HTTPException e transformava 404 em 500.
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"status": "error", "detail": exc.detail},
+        )
+
+    # Error handler global — só pra exceções inesperadas (não-HTTP)
     @app.exception_handler(Exception)
     async def global_error_handler(request: Request, exc: Exception):
-        log.error(f"Erro não tratado | {exc}")
+        # Garantia adicional: se chegou aqui sendo HTTPException, delega pro handler certo
+        if isinstance(exc, (HTTPException, StarletteHTTPException)):
+            return await http_exception_handler(request, exc)
+        log.error(f"Erro não tratado | {type(exc).__name__}: {exc}")
         return JSONResponse(
             status_code=500,
             content={"status": "error", "detail": "Erro interno. Tente novamente."},

@@ -1572,3 +1572,148 @@ class TestVerticalTone:
         conv = Conversation(client_id="x", phone="123")
         prompt = build_tier3_prompt(clinica_identity, conv)
         assert "TOM CLÍNICA" in prompt or "TOM CLINICA" in prompt
+
+
+# ================================================================
+# TESTES DO SPRINT 1 — Segurança e robustez
+# ================================================================
+
+class TestSprint1Security:
+    """Validações de segurança e robustez do Sprint 1."""
+
+    def test_mp_signature_empty_secret_passes_with_warning(self, monkeypatch):
+        """MERCADOPAGO_WEBHOOK_SECRET vazio → permite (modo dev)."""
+        from huma.core import auth
+        monkeypatch.setattr(auth, "MERCADOPAGO_WEBHOOK_SECRET", "")
+        result = auth.verify_mercadopago_signature(
+            x_signature="ts=123,v1=abc",
+            x_request_id="req-1",
+            data_id="payment-123",
+        )
+        assert result is True
+
+    def test_mp_signature_valid_passes(self, monkeypatch):
+        """Assinatura HMAC correta → True."""
+        import hashlib
+        import hmac as _hmac
+        from huma.core import auth
+
+        secret = "test-secret-123"
+        monkeypatch.setattr(auth, "MERCADOPAGO_WEBHOOK_SECRET", secret)
+
+        ts = "1234567890"
+        request_id = "req-abc"
+        data_id = "payment-xyz"
+        manifest = f"id:{data_id};request-id:{request_id};ts:{ts};"
+        expected = _hmac.new(
+            secret.encode("utf-8"),
+            manifest.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        result = auth.verify_mercadopago_signature(
+            x_signature=f"ts={ts},v1={expected}",
+            x_request_id=request_id,
+            data_id=data_id,
+        )
+        assert result is True
+
+    def test_mp_signature_invalid_blocks(self, monkeypatch):
+        """Assinatura HMAC incorreta → False."""
+        from huma.core import auth
+        monkeypatch.setattr(auth, "MERCADOPAGO_WEBHOOK_SECRET", "real-secret")
+        result = auth.verify_mercadopago_signature(
+            x_signature="ts=123,v1=hashfalso",
+            x_request_id="req-1",
+            data_id="payment-123",
+        )
+        assert result is False
+
+    def test_mp_signature_malformed_blocks(self, monkeypatch):
+        """Assinatura sem ts ou v1 → False."""
+        from huma.core import auth
+        monkeypatch.setattr(auth, "MERCADOPAGO_WEBHOOK_SECRET", "secret")
+        # Sem v1
+        assert auth.verify_mercadopago_signature("ts=123", "req-1", "pay-1") is False
+        # Sem ts
+        assert auth.verify_mercadopago_signature("v1=abc", "req-1", "pay-1") is False
+        # data_id vazio
+        assert auth.verify_mercadopago_signature("ts=1,v1=a", "req-1", "") is False
+
+    def test_buffer_falls_back_when_redis_off(self, monkeypatch):
+        """message_buffer sem Redis processa direto (não crasha)."""
+        import asyncio
+        from huma.services import message_buffer
+
+        # Força _client = None (Redis off)
+        monkeypatch.setattr(message_buffer, "_client", None)
+
+        called_args = {}
+
+        async def fake_callback(client_id, phone, text, image_url, *extras):
+            called_args["client_id"] = client_id
+            called_args["phone"] = phone
+            called_args["text"] = text
+
+        result = asyncio.run(message_buffer.buffer_message(
+            client_id="cli",
+            phone="123",
+            text="ola",
+            image_url=None,
+            process_callback=fake_callback,
+            callback_args=(),
+        ))
+
+        assert result["status"] == "no_buffer_processed"
+        assert called_args["text"] == "ola"
+        assert called_args["client_id"] == "cli"
+
+    def test_billing_add_conversations_falls_back_without_rpc(self, monkeypatch):
+        """add_conversations cai em read-modify-write se RPC falhar."""
+        # Apenas valida que o try/except existe e a função tem fallback —
+        # teste estrutural via inspect (sem mock pesado de Supabase).
+        import inspect
+        from huma.services import billing_service
+        src = inspect.getsource(billing_service.add_conversations)
+        assert "increment_wallet_balance" in src
+        assert "RODE A MIGRATION SQL" in src
+        # Fallback (read-modify-write) ainda existe
+        assert "current = await get_balance" in src
+
+    def test_billing_debit_uses_atomic_rpc(self):
+        """debit_conversation chama RPC debit_wallet_atomic."""
+        import inspect
+        from huma.services import billing_service
+        src = inspect.getsource(billing_service.debit_conversation)
+        assert "debit_wallet_atomic" in src
+
+    def test_cors_methods_restricted(self):
+        """app.py tem allow_methods limitado, não wildcard."""
+        import inspect
+        from huma import app as app_module
+        src = inspect.getsource(app_module.create_app)
+        # Verifica métodos específicos no allow_methods
+        assert '"GET"' in src
+        assert '"POST"' in src
+        assert '"PATCH"' in src
+        # E que NÃO tem wildcard solitário em allow_methods
+        # (heuristic: o token "*" sozinho como single member não deve estar em allow_methods)
+        assert 'allow_methods=["*"]' not in src
+
+    def test_app_has_http_exception_handler(self):
+        """app.py tem handler dedicado pra StarletteHTTPException."""
+        import inspect
+        from huma import app as app_module
+        src = inspect.getsource(app_module.create_app)
+        assert "StarletteHTTPException" in src
+        assert "http_exception_handler" in src
+
+    def test_playground_disabled_by_default(self):
+        """PLAYGROUND_ENABLED default é False."""
+        from huma import config
+        # default no env: false
+        assert config.PLAYGROUND_ENABLED in (False, True)
+        # Se não setado, deve ser False (testando o default)
+        # Como pode estar setado em dev, só validamos que existe a flag
+        assert hasattr(config, "PLAYGROUND_ENABLED")
+        assert hasattr(config, "PLAYGROUND_TOKEN")

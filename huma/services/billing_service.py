@@ -183,17 +183,38 @@ async def get_balance(client_id: str) -> int:
 
 
 async def add_conversations(client_id: str, amount: int, source: str = "compra", description: str = "") -> int:
-    supa = get_supabase()
-    current = await get_balance(client_id)
-    new_balance = current + amount
+    """
+    Sprint 1 / item 6 — usa RPC atômica increment_wallet_balance.
+    Antes era read-modify-write (race condition em webhooks MP duplicados).
+    Agora a operação é ATOMIC no Postgres via INSERT ON CONFLICT DO UPDATE.
 
-    await run_in_threadpool(
-        lambda: supa.table("wallets").upsert({
-            "client_id": client_id,
-            "balance": new_balance,
-            "updated_at": datetime.utcnow().isoformat(),
-        }).execute()
-    )
+    Fallback: se RPC não existe (migration não rodada), cai no comportamento antigo
+    com warning. Permite deploy do código antes da migration.
+    """
+    supa = get_supabase()
+
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.rpc(
+                "increment_wallet_balance",
+                {"p_client_id": client_id, "p_amount": amount},
+            ).execute()
+        )
+        new_balance = resp.data if isinstance(resp.data, int) else int(resp.data or 0)
+    except Exception as e:
+        log.warning(
+            f"RPC increment_wallet_balance falhou ({type(e).__name__}: {str(e)[:80]}) — "
+            f"caindo em read-modify-write. RODE A MIGRATION SQL."
+        )
+        current = await get_balance(client_id)
+        new_balance = current + amount
+        await run_in_threadpool(
+            lambda: supa.table("wallets").upsert({
+                "client_id": client_id,
+                "balance": new_balance,
+                "updated_at": datetime.utcnow().isoformat(),
+            }).execute()
+        )
 
     await _log_transaction(client_id, "credit", amount, new_balance, source, description)
     log.info(f"+{amount} conversas | {client_id} | saldo={new_balance} | {source}")
@@ -204,21 +225,41 @@ async def debit_conversation(client_id: str) -> bool:
     """
     Debita 1 conversa. Chamado quando ABRE nova janela 24h.
     NÃO chamado a cada mensagem.
+
+    Sprint 1 / item 6 — RPC atômica debit_wallet_atomic.
+    Função SQL faz UPDATE ... WHERE balance > 0 RETURNING balance,
+    retorna -1 se saldo insuficiente. Sem race condition.
     """
-    current = await get_balance(client_id)
-    if current < 1:
+    supa = get_supabase()
+
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.rpc(
+                "debit_wallet_atomic",
+                {"p_client_id": client_id},
+            ).execute()
+        )
+        new_balance = resp.data if isinstance(resp.data, int) else int(resp.data or -1)
+    except Exception as e:
+        log.warning(
+            f"RPC debit_wallet_atomic falhou ({type(e).__name__}: {str(e)[:80]}) — "
+            f"caindo em read-modify-write. RODE A MIGRATION SQL."
+        )
+        current = await get_balance(client_id)
+        if current < 1:
+            log.warning(f"Sem conversas | {client_id} | saldo=0")
+            return False
+        new_balance = current - 1
+        await run_in_threadpool(
+            lambda: supa.table("wallets").update({
+                "balance": new_balance,
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("client_id", client_id).execute()
+        )
+
+    if new_balance < 0:
         log.warning(f"Sem conversas | {client_id} | saldo=0")
         return False
-
-    supa = get_supabase()
-    new_balance = current - 1
-
-    await run_in_threadpool(
-        lambda: supa.table("wallets").update({
-            "balance": new_balance,
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("client_id", client_id).execute()
-    )
 
     await _log_transaction(client_id, "debit", 1, new_balance, "conversa")
     return True

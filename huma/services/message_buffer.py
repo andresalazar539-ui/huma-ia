@@ -67,6 +67,10 @@ async def buffer_message(
     Se já tem mensagens no buffer, reseta o timer.
     Quando o timer expira, junta tudo e chama process_callback.
 
+    Sprint 1 / item 7 — fallback sem Redis:
+      Se Redis indisponível, processa direto sem buffer (1 msg = 1 processamento).
+      Lead não vai juntar mensagens picadas, mas tudo continua funcionando.
+
     Args:
         client_id: ID do cliente
         phone: telefone do lead
@@ -78,7 +82,21 @@ async def buffer_message(
     Returns:
         {"status": "buffered"} se foi pro buffer
         {"status": "processing"} se disparou o processamento
+        {"status": "no_buffer_processed"} se Redis off (fallback direto)
     """
+    # Sprint 1 / item 7 — Redis indisponível → processa direto
+    if _client is None:
+        log.warning(
+            f"Redis off — processando direto sem buffer | {phone} | "
+            f"text_len={len(text)}"
+        )
+        try:
+            await process_callback(client_id, phone, text, image_url, *callback_args)
+            return {"status": "no_buffer_processed"}
+        except Exception as e:
+            log.error(f"Fallback direct process erro | {phone} | {type(e).__name__}: {e}")
+            return {"status": "error"}
+
     buffer_key = f"msgbuf:{client_id}:{phone}"
     timer_key = f"msgbuf_timer:{client_id}:{phone}"
     first_msg_key = f"msgbuf_first:{client_id}:{phone}"
@@ -130,6 +148,9 @@ async def _schedule_flush(client_id, phone, process_callback, callback_args):
     Isso é implementado com um incremento de versão no Redis:
     o flush só executa se a versão não mudou (nenhuma msg nova chegou).
     """
+    if _client is None:
+        return
+
     timer_key = f"msgbuf_timer:{client_id}:{phone}"
 
     # Incrementa versão (cada msg nova gera uma nova versão)
@@ -148,6 +169,9 @@ async def _delayed_flush(client_id, phone, expected_version, process_callback, c
     Se a versão mudou (nova msg chegou), cancela — outra task cuidará.
     Se a versão é a mesma (silêncio), processa.
     """
+    if _client is None:
+        return
+
     await asyncio.sleep(BUFFER_WAIT_SECONDS)
 
     timer_key = f"msgbuf_timer:{client_id}:{phone}"
@@ -167,6 +191,9 @@ async def _flush_buffer(client_id, phone, process_callback, callback_args):
 
     Usa GETDEL atômico pra evitar que duas tasks processem o mesmo buffer.
     """
+    if _client is None:
+        return
+
     buffer_key = f"msgbuf:{client_id}:{phone}"
     timer_key = f"msgbuf_timer:{client_id}:{phone}"
     first_msg_key = f"msgbuf_first:{client_id}:{phone}"

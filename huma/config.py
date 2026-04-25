@@ -35,6 +35,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 # ── Pagamentos ──
 MERCADOPAGO_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
+# Sprint 1 / item 2 — webhook secret pra validar HMAC do MP (diferente do access_token)
+# Configurar no painel MP: Webhooks → Configurações → "Sua chave secreta"
+MERCADOPAGO_WEBHOOK_SECRET = os.getenv("MERCADOPAGO_WEBHOOK_SECRET", "")
 PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "mercadopago")
 
 # ── Agendamento ──
@@ -46,6 +49,12 @@ ZOOM_API_KEY = os.getenv("ZOOM_API_KEY", "")
 # ── Segurança ──
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 SAFE_MODE = os.getenv("SAFE_MODE", "false").lower() == "true"
+
+# Sprint 1 / item 8 — playground protegido em produção
+# Em prod: PLAYGROUND_ENABLED=false (default) → endpoint trancado
+# Em dev: PLAYGROUND_ENABLED=true + PLAYGROUND_TOKEN setado → exige header X-Playground-Token
+PLAYGROUND_ENABLED = os.getenv("PLAYGROUND_ENABLED", "false").lower() == "true"
+PLAYGROUND_TOKEN = os.getenv("PLAYGROUND_TOKEN", "")
 
 # ── Modelos de IA ──
 AI_MODEL_PRIMARY = os.getenv("AI_MODEL_PRIMARY", "claude-sonnet-4-5-20250929")  # Sonnet (complexo)

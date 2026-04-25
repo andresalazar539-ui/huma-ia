@@ -316,9 +316,25 @@ async def playground_activate(request: Request):
     """
     Salva config do playground no Supabase como client_id='default'
     pra testar via WhatsApp Twilio.
+
+    Sprint 1 / item 8 — protegido em produção:
+      - PLAYGROUND_ENABLED=false (default em prod) → 403
+      - PLAYGROUND_ENABLED=true + PLAYGROUND_TOKEN setado → exige X-Playground-Token
     """
     from fastapi.concurrency import run_in_threadpool
+    import hmac as _hmac
+    from huma.config import PLAYGROUND_ENABLED, PLAYGROUND_TOKEN
     from huma.core.orchestrator import invalidate_client_cache
+
+    # Trava em produção
+    if not PLAYGROUND_ENABLED:
+        raise HTTPException(403, "Playground desabilitado neste ambiente")
+
+    # Se token configurado, exige header
+    if PLAYGROUND_TOKEN:
+        provided = request.headers.get("X-Playground-Token", "")
+        if not provided or not _hmac.compare_digest(provided, PLAYGROUND_TOKEN):
+            raise HTTPException(401, "Playground token ausente ou inválido")
 
     try:
         body = await request.json()
@@ -517,6 +533,9 @@ async def mercadopago_webhook(request: Request, bg: BackgroundTasks):
     - type: "payment" → pagamento direto (Pix, boleto)
     - type: "merchant_order" → Checkout Pro (ignoramos, esperamos o payment)
     - data.id: ID do pagamento
+
+    Sprint 1 / item 2 — valida x-signature antes de processar.
+    Em modo dev (MERCADOPAGO_WEBHOOK_SECRET vazio), pula validação com warning.
     """
     try:
         body = await request.json()
@@ -543,6 +562,18 @@ async def mercadopago_webhook(request: Request, bg: BackgroundTasks):
         if not mp_payment_id:
             log.warning("Webhook MP — sem payment_id")
             return {"status": "ignored", "reason": "no_payment_id"}
+
+        # Sprint 1 / item 2 — valida HMAC antes de processar.
+        # Sem isso, fraudador pode forjar webhook e marcar lead como "won".
+        from huma.core.auth import verify_mercadopago_signature
+        x_signature = request.headers.get("x-signature", "")
+        x_request_id = request.headers.get("x-request-id", "")
+        if not verify_mercadopago_signature(x_signature, x_request_id, mp_payment_id):
+            log.warning(
+                f"Webhook MP REJEITADO | assinatura inválida | "
+                f"payment_id={mp_payment_id} | sig_present={bool(x_signature)}"
+            )
+            raise HTTPException(401, "Assinatura inválida")
 
         # Processa em background pra responder rápido (MP espera 200 em <500ms)
         bg.add_task(_process_mp_payment, mp_payment_id)
