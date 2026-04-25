@@ -18,7 +18,7 @@ Auditoria pré-GA antes do 1º cliente pago, com foco em robustez para 500 usuá
 | 2 | Cache distribuído | ✅ aplicado | `daeaf7f` |
 | 3 | Resiliência | 🟡 parcial (16+17) | `d7da0a0` |
 | 4 | Observabilidade | 🟡 parcial (13, 18, 34) | `4368a15`, `6380ecb`, `a4296db` |
-| 5 | Notificações pro dono | ⏳ pendente | — |
+| 5 | Notificações pro dono | 🟡 parcial (20, 21, 22) | `0591c74` |
 | 6 | Scheduler ativo | ⏳ pendente | — |
 | 7 | Dashboard WhatsApp | ⏳ pendente | — |
 | 8 | Memória + handoff | ⏳ pendente | — |
@@ -57,10 +57,10 @@ Auditoria pré-GA antes do 1º cliente pago, com foco em robustez para 500 usuá
 
 ## 🎨 GAPS PRA "UAU"
 
-- [ ] **20. Notificação pro dono quando lead agenda** — Sprint 5
-- [ ] **21. Notificação pro dono quando lead paga** — Sprint 5
-- [ ] **22. Notificação pro dono quando lead cancela** — Sprint 5
-- [ ] **23. Notificação pro dono em lead "quente travado"** — Sprint 5
+- [x] **20. Notificação pro dono quando lead agenda** — Sprint 5 (`0591c74`)
+- [x] **21. Notificação pro dono quando lead paga** — Sprint 5 (`0591c74`, opt-in adicionado)
+- [x] **22. Notificação pro dono quando lead cancela** — Sprint 5 (`0591c74`)
+- [ ] **23. Notificação pro dono em lead "quente travado"** — **movido pro Sprint 6** (precisa cron)
 - [ ] **24. Lembrete pré-consulta no WhatsApp** — Sprint 6
 - [ ] **25. Dashboard WhatsApp `/stats`** — Sprint 7
 - [ ] **26. Comandos `/hoje` e `/semana`** — Sprint 7
