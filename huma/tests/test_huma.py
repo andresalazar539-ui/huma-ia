@@ -2761,6 +2761,154 @@ class TestSprint5OwnerNotifications:
         # Flag existe → skip
         assert len(send_calls) == 0
 
+    def test_retry_module_exists(self):
+        """Estrutural: huma/utils/retry.py existe com with_retry e is_transient_error."""
+        from huma.utils import retry
+        assert hasattr(retry, "with_retry")
+        assert hasattr(retry, "is_transient_error")
+        assert hasattr(retry, "RETRYABLE_HTTP_STATUS")
+
+    def test_is_transient_error_classification(self):
+        """Funcional: classifica erros corretamente."""
+        import httpx
+        import asyncio
+        from huma.utils.retry import is_transient_error
+
+        # Transitivos
+        assert is_transient_error(asyncio.TimeoutError()) is True
+        assert is_transient_error(httpx.ConnectError("fail")) is True
+        assert is_transient_error(httpx.ReadTimeout("fail")) is True
+
+        # Status code 5xx → transitivo
+        fake_resp = httpx.Response(503)
+        err_503 = httpx.HTTPStatusError("server error", request=httpx.Request("POST", "https://x.com"), response=fake_resp)
+        assert is_transient_error(err_503) is True
+
+        # Status code 429 (rate limit) → transitivo
+        fake_resp_429 = httpx.Response(429)
+        err_429 = httpx.HTTPStatusError("rate limit", request=httpx.Request("POST", "https://x.com"), response=fake_resp_429)
+        assert is_transient_error(err_429) is True
+
+        # Status code 400 (erro do nosso lado) → NÃO transitivo
+        fake_resp_400 = httpx.Response(400)
+        err_400 = httpx.HTTPStatusError("bad request", request=httpx.Request("POST", "https://x.com"), response=fake_resp_400)
+        assert is_transient_error(err_400) is False
+
+        # Status code 401 → NÃO transitivo
+        fake_resp_401 = httpx.Response(401)
+        err_401 = httpx.HTTPStatusError("unauth", request=httpx.Request("POST", "https://x.com"), response=fake_resp_401)
+        assert is_transient_error(err_401) is False
+
+        # Programming error → NÃO transitivo
+        assert is_transient_error(ValueError("oops")) is False
+        assert is_transient_error(KeyError("oops")) is False
+
+    def test_with_retry_succeeds_after_transient_failures(self):
+        """
+        Funcional: função que falha 2x com erro transitivo e sucede na 3ª
+        é retentada e o decorator retorna o sucesso.
+        """
+        import asyncio
+        import httpx
+        from huma.utils.retry import with_retry
+
+        attempt_count = {"n": 0}
+
+        @with_retry(max_attempts=3, base_delay=0.01, label="test")
+        async def flaky():
+            attempt_count["n"] += 1
+            if attempt_count["n"] < 3:
+                raise httpx.ConnectError("transient")
+            return "ok"
+
+        result = asyncio.run(flaky())
+        assert result == "ok"
+        assert attempt_count["n"] == 3
+
+    def test_with_retry_aborts_on_permanent_error(self):
+        """Funcional: erro permanente (400) re-raise imediato sem retentar."""
+        import asyncio
+        import httpx
+        from huma.utils.retry import with_retry
+
+        attempt_count = {"n": 0}
+
+        @with_retry(max_attempts=3, base_delay=0.01, label="test")
+        async def fails_permanently():
+            attempt_count["n"] += 1
+            fake_resp = httpx.Response(400)
+            raise httpx.HTTPStatusError(
+                "bad", request=httpx.Request("POST", "https://x.com"),
+                response=fake_resp,
+            )
+
+        try:
+            asyncio.run(fails_permanently())
+            assert False, "esperava HTTPStatusError"
+        except httpx.HTTPStatusError:
+            pass
+
+        # NÃO retentou — só 1 tentativa
+        assert attempt_count["n"] == 1
+
+    def test_with_retry_exhausts_and_raises(self):
+        """Funcional: depois de max_attempts, levanta a última exception."""
+        import asyncio
+        import httpx
+        from huma.utils.retry import with_retry
+
+        attempt_count = {"n": 0}
+
+        @with_retry(max_attempts=2, base_delay=0.01, label="test")
+        async def always_fails():
+            attempt_count["n"] += 1
+            raise httpx.ConnectError("never works")
+
+        try:
+            asyncio.run(always_fails())
+            assert False, "esperava ConnectError"
+        except httpx.ConnectError:
+            pass
+
+        assert attempt_count["n"] == 2  # tentou max_attempts vezes
+
+    def test_with_retry_preserves_return_value(self):
+        """Funcional: sucesso na primeira tentativa não chama sleep nem retenta."""
+        import asyncio
+        from huma.utils.retry import with_retry
+
+        @with_retry(max_attempts=3, base_delay=0.01, label="test")
+        async def works_first_time():
+            return {"id": 42}
+
+        result = asyncio.run(works_first_time())
+        assert result == {"id": 42}
+
+    def test_payment_service_uses_retry_with_fixed_idempotency_key(self):
+        """
+        Estrutural CRITICO: payment_service garante que idempotency_key é
+        gerado FORA do retry. Sem isso, retry após timeout pode duplicar
+        pagamento (key diferente em cada tentativa = MP cria 2 payments).
+        """
+        import inspect
+        from huma.services import payment_service
+        src = inspect.getsource(payment_service)
+
+        # _mp_post_payment recebe idempotency_key como argumento
+        assert "_mp_post_payment(body, idempotency_key)" in src
+        assert "X-Idempotency-Key\": idempotency_key" in src
+        # Idempotency key gerada antes (str(uuid.uuid4()) acontece nos callers)
+        assert "idempotency_key = str(uuid.uuid4())" in src
+
+    def test_whatsapp_service_uses_retry(self):
+        """Estrutural: send_text e send_image usam decorator with_retry."""
+        import inspect
+        from huma.services import whatsapp_service
+        src = inspect.getsource(whatsapp_service)
+        assert "@with_retry" in src
+        assert "_send_text_with_retry" in src
+        assert "_send_image_with_retry" in src
+
     def test_nps_job_registered(self):
         """Estrutural: job de NPS pós-atendimento registrado em _jobs."""
         from huma.services import scheduler

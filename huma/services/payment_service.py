@@ -29,6 +29,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from huma.config import MERCADOPAGO_ACCESS_TOKEN
 from huma.utils.logger import get_logger
+from huma.utils.retry import with_retry
 
 log = get_logger("payment")
 
@@ -39,6 +40,30 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "").rstrip("/")
 # ================================================================
 # HELPERS
 # ================================================================
+
+
+@with_retry(max_attempts=3, base_delay=1.5, label="mp_create_payment")
+async def _mp_post_payment(body: dict, idempotency_key: str) -> dict:
+    """
+    POST /v1/payments com retry exponencial.
+
+    Sprint 3 / item 10. CRITICO: idempotency_key é gerado FORA do retry e
+    passado como argumento — todas as tentativas usam a MESMA key. Sem isso,
+    retry após timeout pode criar pagamentos duplicados no MP.
+
+    Levanta em erro (httpx.HTTPStatusError ou timeout) pro decorator retentar.
+    """
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        resp = await http.post(
+            "https://api.mercadopago.com/v1/payments",
+            json=body,
+            headers={
+                "Authorization": f"Bearer {MERCADOPAGO_ACCESS_TOKEN}",
+                "X-Idempotency-Key": idempotency_key,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
 
 
 def _format_brl(cents: int) -> str:
@@ -331,17 +356,11 @@ async def _create_pix(req) -> dict:
         if notification_url:
             body["notification_url"] = notification_url
 
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(
-                "https://api.mercadopago.com/v1/payments",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {MERCADOPAGO_ACCESS_TOKEN}",
-                    "X-Idempotency-Key": str(uuid.uuid4()),
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        # Idempotency key gerada fora do retry — mesma key em todas as
+        # tentativas evita duplicação de pagamento se 1ª tentativa der timeout
+        # mas o MP já tiver processado.
+        idempotency_key = str(uuid.uuid4())
+        data = await _mp_post_payment(body, idempotency_key)
 
         pix = data.get("point_of_interaction", {}).get("transaction_data", {})
         amount = _format_brl(req.amount_cents)
@@ -418,17 +437,9 @@ async def _create_boleto(req) -> dict:
         if notification_url:
             body["notification_url"] = notification_url
 
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(
-                "https://api.mercadopago.com/v1/payments",
-                json=body,
-                headers={
-                    "Authorization": f"Bearer {MERCADOPAGO_ACCESS_TOKEN}",
-                    "X-Idempotency-Key": str(uuid.uuid4()),
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        # Idempotency key fixa pra todas as tentativas (evita boleto duplicado)
+        idempotency_key = str(uuid.uuid4())
+        data = await _mp_post_payment(body, idempotency_key)
 
         barcode = data.get("barcode", {}).get("content", "")
         pdf_url = data.get("transaction_details", {}).get("external_resource_url", "")

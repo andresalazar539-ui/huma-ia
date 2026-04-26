@@ -17,6 +17,7 @@ from twilio.rest import Client
 
 from huma.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_FROM
 from huma.utils.logger import get_logger
+from huma.utils.retry import with_retry
 
 log = get_logger("whatsapp")
 
@@ -39,6 +40,20 @@ def _format_whatsapp(phone: str) -> str:
     return phone
 
 
+@with_retry(max_attempts=3, base_delay=1.0, label="wa_send_text")
+async def _send_text_with_retry(to: str, from_number: str, message: str) -> str:
+    """
+    Raw: levanta exception em erro pro decorator de retry capturar.
+    Wrapper público send_text mantém comportamento silent-fail.
+    """
+    msg = _client.messages.create(
+        body=message,
+        from_=from_number,
+        to=to,
+    )
+    return msg.sid
+
+
 async def send_text(
     phone: str,
     message: str,
@@ -47,7 +62,10 @@ async def send_text(
     **kwargs,
 ) -> str | None:
     """
-    Envia texto via WhatsApp. Retorna message_id (SID).
+    Envia texto via WhatsApp. Retorna message_id (SID) ou None se falhou.
+
+    Sprint 3 / item 10: retry exponencial em erros transientes
+    (timeout, 5xx, 429). Erros permanentes (400/401/403) abort imediato.
 
     Args:
         phone: telefone do destinatário
@@ -56,9 +74,6 @@ async def send_text(
         reply_to: message_id da mensagem pra responder em cima (quoted reply).
                   Twilio: ignorado (não suportado).
                   Meta Cloud API: vira context.message_id.
-
-    Returns:
-        message_id (SID) da mensagem enviada, ou None se falhou.
     """
     if not _client:
         log.error("Twilio não configurado")
@@ -68,18 +83,12 @@ async def send_text(
     from_number = _format_whatsapp(TWILIO_WHATSAPP_FROM)
 
     try:
-        # Twilio Sandbox: reply_to não é suportado.
-        # Quando migrar pra Meta Cloud API, adicionar context.message_id aqui.
         # TODO: Meta Cloud API → incluir {"context": {"message_id": reply_to}}
-        msg = _client.messages.create(
-            body=message,
-            from_=from_number,
-            to=to,
-        )
-        log.debug(f"Enviado | {to} | sid={msg.sid}")
-        return msg.sid
+        sid = await _send_text_with_retry(to, from_number, message)
+        log.debug(f"Enviado | {to} | sid={sid}")
+        return sid
     except Exception as e:
-        log.error(f"Erro enviando | {to} | {e}")
+        log.error(f"Erro enviando | {to} | {type(e).__name__}: {e}")
         return None
 
 
@@ -108,6 +117,18 @@ async def send_audio(
         return None
 
 
+@with_retry(max_attempts=3, base_delay=1.0, label="wa_send_image")
+async def _send_image_with_retry(to: str, from_number: str, image_url: str, caption: str) -> str:
+    """Raw com retry. Wrapper público mantém silent-fail."""
+    msg = _client.messages.create(
+        body=caption or "📷",
+        media_url=[image_url],
+        from_=from_number,
+        to=to,
+    )
+    return msg.sid
+
+
 async def send_image(
     phone: str,
     image_url: str,
@@ -116,21 +137,15 @@ async def send_image(
     reply_to: str | None = None,
     **kwargs,
 ) -> str | None:
-    """Envia imagem via WhatsApp. Retorna message_id."""
+    """Envia imagem via WhatsApp. Retorna message_id ou None se falhou."""
     if not _client:
         return None
     to = _format_whatsapp(phone)
     from_number = _format_whatsapp(TWILIO_WHATSAPP_FROM)
     try:
-        msg = _client.messages.create(
-            body=caption or "📷",
-            media_url=[image_url],
-            from_=from_number,
-            to=to,
-        )
-        return msg.sid
+        return await _send_image_with_retry(to, from_number, image_url, caption)
     except Exception as e:
-        log.error(f"Erro imagem | {to} | {e}")
+        log.error(f"Erro imagem | {to} | {type(e).__name__}: {e}")
         return None
 
 
