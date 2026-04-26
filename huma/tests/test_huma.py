@@ -3206,11 +3206,10 @@ class TestSprint5OwnerNotifications:
         import asyncio
         from unittest.mock import patch, AsyncMock, MagicMock
         from huma.core.orchestrator import _compress_history_async
-        from huma.config import HISTORY_MAX_BEFORE_COMPRESS
 
-        # History acima do limite (qualquer que seja o valor configurado)
+        # 10 msgs > HISTORY_MAX_BEFORE_COMPRESS (6)
         fake_conv = MagicMock()
-        fake_conv.history = [{"role": "user" if i%2==0 else "assistant", "content": f"msg {i}"} for i in range(HISTORY_MAX_BEFORE_COMPRESS + 4)]
+        fake_conv.history = [{"role": "user" if i%2==0 else "assistant", "content": f"msg {i}"} for i in range(10)]
         fake_conv.history_summary = ""
         fake_conv.lead_facts = []
 
