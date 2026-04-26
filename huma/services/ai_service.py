@@ -1649,18 +1649,10 @@ async def generate_outbound_message(identity, lead, template=""):
 
 async def compress_history(history, summary, facts):
     """
-    Comprime histórico preservando memória do lead — versão acumulativa.
+    Comprime histórico preservando memória do lead.
 
-    v8.2 (memória pré-GA) — Refeita pra resolver "IA esquecendo após 10-12 msgs":
-      1. Passa SUMMARY ANTERIOR pro Haiku como contexto. Sem isso, cada
-         compressão sobrescrevia o summary, perdendo info crítica de turns
-         anteriores (idade, profissão, contexto pessoal, dores).
-      2. Cap de facts subiu de 25 → 50 (suporta conversas longas).
-      3. Prompt explícito sobre o que NUNCA pode esquecer: emails enviados,
-         pagamentos gerados (markers [PAGAMENTO ENVIADO]), agendamentos
-         confirmados/cancelados, valores discutidos, mudanças de dados.
-      4. Summary cresceu de 3-5 → 6-12 linhas (mais espaço pra venda).
-      5. max_tokens: 800 → 1200 (acomoda summary mais rico + facts maiores).
+    v10.1: HISTORY_MAX_BEFORE_COMPRESS reduzido de 14→10 (config.py).
+    Comprime mais cedo, mantém histórico mais leve.
     """
     if len(history) <= HISTORY_MAX_BEFORE_COMPRESS:
         return history, summary, facts
@@ -1674,46 +1666,28 @@ async def compress_history(history, summary, facts):
         if isinstance(m.get("content"), str)
     )
 
-    # Cap de facts subiu pra 50. Passa todos pro Haiku como "MANTENHA".
-    existing_facts = json.dumps(facts[-50:], ensure_ascii=False) if facts else "[]"
-    existing_summary = summary or "(primeira compressão — sem resumo anterior)"
+    existing_facts = json.dumps(facts[-20:], ensure_ascii=False) if facts else "[]"
 
     prompt = (
-        "Você consolida memória de uma conversa de venda do WhatsApp.\n\n"
-        f"RESUMO ANTERIOR (acumule com info nova, NUNCA descarte):\n{existing_summary}\n\n"
-        f"FATOS ANTERIORES (MANTENHA TODOS, adicione novos):\n{existing_facts}\n\n"
-        f"NOVAS MENSAGENS DA CONVERSA:\n{messages_text}\n\n"
-        "Responda APENAS com JSON válido, sem texto antes ou depois.\n"
-        '{"summary":"...","facts":["fato 1","fato 2"]}\n\n'
-        "REGRAS DO SUMMARY (6-12 linhas, acumulativo):\n"
-        "  - Inclua TUDO do resumo anterior + novidades das mensagens.\n"
-        "  - Preserve detalhes pessoais do lead: idade, profissão, gênero, situação familiar, dores.\n"
-        "  - Preserve histórico de objeções e como foram resolvidas.\n"
-        "  - Preserve estado atual da venda: o que falta, próximo passo.\n\n"
-        "REGRAS DOS FACTS (use prefixos abaixo, NUNCA remova fatos antigos):\n"
-        "  - perfil: <nome>, <gênero>, <idade>, <profissão>, etc.\n"
-        "  - preferência: pagamento, horário, comunicação, parcelas.\n"
-        "  - histórico: o que JÁ comprou, agendou, perguntou.\n"
-        "  - objeção: o que resistiu e como resolveu.\n"
-        "  - pendência: promessas abertas, follow-up.\n\n"
-        "EVENTOS QUE NUNCA PODEM SUMIR (extraia pra facts SEMPRE que aparecer):\n"
-        "  - Email mencionado pelo lead → fact: 'email-informado: x@y.com'\n"
-        "  - Pagamento gerado (marker [PAGAMENTO ENVIADO ...]) → fact:\n"
-        "    'pagamento-gerado: R$X via método em <data>'\n"
-        "  - Agendamento confirmado (marker [AGENDAMENTO CONFIRMADO ...]) → fact:\n"
-        "    'agendado: <serviço> em <data>'\n"
-        "  - Agendamento cancelado (marker [AGENDAMENTO CANCELADO ...]) → fact:\n"
-        "    'cancelou-antes: era <data> de <serviço>'\n"
-        "  - Preço discutido → fact: 'preço-discutido: <serviço> R$X'\n"
-        "  - Boleto/QR enviado → fact: 'boleto/pix-enviado: <data> R$X'\n"
-        "  - Mudança de dado (lead mudou email/CPF/etc) → fact:\n"
-        "    'dado-mudado: <campo> de <antigo> pra <novo>'"
+        f"Resuma esta conversa e extraia fatos do lead.\n\n"
+        f"Fatos anteriores (MANTENHA todos, adicione novos): {existing_facts}\n\n"
+        f"Mensagens:\n{messages_text}\n\n"
+        f"Responda APENAS com JSON, sem texto antes ou depois:\n"
+        f'{{"summary":"resumo de 3-5 linhas do estado da conversa",'
+        f'"facts":["fato 1","fato 2","fato 3"]}}\n\n'
+        f"Nos facts, inclua com prefixo:\n"
+        f"- perfil: nome, gênero, como gosta de ser chamado\n"
+        f"- preferência: pagamento, horário, comunicação\n"
+        f"- histórico: o que já comprou, agendou, perguntou\n"
+        f"- objeção: o que resistiu e como resolveu\n"
+        f"- pendência: promessas abertas, follow-up\n"
+        f"NUNCA remova fatos anteriores. Só adicione."
     )
 
     try:
         response = await _get_ai_client().messages.create(
             model=AI_MODEL_FAST,
-            max_tokens=1200,  # antes 800 — espaço pra summary acumulativo + facts ricos
+            max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = response.content[0].text.strip()
@@ -1729,15 +1703,13 @@ async def compress_history(history, summary, facts):
         new_summary = parsed.get("summary", summary)
         new_facts = parsed.get("facts", facts)
 
-        # Cap subiu de 25 → 50 pra suportar conversas longas
-        if isinstance(new_facts, list) and len(new_facts) > 50:
-            new_facts = new_facts[:50]
-            log.info(f"Compressão: fatos cortados pra 50 (tinha {len(parsed.get('facts', []))})")
+        if isinstance(new_facts, list) and len(new_facts) > 25:
+            new_facts = new_facts[:25]
+            log.info(f"Compressão: fatos cortados pra 25 (tinha {len(parsed.get('facts', []))})")
 
         log.info(
             f"Compressão OK | msgs_comprimidas={len(to_compress)} | "
-            f"msgs_mantidas={len(recent)} | fatos={len(new_facts)} | "
-            f"summary_chars={len(new_summary or '')}"
+            f"msgs_mantidas={len(recent)} | fatos={len(new_facts)}"
         )
         return recent, new_summary, new_facts
 
