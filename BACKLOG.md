@@ -16,7 +16,7 @@ Auditoria pré-GA antes do 1º cliente pago, com foco em robustez para 500 usuá
 |---|---|---|---|
 | 1 | Segurança crítica | ✅ aplicado | `f8d0f8d` |
 | 2 | Cache distribuído | ✅ aplicado | `daeaf7f` |
-| 3 | Resiliência | 🟡 parcial (16+17) | `d7da0a0` |
+| 3 | Resiliência | ✅ aplicado (10, 11, 16, 17) | `d7da0a0`, `437f34c`, `c4ad9de` |
 | 4 | Observabilidade | 🟡 parcial (13, 18, 34) | `4368a15`, `6380ecb`, `a4296db` |
 | 5 | Notificações pro dono | 🟡 parcial (20, 21, 22) | `0591c74` |
 | 6 | Scheduler ativo | ✅ aplicado (19, 24, 28) | `5ad9107`, `10fea47`, `875b5c5`, `78acc20` |
@@ -42,8 +42,8 @@ Auditoria pré-GA antes do 1º cliente pago, com foco em robustez para 500 usuá
 ## ⚠️ PROBLEMAS IMPORTANTES (semanas 1-2)
 
 - [ ] **9. Assinatura Meta Cloud API** — quando migrar do Twilio
-- [ ] **10. Retry com backoff em chamadas externas** — Sprint 3 (cuidado: `generate_response` já tem retry interno) — **adiado: pós-GA com volume real**
-- [ ] **11. Compressão assíncrona** — Sprint 3 (trade-off de qualidade) — **adiado: smoke prod primeiro**
+- [x] **10. Retry com backoff em chamadas externas** — Sprint 3 (`437f34c`)
+- [x] **11. Compressão assíncrona** — Sprint 3 (`c4ad9de`)
 - [x] **12. Rate limit agregado por `client_id`** — Sprint 2
 - [x] **13. Mascarar dados sensíveis em logs (LGPD)** — Sprint 4 (`4368a15`)
 - [x] **14. Restringir CORS `allow_methods`** — Sprint 1
