@@ -3235,6 +3235,186 @@ class TestSprint5OwnerNotifications:
         assert save_calls[0]["history_len"] == 4
         assert save_calls[0]["summary"] == "resumo"
 
+    def test_compress_history_passes_previous_summary_to_haiku(self):
+        """
+        Funcional CRITICO: compress_history passa SUMMARY ANTERIOR pro
+        Haiku. Sem isso, summary é descartado a cada compressão e IA
+        esquece info do início da conversa após 10-12 msgs.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import ai_service
+
+        prompt_seen = {"text": ""}
+
+        class FakeResponse:
+            def __init__(self):
+                self.content = [MagicMock(text='{"summary":"resumo novo","facts":["perfil: Camila"]}')]
+
+        async def fake_create(model, max_tokens, messages):
+            prompt_seen["text"] = messages[0]["content"]
+            return FakeResponse()
+
+        fake_client = MagicMock()
+        fake_client.messages.create = fake_create
+
+        with patch("huma.services.ai_service._get_ai_client", return_value=fake_client):
+            history = [{"role": "user" if i%2==0 else "assistant", "content": f"msg {i}"} for i in range(20)]
+            asyncio.run(ai_service.compress_history(
+                history=history,
+                summary="Camila, 35 anos, mãe, medo de doer.",
+                facts=["perfil: nome=Camila", "perfil: idade=35"],
+            ))
+
+        # Summary anterior DEVE aparecer no prompt enviado pro Haiku
+        assert "Camila, 35 anos" in prompt_seen["text"]
+        assert "RESUMO ANTERIOR" in prompt_seen["text"]
+        # Facts anteriores DEVEM aparecer
+        assert "FATOS ANTERIORES" in prompt_seen["text"]
+        assert "Camila" in prompt_seen["text"]
+
+    def test_compress_history_prompt_lists_critical_events(self):
+        """
+        Estrutural: prompt menciona explicitamente os 6 tipos de evento
+        que NUNCA podem sumir (email, pagamento, agendamento, cancelamento,
+        preço, mudança de dado).
+        """
+        import asyncio
+        from unittest.mock import patch, MagicMock
+        from huma.services import ai_service
+
+        prompt_seen = {"text": ""}
+
+        class FakeResponse:
+            def __init__(self):
+                self.content = [MagicMock(text='{"summary":"x","facts":[]}')]
+
+        async def fake_create(model, max_tokens, messages):
+            prompt_seen["text"] = messages[0]["content"]
+            return FakeResponse()
+
+        fake_client = MagicMock()
+        fake_client.messages.create = fake_create
+
+        with patch("huma.services.ai_service._get_ai_client", return_value=fake_client):
+            history = [{"role": "user", "content": f"m {i}"} for i in range(20)]
+            asyncio.run(ai_service.compress_history(history=history, summary="", facts=[]))
+
+        text = prompt_seen["text"]
+        # Os 6 eventos críticos têm que estar no prompt
+        assert "email-informado" in text
+        assert "pagamento-gerado" in text
+        assert "agendado" in text
+        assert "cancelou-antes" in text or "cancelou" in text
+        assert "preço-discutido" in text or "preco-discutido" in text
+        assert "dado-mudado" in text
+
+    def test_compress_history_facts_cap_50(self):
+        """
+        Funcional: cap de facts subiu pra 50 (era 25). Suporta conversas
+        longas sem perder fatos antigos.
+        """
+        import asyncio
+        from unittest.mock import patch, MagicMock
+        from huma.services import ai_service
+        import json
+
+        # Haiku retorna 60 fatos — sistema deve cortar pra 50
+        big_facts = [f"perfil: trait_{i}" for i in range(60)]
+
+        class FakeResponse:
+            def __init__(self):
+                self.content = [MagicMock(text=json.dumps({
+                    "summary": "x",
+                    "facts": big_facts,
+                }))]
+
+        async def fake_create(model, max_tokens, messages):
+            return FakeResponse()
+
+        fake_client = MagicMock()
+        fake_client.messages.create = fake_create
+
+        with patch("huma.services.ai_service._get_ai_client", return_value=fake_client):
+            history = [{"role": "user", "content": f"m {i}"} for i in range(20)]
+            _, _, new_facts = asyncio.run(ai_service.compress_history(
+                history=history, summary="", facts=[],
+            ))
+
+        assert len(new_facts) == 50, f"esperava cap em 50, foi {len(new_facts)}"
+
+    def test_compress_history_no_op_below_threshold(self):
+        """
+        Funcional: history <=14 msgs (HISTORY_MAX_BEFORE_COMPRESS=14)
+        retorna intacto sem chamar Haiku. Garante economia.
+        """
+        import asyncio
+        from unittest.mock import patch, MagicMock
+        from huma.services import ai_service
+
+        called = {"flag": False}
+
+        async def fake_create(model, max_tokens, messages):
+            called["flag"] = True
+            return MagicMock()
+
+        fake_client = MagicMock()
+        fake_client.messages.create = fake_create
+
+        with patch("huma.services.ai_service._get_ai_client", return_value=fake_client):
+            short_history = [{"role": "user", "content": f"m {i}"} for i in range(10)]  # <14
+            result_history, result_summary, result_facts = asyncio.run(
+                ai_service.compress_history(history=short_history, summary="orig", facts=["a"]),
+            )
+
+        # Não chamou Haiku, retornou tudo intacto
+        assert called["flag"] is False
+        assert result_history == short_history
+        assert result_summary == "orig"
+        assert result_facts == ["a"]
+
+    def test_compress_history_preserves_payment_marker(self):
+        """
+        Funcional: marker [PAGAMENTO ENVIADO] no history vai pro prompt
+        do Haiku, que deve gerar fact 'pagamento-gerado:'.
+
+        Esse é o cenário do dono: "lembra que paguei? manda comprovante de novo".
+        """
+        import asyncio
+        from unittest.mock import patch, MagicMock
+        from huma.services import ai_service
+
+        prompt_seen = {"text": ""}
+
+        class FakeResponse:
+            def __init__(self):
+                self.content = [MagicMock(text='{"summary":"x","facts":["pagamento-gerado: R$350 via pix em 26/04"]}')]
+
+        async def fake_create(model, max_tokens, messages):
+            prompt_seen["text"] = messages[0]["content"]
+            return FakeResponse()
+
+        fake_client = MagicMock()
+        fake_client.messages.create = fake_create
+
+        with patch("huma.services.ai_service._get_ai_client", return_value=fake_client):
+            history = [
+                {"role": "user", "content": "Quero a consulta"},
+                {"role": "assistant", "content": "Beleza, vou gerar o link"},
+                {"role": "assistant", "content": "[PAGAMENTO ENVIADO: R$350 via pix — link ativo no chat. NÃO gerar outro.]"},
+            ]
+            # Adiciona msgs até passar do limite
+            history.extend([{"role": "user", "content": f"m {i}"} for i in range(20)])
+
+            _, _, facts = asyncio.run(ai_service.compress_history(
+                history=history, summary="", facts=[],
+            ))
+
+        # Marker de pagamento aparece no prompt enviado pro Haiku
+        assert "[PAGAMENTO ENVIADO" in prompt_seen["text"]
+        # Fact extraído menciona pagamento
+        assert any("pagamento" in f.lower() for f in facts)
+
     def test_compress_history_async_releases_lock_on_exception(self):
         """
         Funcional: se compress_history levanta, lock ainda é liberado.
