@@ -65,10 +65,18 @@ RATE_LIMIT_MAX_MSGS = int(os.getenv("RATE_LIMIT_MAX_MSGS", "10"))
 RATE_LIMIT_WINDOW_SEC = int(os.getenv("RATE_LIMIT_WINDOW_SEC", "60"))
 
 # ── Histórico ──
-# v10.2: reduzido pra 4/6. Compressão preserva contexto via lead_facts + summary.
-# 4 msgs recentes = Claude mantém fio. Economia: ~3000 tokens/chamada.
-HISTORY_WINDOW = 4
-HISTORY_MAX_BEFORE_COMPRESS = 6
+# v8.2 (memória pré-GA):
+#   - HISTORY_WINDOW 4 → 8: mantém ~4 trocas completas após compressão
+#     (lead pergunta → IA responde × 4). Antes 4 cobria só 2 trocas.
+#   - HISTORY_MAX_BEFORE_COMPRESS 6 → 14: conversas até 14 msgs ficam
+#     INTEIRAS sem compressão. Cobre ~95% das vendas WhatsApp típicas.
+#
+# Motivação: dono reportou IA esquecendo info depois de 10-12 msgs.
+# Diagnóstico identificou compressão precoce + summary não-acumulativo.
+# Trade-off de custo: +200-300 tokens por chamada Haiku (~R$0.001 extra
+# por turn). Vale ouro vs. churn por "vendedor que esqueceu o lead".
+HISTORY_WINDOW = 8
+HISTORY_MAX_BEFORE_COMPRESS = 14
 DEDUP_WINDOW_SEC = 30
 
 # ── App ──
