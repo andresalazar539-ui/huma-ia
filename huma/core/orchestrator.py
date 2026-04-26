@@ -21,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import BackgroundTasks
 
-from huma.config import SAFE_MODE, HISTORY_MAX_BEFORE_COMPRESS
+from huma.config import SAFE_MODE
 from huma.core.funnel import get_stages
 from huma.models.schemas import (
     CloneMode, Conversation, MessagePayload,
@@ -175,12 +175,9 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             conv.stage = "discovery"
             conv.follow_up_count = 0
 
-        # Sprint 3 / item 11 — compressão movida pra background (após resposta).
-        # Trade-off: este turn usa history não comprimido (mais ~2-3k tokens
-        # quando >6 msgs). Custo Haiku desprezivel (~R$0.003 extra). Em troca:
-        # latência por turn cai ~1-2s (compressão sincrona bloqueava antes).
-        # Próximo turn já usa history comprimido (compressão termina em segundos).
-        # Lock cluster-safe via Redis evita compressões concorrentes.
+        conv.history, conv.history_summary, conv.lead_facts = await ai.compress_history(
+            conv.history, conv.history_summary, conv.lead_facts
+        )
 
         # ============================================================
         # CLASSIFICAÇÃO INTELIGENTE
@@ -384,11 +381,6 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
         await db.save_conversation(conv)
 
-        # Sprint 3 / item 11 — dispara compressão de history em background
-        # se atingiu limiar. Não bloqueia o turn atual nem o envio da resposta.
-        if len(conv.history) > HISTORY_MAX_BEFORE_COMPRESS:
-            asyncio.create_task(_compress_history_async(client_id, phone))
-
         # Envia ou pede aprovação
         if client_data.clone_mode == CloneMode.AUTO and not force_approval:
             asyncio.create_task(
@@ -474,46 +466,6 @@ async def process_outbound_campaign(client_data, campaign):
 def _typing_delay(text: str) -> float:
     """4-15 segundos. Brasileiro real digitando."""
     return min(4.0 + len(text) * 0.06, 15.0)
-
-
-async def _compress_history_async(client_id: str, phone: str) -> None:
-    """
-    Sprint 3 / item 11 — compressão de history em background.
-
-    Roda fora do caminho crítico do turn. Re-busca conversa fresh do banco
-    pra pegar o estado mais recente (turn pode ter sido salvo entre o
-    dispatch e a execução). Lock cluster-safe via Redis evita compressões
-    concorrentes do mesmo lead.
-
-    Falha silenciosa: exception aqui NÃO afeta caminho do lead.
-    """
-    lock_key = f"compress_lock:{client_id}:{phone}"
-    if not await cache.acquire_lock(lock_key, ttl=60):
-        log.debug(f"compress_async | {client_id} | {phone} | lock ocupado, skip")
-        return
-    try:
-        conv = await db.get_conversation(client_id, phone)
-        if len(conv.history) <= HISTORY_MAX_BEFORE_COMPRESS:
-            # Já comprimida por outra task ou turn anterior — nada a fazer
-            return
-        new_history, new_summary, new_facts = await ai.compress_history(
-            conv.history, conv.history_summary, conv.lead_facts
-        )
-        conv.history = new_history
-        conv.history_summary = new_summary
-        conv.lead_facts = new_facts
-        await db.save_conversation(conv)
-        log.info(
-            f"compress_async OK | {client_id} | {phone} | "
-            f"history_len={len(new_history)} | facts={len(new_facts)}"
-        )
-    except Exception as e:
-        log.warning(
-            f"compress_async erro | {client_id} | {phone} | "
-            f"{type(e).__name__}: {e}"
-        )
-    finally:
-        await cache.release_lock(lock_key)
 
 
 async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv, ai_result):
