@@ -2900,6 +2900,221 @@ class TestSprint5OwnerNotifications:
         # Idempotency key gerada antes (str(uuid.uuid4()) acontece nos callers)
         assert "idempotency_key = str(uuid.uuid4())" in src
 
+    def test_stuck_hot_lead_job_registered(self):
+        """Estrutural: job de stuck_hot_lead registrado em _jobs."""
+        from huma.services import scheduler
+        names = [j[0] for j in scheduler._jobs]
+        assert "stuck_hot_lead" in names
+
+    def test_stuck_conversation_alert_job_registered(self):
+        """Estrutural: job de unanswered registrado em _jobs."""
+        from huma.services import scheduler
+        names = [j[0] for j in scheduler._jobs]
+        assert "stuck_conversation_alert" in names
+
+    def test_client_identity_has_notify_stuck_lead_field(self):
+        """Estrutural: opt-in notify_owner_on_stuck_lead existe e default True."""
+        ci = ClientIdentity(client_id="x")
+        assert ci.notify_owner_on_stuck_lead is True
+
+    def test_stuck_hot_skips_when_history_too_short(self):
+        """Funcional: lead com <8 msgs NÃO é considerado 'quente'."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        # 5 msgs — abaixo do limite 8
+        fake_row = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "stage": "offer",
+            "history": [{"role": "user", "content": f"msg {i}"} for i in range(5)],
+            "lead_name_canonical": "Camila",
+        }
+
+        notify_calls = []
+
+        async def fake_notify(owner_phone, msg, **kwargs):
+            notify_calls.append(msg)
+            return "sid"
+
+        with patch("huma.services.db_service.list_hot_stuck_conversations", new=AsyncMock(return_value=[fake_row])), \
+             patch("huma.services.whatsapp_service.notify_owner", new=fake_notify), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)):
+            asyncio.run(scheduler._run_stuck_hot_lead_job())
+
+        assert len(notify_calls) == 0  # história curta, não notifica
+
+    def test_stuck_hot_notifies_owner_when_qualified(self):
+        """Funcional: lead qualificado dispara notif do dono."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        fake_row = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "stage": "closing",
+            "history": [{"role": "user", "content": f"msg {i}"} for i in range(10)],
+            "lead_name_canonical": "Camila Silva",
+        }
+
+        fake_client = MagicMock()
+        fake_client.business_name = "Clínica X"
+        fake_client.owner_phone = "5511555554444"
+        fake_client.notify_owner_on_stuck_lead = True
+
+        notify_calls = []
+
+        async def fake_notify(owner_phone, msg, **kwargs):
+            notify_calls.append({"to": owner_phone, "msg": msg})
+            return "sid"
+
+        flag_set = []
+
+        async def fake_set_ttl(key, value, ttl):
+            flag_set.append({"key": key, "ttl": ttl})
+
+        with patch("huma.services.db_service.list_hot_stuck_conversations", new=AsyncMock(return_value=[fake_row])), \
+             patch("huma.services.db_service.get_client", new=AsyncMock(return_value=fake_client)), \
+             patch("huma.core.orchestrator._is_silent_hours", return_value=False), \
+             patch("huma.services.whatsapp_service.notify_owner", new=fake_notify), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.redis_service.set_with_ttl", new=fake_set_ttl):
+            asyncio.run(scheduler._run_stuck_hot_lead_job())
+
+        assert len(notify_calls) == 1
+        assert "Camila" in notify_calls[0]["msg"]
+        assert "closing" in notify_calls[0]["msg"]
+        assert "5511555554444" == notify_calls[0]["to"]
+        # Dedup TTL 24h
+        assert any(f["ttl"] == 86400 for f in flag_set)
+        assert any("stuck_hot_alerted:c1" in f["key"] for f in flag_set)
+
+    def test_stuck_hot_respects_opt_out(self):
+        """Funcional: cliente com notify_owner_on_stuck_lead=False NÃO recebe."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.services import scheduler
+
+        fake_row = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "stage": "offer",
+            "history": [{"role": "user", "content": f"m {i}"} for i in range(10)],
+            "lead_name_canonical": "X",
+        }
+
+        fake_client = MagicMock()
+        fake_client.business_name = "Y"
+        fake_client.owner_phone = "5511555"
+        fake_client.notify_owner_on_stuck_lead = False  # opt-out
+
+        notify_calls = []
+
+        async def fake_notify(*args, **kwargs):
+            notify_calls.append(args)
+            return "sid"
+
+        with patch("huma.services.db_service.list_hot_stuck_conversations", new=AsyncMock(return_value=[fake_row])), \
+             patch("huma.services.db_service.get_client", new=AsyncMock(return_value=fake_client)), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.whatsapp_service.notify_owner", new=fake_notify):
+            asyncio.run(scheduler._run_stuck_hot_lead_job())
+
+        assert len(notify_calls) == 0
+
+    def test_stuck_hot_dedup_via_flag(self):
+        """Funcional: se flag stuck_hot_alerted existe, NÃO notifica."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        fake_row = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "stage": "offer",
+            "history": [{"role": "user", "content": f"m {i}"} for i in range(10)],
+            "lead_name_canonical": "X",
+        }
+
+        notify_calls = []
+
+        async def fake_notify(*args, **kwargs):
+            notify_calls.append(args)
+            return "sid"
+
+        with patch("huma.services.db_service.list_hot_stuck_conversations", new=AsyncMock(return_value=[fake_row])), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=True)), \
+             patch("huma.services.whatsapp_service.notify_owner", new=fake_notify):
+            asyncio.run(scheduler._run_stuck_hot_lead_job())
+
+        assert len(notify_calls) == 0
+
+    def test_unanswered_skips_when_assistant_was_last(self):
+        """Funcional: se última msg é do assistant (silêncio do lead), NÃO alerta."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        fake_row = {
+            "client_id": "c1",
+            "phone": "5511999998888",
+            "stage": "offer",
+            "history": [
+                {"role": "user", "content": "Quanto custa?"},
+                {"role": "assistant", "content": "R$ 350,00"},  # ← último é assistant
+            ],
+            "last_message_at": "2026-04-26T10:00:00",
+        }
+
+        critical_calls = []
+
+        with patch("huma.services.db_service.list_unanswered_conversations", new=AsyncMock(return_value=[fake_row])), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.redis_service.set_with_ttl", new=AsyncMock()):
+            # Captura log.critical
+            with patch("huma.services.scheduler.log.critical", side_effect=lambda m: critical_calls.append(m)):
+                asyncio.run(scheduler._run_stuck_conversation_alert_job())
+
+        assert len(critical_calls) == 0  # não alerta — silêncio é do lead
+
+    def test_unanswered_alerts_when_user_was_last(self):
+        """Funcional: última msg do user há 2h+ → log.critical."""
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduler
+
+        fake_row = {
+            "client_id": "c_test",
+            "phone": "5511999998888",
+            "stage": "discovery",
+            "history": [
+                {"role": "assistant", "content": "Oi! Como posso te ajudar?"},
+                {"role": "user", "content": "Quanto custa?"},  # ← último é user (sistema não respondeu)
+            ],
+            "last_message_at": "2026-04-26T10:00:00",
+        }
+
+        critical_calls = []
+        flag_set = []
+
+        async def fake_set_ttl(key, value, ttl):
+            flag_set.append({"key": key, "ttl": ttl})
+
+        with patch("huma.services.db_service.list_unanswered_conversations", new=AsyncMock(return_value=[fake_row])), \
+             patch("huma.services.redis_service.exists", new=AsyncMock(return_value=False)), \
+             patch("huma.services.redis_service.set_with_ttl", new=fake_set_ttl):
+            with patch("huma.services.scheduler.log.critical", side_effect=lambda m: critical_calls.append(m)):
+                asyncio.run(scheduler._run_stuck_conversation_alert_job())
+
+        assert len(critical_calls) == 1
+        assert "UNANSWERED" in critical_calls[0]
+        assert "c_test" in critical_calls[0]
+        assert "investigar" in critical_calls[0].lower()
+        # Flag dedup TTL 4h
+        assert any(f["ttl"] == 14400 for f in flag_set)
+
     def test_compress_history_no_longer_blocks_turn(self):
         """
         Estrutural: orchestrator NÃO chama mais await ai.compress_history()

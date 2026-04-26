@@ -228,6 +228,85 @@ async def list_stuck_conversations(
     return resp.data or []
 
 
+async def list_hot_stuck_conversations(
+    hours_silent_min: float = 2.0,
+    hours_silent_max: float = 24.0,
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Sprint 6 / item 23 — leads 'quentes' que pararam.
+
+    Critério: lead em stage offer/closing (perto de fechar), ainda sem
+    agendamento ativo, com last_message_at entre [hours_silent_max,
+    hours_silent_min] horas atrás. Janela máxima evita alertar de leads
+    velhíssimos toda execução.
+
+    Returns:
+        Lista de dicts com client_id, phone, last_message_at, stage,
+        history (pra contar msgs em Python), lead_name_canonical.
+    """
+    from datetime import timedelta
+    now = datetime.utcnow()
+    cutoff_min = (now - timedelta(hours=hours_silent_min)).isoformat()
+    cutoff_max = (now - timedelta(hours=hours_silent_max)).isoformat()
+
+    def query():
+        return (
+            get_supabase()
+            .table("conversations")
+            .select(
+                "client_id,phone,last_message_at,stage,history,"
+                "lead_name_canonical,active_appointment_event_id"
+            )
+            .lte("last_message_at", cutoff_min)
+            .gte("last_message_at", cutoff_max)
+            .in_("stage", ["offer", "closing"])
+            .or_("active_appointment_event_id.is.null,active_appointment_event_id.eq.")
+            .limit(limit)
+            .execute()
+        )
+
+    resp = await run_in_threadpool(query)
+    return resp.data or []
+
+
+async def list_unanswered_conversations(
+    hours_silent_min: float = 2.0,
+    hours_silent_max: float = 12.0,
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Sprint 6 / item 33 — conversas onde lead mandou msg e sistema NÃO
+    respondeu há 2h+ (possível bug ou IA travada).
+
+    Filtragem da última mensagem ser do role 'user' é feita em Python
+    porque history é JSONB e Supabase REST não filtra dentro de array.
+
+    Returns:
+        Lista de dicts com client_id, phone, last_message_at, history,
+        stage. Caller filtra por history[-1].role == 'user'.
+    """
+    from datetime import timedelta
+    now = datetime.utcnow()
+    cutoff_min = (now - timedelta(hours=hours_silent_min)).isoformat()
+    cutoff_max = (now - timedelta(hours=hours_silent_max)).isoformat()
+
+    def query():
+        return (
+            get_supabase()
+            .table("conversations")
+            .select("client_id,phone,last_message_at,stage,history")
+            .lte("last_message_at", cutoff_min)
+            .gte("last_message_at", cutoff_max)
+            .not_.in_("stage", ["won", "lost"])
+            .limit(limit)
+            .execute()
+        )
+
+    resp = await run_in_threadpool(query)
+    return resp.data or []
+
+
 async def list_active_appointments(limit: int = 300) -> list[dict]:
     """
     Sprint 6 / itens 24, 28 — busca conversas com agendamento ativo

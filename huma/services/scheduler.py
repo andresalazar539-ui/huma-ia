@@ -383,6 +383,197 @@ async def _run_nps_job() -> None:
     )
 
 
+# ================================================================
+# JOB: notif dono lead quente travado (Sprint 6 / item 23)
+# ================================================================
+
+# Critério: stage offer/closing + 8+ msgs no history + sem agendamento +
+# parado há 2h-24h. Tempo máximo 24h pra não notificar leads velhos
+# que dono já tratou ou desistiu.
+_STUCK_HOT_MIN_MSGS = 8
+
+
+async def _run_stuck_hot_lead_job() -> None:
+    """
+    Roda a cada 30min. Detecta leads 'quentes' que pararam de responder
+    e notifica dono pra intervir manualmente antes do lead esfriar.
+
+    Idempotência: Redis flag stuck_hot_alerted:{client_id}:{phone} TTL 24h
+    — dono recebe alerta 1x por lead, mesmo que job rode dezenas de vezes.
+    """
+    from huma.services import db_service as db
+    from huma.services import whatsapp_service as wa
+    from huma.core.orchestrator import _is_silent_hours
+
+    candidates = await db.list_hot_stuck_conversations(
+        hours_silent_min=2.0,
+        hours_silent_max=24.0,
+        limit=200,
+    )
+    if not candidates:
+        log.info("stuck_hot | nenhum candidato")
+        return
+
+    notified = 0
+    skipped_short = 0
+    skipped_silent = 0
+    skipped_dedup = 0
+    skipped_no_optin = 0
+    errors = 0
+
+    for row in candidates:
+        client_id = row.get("client_id", "")
+        phone = row.get("phone", "")
+        history = row.get("history") or []
+
+        if not client_id or not phone:
+            continue
+
+        # Filtra leads que não engajaram o suficiente pra serem 'quentes'
+        if len(history) < _STUCK_HOT_MIN_MSGS:
+            skipped_short += 1
+            continue
+
+        try:
+            flag_key = f"stuck_hot_alerted:{client_id}:{phone}"
+            if await cache.exists(flag_key):
+                skipped_dedup += 1
+                continue
+
+            client_data = await db.get_client(client_id)
+            if not client_data or not client_data.business_name:
+                continue
+
+            if not getattr(client_data, "notify_owner_on_stuck_lead", True):
+                skipped_no_optin += 1
+                continue
+
+            if not client_data.owner_phone:
+                continue
+
+            if _is_silent_hours(client_data):
+                skipped_silent += 1
+                continue
+
+            lead_name = row.get("lead_name_canonical", "") or "Lead"
+            stage = row.get("stage", "?")
+            msgs = len(history)
+
+            owner_msg = (
+                f"🔥 Lead quente parou de responder\n"
+                f"Lead: {lead_name}\n"
+                f"Stage: {stage}\n"
+                f"Mensagens: {msgs}\n"
+                f"Telefone: {phone}\n\n"
+                f"Talvez vale uma intervenção manual."
+            )
+            await wa.notify_owner(client_data.owner_phone, owner_msg, client_id=client_id)
+
+            # TTL 24h: alerta 1x por lead a cada janela de 24h
+            await cache.set_with_ttl(flag_key, "1", ttl=86400)
+
+            notified += 1
+            await asyncio.sleep(0.2)
+
+        except Exception as e:
+            errors += 1
+            log.warning(
+                f"stuck_hot | {client_id} | {phone} | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    log.info(
+        f"stuck_hot | notified={notified} | short={skipped_short} | "
+        f"dedup={skipped_dedup} | silent={skipped_silent} | "
+        f"no_optin={skipped_no_optin} | errors={errors} | "
+        f"total_candidates={len(candidates)}"
+    )
+
+
+# ================================================================
+# JOB: alerta conversa não-respondida (Sprint 6 / item 33)
+# ================================================================
+
+# Critério: última mensagem do history é do lead, parada há 2h-12h.
+# Significa que sistema não respondeu — possível bug, IA travada ou Twilio
+# falhou. Loga CRITICAL pra alerting (Railway logs / Datadog).
+_UNANSWERED_HOURS_SILENT_MIN = 2.0
+_UNANSWERED_HOURS_SILENT_MAX = 12.0
+
+
+async def _run_stuck_conversation_alert_job() -> None:
+    """
+    Roda a cada 1h. Detecta conversas onde lead mandou msg e sistema não
+    respondeu há 2h-12h. Loga CRITICAL pra investigar (não notifica dono
+    via WhatsApp pra evitar ruído — bug é nosso, não dele).
+
+    Idempotência: Redis flag unanswered_alerted:{client_id}:{phone} TTL 4h.
+    """
+    from huma.services import db_service as db
+
+    rows = await db.list_unanswered_conversations(
+        hours_silent_min=_UNANSWERED_HOURS_SILENT_MIN,
+        hours_silent_max=_UNANSWERED_HOURS_SILENT_MAX,
+        limit=200,
+    )
+    if not rows:
+        log.info("unanswered | nenhum candidato")
+        return
+
+    alerted = 0
+    skipped_assistant_last = 0
+    skipped_dedup = 0
+    skipped_empty_history = 0
+    errors = 0
+
+    for row in rows:
+        client_id = row.get("client_id", "")
+        phone = row.get("phone", "")
+        history = row.get("history") or []
+        stage = row.get("stage", "?")
+        last_msg_at = row.get("last_message_at", "?")
+
+        if not client_id or not phone:
+            continue
+
+        if not history:
+            skipped_empty_history += 1
+            continue
+
+        try:
+            # Última msg precisa ser do lead pra ser "sistema não respondeu"
+            last_role = history[-1].get("role", "") if isinstance(history[-1], dict) else ""
+            if last_role != "user":
+                skipped_assistant_last += 1
+                continue
+
+            flag_key = f"unanswered_alerted:{client_id}:{phone}"
+            if await cache.exists(flag_key):
+                skipped_dedup += 1
+                continue
+
+            log.critical(
+                f"UNANSWERED | {client_id} | {phone} | stage={stage} | "
+                f"last_user_msg_at={last_msg_at} | history_len={len(history)} | "
+                f"investigar bug ou IA travada"
+            )
+            await cache.set_with_ttl(flag_key, "1", ttl=14400)  # 4h
+            alerted += 1
+
+        except Exception as e:
+            errors += 1
+            log.warning(
+                f"unanswered | {client_id} | {phone} | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    log.info(
+        f"unanswered | alerted={alerted} | assistant_last={skipped_assistant_last} | "
+        f"dedup={skipped_dedup} | empty={skipped_empty_history} | errors={errors} | "
+        f"total={len(rows)}"
+    )
+
+
 # Jobs registrados. Tupla: (nome, fn_async, intervalo_segundos, ttl_lock_segundos)
 # - intervalo_segundos: de quanto em quanto tempo a task acorda
 # - ttl_lock_segundos: lock cluster TTL (deve ser maior que duração esperada do job)
@@ -393,6 +584,10 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("pre_appointment_reminder", _run_pre_appointment_reminder_job, 1800, 900),
     # Item 28 — NPS pós-atendimento: a cada 6h, lock 30min
     ("nps", _run_nps_job, 21600, 1800),
+    # Item 23 — lead quente travado: a cada 30min, lock 15min
+    ("stuck_hot_lead", _run_stuck_hot_lead_job, 1800, 900),
+    # Item 33 — alerta conversa não-respondida: a cada 1h, lock 30min
+    ("stuck_conversation_alert", _run_stuck_conversation_alert_job, 3600, 1800),
 ]
 
 

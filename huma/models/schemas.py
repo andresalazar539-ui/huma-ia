@@ -405,6 +405,14 @@ class ClientIdentity(BaseModel):
         default=True,
         description="Sprint 5 / item 22 — notificar dono quando lead cancela.",
     )
+    notify_owner_on_stuck_lead: bool = Field(
+        default=True,
+        description=(
+            "Sprint 6 / item 23 — notificar dono quando lead 'quente travado': "
+            "stage offer/closing, 8+ msgs, parado há 2h+, sem agendar. "
+            "Janela pra dono intervir manualmente antes do lead esfriar."
+        ),
+    )
     plan: str = Field(
         default="starter",
         description="Plano: starter, pro, scale, elite.",
