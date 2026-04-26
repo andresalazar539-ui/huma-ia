@@ -2900,6 +2900,156 @@ class TestSprint5OwnerNotifications:
         # Idempotency key gerada antes (str(uuid.uuid4()) acontece nos callers)
         assert "idempotency_key = str(uuid.uuid4())" in src
 
+    def test_compress_history_no_longer_blocks_turn(self):
+        """
+        Estrutural: orchestrator NÃO chama mais await ai.compress_history()
+        no caminho crítico do turn. Deve usar _compress_history_async em
+        background.
+        """
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+
+        # NÃO pode mais ter a chamada bloqueante na entrada do turn
+        forbidden = "conv.history, conv.history_summary, conv.lead_facts = await ai.compress_history"
+        assert forbidden not in src, (
+            "BUG VOLTOU: compress_history voltou a bloquear o turn. "
+            "Latência sobe 800-2000ms por turn quando comprime."
+        )
+
+        # Função async existe e é disparada via create_task
+        assert "_compress_history_async" in src
+        assert "asyncio.create_task(_compress_history_async" in src
+
+    def test_compress_history_async_uses_redis_lock(self):
+        """
+        Estrutural: _compress_history_async usa cache.acquire_lock pra evitar
+        compressões concorrentes do mesmo lead.
+        """
+        import inspect
+        from huma.core.orchestrator import _compress_history_async
+        src = inspect.getsource(_compress_history_async)
+        assert "cache.acquire_lock" in src
+        assert "compress_lock:" in src
+        assert "cache.release_lock" in src
+
+    def test_compress_history_async_skips_when_lock_busy(self):
+        """
+        Funcional: se lock ocupado, _compress_history_async retorna sem
+        chamar ai.compress_history.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.core.orchestrator import _compress_history_async
+
+        compress_called = {"flag": False}
+
+        async def fake_compress(*args):
+            compress_called["flag"] = True
+            return [], "", []
+
+        with patch("huma.core.orchestrator.cache.acquire_lock", new=AsyncMock(return_value=False)), \
+             patch("huma.core.orchestrator.cache.release_lock", new=AsyncMock()), \
+             patch("huma.services.ai_service.compress_history", new=fake_compress):
+            asyncio.run(_compress_history_async("c1", "5511999998888"))
+
+        assert compress_called["flag"] is False
+
+    def test_compress_history_async_skips_when_history_short(self):
+        """
+        Funcional: se history já <= limite (ja foi comprimido), pula compress.
+        Defesa contra dispatch duplicado.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.core.orchestrator import _compress_history_async
+
+        # Conv com history curta (3 msgs, < HISTORY_MAX_BEFORE_COMPRESS=6)
+        fake_conv = MagicMock()
+        fake_conv.history = [{"role": "user", "content": "oi"}, {"role": "assistant", "content": "oi"}, {"role": "user", "content": "tudo"}]
+        fake_conv.history_summary = ""
+        fake_conv.lead_facts = []
+
+        compress_called = {"flag": False}
+
+        async def fake_compress(*args):
+            compress_called["flag"] = True
+            return args[0], args[1], args[2]
+
+        with patch("huma.core.orchestrator.cache.acquire_lock", new=AsyncMock(return_value=True)), \
+             patch("huma.core.orchestrator.cache.release_lock", new=AsyncMock()), \
+             patch("huma.services.db_service.get_conversation", new=AsyncMock(return_value=fake_conv)), \
+             patch("huma.services.ai_service.compress_history", new=fake_compress):
+            asyncio.run(_compress_history_async("c1", "5511999998888"))
+
+        assert compress_called["flag"] is False  # história curta, não comprime
+
+    def test_compress_history_async_compresses_and_saves(self):
+        """
+        Funcional: history grande → compressa + salva conv.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.core.orchestrator import _compress_history_async
+
+        # 10 msgs > HISTORY_MAX_BEFORE_COMPRESS (6)
+        fake_conv = MagicMock()
+        fake_conv.history = [{"role": "user" if i%2==0 else "assistant", "content": f"msg {i}"} for i in range(10)]
+        fake_conv.history_summary = ""
+        fake_conv.lead_facts = []
+
+        async def fake_compress(history, summary, facts):
+            # Simula compressão real: retorna últimos 4 + summary novo + 1 fato
+            return history[-4:], "resumo", ["perfil: nome=Camila"]
+
+        save_calls = []
+
+        async def fake_save(conv):
+            save_calls.append({"history_len": len(conv.history), "summary": conv.history_summary})
+
+        with patch("huma.core.orchestrator.cache.acquire_lock", new=AsyncMock(return_value=True)), \
+             patch("huma.core.orchestrator.cache.release_lock", new=AsyncMock()), \
+             patch("huma.services.db_service.get_conversation", new=AsyncMock(return_value=fake_conv)), \
+             patch("huma.services.db_service.save_conversation", new=fake_save), \
+             patch("huma.services.ai_service.compress_history", new=fake_compress):
+            asyncio.run(_compress_history_async("c1", "5511999998888"))
+
+        # Comprimiu (history reduzida pra 4) e salvou
+        assert len(save_calls) == 1
+        assert save_calls[0]["history_len"] == 4
+        assert save_calls[0]["summary"] == "resumo"
+
+    def test_compress_history_async_releases_lock_on_exception(self):
+        """
+        Funcional: se compress_history levanta, lock ainda é liberado.
+        Sem isso, lock fica preso 60s e bloqueia compressões futuras.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from huma.core.orchestrator import _compress_history_async
+
+        fake_conv = MagicMock()
+        fake_conv.history = [{"role": "user", "content": f"msg {i}"} for i in range(10)]
+        fake_conv.history_summary = ""
+        fake_conv.lead_facts = []
+
+        release_called = {"flag": False}
+
+        async def fake_release(key):
+            release_called["flag"] = True
+
+        async def fake_compress_fail(*args):
+            raise RuntimeError("compress crashed")
+
+        with patch("huma.core.orchestrator.cache.acquire_lock", new=AsyncMock(return_value=True)), \
+             patch("huma.core.orchestrator.cache.release_lock", new=fake_release), \
+             patch("huma.services.db_service.get_conversation", new=AsyncMock(return_value=fake_conv)), \
+             patch("huma.services.ai_service.compress_history", new=fake_compress_fail):
+            # Não pode levantar (silent fail)
+            asyncio.run(_compress_history_async("c1", "5511999998888"))
+
+        assert release_called["flag"] is True
+
     def test_whatsapp_service_uses_retry(self):
         """Estrutural: send_text e send_image usam decorator with_retry."""
         import inspect
