@@ -494,19 +494,6 @@ REGRAS CUSTOM:
     if vertical_tone:
         prompt += vertical_tone
 
-    # ── Playbook de vendas avançado (cruzamento clínica + vendas pro) ──
-    # Feature flag: ENABLE_SALES_PLAYBOOK. Default false em prod até validar.
-    # Adiciona ~1500 tokens cacheados quando vertical=clinica e flag ativa.
-    # Cobre: leitura DISC do lead, funil consciente (SPIN/Sandler/Challenger),
-    # playbook de objeções (preço/medo/tempo/resultado), fechamento natural.
-    from huma.config import ENABLE_SALES_PLAYBOOK
-    if ENABLE_SALES_PLAYBOOK:
-        from huma.services.sales_playbook import build_clinic_sales_playbook
-        # conv não é parametro aqui — passa None, playbook ignora.
-        playbook = build_clinic_sales_playbook(identity, conv=None)
-        if playbook:
-            prompt += playbook
-
     # ── Perfis de cliente por vertical (v11.3 — também engrossa static pra cache Haiku) ──
     vertical_profiles = _build_vertical_compressed(identity.category)
     if vertical_profiles:
