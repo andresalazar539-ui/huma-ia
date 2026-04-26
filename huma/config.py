@@ -56,6 +56,11 @@ SAFE_MODE = os.getenv("SAFE_MODE", "false").lower() == "true"
 PLAYGROUND_ENABLED = os.getenv("PLAYGROUND_ENABLED", "false").lower() == "true"
 PLAYGROUND_TOKEN = os.getenv("PLAYGROUND_TOKEN", "")
 
+# Sprint vendas — playbook avançado pra clínica de estética.
+# Quando true, build_static_prompt injeta o playbook (~1500 tokens cacheados)
+# pra clientes com category=clinica. Default false em prod até validação.
+ENABLE_SALES_PLAYBOOK = os.getenv("ENABLE_SALES_PLAYBOOK", "false").lower() == "true"
+
 # ── Modelos de IA ──
 AI_MODEL_PRIMARY = os.getenv("AI_MODEL_PRIMARY", "claude-sonnet-4-5-20250929")  # Sonnet (complexo)
 AI_MODEL_FAST = os.getenv("AI_MODEL_FAST", "claude-haiku-4-5-20251001")        # Haiku (simples)

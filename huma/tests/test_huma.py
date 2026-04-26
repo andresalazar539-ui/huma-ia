@@ -3235,6 +3235,130 @@ class TestSprint5OwnerNotifications:
         assert save_calls[0]["history_len"] == 4
         assert save_calls[0]["summary"] == "resumo"
 
+    def test_sales_playbook_returns_empty_for_non_clinic(self):
+        """
+        Estrutural: playbook só ativa pra category=clinica.
+        Outras verticais (ecommerce, salao, etc.) recebem string vazia.
+        """
+        from huma.services.sales_playbook import build_clinic_sales_playbook
+
+        for cat in [BusinessCategory.ECOMMERCE, BusinessCategory.SALAO_BARBEARIA]:
+            ci = ClientIdentity(client_id="x", category=cat)
+            result = build_clinic_sales_playbook(ci, conv=None)
+            assert result == "", f"playbook nao deveria ativar pra {cat}, retornou {len(result)} chars"
+
+    def test_sales_playbook_returns_content_for_clinic(self):
+        """
+        Funcional: playbook retorna conteúdo substancial pra clínica.
+        Faixa aceitável: 3k-9k chars (~750-2250 tokens). Acima vira ruído
+        no prompt; abaixo provavelmente ficou raso.
+        """
+        from huma.services.sales_playbook import build_clinic_sales_playbook
+
+        ci = ClientIdentity(client_id="x", category=BusinessCategory.CLINICA)
+        result = build_clinic_sales_playbook(ci, conv=None)
+        assert 3000 < len(result) < 9000, (
+            f"playbook esperado entre 3k-9k chars, veio com {len(result)}"
+        )
+
+    def test_sales_playbook_covers_all_4_blocks(self):
+        """Estrutural: todos os 4 blocos chave aparecem no playbook clínica."""
+        from huma.services.sales_playbook import build_clinic_sales_playbook
+        ci = ClientIdentity(client_id="x", category=BusinessCategory.CLINICA)
+        playbook = build_clinic_sales_playbook(ci, conv=None)
+        # Marcadores de cada bloco
+        assert "LEITURA DO LEAD" in playbook
+        assert "FUNIL CONSCIENTE" in playbook
+        assert "PLAYBOOK DE OBJEÇÕES" in playbook
+        assert ("FECHAMENTO NATURAL" in playbook or "FECHAMENTO" in playbook)
+
+    def test_sales_playbook_has_disc_profiles(self):
+        """Funcional: playbook menciona os 4 perfis DISC."""
+        from huma.services.sales_playbook import build_clinic_sales_playbook
+        ci = ClientIdentity(client_id="x", category=BusinessCategory.CLINICA)
+        playbook = build_clinic_sales_playbook(ci, conv=None)
+        for profile in ["DOMINANTE", "INFLUENTE", "ESTÁVEL", "CONFORMISTA"]:
+            assert profile in playbook, f"perfil {profile} ausente"
+
+    def test_sales_playbook_has_4_objection_categories(self):
+        """Funcional: playbook cobre as 4 objeções (preço/medo/tempo/resultado)."""
+        from huma.services.sales_playbook import build_clinic_sales_playbook
+        ci = ClientIdentity(client_id="x", category=BusinessCategory.CLINICA)
+        playbook = build_clinic_sales_playbook(ci, conv=None)
+        for objection in ["PREÇO", "MEDO", "TEMPO", "RESULTADO"]:
+            assert objection in playbook, f"objeção {objection} ausente"
+
+    def test_sales_playbook_forbids_dangerous_words(self):
+        """
+        Funcional CRITICO: playbook lista palavras proibidas (CFM/CRM compliance).
+        IA NUNCA pode prometer "resultado garantido" ou usar vocativos íntimos.
+        """
+        from huma.services.sales_playbook import build_clinic_sales_playbook
+        ci = ClientIdentity(client_id="x", category=BusinessCategory.CLINICA)
+        playbook = build_clinic_sales_playbook(ci, conv=None)
+        # As proibições têm que estar EXPLÍCITAS
+        for forbidden in ["resultado garantido", "linda", "flor", "querida"]:
+            assert forbidden in playbook, f"proibição '{forbidden}' não está explícita"
+
+    def test_sales_playbook_disabled_by_default_in_static_prompt(self):
+        """
+        Estrutural: feature flag default false. Static prompt NÃO inclui playbook
+        a menos que ENABLE_SALES_PLAYBOOK=true.
+        """
+        from unittest.mock import patch
+        from huma.services.ai_service import build_static_prompt
+
+        ci = ClientIdentity(
+            client_id="x",
+            business_name="Clínica Test",
+            category=BusinessCategory.CLINICA,
+            tone_of_voice="Acolhedor",
+        )
+
+        # Flag false (default) → playbook NÃO entra
+        with patch("huma.config.ENABLE_SALES_PLAYBOOK", False):
+            prompt = build_static_prompt(ci)
+            assert "PLAYBOOK DE VENDAS" not in prompt, (
+                "playbook entrou no prompt mesmo com flag false"
+            )
+
+    def test_sales_playbook_active_when_flag_on_and_clinic(self):
+        """Funcional: flag on + clínica → playbook entra no static."""
+        from unittest.mock import patch
+        from huma.services.ai_service import build_static_prompt
+
+        ci = ClientIdentity(
+            client_id="x",
+            business_name="Clínica Test",
+            category=BusinessCategory.CLINICA,
+            tone_of_voice="Acolhedor",
+        )
+
+        # Patcheamos o módulo onde a flag é IMPORTADA dentro do build_static_prompt
+        with patch("huma.config.ENABLE_SALES_PLAYBOOK", True):
+            prompt = build_static_prompt(ci)
+            assert "PLAYBOOK DE VENDAS" in prompt, (
+                "playbook NÃO entrou mesmo com flag true e category=clinica"
+            )
+            # Marcadores chave devem aparecer no prompt final
+            assert "LEITURA DO LEAD" in prompt
+            assert "FUNIL CONSCIENTE" in prompt
+
+    def test_sales_playbook_skip_when_flag_on_but_not_clinic(self):
+        """Funcional: flag on mas vertical=ecommerce → playbook NÃO entra."""
+        from unittest.mock import patch
+        from huma.services.ai_service import build_static_prompt
+
+        ci = ClientIdentity(
+            client_id="x",
+            business_name="Loja Test",
+            category=BusinessCategory.ECOMMERCE,
+        )
+
+        with patch("huma.config.ENABLE_SALES_PLAYBOOK", True):
+            prompt = build_static_prompt(ci)
+            assert "PLAYBOOK DE VENDAS — CLÍNICA" not in prompt
+
     def test_compress_history_passes_previous_summary_to_haiku(self):
         """
         Funcional CRITICO: compress_history passa SUMMARY ANTERIOR pro
