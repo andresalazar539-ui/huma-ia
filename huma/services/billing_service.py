@@ -272,15 +272,29 @@ async def check_conversations(client_id: str) -> dict:
 
     Sprint 2 / item 4 — cache distribuído via Redis.
     Fallback automático: dict em memória se Redis off (preserva dev).
+
+    HOTFIX bug crítico: cache.get_int retornava 0 quando chave NÃO EXISTIA
+    (cache miss em Redis novo/limpo). Código tratava como "saldo zerado" e
+    bloqueava atendimento de cliente com saldo positivo no Supabase.
+    Fix: usar cache.get_value (retorna None pra chave inexistente) e
+    distinguir cache-miss de saldo-zerado-real.
     """
     import time as _t
 
     redis_key = f"wallet_bal:{client_id}"
 
     # ── 1. Tenta Redis primeiro ──
-    cached = await cache.get_int(redis_key)
-    if cached >= 0:  # >= 0 = hit válido (saldo zerado é resposta válida)
-        return {"has_conversations": cached >= 1, "balance": cached}
+    # IMPORTANTE: get_value retorna None se chave não existe; "0" se cache de
+    # saldo zerado real foi salvo. NÃO usar get_int aqui (retorna 0 em ambos
+    # os casos = bug crítico do Sprint 2).
+    cached_raw = await cache.get_value(redis_key)
+    if cached_raw is not None:
+        try:
+            cached = int(cached_raw)
+            return {"has_conversations": cached >= 1, "balance": cached}
+        except (ValueError, TypeError):
+            # Valor corrompido no cache — segue pra Supabase
+            pass
 
     # ── 2. Fallback: cache em memória local (legacy, só usado se Redis off) ──
     cache_key = f"_convs_{client_id}"

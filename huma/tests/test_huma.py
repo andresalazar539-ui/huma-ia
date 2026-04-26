@@ -3235,6 +3235,102 @@ class TestSprint5OwnerNotifications:
         assert save_calls[0]["history_len"] == 4
         assert save_calls[0]["summary"] == "resumo"
 
+    def test_check_conversations_does_not_use_get_int_fallback_to_zero(self):
+        """
+        Regressão CRÍTICA: bug do Sprint 2 fazia check_conversations bloquear
+        atendimento quando Redis tinha cache vazio (chave não existia).
+
+        Causa: get_int retorna 0 pra chave-inexistente E pra saldo-zero-real.
+        Código tratava ambos como hit, retornando has_conversations=False.
+
+        Fix: usa get_value (retorna None pra inexistente). Esse teste garante
+        que a regra "cache miss = busca Supabase" não regrida.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import billing_service
+
+        # Cache miss simulado (Redis ON mas chave nunca foi populada)
+        async def fake_get_value(key):
+            return None  # chave NÃO existe
+
+        async def fake_get_balance(client_id):
+            return 100  # cliente tem saldo de 100 conversas no Supabase
+
+        async def fake_set_with_ttl(key, value, ttl):
+            pass
+
+        # Limpa cache memória pra forçar buscar
+        if hasattr(billing_service.check_conversations, '_cache'):
+            billing_service.check_conversations._cache.clear()
+
+        with patch("huma.services.billing_service.cache.get_value", new=fake_get_value), \
+             patch("huma.services.billing_service.cache.set_with_ttl", new=fake_set_with_ttl), \
+             patch("huma.services.billing_service.get_balance", new=fake_get_balance):
+            result = asyncio.run(billing_service.check_conversations("c_test_miss"))
+
+        # Deve ter ido pro Supabase e retornado saldo real, NÃO bloqueado
+        assert result["has_conversations"] is True, (
+            f"BUG VOLTOU: cache miss → Supabase ignorado → bloqueio injusto. "
+            f"Resultado: {result}"
+        )
+        assert result["balance"] == 100
+
+    def test_check_conversations_respects_real_zero_in_cache(self):
+        """
+        Funcional: se cache TEM "0" salvo (saldo zerado real), respeitar.
+        NÃO buscar Supabase de novo. Isso é o comportamento esperado do cache.
+        """
+        import asyncio
+        from unittest.mock import patch, AsyncMock
+        from huma.services import billing_service
+
+        async def fake_get_value(key):
+            return "0"  # cache tem saldo zerado salvo
+
+        get_balance_called = {"flag": False}
+
+        async def fake_get_balance(client_id):
+            get_balance_called["flag"] = True
+            return 999  # se chamar Supabase erra (deveria usar cache)
+
+        if hasattr(billing_service.check_conversations, '_cache'):
+            billing_service.check_conversations._cache.clear()
+
+        with patch("huma.services.billing_service.cache.get_value", new=fake_get_value), \
+             patch("huma.services.billing_service.get_balance", new=fake_get_balance):
+            result = asyncio.run(billing_service.check_conversations("c_zero"))
+
+        assert result["has_conversations"] is False
+        assert result["balance"] == 0
+        assert get_balance_called["flag"] is False, "Supabase chamado quando cache tinha valor"
+
+    def test_check_conversations_uses_supabase_when_redis_off(self):
+        """Funcional: Redis off (get_value retorna None) → busca Supabase."""
+        import asyncio
+        from unittest.mock import patch
+        from huma.services import billing_service
+
+        async def fake_get_value(key):
+            return None
+
+        async def fake_get_balance(client_id):
+            return 50
+
+        async def fake_set_with_ttl(key, value, ttl):
+            pass
+
+        if hasattr(billing_service.check_conversations, '_cache'):
+            billing_service.check_conversations._cache.clear()
+
+        with patch("huma.services.billing_service.cache.get_value", new=fake_get_value), \
+             patch("huma.services.billing_service.cache.set_with_ttl", new=fake_set_with_ttl), \
+             patch("huma.services.billing_service.get_balance", new=fake_get_balance):
+            result = asyncio.run(billing_service.check_conversations("c_redis_off"))
+
+        assert result["has_conversations"] is True
+        assert result["balance"] == 50
+
     def test_sales_playbook_returns_empty_for_non_clinic(self):
         """
         Estrutural: playbook só ativa pra category=clinica.
