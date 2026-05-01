@@ -313,6 +313,87 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 tier=tier,
             )
 
+            # ── PT-BR JUDGE (v12.x) ──
+            # Camada de defesa: depois que Haiku gera resposta, um Haiku
+            # juiz avalia se tem erro de português. Se sim, regenera com
+            # Sonnet. Em qualquer falha → mantém Haiku (lead nunca fica
+            # sem resposta).
+            # Só roda quando a resposta foi gerada por Haiku (use_sonnet=False).
+            from huma.config import (
+                PT_JUDGE_ENABLED,
+                PT_JUDGE_TIMEOUT_SEC,
+                PT_JUDGE_RETRY_TIMEOUT_SEC,
+            )
+            from huma.services.portuguese_judge import judge_response
+
+            if PT_JUDGE_ENABLED and not use_sonnet:
+                _parts = ai_result.get("reply_parts") or []
+                if not _parts:
+                    _single = ai_result.get("reply") or ""
+                    if _single:
+                        _parts = [_single]
+
+                _has_err, _reason = await judge_response(
+                    _parts,
+                    timeout_sec=PT_JUDGE_TIMEOUT_SEC,
+                )
+
+                if _has_err:
+                    log.warning(
+                        f"pt_judge|{phone}|verdict=error|reason={_reason}|"
+                        f"action=retry_sonnet"
+                    )
+                    try:
+                        _retry = await asyncio.wait_for(
+                            ai.generate_response(
+                                client_data, conv, unified_text,
+                                image_url=unified_image,
+                                use_fast_model=False,  # força Sonnet
+                                tier=tier,
+                            ),
+                            timeout=PT_JUDGE_RETRY_TIMEOUT_SEC,
+                        )
+                        # Confirma que Sonnet não voltou também com erro
+                        _retry_parts = _retry.get("reply_parts") or []
+                        if not _retry_parts:
+                            _retry_single = _retry.get("reply") or ""
+                            if _retry_single:
+                                _retry_parts = [_retry_single]
+
+                        _has_err_retry, _retry_reason = await judge_response(
+                            _retry_parts,
+                            timeout_sec=PT_JUDGE_TIMEOUT_SEC,
+                        )
+
+                        if not _has_err_retry:
+                            ai_result = _retry
+                            log.info(
+                                f"pt_judge|{phone}|outcome=sonnet_replaced_haiku"
+                            )
+                            # Conta a chamada extra no billing
+                            await billing.increment_ia_calls(phone)
+                            await billing.log_usage(
+                                client_id,
+                                billing.UsageType.ANTHROPIC_SONNET,
+                                cost_usd=0.003,
+                            )
+                        else:
+                            log.warning(
+                                f"pt_judge|{phone}|outcome=sonnet_also_failed|"
+                                f"reason={_retry_reason}|keeping=haiku_original"
+                            )
+                    except asyncio.TimeoutError:
+                        log.warning(
+                            f"pt_judge|{phone}|outcome=sonnet_timeout|"
+                            f"timeout_sec={PT_JUDGE_RETRY_TIMEOUT_SEC}|"
+                            f"keeping=haiku_original"
+                        )
+                    except Exception as _e:
+                        log.error(
+                            f"pt_judge|{phone}|outcome=retry_exception|"
+                            f"err={type(_e).__name__}: {_e}|keeping=haiku_original"
+                        )
+
             # Sprint 2 / item 3 — increment_ia_calls virou async
             await billing.increment_ia_calls(phone)
             model_type = billing.UsageType.ANTHROPIC_SONNET if use_sonnet else billing.UsageType.ANTHROPIC_HAIKU

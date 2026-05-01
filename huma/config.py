@@ -108,3 +108,18 @@ if not REDIS_URL:
     logging.warning("REDIS_URL não configurado. Cache e rate limit desabilitados.")
     # ── ElevenLabs ──
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
+
+# ── PT-BR Judge (LLM-as-judge) ──
+# Avaliador de português que roda APÓS cada resposta do Haiku.
+# Se detectar erro → orchestrator regenera com Sonnet.
+# Em qualquer falha (timeout, parse) → mantém Haiku (degrade gracioso).
+
+# Liga/desliga a camada inteira. Em emergência: PT_JUDGE_ENABLED=false
+PT_JUDGE_ENABLED = os.getenv("PT_JUDGE_ENABLED", "true").lower() == "true"
+
+# Timeout do juiz (Haiku avaliando). Default 3s — Haiku responde em <1s típico.
+PT_JUDGE_TIMEOUT_SEC = float(os.getenv("PT_JUDGE_TIMEOUT_SEC", "3.0"))
+
+# Timeout do retry com Sonnet quando juiz aponta erro.
+# Default 8s — Sonnet leva 3-5s típico, 8s dá margem.
+PT_JUDGE_RETRY_TIMEOUT_SEC = float(os.getenv("PT_JUDGE_RETRY_TIMEOUT_SEC", "8.0"))
