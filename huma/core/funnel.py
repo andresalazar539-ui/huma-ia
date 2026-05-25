@@ -92,10 +92,11 @@ def build_dynamic_discovery(identity: ClientIdentity) -> FunnelStageConfig:
     - Se o lead já chegou dizendo o que quer: não pergunte o óbvio. Avance.
 
   VERIFICAÇÃO DE AGENDA (independente de stage):
-    Os horários LIVRES reais aparecem no bloco AGENDA REAL DO CLIENTE do seu contexto.
-    Ofereça SEMPRE a partir dessa lista, filtrando pela preferência do lead (dia, turno,
-    urgência, recusa de dia). NUNCA invente horário. NUNCA diga que algo está ocupado se
-    não estiver fora da lista. Interprete o sentido do pedido — exemplos são ilustrações."""
+    SE o lead pedir disponibilidade ou der urgência, consulte o bloco AGENDA REAL DO
+    CLIENTE do contexto e ofereça horários reais filtrados pela preferência dele.
+    CASO CONTRÁRIO, NÃO mencione horário — siga o discovery normal (rapport, descoberta,
+    coleta de dados, pergunta natural). A psicologia de rapport SEMPRE vem antes de
+    empurrar horário. NUNCA invente horário fora da lista."""
 
     if identity.collect_before_offer:
         instructions += "\n  SÓ avance quando tiver TUDO acima coletado."
@@ -142,10 +143,11 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Se tem promoção/condição: mencione como escassez natural, não como desconto desesperado.\n"
         "\n"
         "  VERIFICAÇÃO DE AGENDA:\n"
-        "    Os horários LIVRES reais aparecem no bloco AGENDA REAL DO CLIENTE do seu contexto.\n"
-        "    Ofereça SEMPRE a partir dessa lista, filtrando pela preferência do lead (dia, turno,\n"
-        "    urgência, recusa de dia). NUNCA invente horário. NUNCA diga que algo está ocupado se\n"
-        "    não estiver fora da lista. Interprete o sentido do pedido — exemplos são ilustrações."
+        "    SE o lead pedir disponibilidade, der urgência, escolher um dia, ou estiver\n"
+        "    fechando agendamento, consulte o bloco AGENDA REAL DO CLIENTE do contexto e\n"
+        "    ofereça horários reais filtrados pela preferência dele. CASO CONTRÁRIO, NÃO\n"
+        "    mencione horário — continue a psicologia normal da stage (apresentação,\n"
+        "    desejo, pergunta de avanço). NUNCA invente horário fora da lista."
     )
 
     # ── Closing: facilitar, não pressionar ──
@@ -181,10 +183,11 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Silêncio depois do preço é NORMAL. Não quebre com mais argumentos.\n"
         "\n"
         "  VERIFICAÇÃO DE AGENDA:\n"
-        "    Os horários LIVRES reais aparecem no bloco AGENDA REAL DO CLIENTE do seu contexto.\n"
-        "    Ofereça SEMPRE a partir dessa lista, filtrando pela preferência do lead (dia, turno,\n"
-        "    urgência, recusa de dia). NUNCA invente horário. NUNCA diga que algo está ocupado se\n"
-        "    não estiver fora da lista. Interprete o sentido do pedido — exemplos são ilustrações."
+        "    SE o lead pedir disponibilidade, der urgência, escolher um dia, ou estiver\n"
+        "    fechando agendamento, consulte o bloco AGENDA REAL DO CLIENTE do contexto e\n"
+        "    ofereça horários reais filtrados pela preferência dele. CASO CONTRÁRIO, NÃO\n"
+        "    mencione horário — continue a psicologia normal da stage (apresentação,\n"
+        "    desejo, pergunta de avanço). NUNCA invente horário fora da lista."
     )
 
     committed_instructions = (

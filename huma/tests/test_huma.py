@@ -1588,7 +1588,7 @@ class TestWeekdayGrounding:
         assert out == ""
 
     def test_agenda_text_injects_real_slots(self):
-        """Stage offer + agenda ok → texto contém horários reais e a regra."""
+        """Stage offer + agenda ok → texto contém horários reais, é condicional."""
         import asyncio
         from unittest.mock import MagicMock, patch, AsyncMock
         from huma.services.ai_service import _build_agenda_text
@@ -1604,8 +1604,11 @@ class TestWeekdayGrounding:
              patch("huma.services.scheduling_service.get_agenda_snapshot", new=AsyncMock(return_value=snap)):
             out = asyncio.run(_build_agenda_text(identity, conv))
         assert "09:00" in out
-        assert "REGRA ABSOLUTA" in out
         assert "terça-feira" in out
+        # Texto deve ser CONDICIONAL — só age quando lead pedir agendamento,
+        # senão IA segue rapport/psicologia normal da stage.
+        assert "QUANDO" in out
+        assert "rapport" in out or "psicologia" in out
 
 
 # ================================================================
