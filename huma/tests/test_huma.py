@@ -965,26 +965,31 @@ class TestOutputSanitizer:
 class TestCheckAvailability:
     """Testa a action check_availability e seu handler."""
 
-    def test_check_availability_removed_from_tool_description(self):
-        """check_availability foi removida da tool (agenda real vive no prompt agora)."""
+    def test_check_availability_in_tool_description(self):
+        """Tool description inclui check_availability (structural contract)."""
         from huma.services.ai_service import _build_reply_tool_compact
         from huma.models.schemas import MessagingStyle
+
         tool = _build_reply_tool_compact(MessagingStyle.SPLIT)
         actions_desc = tool["input_schema"]["properties"]["actions"]["description"]
-        assert "check_availability" not in actions_desc
-        # As outras actions continuam intactas
+
+        assert "check_availability" in actions_desc
+        assert "urgency" in actions_desc
+        # Não regride as outras actions
         assert "create_appointment" in actions_desc
         assert "cancel_appointment" in actions_desc
         assert "generate_payment" in actions_desc
         assert "send_media" in actions_desc
+        assert "exclude_weekdays" in actions_desc
 
-    def test_offer_instructions_reference_real_agenda(self, clinica_identity):
-        """Stage offer aponta pra AGENDA REAL DO CLIENTE (não mais check_availability)."""
+    def test_offer_instructions_mention_check_availability(self, clinica_identity):
+        """Stage offer instrui IA a emitir check_availability."""
         from huma.core.funnel import get_stages
         stages = get_stages(clinica_identity)
         offer = [s for s in stages if s.name == "offer"][0]
-        assert "AGENDA REAL DO CLIENTE" in offer.instructions
-        assert "check_availability" not in offer.instructions
+        assert "check_availability" in offer.instructions
+        assert "VERIFICAÇÃO DE AGENDA" in offer.instructions
+        assert 'NUNCA diga "vou verificar e te retorno"' in offer.instructions
 
     def test_find_next_available_slots_no_credentials(self, monkeypatch):
         """Sem credenciais Google, retorna no_credentials graciosamente."""
@@ -1543,26 +1548,8 @@ class TestWeekdayGrounding:
         assert out["count"] == 2
         assert any("terça-feira" in s for s in out["slots"])
 
-    def test_agenda_text_runs_in_discovery(self):
-        """discovery agora ATIVA a agenda (lead pode pedir horário cedo)."""
-        import asyncio
-        from unittest.mock import MagicMock, patch, AsyncMock
-        from huma.services.ai_service import _build_agenda_text
-        from huma.models.schemas import Conversation
-        identity = MagicMock()
-        identity.enable_scheduling = True
-        identity.client_id = "x"
-        identity.business_schedule = None
-        conv = Conversation(client_id="x", phone="1", stage="discovery")
-        snap = {"status": "ok", "slots": ["21/04/2026 (terça-feira) 09:00"], "count": 1}
-        with patch("huma.services.redis_service.get_value", new=AsyncMock(return_value=None)), \
-             patch("huma.services.redis_service.set_with_ttl", new=AsyncMock()), \
-             patch("huma.services.scheduling_service.get_agenda_snapshot", new=AsyncMock(return_value=snap)):
-            out = asyncio.run(_build_agenda_text(identity, conv))
-        assert "09:00" in out
-
-    def test_agenda_text_skips_terminal_stage(self):
-        """Stage terminal (won/lost) não injeta agenda."""
+    def test_agenda_text_skips_non_scheduling_stage(self):
+        """Stage fora de offer/closing/committed → texto vazio."""
         import asyncio
         from unittest.mock import MagicMock
         from huma.services.ai_service import _build_agenda_text
@@ -1570,7 +1557,7 @@ class TestWeekdayGrounding:
         identity = MagicMock()
         identity.enable_scheduling = True
         identity.client_id = "x"
-        conv = Conversation(client_id="x", phone="1", stage="won")
+        conv = Conversation(client_id="x", phone="1", stage="discovery")
         out = asyncio.run(_build_agenda_text(identity, conv))
         assert out == ""
 
