@@ -1368,6 +1368,22 @@ class TestWeekdayGrounding:
         assert "09:00" in m
         assert "NÃO invente" in m
 
+    def test_build_specific_slot_marker_free_instructs_direct_confirmation(self):
+        """Marker de livre dá instrução numerada + exemplo + 3 negações pra evitar 'vou verificar'."""
+        from huma.core.orchestrator import _build_specific_slot_marker
+        m = _build_specific_slot_marker({
+            "status": "free", "requested": "28/05/2026 (quinta-feira) 15:00",
+        })
+        assert "LIVRE" in m
+        assert "28/05/2026" in m
+        # Instrução estruturada com passos numerados
+        assert "1." in m and "2." in m
+        # Exemplo concreto pra IA copiar o tom
+        assert "Exemplo:" in m or "exemplo:" in m
+        # 3 negações que matam os comportamentos errados vistos em produção
+        assert "vou verificar" in m  # NÃO diga "vou verificar"
+        assert "confirmar se serve" in m  # NÃO peça pro lead confirmar se serve
+
     def test_handler_specific_slot_does_not_call_generic(self):
         """requested_datetime presente e conclusivo → NÃO chama find_next_available_slots."""
         import asyncio

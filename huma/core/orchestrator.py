@@ -1900,10 +1900,14 @@ def _build_specific_slot_marker(specific: dict) -> str:
 
     if status == "free":
         return (
-            f"[AGENDA CONSULTADA — o horário que o lead pediu ({requested}) está LIVRE. "
-            f"Confirme que serve e siga pra coletar nome+email pra fechar (action "
-            f"create_appointment). NÃO diga que está confirmado — quem confirma é o "
-            f"sistema ao criar o evento.]"
+            f"[AGENDA CONSULTADA — {requested} está LIVRE no calendário do dono.\n"
+            f"NA SUA PRÓXIMA RESPOSTA:\n"
+            f"  1. Comunique ao lead que o horário ESTÁ DISPONÍVEL (afirmação direta).\n"
+            f"  2. Em seguida, peça o email pra finalizar o agendamento.\n"
+            f"Exemplo: \"Quinta às 15h tá livre! Qual seu email pra eu fechar?\"\n"
+            f"NÃO diga \"vou verificar\" nem \"deixa eu checar\" — você JÁ verificou.\n"
+            f"NÃO diga \"está confirmado\" — quem confirma é o sistema ao emitir create_appointment.\n"
+            f"NÃO peça pro lead \"confirmar se serve\" — ele já pediu esse horário, óbvio que serve.]"
         )
 
     if status == "outside_hours":
