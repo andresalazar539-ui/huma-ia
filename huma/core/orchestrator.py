@@ -157,7 +157,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
             await billing.debit_conversation(client_id)
 
-        max_ia = plan_config.get("max_ia_calls_per_conversation", 30)
+        max_ia = plan_config.get("max_ia_calls_per_conversation", 50)
         # Sprint 2 / item 3 — check_ia_limit virou async (Redis distribuído)
         ia_limit_reached = not await billing.check_ia_limit(phone, max_ia)
 
@@ -277,7 +277,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 await wa.notify_owner(
                     owner,
                     f"⚠️ Lead {phone} atingiu o limite diário de IA "
-                    f"(30 msgs/dia). Conversa pausada — assume direto pelo "
+                    f"(50 msgs/dia). Conversa pausada — assume direto pelo "
                     f"WhatsApp. Mensagens seguintes do lead não receberão "
                     f"resposta automática hoje.",
                     client_id=client_id,
