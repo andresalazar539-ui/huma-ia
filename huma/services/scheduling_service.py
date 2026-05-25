@@ -1130,3 +1130,105 @@ async def find_next_available_slots(
         err_type = type(e).__name__
         log.error(f"check_availability erro | {err_type}: {str(e)[:200]}")
         return {"status": "error", "slots": [], "count": 0, "detail": f"{err_type}: {str(e)[:100]}"}
+
+
+def _format_slot(dt: datetime) -> str:
+    """
+    Formata um datetime como 'dd/mm/YYYY (dia-da-semana pt-br) HH:MM'.
+
+    Mesmo formato anti-alucinação do fix 7.5 (dia-da-semana explícito pra
+    Claude não confundir 21/04 terça com quarta).
+
+    Args:
+        dt: datetime naïve (timezone já normalizado pelo parser).
+
+    Returns:
+        String formatada, ex: '21/04/2026 (terça-feira) 14:00'.
+    """
+    return f"{dt.strftime('%d/%m/%Y')} ({_WEEKDAY_NAMES_PT[dt.weekday()]}) {dt.strftime('%H:%M')}"
+
+
+async def check_specific_slot(
+    requested_datetime: str,
+    duration_minutes: int = 60,
+    schedule_config: BusinessScheduleConfig | None = None,
+) -> dict:
+    """
+    Verifica a disponibilidade de UM horário específico pedido pelo lead (read-only).
+
+    Diferente de find_next_available_slots (que devolve os próximos N livres
+    cronológicos, ignorando o horário pedido), esta função responde a VERDADE
+    sobre o slot que o lead nomeou ("segunda 14h"): livre, ocupado ou fora do
+    horário de atendimento. Se indisponível, devolve alternativas reais.
+    NÃO exige nome/email — é read-only na agenda do dono, igual check_availability.
+
+    Args:
+        requested_datetime: horário pedido, no mesmo formato aceito por
+            create_appointment (ISO, '21/04/2026 14:00', '21/04/2026 às 14h').
+        duration_minutes: duração da consulta (default 60; config sobrepõe).
+        schedule_config: horário de funcionamento do dono (opcional).
+
+    Returns:
+        {"status": "free", "requested": "<fmt>"}
+        {"status": "busy", "requested": "<fmt>", "alternatives": ["<fmt>", ...]}
+        {"status": "outside_hours", "requested": "<fmt>", "reason": "...", "alternatives": [...]}
+        {"status": "unparseable", "requested": "<raw>"}   # caller cai no fallback genérico
+        {"status": "no_credentials"}
+        {"status": "error", "detail": "<ExcName>"}
+
+    Raises:
+        Nunca propaga exceção — erros viram status="error" pra não bloquear atendimento.
+    """
+    raw = (requested_datetime or "").strip()
+    if not raw:
+        return {"status": "unparseable", "requested": raw}
+
+    dt = _parse_datetime(raw)
+    if dt is None:
+        log.info(f"check_specific_slot | datetime não parseável | raw={raw[:40]}")
+        return {"status": "unparseable", "requested": raw}
+
+    credentials, _ = _build_google_credentials()
+    if not credentials:
+        log.warning("check_specific_slot | Google Calendar não configurado")
+        return {"status": "no_credentials"}
+
+    effective_duration = duration_minutes
+    if schedule_config and schedule_config.appointment_duration_minutes:
+        effective_duration = schedule_config.appointment_duration_minutes
+
+    requested_fmt = _format_slot(dt)
+
+    within, reason = _is_within_business_hours(schedule_config, dt, effective_duration)
+    if not within:
+        alternatives = await _find_available_slots(
+            dt, effective_duration, slots_to_find=6,
+            credentials=credentials, schedule_config=schedule_config,
+        )
+        log.info(f"check_specific_slot | fora do horário | {requested_fmt} | reason={reason}")
+        return {
+            "status": "outside_hours",
+            "requested": requested_fmt,
+            "reason": reason,
+            "alternatives": [_format_slot(s) for s in alternatives],
+        }
+
+    try:
+        availability = await _check_availability(
+            dt, effective_duration, schedule_config=schedule_config,
+        )
+    except Exception as e:
+        log.error(f"check_specific_slot | erro | {type(e).__name__}: {str(e)[:120]}")
+        return {"status": "error", "detail": type(e).__name__}
+
+    if availability.get("available"):
+        log.info(f"check_specific_slot | LIVRE | {requested_fmt}")
+        return {"status": "free", "requested": requested_fmt}
+
+    suggestions = availability.get("suggestions") or []
+    log.info(f"check_specific_slot | OCUPADO | {requested_fmt} | alts={len(suggestions)}")
+    return {
+        "status": "busy",
+        "requested": requested_fmt,
+        "alternatives": [_format_slot(s) for s in suggestions],
+    }

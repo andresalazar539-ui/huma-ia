@@ -1882,32 +1882,110 @@ async def _handle_cancel_appointment_action(phone, action, client_data, conv):
 # ================================================================
 
 
-async def _handle_check_availability_action(phone, action, client_data, conv):
+def _build_specific_slot_marker(specific: dict) -> str:
     """
-    Handler da action check_availability.
+    Monta o marker [AGENDA CONSULTADA] pro resultado de check_specific_slot.
 
-    Consulta Google Calendar, obtém próximos horários livres, e injeta
-    um marker no histórico pra IA saber quais horários oferecer.
+    Função pura (sem I/O) — fácil de testar isoladamente.
 
-    Esse handler NÃO envia mensagem pro lead — ele apenas prepara o
-    contexto. A próxima chamada da IA (ou a mesma, se houver follow-up
-    automático) vai ler o marker e responder com os horários reais.
+    Args:
+        specific: dict retornado por sched.check_specific_slot com status em
+            {"free", "busy", "outside_hours"}.
 
-    Como o orchestrator chama a IA uma vez por mensagem do lead, esse
-    handler é tipicamente processado JUNTO com o reply. Se a IA emitiu
-    check_availability + reply (tipo "deixa eu ver os horários"), o marker
-    vai pra próxima mensagem. Se a IA emitiu SÓ check_availability, o
-    sistema re-injeta e a IA responde com os horários.
+    Returns:
+        String do marker pra injetar no histórico.
+    """
+    status = specific.get("status")
+    requested = specific.get("requested", "o horário pedido")
+
+    if status == "free":
+        return (
+            f"[AGENDA CONSULTADA — o horário que o lead pediu ({requested}) está LIVRE. "
+            f"Confirme que serve e siga pra coletar nome+email pra fechar (action "
+            f"create_appointment). NÃO diga que está confirmado — quem confirma é o "
+            f"sistema ao criar o evento.]"
+        )
+
+    if status == "outside_hours":
+        head = (
+            f"o horário que o lead pediu ({requested}) está FORA do horário de "
+            f"atendimento ({specific.get('reason', 'fechado')})"
+        )
+    else:  # busy
+        head = f"o horário que o lead pediu ({requested}) está OCUPADO"
+
+    alts = specific.get("alternatives") or []
+    if alts:
+        return (
+            f"[AGENDA CONSULTADA — {head}. Avise o lead com clareza e ofereça os "
+            f"horários REAIS disponíveis (use APENAS estes): {', '.join(alts)}. "
+            f"NÃO invente outros. Cada slot traz o DIA DA SEMANA entre parênteses — "
+            f"é a VERDADE do calendário, nunca contradiga.]"
+        )
+    return (
+        f"[AGENDA CONSULTADA — {head} e não há horários livres próximos. "
+        f"Avise o lead e pergunte que outro dia funcionaria pra ele.]"
+    )
+
+
+async def _handle_specific_slot_check(phone, requested_datetime, client_data, conv):
+    """
+    Caminho A do check_availability: lead nomeou um horário específico.
+
+    Verifica AQUELE slot (read-only) e injeta um marker com a verdade. Retorna
+    None se o resultado for inconclusivo (não parseável / sem credencial / erro),
+    sinalizando ao caller pra cair no caminho genérico.
+
+    Returns:
+        {"executed": True, "slots": [...], "status": "ok"} quando conclusivo.
+        None quando inconclusivo (caller usa fallback genérico).
+    """
+    specific = await sched.check_specific_slot(
+        requested_datetime, schedule_config=client_data.business_schedule,
+    )
+    sp_status = specific.get("status")
+
+    if sp_status not in ("free", "busy", "outside_hours"):
+        log.info(
+            f"check_availability específico inconclusivo | {phone} | "
+            f"sp_status={sp_status} → fallback genérico"
+        )
+        return None
+
+    marker = _build_specific_slot_marker(specific)
+    if sp_status == "free":
+        slots_out = [specific["requested"]]
+    else:
+        slots_out = specific.get("alternatives") or []
+
+    try:
+        conv.history.append({"role": "assistant", "content": marker})
+        await db.save_conversation(conv)
+        log.info(
+            f"check_availability marker injetado (específico) | {phone} | "
+            f"sp_status={sp_status} | slots={len(slots_out)}"
+        )
+    except Exception as e:
+        log.error(
+            f"Erro salvando marker check_availability | {phone} | "
+            f"{type(e).__name__}: {e}"
+        )
+
+    return {"executed": True, "slots": slots_out, "status": "ok"}
+
+
+async def _handle_generic_availability(phone, action, client_data, conv):
+    """
+    Caminho B do check_availability: lead pediu disponibilidade genérica.
+
+    Comportamento histórico — próximos N horários livres cronológicos.
 
     Returns:
         {"executed": bool, "slots": [...], "status": str}
     """
-    cid = client_data.client_id
-
     urgency = action.get("urgency", "normal")
     slots_to_find = int(action.get("slots_to_find", 5))
 
-    # Limites defensivos
     if slots_to_find < 1:
         slots_to_find = 3
     if slots_to_find > 10:
@@ -1921,16 +1999,13 @@ async def _handle_check_availability_action(phone, action, client_data, conv):
     result = await sched.find_next_available_slots(
         slots_to_find=slots_to_find,
         urgency=urgency,
-        schedule_config=client_data.business_schedule,  # v12 / fix 7.6
+        schedule_config=client_data.business_schedule,
     )
 
     status = result.get("status", "error")
     slots = result.get("slots", [])
 
     if status == "ok" and slots:
-        # Marker no histórico — a IA vai ler e usar os horários reais.
-        # Anti-redundância (v12 / fix 7.3): explicita que a IA já acolheu o lead
-        # no turn anterior, pra não repetir empatia/pergunta no turn 2.
         slots_text = ", ".join(slots)
         marker = (
             f"[AGENDA CONSULTADA — próximos horários LIVRES (use APENAS estes na resposta): "
@@ -1955,7 +2030,6 @@ async def _handle_check_availability_action(phone, action, client_data, conv):
             "Peça ao lead que sugira 2-3 horários que funcionem pra ele, que você confirma depois.]"
         )
     else:
-        # erro genérico
         marker = (
             "[AGENDA INDISPONÍVEL — consulta falhou por instabilidade. "
             "Peça ao lead que sugira horário que prefere, você confirma quando voltar.]"
@@ -1976,6 +2050,32 @@ async def _handle_check_availability_action(phone, action, client_data, conv):
         )
 
     return {"executed": True, "slots": slots, "status": status}
+
+
+async def _handle_check_availability_action(phone, action, client_data, conv):
+    """
+    Dispatcher do check_availability.
+
+    Caminho A (requested_datetime presente): verifica o horário específico que o
+    lead nomeou e responde a verdade. Caminho B (ausente/inconclusivo): próximos
+    N livres genéricos (comportamento histórico).
+
+    NÃO envia mensagem pro lead — apenas prepara o contexto (marker no histórico).
+    A re-invocação da IA (fix 7.3, no caller) lê o marker e responde.
+
+    Returns:
+        {"executed": bool, "slots": [...], "status": str}
+    """
+    requested_datetime = (action.get("requested_datetime") or "").strip()
+
+    if requested_datetime:
+        specific_result = await _handle_specific_slot_check(
+            phone, requested_datetime, client_data, conv
+        )
+        if specific_result is not None:
+            return specific_result
+
+    return await _handle_generic_availability(phone, action, client_data, conv)
 
 
 # ================================================================

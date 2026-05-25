@@ -1328,6 +1328,75 @@ class TestWeekdayGrounding:
         # Deve instruir a avisar lead quando o dia pedido não tem vaga
         assert "AVISE" in marker or "avise" in marker
 
+    def test_check_specific_slot_busy_returns_real_alternatives(self):
+        """Slot ocupado → status=busy + alternatives formatadas com dia-da-semana."""
+        import asyncio
+        from datetime import datetime
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduling_service as sched
+
+        async def fake_check(dt, dur, schedule_config=None):
+            return {"available": False, "conflicting_event": "X",
+                    "conflicting_event_ids": [], "suggestions": [datetime(2026, 4, 21, 9, 0)]}
+
+        with patch.object(sched, "_build_google_credentials", return_value=(object(), "o@x.com")), \
+             patch.object(sched, "_is_within_business_hours", return_value=(True, "")), \
+             patch.object(sched, "_check_availability", new=AsyncMock(side_effect=fake_check)):
+            out = asyncio.run(sched.check_specific_slot("21/04/2026 14:00"))
+
+        assert out["status"] == "busy"
+        assert "14:00" in out["requested"]
+        assert any("09:00" in a for a in out["alternatives"])
+        assert any("terça-feira" in a for a in out["alternatives"])
+
+    def test_check_specific_slot_unparseable_falls_through(self):
+        """Datetime inválido → status=unparseable (caller usa fallback)."""
+        import asyncio
+        from huma.services import scheduling_service as sched
+        out = asyncio.run(sched.check_specific_slot("não é data"))
+        assert out["status"] == "unparseable"
+
+    def test_build_specific_slot_marker_busy_has_truth(self):
+        """Marker de ocupado contém OCUPADO + alternativas, sem inventar."""
+        from huma.core.orchestrator import _build_specific_slot_marker
+        m = _build_specific_slot_marker({
+            "status": "busy", "requested": "21/04/2026 (terça-feira) 14:00",
+            "alternatives": ["21/04/2026 (terça-feira) 09:00"],
+        })
+        assert "OCUPADO" in m
+        assert "09:00" in m
+        assert "NÃO invente" in m
+
+    def test_handler_specific_slot_does_not_call_generic(self):
+        """requested_datetime presente e conclusivo → NÃO chama find_next_available_slots."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from huma.core.orchestrator import _handle_check_availability_action
+        from huma.models.schemas import Conversation, ClientIdentity
+
+        conv = Conversation(client_id="x", phone="123")
+        client_data = MagicMock(spec=ClientIdentity)
+        client_data.client_id = "x"
+        client_data.business_schedule = None
+
+        specific = {"status": "busy", "requested": "21/04/2026 (terça-feira) 14:00",
+                    "alternatives": ["21/04/2026 (terça-feira) 09:00"]}
+
+        with patch("huma.core.orchestrator.sched.check_specific_slot",
+                   new=AsyncMock(return_value=specific)), \
+             patch("huma.core.orchestrator.sched.find_next_available_slots",
+                   new=AsyncMock()) as gen, \
+             patch("huma.core.orchestrator.db.save_conversation", new=AsyncMock()):
+            res = asyncio.run(_handle_check_availability_action(
+                "123", {"type": "check_availability", "requested_datetime": "21/04/2026 14:00"},
+                client_data, conv,
+            ))
+
+        gen.assert_not_called()
+        assert res["status"] == "ok"
+        assert any("OCUPADO" in (m.get("content", "") if isinstance(m.get("content"), str) else "")
+                   for m in conv.history)
+
 
 # ================================================================
 # TESTES DE HORÁRIO DE FUNCIONAMENTO (v12 / fix 7.6)
