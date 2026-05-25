@@ -391,18 +391,15 @@ AGENDAMENTO:
   NUNCA diga "tá confirmado". Quem confirma é o sistema.
 
   CENÁRIOS:
-    Lead pergunta disponibilidade ("tem horário amanhã?", "quando tem?", "o quanto antes", "tô com urgência")
-      → EMITA action check_availability (com urgency='urgent' se houver pressa).
-      → NÃO precisa nome nem email pra isso. Agenda é da EMPRESA, consulta é read-only.
-      → Sistema devolve horários reais que você oferece ao lead.
-    Lead dá horário específico ("quinta 14h") E você tem nome+email
-      → action create_appointment ("verificando...").
+    Disponibilidade: o bloco AGENDA REAL DO CLIENTE (quando presente no contexto) já traz a
+      lista completa de horários LIVRES reais. Ofereça SEMPRE a partir dessa lista, filtrando
+      pela preferência do lead (dia, turno, urgência, recusa de dia). NUNCA invente horário,
+      NUNCA diga que algo está ocupado se não estiver fora da lista. Interprete o sentido do
+      pedido do lead — exemplos de fala são ilustrações, não regras fixas.
+    Lead dá/confirma horário específico ("quinta 14h", "marca esse", "bora") E você tem nome+email
+      → action create_appointment.
     Lead dá horário específico mas FALTA nome ou email
       → Colete o que falta ANTES do create_appointment.
-    Lead confirma horário ("sim", "marca esse", "bora") com nome+email já coletados
-      → action create_appointment.
-    Após conflito (sistema devolveu horários alternativos), lead aceita um horário da lista
-      → action create_appointment com horário exato.
 
   REGRA: email é DO LEAD. Agenda é da EMPRESA. Telefone NÃO é obrigatório (já tá no WhatsApp).
 """
@@ -1357,7 +1354,6 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
                     "items": {"type": "object"},
                     "description": (
                         "Ações especiais. Cada item DEVE ter o campo 'type' obrigatório + campos específicos:\n"
-                        "- type='check_availability': (campos opcionais: urgency='urgent'|'normal', slots_to_find=5, requested_datetime, exclude_weekdays). Emita quando o lead pedir disponibilidade OU nomear um horário específico SEM você ainda ter nome+email pra create_appointment. Se o lead nomeou um horário ('segunda 14h', 'quinta de manhã'), passe requested_datetime no MESMO formato de date_time do create_appointment — o sistema checa AQUELE horário e te diz se está livre, ocupado ou fora do expediente, com alternativas reais. Se o lead RECUSOU um ou mais dias ('não posso segunda', 'qualquer dia menos terça'), passe exclude_weekdays como lista de inteiros (0=segunda, 1=terça, 2=quarta, 3=quinta, 4=sexta, 5=sábado, 6=domingo) pra não receber esses dias de volta. Sem horário nomeado, omita requested_datetime; sem recusa de dia, omita exclude_weekdays. NUNCA diga 'vou verificar' nem invente que algo está ocupado — apenas emita a action.\n"
                         "- type='create_appointment': lead_name, lead_email, service, date_time. Emita quando o lead escolher um horário específico e você tiver nome+email.\n"
                         "- type='cancel_appointment': (sem campos — só emita quando lead insistiu em cancelar após você oferecer alternativa E perguntar motivo; sistema deleta o evento no Calendar)\n"
                         "- type='generate_payment': lead_name, description, amount_cents, payment_method, lead_cpf (só boleto)\n"
@@ -1375,7 +1371,7 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
 # ================================================================
 
 # Stages onde a agenda real importa. Fora destes não injeta (economia de token).
-_AGENDA_RELEVANT_STAGES = frozenset({"offer", "closing", "committed"})
+_AGENDA_RELEVANT_STAGES = frozenset({"discovery", "offer", "closing", "committed"})
 
 
 async def _build_agenda_text(identity, conv) -> str:

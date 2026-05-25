@@ -92,12 +92,10 @@ def build_dynamic_discovery(identity: ClientIdentity) -> FunnelStageConfig:
     - Se o lead já chegou dizendo o que quer: não pergunte o óbvio. Avance.
 
   VERIFICAÇÃO DE AGENDA (independente de stage):
-    Se o lead pedir disponibilidade ('tem horário amanhã?', 'quando tem?', 'o quanto antes'),
-    ou demonstrar urgência ('tô com dor', 'emergência', 'hoje ainda'),
-    EMITA action check_availability IMEDIATAMENTE — NÃO precisa coletar nome/email antes.
-    check_availability é read-only na agenda do dono, não registra nada do lead.
-    Com urgência: urgency='urgent'. Sem: urgency='normal' (ou omita).
-    NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."""
+    Os horários LIVRES reais aparecem no bloco AGENDA REAL DO CLIENTE do seu contexto.
+    Ofereça SEMPRE a partir dessa lista, filtrando pela preferência do lead (dia, turno,
+    urgência, recusa de dia). NUNCA invente horário. NUNCA diga que algo está ocupado se
+    não estiver fora da lista. Interprete o sentido do pedido — exemplos são ilustrações."""
 
     if identity.collect_before_offer:
         instructions += "\n  SÓ avance quando tiver TUDO acima coletado."
@@ -144,14 +142,10 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Se tem promoção/condição: mencione como escassez natural, não como desconto desesperado.\n"
         "\n"
         "  VERIFICAÇÃO DE AGENDA:\n"
-        "    Se o lead pedir disponibilidade ('tem vaga amanhã?', 'quando tem?', 'o quanto antes',\n"
-        "    'qualquer horário', 'o mais cedo possível'), ou demonstrar urgência ('tô com dor',\n"
-        "    'emergência', 'hoje ainda'), EMITA action check_availability.\n"
-        "      - Com urgência: inclua urgency='urgent' na action.\n"
-        "      - Sem urgência específica: urgency='normal' (ou omita).\n"
-        "      - NUNCA diga \"vou verificar e te retorno\" sem emitir a action. O sistema consulta\n"
-        "        o Calendar e injeta os horários reais pra você oferecer na próxima mensagem.\n"
-        "      - NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."
+        "    Os horários LIVRES reais aparecem no bloco AGENDA REAL DO CLIENTE do seu contexto.\n"
+        "    Ofereça SEMPRE a partir dessa lista, filtrando pela preferência do lead (dia, turno,\n"
+        "    urgência, recusa de dia). NUNCA invente horário. NUNCA diga que algo está ocupado se\n"
+        "    não estiver fora da lista. Interprete o sentido do pedido — exemplos são ilustrações."
     )
 
     # ── Closing: facilitar, não pressionar ──
@@ -187,14 +181,10 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Silêncio depois do preço é NORMAL. Não quebre com mais argumentos.\n"
         "\n"
         "  VERIFICAÇÃO DE AGENDA:\n"
-        "    Se o lead pedir disponibilidade ('tem vaga amanhã?', 'quando tem?', 'o quanto antes',\n"
-        "    'qualquer horário', 'o mais cedo possível'), ou demonstrar urgência ('tô com dor',\n"
-        "    'emergência', 'hoje ainda'), EMITA action check_availability.\n"
-        "      - Com urgência: inclua urgency='urgent' na action.\n"
-        "      - Sem urgência específica: urgency='normal' (ou omita).\n"
-        "      - NUNCA diga \"vou verificar e te retorno\" sem emitir a action. O sistema consulta\n"
-        "        o Calendar e injeta os horários reais pra você oferecer na próxima mensagem.\n"
-        "      - NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."
+        "    Os horários LIVRES reais aparecem no bloco AGENDA REAL DO CLIENTE do seu contexto.\n"
+        "    Ofereça SEMPRE a partir dessa lista, filtrando pela preferência do lead (dia, turno,\n"
+        "    urgência, recusa de dia). NUNCA invente horário. NUNCA diga que algo está ocupado se\n"
+        "    não estiver fora da lista. Interprete o sentido do pedido — exemplos são ilustrações."
     )
 
     committed_instructions = (
