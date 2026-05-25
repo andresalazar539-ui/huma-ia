@@ -1397,6 +1397,71 @@ class TestWeekdayGrounding:
         assert any("OCUPADO" in (m.get("content", "") if isinstance(m.get("content"), str) else "")
                    for m in conv.history)
 
+    def test_find_available_slots_spreads_across_days(self):
+        """Agenda toda livre → slots distribuídos entre dias, não saturando o 1º."""
+        import asyncio
+        from datetime import datetime
+        from unittest.mock import patch
+        from huma.services import scheduling_service as sched
+
+        base = datetime(2026, 4, 20, 8, 0)  # segunda
+
+        async def fake_threadpool(fn):
+            return []  # nenhum busy → tudo livre
+
+        with patch.object(sched, "run_in_threadpool", new=fake_threadpool):
+            slots = asyncio.run(sched._find_available_slots(
+                base, slots_to_find=6, credentials=object(), schedule_config=None,
+            ))
+
+        # 6 slots não podem ser todos do mesmo dia (clustering bug)
+        distinct_days = {s.date() for s in slots}
+        assert len(distinct_days) >= 2, f"slots concentrados em 1 dia: {slots}"
+
+    def test_find_available_slots_excludes_weekday(self):
+        """exclude_weekdays={0} (segunda) → nenhum slot de segunda."""
+        import asyncio
+        from datetime import datetime
+        from unittest.mock import patch
+        from huma.services import scheduling_service as sched
+
+        base = datetime(2026, 4, 20, 8, 0)  # segunda
+
+        async def fake_threadpool(fn):
+            return []
+
+        with patch.object(sched, "run_in_threadpool", new=fake_threadpool):
+            slots = asyncio.run(sched._find_available_slots(
+                base, slots_to_find=6, credentials=object(),
+                schedule_config=None, exclude_weekdays={0},
+            ))
+
+        assert all(s.weekday() != 0 for s in slots), f"segunda vazou: {slots}"
+        assert len(slots) > 0  # outros dias preenchem
+
+    def test_find_available_slots_single_open_day_degrades(self):
+        """Só 1 dia útil disponível → retorna slots desse dia, sem quebrar."""
+        import asyncio
+        from datetime import datetime, date
+        from unittest.mock import patch
+        from huma.models.schemas import BusinessScheduleConfig, TimeWindow
+        from huma.services import scheduling_service as sched
+
+        # Só segunda aberta
+        config = BusinessScheduleConfig(weekly=[[TimeWindow(start="08:00", end="18:00")]] + [[]] * 6)
+        base = datetime(2026, 4, 20, 8, 0)  # segunda
+
+        async def fake_threadpool(fn):
+            return []
+
+        with patch.object(sched, "run_in_threadpool", new=fake_threadpool):
+            slots = asyncio.run(sched._find_available_slots(
+                base, slots_to_find=4, credentials=object(), schedule_config=config,
+            ))
+
+        assert len(slots) > 0
+        assert all(s.weekday() == 0 for s in slots)
+
 
 # ================================================================
 # TESTES DE HORÁRIO DE FUNCIONAMENTO (v12 / fix 7.6)

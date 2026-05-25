@@ -543,6 +543,7 @@ async def _find_available_slots(
     slots_to_find: int = 3,
     credentials=None,
     schedule_config: BusinessScheduleConfig | None = None,
+    exclude_weekdays: set[int] | None = None,
 ) -> list[datetime]:
     """
     Encontra horários disponíveis próximos ao original.
@@ -554,6 +555,16 @@ async def _find_available_slots(
       - Usa appointment_duration_minutes da config se presente.
     Se config None, cai no fallback seg-sex 8-18 (comportamento histórico).
 
+    v12.x — spreading + exclude_weekdays:
+      - Coleta candidatos por dia e faz round-robin no final pra não saturar
+        o 1º dia (sem isso, 6 slots vinham todos de segunda; agora vêm de
+        3+ dias quando possível).
+      - exclude_weekdays={0..6} pula esses weekdays no resultado.
+
+    Floor temporal = original_dt: callers de produção pré-floor com now+1h
+    (find_next_available_slots), então slots passados ficam fora naturalmente.
+    Tests podem passar original_dt arbitrário e receber resultados sem fricção.
+
     Reutiliza credentials já autenticadas do _check_availability
     pra evitar erro de authorization com scope diferente.
     """
@@ -562,28 +573,26 @@ async def _find_available_slots(
     if not credentials:
         return []
 
-    # Usa duration da config se passada (e config for válida)
     effective_duration = duration_minutes
     if schedule_config and schedule_config.appointment_duration_minutes:
         effective_duration = schedule_config.appointment_duration_minutes
 
+    excluded = exclude_weekdays or set()
+
     try:
-        available: list[datetime] = []
-        now = datetime.now()
+        per_day: list[list[datetime]] = []
         check_date = original_dt.date()
 
         for day_offset in range(7):
-            if len(available) >= slots_to_find:
-                break
-
             current_date = check_date + timedelta(days=day_offset)
 
-            # v12 / fix 7.6 — usa janelas efetivas do dia (weekly + holiday override)
+            if current_date.weekday() in excluded:
+                continue
+
             windows = _get_effective_windows(schedule_config, current_date)
             if not windows:
                 continue  # dia fechado (seja por weekday ou holiday)
 
-            # Limites do dia pra query do Calendar: do início da 1ª janela até o fim da última
             first_start = windows[0]
             last_end = windows[-1]
             fh, fm = map(int, first_start.start.split(":"))
@@ -606,7 +615,6 @@ async def _find_available_slots(
 
             busy_ranges = await run_in_threadpool(_query_day)
 
-            # Parse dos ranges ocupados
             busy_parsed: list[tuple[datetime, datetime]] = []
             for b in busy_ranges:
                 try:
@@ -620,29 +628,24 @@ async def _find_available_slots(
                 except (ValueError, KeyError):
                     pass
 
-            # Testa cada hora DENTRO de cada janela aberta do dia
+            day_candidates: list[datetime] = []
             for window in windows:
-                if len(available) >= slots_to_find:
-                    break
                 wh, wm = map(int, window.start.split(":"))
                 eh, em = map(int, window.end.split(":"))
                 window_start = datetime.combine(current_date, datetime.min.time()).replace(hour=wh, minute=wm)
                 window_end = datetime.combine(current_date, datetime.min.time()).replace(hour=eh, minute=em)
 
                 candidate = window_start
-                while candidate < window_end and len(available) < slots_to_find:
+                while candidate < window_end:
                     candidate_end = candidate + timedelta(minutes=effective_duration)
-
-                    # Slot só é válido se cabe inteiro na janela
                     if candidate_end > window_end:
                         break
 
-                    # Não sugere passado nem o horário original com conflito
-                    if candidate <= now or candidate == original_dt:
+                    # Floor = original_dt. Skipa o horário em conflito também.
+                    if candidate <= original_dt:
                         candidate += timedelta(hours=1)
                         continue
 
-                    # Verifica conflito com eventos ocupados
                     is_free = True
                     for bs, be in busy_parsed:
                         if candidate < be and candidate_end > bs:
@@ -650,9 +653,28 @@ async def _find_available_slots(
                             break
 
                     if is_free:
-                        available.append(candidate)
+                        day_candidates.append(candidate)
 
                     candidate += timedelta(hours=1)
+
+            if day_candidates:
+                per_day.append(day_candidates)
+
+        # Round-robin merge: pega 1º slot de cada dia, depois 2º, etc.
+        # Sem isso, 6 slots vinham todos do dia 1 (clustering). Com isso,
+        # idealmente saem de 3+ dias diferentes. Se só 1 dia tem candidatos,
+        # degrada bem (devolve todos dele).
+        available: list[datetime] = []
+        if per_day:
+            max_len = max(len(d) for d in per_day)
+            for slot_idx in range(max_len):
+                for d in per_day:
+                    if len(available) >= slots_to_find:
+                        break
+                    if slot_idx < len(d):
+                        available.append(d[slot_idx])
+                if len(available) >= slots_to_find:
+                    break
 
         return available
 
