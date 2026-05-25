@@ -4080,3 +4080,142 @@ class TestSprint5OwnerNotifications:
         assert "André Santos" in msg
         assert "30/04/2026" in msg
         assert phone in msg
+
+
+# ================================================================
+# v12.x — Factual Judge (anti-alucinação determinístico)
+# ================================================================
+
+class TestFactualJudge:
+    """
+    Cobertura do juiz factual: detecta promessa de entrega sem action.
+    Caso real: lead pediu Pix, Haiku respondeu "Tá aqui, escaneia" sem
+    nenhum generate_payment (prod May/2026).
+    """
+
+    def test_payment_promise_without_action_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, reason = detect_promise_action_mismatch(
+            "Tá aqui o QR code do Pix, escaneia com o celular",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is True
+        assert "generate_payment" in reason
+
+    def test_payment_promise_with_action_passes(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Tá aqui o QR code do Pix, escaneia com o celular",
+            actions=[{"type": "generate_payment", "amount_cents": 35000}],
+            audio_text="",
+        )
+        assert mismatch is False
+
+    def test_media_promise_without_action_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, reason = detect_promise_action_mismatch(
+            "Olha as fotos do antes e depois!",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is True
+        assert "send_media" in reason
+
+    def test_media_promise_with_action_passes(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Segue o catálogo aqui",
+            actions=[{"type": "send_media", "tags": ["catalogo"]}],
+            audio_text="",
+        )
+        assert mismatch is False
+
+    def test_audio_promise_without_audio_text_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, reason = detect_promise_action_mismatch(
+            "Olha esse áudio explicando como funciona",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is True
+        assert "audio_text" in reason
+
+    def test_audio_promise_with_audio_text_passes(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Olha esse áudio explicando",
+            actions=[],
+            audio_text="Oi, aqui é o André explicando o procedimento...",
+        )
+        assert mismatch is False
+
+    def test_future_offer_not_flagged(self):
+        """'Te mando o pix agora' é futuro próximo, pode ser legítimo
+        antes de pedir dados. Não deve ser flagged."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Te mando o pix agora! Me passa seu CPF?",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is False
+
+    def test_question_offer_not_flagged(self):
+        """'Quer que eu te mande?' é pergunta — não entrega afirmativa."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Quer que eu te mande o catálogo?",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is False
+
+    def test_unrelated_delivery_not_flagged(self):
+        """'Olha só' sem âncora de pagamento/mídia/áudio não dispara."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Olha só, segunda às 14h tá livre. Topa?",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is False
+
+    def test_empty_reply_not_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        assert detect_promise_action_mismatch("", [], "")[0] is False
+        assert detect_promise_action_mismatch(None, [], "")[0] is False
+
+    def test_reply_parts_concatenated_flagged(self):
+        """Caso do print: 1ª msg fala 'vou gerar QR code do Pix', 2ª msg
+        diz 'Tá aqui'. Concatenadas com espaço, proximidade de ~50 chars
+        dispara o mismatch."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        concatenated = (
+            "Sem problema! Vou gerar o QR code do Pix agora pra você. "
+            "Tá aqui, você escaneia com o celular e a gente recebe na hora."
+        )
+        mismatch, reason = detect_promise_action_mismatch(
+            concatenated, actions=[], audio_text=""
+        )
+        assert mismatch is True
+        assert "generate_payment" in reason
+
+    def test_boleto_delivery_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Acabei de gerar o boleto",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is True
+
+    def test_orchestrator_imports_factual_judge(self):
+        """Estrutural: garante que o hook do factual_judge está no
+        orchestrator e referencia detect_promise_action_mismatch."""
+        import inspect
+        from huma.core import orchestrator
+        src = inspect.getsource(orchestrator)
+        assert "detect_promise_action_mismatch" in src
+        assert "FACTUAL_JUDGE_ENABLED" in src
+        assert "factual_judge" in src

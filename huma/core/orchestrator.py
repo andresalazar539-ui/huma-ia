@@ -217,19 +217,82 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 f"conf={classification.confidence:.2f} | sem_IA"
             )
         elif ia_limit_reached:
-            # v12 (fix 8) — template sem business_name.split() que quebrava
-            # gramática ("Vou pedir pro Clínica te atender...").
-            _fallback_text = "Vou te passar pra alguém da equipe, tá? Respondem em breve!"
+            # ============================================================
+            # ANTI-LOOP v12.x — fallback graduado quando bate teto IA
+            #
+            # Antes: a cada msg após o teto (30/dia), respondia a MESMA
+            # string ("Vou te passar pra alguém da equipe..."). Lead via
+            # 5+ respostas robóticas idênticas. Caso real em prod, May/2026.
+            #
+            # Agora:
+            #   1ª vez no dia → handoff humanizado + notifica dono +
+            #                   marca Redis pra não repetir.
+            #   Próximas      → SILÊNCIO. Salva msg do lead no history pro
+            #                   dono ver contexto, não responde nada.
+            #
+            # Chave Redis: ia_limit_notified:{phone}:{YYYY-MM-DD} TTL 25h
+            # (alinhado com TTL do contador ia_calls em billing).
+            # ============================================================
+            today_key = datetime.utcnow().strftime("%Y-%m-%d")
+            notified_key = f"ia_limit_notified:{phone}:{today_key}"
+            already_notified = await cache.exists(notified_key)
+
+            if already_notified:
+                # SILÊNCIO — salva msg do lead pro dono ver e encerra
+                user_content = unified_text
+                if unified_image:
+                    user_content = f"[imagem enviada pelo lead] {unified_text}".strip()
+                conv.history.append({"role": "user", "content": user_content})
+                conv.last_message_at = datetime.utcnow()
+                await db.save_conversation(conv)
+
+                log.info(
+                    f"Limite IA silenciado | {phone} | "
+                    f"{await billing.get_ia_calls_today(phone)}/{max_ia} | "
+                    f"msg salva, sem reply (dono já notificado hoje)"
+                )
+                try:
+                    await loop_detector.record_turn(client_id)
+                except Exception as e:
+                    log.debug(
+                        f"loop_detector silencioso falhou | "
+                        f"{type(e).__name__}: {e}"
+                    )
+                return  # release_lock roda no finally
+
+            # PRIMEIRA VEZ NO DIA — handoff humanizado + notifica dono
+            _fallback_text = "Vou chamar a equipe aqui pra te atender direto, tá? Um instante!"
             ai_result = {
                 "reply": _fallback_text,
                 "reply_parts": [_fallback_text],
                 "intent": "neutral", "sentiment": "neutral",
                 "stage_action": "hold", "confidence": 1.0,
                 "lead_facts": [], "actions": [],
-                "resolved_by": "ia_limit",
+                "resolved_by": "ia_limit_first",
             }
-            # Sprint 2 / item 3 — get_ia_calls_today virou async
-            log.warning(f"Limite IA | {phone} | {await billing.get_ia_calls_today(phone)}/{max_ia}")
+            await cache.set_with_ttl(notified_key, "1", ttl=25 * 3600)
+
+            try:
+                owner = client_data.owner_phone or client_data.client_id
+                await wa.notify_owner(
+                    owner,
+                    f"⚠️ Lead {phone} atingiu o limite diário de IA "
+                    f"(30 msgs/dia). Conversa pausada — assume direto pelo "
+                    f"WhatsApp. Mensagens seguintes do lead não receberão "
+                    f"resposta automática hoje.",
+                    client_id=client_id,
+                )
+            except Exception as e:
+                log.error(
+                    f"notify_owner falhou no ia_limit | {phone} | "
+                    f"{type(e).__name__}: {e}"
+                )
+
+            log.warning(
+                f"Limite IA atingido | {phone} | "
+                f"{await billing.get_ia_calls_today(phone)}/{max_ia} | "
+                f"handoff humanizado + dono notificado"
+            )
         else:
             # Roteamento Tiered Intelligence v11.0
             tier, use_sonnet = _select_tier(classification, conv, unified_text, unified_image)
@@ -323,8 +386,16 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 PT_JUDGE_ENABLED,
                 PT_JUDGE_TIMEOUT_SEC,
                 PT_JUDGE_RETRY_TIMEOUT_SEC,
+                FACTUAL_JUDGE_ENABLED,
+                FACTUAL_JUDGE_RETRY_TIMEOUT_SEC,
             )
             from huma.services.portuguese_judge import judge_response
+            from huma.services.factual_judge import detect_promise_action_mismatch
+
+            # Rastreia se a resposta final veio do Sonnet (use_sonnet=True
+            # OU pt_judge regenerou). Usado pelo factual_judge logo abaixo
+            # pra decidir se vale tentar escalar de novo.
+            _used_sonnet_for_reply = use_sonnet
 
             if PT_JUDGE_ENABLED and not use_sonnet:
                 _parts = ai_result.get("reply_parts") or []
@@ -367,6 +438,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
                         if not _has_err_retry:
                             ai_result = _retry
+                            _used_sonnet_for_reply = True
                             log.info(
                                 f"pt_judge|{phone}|outcome=sonnet_replaced_haiku"
                             )
@@ -391,6 +463,96 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                     except Exception as _e:
                         log.error(
                             f"pt_judge|{phone}|outcome=retry_exception|"
+                            f"err={type(_e).__name__}: {_e}|keeping=haiku_original"
+                        )
+
+            # ── FACTUAL JUDGE (v12.x) ──
+            # Camada de defesa: detecta alucinação de ENTREGA. Se a IA
+            # falou "tá aqui o pix"/"olha o catálogo"/"segue o áudio" sem
+            # emitir generate_payment/send_media/audio_text, regenera com
+            # Sonnet. Caso real: lead pediu Pix, Haiku respondeu "Tá aqui,
+            # escaneia" sem nenhum generate_payment emitido (May/2026).
+            #
+            # Custo: regex (~0ms, 0$). Retry só dispara em mismatch real.
+            # Roda em qualquer modelo, mas só regenera se ainda não usou
+            # Sonnet — se Sonnet também alucinou, loga e mantém.
+            if FACTUAL_JUDGE_ENABLED:
+                _parts_fj = ai_result.get("reply_parts") or []
+                if _parts_fj:
+                    _reply_for_judge = " ".join(
+                        p for p in _parts_fj if isinstance(p, str)
+                    )
+                else:
+                    _reply_for_judge = ai_result.get("reply") or ""
+
+                _mismatch, _fj_reason = detect_promise_action_mismatch(
+                    _reply_for_judge,
+                    ai_result.get("actions"),
+                    ai_result.get("audio_text"),
+                )
+
+                if _mismatch and _used_sonnet_for_reply:
+                    # Já é o melhor modelo — só loga pra observabilidade.
+                    log.warning(
+                        f"factual_judge|{phone}|verdict=mismatch_sonnet|"
+                        f"reason={_fj_reason}|keeping=sonnet_original"
+                    )
+                elif _mismatch:
+                    log.warning(
+                        f"factual_judge|{phone}|verdict=mismatch_haiku|"
+                        f"reason={_fj_reason}|action=retry_sonnet"
+                    )
+                    try:
+                        _retry_fj = await asyncio.wait_for(
+                            ai.generate_response(
+                                client_data, conv, unified_text,
+                                image_url=unified_image,
+                                use_fast_model=False,  # força Sonnet
+                                tier=tier,
+                            ),
+                            timeout=FACTUAL_JUDGE_RETRY_TIMEOUT_SEC,
+                        )
+
+                        _retry_parts_fj = _retry_fj.get("reply_parts") or []
+                        if _retry_parts_fj:
+                            _retry_reply_for_judge = " ".join(
+                                p for p in _retry_parts_fj if isinstance(p, str)
+                            )
+                        else:
+                            _retry_reply_for_judge = _retry_fj.get("reply") or ""
+
+                        _retry_mismatch, _retry_fj_reason = detect_promise_action_mismatch(
+                            _retry_reply_for_judge,
+                            _retry_fj.get("actions"),
+                            _retry_fj.get("audio_text"),
+                        )
+
+                        if not _retry_mismatch:
+                            ai_result = _retry_fj
+                            _used_sonnet_for_reply = True
+                            log.info(
+                                f"factual_judge|{phone}|outcome=sonnet_replaced_haiku"
+                            )
+                            await billing.increment_ia_calls(phone)
+                            await billing.log_usage(
+                                client_id,
+                                billing.UsageType.ANTHROPIC_SONNET,
+                                cost_usd=0.003,
+                            )
+                        else:
+                            log.warning(
+                                f"factual_judge|{phone}|outcome=sonnet_also_mismatched|"
+                                f"reason={_retry_fj_reason}|keeping=haiku_original"
+                            )
+                    except asyncio.TimeoutError:
+                        log.warning(
+                            f"factual_judge|{phone}|outcome=sonnet_timeout|"
+                            f"timeout_sec={FACTUAL_JUDGE_RETRY_TIMEOUT_SEC}|"
+                            f"keeping=haiku_original"
+                        )
+                    except Exception as _e:
+                        log.error(
+                            f"factual_judge|{phone}|outcome=retry_exception|"
                             f"err={type(_e).__name__}: {_e}|keeping=haiku_original"
                         )
 

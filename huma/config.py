@@ -123,3 +123,18 @@ PT_JUDGE_TIMEOUT_SEC = float(os.getenv("PT_JUDGE_TIMEOUT_SEC", "3.0"))
 # Timeout do retry com Sonnet quando juiz aponta erro.
 # Default 8s — Sonnet leva 3-5s típico, 8s dá margem.
 PT_JUDGE_RETRY_TIMEOUT_SEC = float(os.getenv("PT_JUDGE_RETRY_TIMEOUT_SEC", "8.0"))
+
+# ── Factual Judge (regex determinístico) ──
+# Detecta alucinação de entrega: IA fala "tá aqui o pix" / "olha o áudio"
+# sem ter emitido a action correspondente (generate_payment / send_media /
+# audio_text). Em mismatch → regenera com Sonnet (mesmo fluxo do pt_judge).
+# Custo: zero (regex). Custo do retry: ~R$0,003 por turn que dispara.
+
+# Liga/desliga a camada. Em emergência: FACTUAL_JUDGE_ENABLED=false
+FACTUAL_JUDGE_ENABLED = os.getenv("FACTUAL_JUDGE_ENABLED", "true").lower() == "true"
+
+# Timeout do retry com Sonnet quando juiz aponta mismatch.
+# Default 8s — alinhado com PT_JUDGE_RETRY_TIMEOUT_SEC.
+FACTUAL_JUDGE_RETRY_TIMEOUT_SEC = float(
+    os.getenv("FACTUAL_JUDGE_RETRY_TIMEOUT_SEC", "8.0")
+)
