@@ -1524,6 +1524,76 @@ class TestWeekdayGrounding:
         sig = inspect.signature(sched.find_next_available_slots)
         assert "exclude_weekdays" in sig.parameters
 
+    def test_get_agenda_snapshot_no_credentials(self):
+        """Sem credencial → status no_credentials, sem quebrar."""
+        import asyncio
+        from unittest.mock import patch
+        from huma.services import scheduling_service as sched
+        with patch.object(sched, "_build_google_credentials", return_value=(None, None)):
+            out = asyncio.run(sched.get_agenda_snapshot())
+        assert out["status"] == "no_credentials"
+        assert out["slots"] == []
+
+    def test_get_agenda_snapshot_formats_slots(self):
+        """Agenda livre → slots formatados com dia-da-semana, status ok."""
+        import asyncio
+        from datetime import datetime
+        from unittest.mock import patch, AsyncMock
+        from huma.services import scheduling_service as sched
+        fake_raw = [datetime(2026, 4, 21, 9, 0), datetime(2026, 4, 22, 14, 0)]
+        with patch.object(sched, "_build_google_credentials", return_value=(object(), "o@x.com")), \
+             patch.object(sched, "_find_available_slots", new=AsyncMock(return_value=fake_raw)):
+            out = asyncio.run(sched.get_agenda_snapshot())
+        assert out["status"] == "ok"
+        assert out["count"] == 2
+        assert any("terça-feira" in s for s in out["slots"])
+
+    def test_agenda_text_skips_non_scheduling_stage(self):
+        """Stage fora de offer/closing/committed → texto vazio."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from huma.services.ai_service import _build_agenda_text
+        from huma.models.schemas import Conversation
+        identity = MagicMock()
+        identity.enable_scheduling = True
+        identity.client_id = "x"
+        conv = Conversation(client_id="x", phone="1", stage="discovery")
+        out = asyncio.run(_build_agenda_text(identity, conv))
+        assert out == ""
+
+    def test_agenda_text_skips_when_scheduling_disabled(self):
+        """Scheduling off → texto vazio mesmo em stage de agendamento."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from huma.services.ai_service import _build_agenda_text
+        from huma.models.schemas import Conversation
+        identity = MagicMock()
+        identity.enable_scheduling = False
+        identity.client_id = "x"
+        conv = Conversation(client_id="x", phone="1", stage="offer")
+        out = asyncio.run(_build_agenda_text(identity, conv))
+        assert out == ""
+
+    def test_agenda_text_injects_real_slots(self):
+        """Stage offer + agenda ok → texto contém horários reais e a regra."""
+        import asyncio
+        from unittest.mock import MagicMock, patch, AsyncMock
+        from huma.services.ai_service import _build_agenda_text
+        from huma.models.schemas import Conversation
+        identity = MagicMock()
+        identity.enable_scheduling = True
+        identity.client_id = "x"
+        identity.business_schedule = None
+        conv = Conversation(client_id="x", phone="1", stage="offer")
+        snap = {"status": "ok", "slots": ["21/04/2026 (terça-feira) 09:00"], "count": 1}
+        with patch("huma.services.redis_service.get_value", new=AsyncMock(return_value=None)), \
+             patch("huma.services.redis_service.set_with_ttl", new=AsyncMock()), \
+             patch("huma.services.scheduling_service.get_agenda_snapshot", new=AsyncMock(return_value=snap)):
+            out = asyncio.run(_build_agenda_text(identity, conv))
+        assert "09:00" in out
+        assert "REGRA ABSOLUTA" in out
+        assert "terça-feira" in out
+
 
 # ================================================================
 # TESTES DE HORÁRIO DE FUNCIONAMENTO (v12 / fix 7.6)

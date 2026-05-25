@@ -1158,6 +1158,60 @@ async def find_next_available_slots(
         return {"status": "error", "slots": [], "count": 0, "detail": f"{err_type}: {str(e)[:100]}"}
 
 
+async def get_agenda_snapshot(
+    slots_cap: int = 30,
+    schedule_config: BusinessScheduleConfig | None = None,
+) -> dict:
+    """
+    Retrato AMPLO da agenda real pros próximos 7 dias, pra injeção no prompt.
+
+    Devolve TODOS os horários livres encontrados (até slots_cap), formatados com
+    dia-da-semana em pt-br. Mapa que a IA lê pra atender qualquer pedido do lead
+    (dia, turno, urgência) sem inventar. Respeita schedule_config (dias/horários
+    de atendimento, feriados) via _find_available_slots.
+
+    Args:
+        slots_cap: teto de horários no total (protege tamanho do prompt).
+        schedule_config: horário de funcionamento do dono.
+
+    Returns:
+        {"status": "ok", "slots": ["dd/mm/YYYY (dia) HH:MM", ...], "count": N}
+        {"status": "no_credentials", "slots": [], "count": 0}
+        {"status": "empty", "slots": [], "count": 0}
+        {"status": "error", "slots": [], "count": 0, "detail": "<ExcName>"}
+
+    Raises:
+        Nunca propaga exceção — erros viram status="error".
+    """
+    credentials, _ = _build_google_credentials()
+    if not credentials:
+        return {"status": "no_credentials", "slots": [], "count": 0}
+
+    try:
+        now = datetime.now()
+        start_from = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+
+        raw = await _find_available_slots(
+            original_dt=start_from,
+            duration_minutes=60,
+            slots_to_find=slots_cap,
+            credentials=credentials,
+            schedule_config=schedule_config,
+        )
+
+        if not raw:
+            return {"status": "empty", "slots": [], "count": 0}
+
+        formatted = [_format_slot(s) for s in raw]
+        log.info(f"agenda_snapshot OK | count={len(formatted)} | primeiro={formatted[0]}")
+        return {"status": "ok", "slots": formatted, "count": len(formatted)}
+
+    except Exception as e:
+        err = type(e).__name__
+        log.error(f"agenda_snapshot erro | {err}: {str(e)[:120]}")
+        return {"status": "error", "slots": [], "count": 0, "detail": err}
+
+
 def _format_slot(dt: datetime) -> str:
     """
     Formata um datetime como 'dd/mm/YYYY (dia-da-semana pt-br) HH:MM'.

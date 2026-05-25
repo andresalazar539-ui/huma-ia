@@ -1374,6 +1374,88 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
 # GERAÇÃO DE RESPOSTA
 # ================================================================
 
+# Stages onde a agenda real importa. Fora destes não injeta (economia de token).
+_AGENDA_RELEVANT_STAGES = frozenset({"offer", "closing", "committed"})
+
+
+async def _build_agenda_text(identity, conv) -> str:
+    """
+    Texto da AGENDA REAL pra anexar como bloco de sistema, com cache Redis (TTL 3min).
+
+    Vale pra TODOS os tiers (injetado no generate_response, não nos montadores).
+    Só roda em stages de agendamento e com scheduling habilitado. Degrada pra ""
+    sem quebrar se: stage irrelevante, scheduling off, sem credencial, ou erro.
+
+    Args:
+        identity: configuração do cliente.
+        conv: conversa atual (usa stage).
+
+    Returns:
+        Texto pronto pra virar system block, ou "" se não aplicável.
+    """
+    if not getattr(identity, "enable_scheduling", False):
+        return ""
+    if conv.stage not in _AGENDA_RELEVANT_STAGES:
+        return ""
+
+    from huma.services import redis_service as cache
+    from huma.services import scheduling_service as sched
+
+    cache_key = f"agenda_snapshot:{identity.client_id}"
+
+    try:
+        cached = await cache.get_value(cache_key)
+    except Exception:
+        cached = None
+    if cached:
+        return cached
+
+    snapshot = await sched.get_agenda_snapshot(
+        schedule_config=getattr(identity, "business_schedule", None),
+    )
+    status = snapshot.get("status")
+
+    if status == "ok" and snapshot.get("slots"):
+        slots_text = "; ".join(snapshot["slots"])
+        text = (
+            "AGENDA REAL DO CLIENTE (VERDADE — fonte: Google Calendar):\n"
+            f"  Horários LIVRES nos próximos dias: {slots_text}.\n"
+            "  REGRA ABSOLUTA: ofereça SOMENTE horários desta lista. Fora dela NÃO existe —\n"
+            "  nunca invente horário, nunca diga que algo está 'ocupado' sem estar nesta lista.\n"
+            "  Cada slot traz o dia-da-semana entre parênteses: é a verdade do calendário.\n"
+            "\n"
+            "  INTERPRETE a preferência do lead e ofereça 2-3 opções DESTA lista que casem\n"
+            "  com o que ele pediu. A preferência pode ser de QUALQUER tipo e sobre QUALQUER\n"
+            "  dia ou horário, expressa de QUALQUER jeito. Use lógica, não casamento de palavra:\n"
+            "    - recusa de um ou mais dias: 'não posso segunda', 'nem terça nem quinta',\n"
+            "      'só não pode sexta' — vale o dia QUE ELE DISSER, não um dia fixo.\n"
+            "    - turno: 'de manhã', 'à tarde', 'fim do dia', 'depois das 18h'.\n"
+            "    - urgência: 'o quanto antes', 'hoje ainda', 'tô com dor' → ofereça o mais cedo.\n"
+            "    - janela: 'essa semana', 'semana que vem', 'só dia par' — interprete e filtre.\n"
+            "  Os itens acima são EXEMPLOS ILUSTRATIVOS, NÃO uma lista fechada. Se o lead disser\n"
+            "  'não posso terça', trate igual a 'não posso segunda' — é o mesmo raciocínio com\n"
+            "  outro dia. NUNCA trate um dia ou frase como especial só porque apareceu de exemplo.\n"
+            "  Se nada na lista casar exatamente, diga com honestidade o que há de mais próximo\n"
+            "  e pergunte se serve."
+        )
+    elif status == "empty":
+        text = (
+            "AGENDA REAL DO CLIENTE: sem horários livres nos próximos dias.\n"
+            "  Se o lead quiser agendar, avise com honestidade que está cheio e pergunte\n"
+            "  se ele consegue mais pra frente. NUNCA invente um horário."
+        )
+    else:
+        # no_credentials / error → não injeta; fluxo antigo (markers/actions) segue de fallback.
+        return ""
+
+    try:
+        await cache.set_with_ttl(cache_key, text, ttl=180)
+    except Exception:
+        pass
+
+    return text
+
+
 async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False, tier: int = 3):
     """
     Gera resposta da IA usando tool_use para garantir JSON válido.
@@ -1474,6 +1556,18 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         system_blocks = [static_block]
         if dynamic:
             system_blocks.append({"type": "text", "text": dynamic})
+
+        # AGENDA REAL — bloco de sistema separado, vale pra Tier 2 e Tier 3.
+        # Não entra no static (que é cacheado) porque muda conforme a agenda.
+        # Degrada pra "" silenciosamente se não aplicável (stage/scheduling/credencial).
+        try:
+            agenda_text = await _build_agenda_text(identity, conv)
+        except Exception as _ag_e:
+            agenda_text = ""
+            log.warning(f"agenda_text falhou silencioso | {type(_ag_e).__name__}: {_ag_e}")
+        if agenda_text:
+            system_blocks.append({"type": "text", "text": agenda_text})
+            log.info(f"AGENDA injetada no prompt | tier={tier} | chars={len(agenda_text)}")
 
     # Diagnóstico de cache v11.2 — loga hash do static pra verificar se muda entre chamadas
     import hashlib
