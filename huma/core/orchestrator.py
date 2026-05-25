@@ -1991,15 +1991,29 @@ async def _handle_generic_availability(phone, action, client_data, conv):
     if slots_to_find > 10:
         slots_to_find = 10
 
+    # exclude_weekdays: dias-da-semana que o lead recusou (0=seg..6=dom).
+    # Tolera lista vinda do modelo; descarta valores fora de 0-6 e não-int.
+    raw_exclude = action.get("exclude_weekdays")
+    exclude_weekdays: set[int] = set()
+    if isinstance(raw_exclude, list):
+        for d in raw_exclude:
+            if isinstance(d, bool):
+                continue  # bool é subclasse de int — rejeita explicitamente
+            if isinstance(d, int) and 0 <= d <= 6:
+                exclude_weekdays.add(d)
+            elif isinstance(d, str) and d.isdigit() and 0 <= int(d) <= 6:
+                exclude_weekdays.add(int(d))
+
     log.info(
         f"check_availability iniciando | {phone} | urgency={urgency} | "
-        f"slots_to_find={slots_to_find}"
+        f"slots_to_find={slots_to_find} | exclude_weekdays={sorted(exclude_weekdays)}"
     )
 
     result = await sched.find_next_available_slots(
         slots_to_find=slots_to_find,
         urgency=urgency,
         schedule_config=client_data.business_schedule,
+        exclude_weekdays=exclude_weekdays,
     )
 
     status = result.get("status", "error")

@@ -980,6 +980,7 @@ class TestCheckAvailability:
         assert "cancel_appointment" in actions_desc
         assert "generate_payment" in actions_desc
         assert "send_media" in actions_desc
+        assert "exclude_weekdays" in actions_desc
 
     def test_offer_instructions_mention_check_availability(self, clinica_identity):
         """Stage offer instrui IA a emitir check_availability."""
@@ -1461,6 +1462,67 @@ class TestWeekdayGrounding:
 
         assert len(slots) > 0
         assert all(s.weekday() == 0 for s in slots)
+
+    def test_generic_availability_plumbs_exclude_weekdays(self):
+        """exclude_weekdays da action chega em find_next_available_slots."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from huma.core.orchestrator import _handle_check_availability_action
+        from huma.models.schemas import Conversation, ClientIdentity
+
+        conv = Conversation(client_id="x", phone="123")
+        client_data = MagicMock(spec=ClientIdentity)
+        client_data.client_id = "x"
+        client_data.business_schedule = None
+
+        fake_result = {"status": "ok", "slots": ["21/04/2026 (terça-feira) 10:00"], "count": 1}
+
+        with patch("huma.core.orchestrator.sched.find_next_available_slots",
+                   new=AsyncMock(return_value=fake_result)) as gen, \
+             patch("huma.core.orchestrator.db.save_conversation", new=AsyncMock()):
+            asyncio.run(_handle_check_availability_action(
+                "123",
+                {"type": "check_availability", "exclude_weekdays": [0]},
+                client_data, conv,
+            ))
+
+        # exclude_weekdays={0} foi passado como kwarg
+        _, kwargs = gen.call_args
+        assert kwargs.get("exclude_weekdays") == {0}
+
+    def test_generic_availability_sanitizes_bad_exclude_weekdays(self):
+        """Valores fora de 0-6, bool e não-int são descartados; válidos passam."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from huma.core.orchestrator import _handle_check_availability_action
+        from huma.models.schemas import Conversation, ClientIdentity
+
+        conv = Conversation(client_id="x", phone="123")
+        client_data = MagicMock(spec=ClientIdentity)
+        client_data.client_id = "x"
+        client_data.business_schedule = None
+
+        fake_result = {"status": "ok", "slots": ["x"], "count": 1}
+
+        with patch("huma.core.orchestrator.sched.find_next_available_slots",
+                   new=AsyncMock(return_value=fake_result)) as gen, \
+             patch("huma.core.orchestrator.db.save_conversation", new=AsyncMock()):
+            asyncio.run(_handle_check_availability_action(
+                "123",
+                {"type": "check_availability", "exclude_weekdays": [0, 9, "2", "abc", True, 3]},
+                client_data, conv,
+            ))
+
+        _, kwargs = gen.call_args
+        # 0 e 3 (int válidos), 2 (str dígito válida); 9 fora de range, "abc" não-dígito, True bool → fora
+        assert kwargs.get("exclude_weekdays") == {0, 2, 3}
+
+    def test_find_next_available_slots_accepts_exclude_weekdays(self):
+        """Assinatura de find_next_available_slots aceita exclude_weekdays (smoke)."""
+        import inspect
+        from huma.services import scheduling_service as sched
+        sig = inspect.signature(sched.find_next_available_slots)
+        assert "exclude_weekdays" in sig.parameters
 
 
 # ================================================================

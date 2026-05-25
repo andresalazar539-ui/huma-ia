@@ -1077,6 +1077,7 @@ async def find_next_available_slots(
     duration_minutes: int = 60,
     urgency: str = "normal",
     schedule_config: BusinessScheduleConfig | None = None,
+    exclude_weekdays: set[int] | None = None,
 ) -> dict:
     """
     Busca os próximos N horários livres no Google Calendar, ordenados cronologicamente.
@@ -1089,6 +1090,8 @@ async def find_next_available_slots(
         slots_to_find: quantos slots retornar (default 5).
         duration_minutes: duração da consulta (default 60).
         urgency: "urgent" prioriza hoje/amanhã, "normal" olha próximos 7 dias.
+        exclude_weekdays: weekdays (0=seg..6=dom) a PULAR — dias que o lead recusou.
+            None = não exclui nada.
 
     Returns:
         {
@@ -1120,6 +1123,7 @@ async def find_next_available_slots(
             slots_to_find=slots_to_find,
             credentials=credentials,
             schedule_config=schedule_config,
+            exclude_weekdays=exclude_weekdays,
         )
 
         if not slots:
