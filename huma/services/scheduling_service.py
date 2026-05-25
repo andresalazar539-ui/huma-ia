@@ -660,21 +660,44 @@ async def _find_available_slots(
             if day_candidates:
                 per_day.append(day_candidates)
 
-        # Round-robin merge: pega 1º slot de cada dia, depois 2º, etc.
-        # Sem isso, 6 slots vinham todos do dia 1 (clustering). Com isso,
-        # idealmente saem de 3+ dias diferentes. Se só 1 dia tem candidatos,
-        # degrada bem (devolve todos dele).
+        # Merge intercalando (dia × período): garante variedade de DIA E de TURNO.
+        # Versão anterior fazia round-robin só por dia, então slots_to_find=5 com
+        # 5 dias livres devolvia 5 manhãs (1º slot de cada dia) — lead que pedia
+        # "tarde" via lista só com manhãs e IA concluía erradamente "tardes ocupadas".
+        # Agora intercala manhã/tarde/noite por dia: ter 8h, ter 14h, qua 8h, qua 14h...
+        # Se só houver manhã, degrada bem (só manhãs).
+        def _period(dt: datetime) -> str:
+            if dt.hour < 12:
+                return "morning"
+            if dt.hour < 18:
+                return "afternoon"
+            return "evening"
+
+        PERIODS = ("morning", "afternoon", "evening")
+        per_day_by_period: list[dict[str, list[datetime]]] = []
+        for day_list in per_day:
+            buckets = {p: [] for p in PERIODS}
+            for c in day_list:
+                buckets[_period(c)].append(c)
+            per_day_by_period.append(buckets)
+
         available: list[datetime] = []
-        if per_day:
-            max_len = max(len(d) for d in per_day)
-            for slot_idx in range(max_len):
-                for d in per_day:
-                    if len(available) >= slots_to_find:
-                        break
-                    if slot_idx < len(d):
-                        available.append(d[slot_idx])
+        round_idx = 0
+        while len(available) < slots_to_find:
+            progressed = False
+            for day_buckets in per_day_by_period:
+                for period in PERIODS:
+                    bucket = day_buckets[period]
+                    if round_idx < len(bucket):
+                        available.append(bucket[round_idx])
+                        progressed = True
+                        if len(available) >= slots_to_find:
+                            break
                 if len(available) >= slots_to_find:
                     break
+            if not progressed:
+                break
+            round_idx += 1
 
         return available
 

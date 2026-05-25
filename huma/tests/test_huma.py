@@ -1463,6 +1463,28 @@ class TestWeekdayGrounding:
         assert len(slots) > 0
         assert all(s.weekday() == 0 for s in slots)
 
+    def test_find_available_slots_mixes_morning_and_afternoon(self):
+        """Janela ampla (8-18) → slots mesclam manhã E tarde, não saturam 1 turno."""
+        import asyncio
+        from datetime import datetime
+        from unittest.mock import patch
+        from huma.services import scheduling_service as sched
+
+        base = datetime(2026, 4, 20, 8, 0)  # segunda, janela default 8-18
+
+        async def fake_threadpool(fn):
+            return []  # tudo livre
+
+        with patch.object(sched, "run_in_threadpool", new=fake_threadpool):
+            slots = asyncio.run(sched._find_available_slots(
+                base, slots_to_find=4, credentials=object(), schedule_config=None,
+            ))
+
+        morning = [s for s in slots if s.hour < 12]
+        afternoon = [s for s in slots if 12 <= s.hour < 18]
+        assert morning, f"sem slots de manhã: {slots}"
+        assert afternoon, f"sem slots de tarde: {slots}"
+
     def test_generic_availability_plumbs_exclude_weekdays(self):
         """exclude_weekdays da action chega em find_next_available_slots."""
         import asyncio
