@@ -272,6 +272,128 @@ def _build_vertical_tone_prompt(category: str) -> str:
 
 
 # ================================================================
+# CONTEXTO TEMPORAL (v12.x.2 — consciência de tempo + status real)
+#
+# Resolve dois bugs observados em prod:
+#   1. Lead volta no dia seguinte e IA responde como se fosse o mesmo
+#      turn ("Que bom! Tá tudo certo por aqui"), sem perceber gap.
+#   2. IA afirma status que não corresponde à realidade do sistema
+#      ("o link já foi enviado") porque summary do Haiku ficou errado.
+#
+# Solução: injetar no dynamic prompt (a cada turn) um bloco curto com:
+#   - Tempo desde a última msg do lead (categorizado em buckets).
+#   - Orientação de tom conforme o bucket (continuar / cumprimentar /
+#     reativar).
+#   - STATUS REAL do sistema (agendamento ativo do schema) como verdade
+#     que sobrepõe qualquer alucinação do summary.
+#
+# Custo: ~80-130 tokens quando dispara (gap >=1h). Zero quando <1h.
+# ================================================================
+
+def _build_temporal_context(conv: "Conversation") -> str:
+    """
+    Injeta consciência temporal + status real no dynamic prompt.
+
+    Bucket de tempo:
+      <1h    → silencio (sem alerta, é continuação direta)
+      1-6h   → mesmo dia, volta após pausa
+      6-24h  → pode ser dia seguinte (cumprimento horário)
+      1-3d   → reativação curta
+      >3d    → reativação fria
+    """
+    if not conv.last_message_at:
+        return ""
+
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    now_utc = _dt.utcnow()
+    last = conv.last_message_at
+    # last_message_at pode vir do Supabase com tzinfo ou in-memory sem.
+    # Normaliza pra UTC naive antes do delta.
+    if last.tzinfo is not None:
+        last = last.astimezone(_tz.utc).replace(tzinfo=None)
+
+    delta = now_utc - last
+    hours = delta.total_seconds() / 3600
+
+    if hours < 1:
+        return ""  # continuação imediata, sem ruído no prompt
+
+    # Hora local BR pra cumprimento adequado
+    br_now = _dt.now(_tz(_td(hours=-3)))
+    br_hour = br_now.hour
+    if br_hour < 12:
+        period = "bom dia"
+    elif br_hour < 18:
+        period = "boa tarde"
+    else:
+        period = "boa noite"
+
+    if hours < 6:
+        marker = (
+            f"CONTEXTO TEMPORAL: lead voltou após ~{int(hours)}h de silêncio "
+            f"(mesmo dia, agora é {period})."
+        )
+        guidance = (
+            "Continue de onde parou. NÃO cumprimente como se fosse 1º contato. "
+            "NÃO use 'tá tudo certo' como filler vazio — só confirme se houver "
+            "fato concreto pra confirmar."
+        )
+    elif hours < 24:
+        marker = (
+            f"CONTEXTO TEMPORAL: lead voltou após ~{int(hours)}h "
+            f"(provavelmente outro turno, agora é {period})."
+        )
+        guidance = (
+            f"Cumprimente brevemente com '{period}' se ele cumprimentou primeiro, "
+            "ou continue direto. NÃO repita 'como você está' se já perguntou. "
+            "NÃO repita info que já está no histórico. NÃO afirme que algo foi "
+            "enviado/gerado se não consta no STATUS REAL abaixo."
+        )
+    elif hours < 72:
+        days = max(1, int(hours / 24))
+        marker = (
+            f"CONTEXTO TEMPORAL: lead voltou após ~{days}d de silêncio "
+            f"(agora é {period})."
+        )
+        guidance = (
+            "Acolha o retorno brevemente, recupere o contexto da memória/summary, "
+            "e pergunte se ainda tem interesse no próximo passo. Não finja conversa "
+            "contínua. Não repita info que já está no histórico."
+        )
+    else:
+        days = int(hours / 24)
+        marker = (
+            f"CONTEXTO TEMPORAL: lead sumiu por {days}d — REATIVAÇÃO FRIA "
+            f"(agora é {period})."
+        )
+        guidance = (
+            "Tom leve, sem cobrança. Resuma onde estavam, ofereça retomar. "
+            "Nunca cobre decisão nem use urgência forçada."
+        )
+
+    # STATUS REAL (verdade do sistema, anti-alucinação cross-day)
+    status_lines = []
+    if conv.active_appointment_datetime:
+        svc = conv.active_appointment_service or "serviço"
+        status_lines.append(
+            f"  - Agendamento ATIVO: {svc} em {conv.active_appointment_datetime}"
+        )
+    else:
+        status_lines.append("  - Agendamento: nenhum ativo no sistema")
+
+    # Stage atual como verdade
+    status_lines.append(f"  - Stage atual: {conv.stage}")
+
+    status_block = (
+        "STATUS REAL DO SISTEMA (use isto como VERDADE — sobrepõe qualquer "
+        "info do summary que conflite):\n" + "\n".join(status_lines)
+    )
+
+    return f"\n{marker}\n{guidance}\n\n{status_block}\n"
+
+
+# ================================================================
 # LEAD MEMORY (v10 — layered)
 # ================================================================
 
@@ -766,6 +888,11 @@ def build_dynamic_prompt(
     Inclui: gênero, funil, vendas, memória do lead, imagem (se houver).
     """
     prompt = ""
+
+    # ── Contexto temporal (consciência de tempo + status real) ──
+    # Vem PRIMEIRO porque calibra o tom de tudo que vem depois.
+    # Em <1h de gap retorna vazio, sem custo de tokens.
+    prompt += _build_temporal_context(conv)
 
     # ── Gênero do lead ──
     prompt += _build_gender_prompt(conv)

@@ -4330,6 +4330,121 @@ class TestFactualJudge:
         )
         assert mismatch is False
 
+    # ── v12.x.2 — Contexto temporal (consciência de tempo) ──
+
+    def test_temporal_context_empty_when_no_last_message(self):
+        """Sem last_message_at (lead novo) → bloco vazio."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        conv = Conversation(client_id="c", phone="p", last_message_at=None)
+        assert _build_temporal_context(conv) == ""
+
+    def test_temporal_context_empty_when_under_1h(self):
+        """Gap <1h → continuação imediata, sem ruído no prompt."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        from datetime import datetime, timedelta
+        conv = Conversation(
+            client_id="c", phone="p",
+            last_message_at=datetime.utcnow() - timedelta(minutes=20),
+        )
+        assert _build_temporal_context(conv) == ""
+
+    def test_temporal_context_same_day_gap(self):
+        """Gap 1-6h → instrução pra continuar de onde parou."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        from datetime import datetime, timedelta
+        conv = Conversation(
+            client_id="c", phone="p",
+            last_message_at=datetime.utcnow() - timedelta(hours=3),
+        )
+        result = _build_temporal_context(conv)
+        assert "CONTEXTO TEMPORAL" in result
+        assert "mesmo dia" in result.lower()
+        assert "tá tudo certo" in result.lower()  # instrução pra não usar
+        assert "STATUS REAL" in result
+
+    def test_temporal_context_next_day_gap(self):
+        """Gap 6-24h → cumprimentar e não repetir info."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        from datetime import datetime, timedelta
+        conv = Conversation(
+            client_id="c", phone="p",
+            last_message_at=datetime.utcnow() - timedelta(hours=14),
+        )
+        result = _build_temporal_context(conv)
+        assert "CONTEXTO TEMPORAL" in result
+        assert "outro turno" in result.lower() or "14h" in result
+        assert "não repita" in result.lower()
+        assert "não afirme que algo foi" in result.lower()
+
+    def test_temporal_context_reativation_few_days(self):
+        """Gap 1-3d → reativação curta."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        from datetime import datetime, timedelta
+        conv = Conversation(
+            client_id="c", phone="p",
+            last_message_at=datetime.utcnow() - timedelta(days=2),
+        )
+        result = _build_temporal_context(conv)
+        assert "CONTEXTO TEMPORAL" in result
+        assert "2d" in result
+        assert "acolha" in result.lower()
+
+    def test_temporal_context_cold_reativation(self):
+        """Gap >3d → reativação fria com tom leve."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        from datetime import datetime, timedelta
+        conv = Conversation(
+            client_id="c", phone="p",
+            last_message_at=datetime.utcnow() - timedelta(days=10),
+        )
+        result = _build_temporal_context(conv)
+        assert "REATIVAÇÃO FRIA" in result
+        assert "10d" in result
+        assert "sem cobrança" in result.lower() or "tom leve" in result.lower()
+
+    def test_temporal_context_includes_active_appointment(self):
+        """Status real exibe agendamento ativo quando há."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        from datetime import datetime, timedelta
+        conv = Conversation(
+            client_id="c", phone="p",
+            last_message_at=datetime.utcnow() - timedelta(hours=14),
+            active_appointment_datetime="2026-06-15 10:00",
+            active_appointment_service="clareamento",
+            stage="committed",
+        )
+        result = _build_temporal_context(conv)
+        assert "Agendamento ATIVO" in result
+        assert "clareamento" in result
+        assert "2026-06-15" in result
+        assert "committed" in result
+
+    def test_temporal_context_no_appointment(self):
+        """Sem agendamento ativo → status explícito 'nenhum ativo'."""
+        from huma.services.ai_service import _build_temporal_context
+        from huma.models.schemas import Conversation
+        from datetime import datetime, timedelta
+        conv = Conversation(
+            client_id="c", phone="p",
+            last_message_at=datetime.utcnow() - timedelta(hours=14),
+        )
+        result = _build_temporal_context(conv)
+        assert "Agendamento: nenhum ativo" in result
+
+    def test_build_dynamic_prompt_includes_temporal_context(self):
+        """Estrutural: build_dynamic_prompt chama _build_temporal_context."""
+        import inspect
+        from huma.services import ai_service
+        src = inspect.getsource(ai_service.build_dynamic_prompt)
+        assert "_build_temporal_context" in src
+
     def test_prompt_has_rule_18_inappropriate_content(self):
         """Estrutural: garante que build_static_prompt contém a regra
         sobre pivotar conteúdo inapropriado sem validar."""
