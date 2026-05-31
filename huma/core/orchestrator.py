@@ -489,6 +489,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                     _reply_for_judge,
                     ai_result.get("actions"),
                     ai_result.get("audio_text"),
+                    user_text=unified_text,
                 )
 
                 if _mismatch and _used_sonnet_for_reply:
@@ -525,6 +526,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                             _retry_reply_for_judge,
                             _retry_fj.get("actions"),
                             _retry_fj.get("audio_text"),
+                            user_text=unified_text,
                         )
 
                         if not _retry_mismatch:

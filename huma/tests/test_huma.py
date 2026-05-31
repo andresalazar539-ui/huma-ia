@@ -4219,3 +4219,128 @@ class TestFactualJudge:
         assert "detect_promise_action_mismatch" in src
         assert "FACTUAL_JUDGE_ENABLED" in src
         assert "factual_judge" in src
+
+    # ── v12.x.1 — Cross-turn check (modo B) ──
+    # Cobre o caso "Me manda áudio" → "Segura aí." que passava pelo
+    # modo A porque "segura aí" não tem âncora de produto na frase.
+
+    def test_segura_ai_after_audio_request_flagged(self):
+        """Caso real prod: lead pediu áudio, IA respondeu 'Segura aí'
+        sem audio_text. Sem user_text seria falso negativo."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, reason = detect_promise_action_mismatch(
+            "Claro, segura aí.",
+            actions=[],
+            audio_text="",
+            user_text="Me manda um áudio explicando como funciona a avaliação",
+        )
+        assert mismatch is True
+        assert "áudio" in reason or "audio_text" in reason
+
+    def test_segura_ai_after_audio_with_audio_passes(self):
+        """Mesma promessa vaga, mas audio_text preenchido → ok."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Claro, segura aí.",
+            actions=[],
+            audio_text="Oi André, deixa eu te explicar como funciona...",
+            user_text="me manda um áudio explicando",
+        )
+        assert mismatch is False
+
+    def test_segura_ai_without_user_text_passes(self):
+        """Sem user_text, promessa vaga sozinha não dispara (não temos
+        contexto pra saber o que foi pedido)."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Claro, segura aí.",
+            actions=[],
+            audio_text="",
+            # user_text omitido
+        )
+        assert mismatch is False
+
+    def test_um_instante_after_payment_request_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, reason = detect_promise_action_mismatch(
+            "Só um instante!",
+            actions=[],
+            audio_text="",
+            user_text="me manda o pix",
+        )
+        assert mismatch is True
+        assert "pagamento" in reason or "generate_payment" in reason
+
+    def test_deixa_eu_ver_after_media_request_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Deixa eu separar pra você.",
+            actions=[],
+            audio_text="",
+            user_text="tem foto antes e depois?",
+        )
+        assert mismatch is True
+
+    def test_vague_promise_with_action_passes(self):
+        """Lead pediu pix, IA respondeu vago MAS emitiu generate_payment
+        no mesmo turn → ok (action vai executar a entrega real)."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Já te mando!",
+            actions=[{"type": "generate_payment", "amount_cents": 35000}],
+            audio_text="",
+            user_text="me manda o pix",
+        )
+        assert mismatch is False
+
+    # ── v12.x.1 — Passiva ("já foi enviado") ──
+    # Cobre alucinação cross-day: summary errado afirma envio que
+    # nunca aconteceu, e IA diz "o link já foi enviado".
+
+    def test_link_ja_foi_enviado_flagged(self):
+        """Caso real prod (dia seguinte): IA afirma 'O link já foi
+        enviado' sem generate_payment no turn atual."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, reason = detect_promise_action_mismatch(
+            "O link de pagamento já foi enviado. Chegou aí?",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is True
+        assert "generate_payment" in reason
+
+    def test_pix_ja_esta_pronto_flagged(self):
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Seu Pix já está pronto.",
+            actions=[],
+            audio_text="",
+        )
+        assert mismatch is True
+
+    def test_normal_question_with_request_not_flagged(self):
+        """Lead pediu áudio, IA fez pergunta legítima de qualificação
+        (não usa promessa vaga). Não deve disparar."""
+        from huma.services.factual_judge import detect_promise_action_mismatch
+        mismatch, _ = detect_promise_action_mismatch(
+            "Posso te mandar! É pra qual procedimento específico?",
+            actions=[],
+            audio_text="",
+            user_text="me manda um áudio",
+        )
+        assert mismatch is False
+
+    def test_prompt_has_rule_18_inappropriate_content(self):
+        """Estrutural: garante que build_static_prompt contém a regra
+        sobre pivotar conteúdo inapropriado sem validar."""
+        from huma.services.ai_service import build_static_prompt
+        from huma.models.schemas import ClientIdentity
+        identity = ClientIdentity(
+            client_id="test", business_name="Clínica Teste",
+            tone="profissional", products=[], scheduling=None,
+            payment_methods=[],
+        )
+        prompt = build_static_prompt(identity)
+        assert "18." in prompt
+        assert "INAPROPRIADO" in prompt or "inapropriado" in prompt.lower()
+        assert "pivote" in prompt.lower() or "pivotar" in prompt.lower()
