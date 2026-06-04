@@ -42,6 +42,7 @@ from huma.config import (
 from huma.models.schemas import (
     ClientIdentity, Conversation, Intent, MessagingStyle, Sentiment,
 )
+from huma.core.capabilities import Capability, has_any_sell
 from huma.core.funnel import build_funnel_prompt
 from huma.utils.logger import get_logger
 
@@ -496,7 +497,7 @@ def build_autonomy_prompt(identity: ClientIdentity) -> str:
             if m not in methods:
                 prompt += f"  NÃO ofereça {m}.\n"
 
-    if identity.enable_scheduling:
+    if Capability.SCHEDULE in identity.capabilities_resolved:
         sched_fields = identity.scheduling_required_fields
         if sched_fields:
             collect_text = f"Colete: {', '.join(sched_fields)}."
@@ -1430,13 +1431,23 @@ def _build_reply_tool(messaging_style: MessagingStyle) -> dict:
     }
 
 
-def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
+def _build_reply_tool_compact(
+    messaging_style: MessagingStyle,
+    identity: ClientIdentity | None = None,
+) -> dict:
     """
     Versão compacta de _build_reply_tool — sem descriptions nos campos.
     Preserva branching SPLIT/SINGLE. Economia ~400 tokens por call.
 
     v12 (Cenário 7): adiciona check_availability na description de actions
     (structural — ver CLAUDE.md §1).
+
+    Fase 1 Capabilities (v12.x): se `identity` é fornecido, filtra as
+    actions na description por capability ativa — cliente AGENDA-only
+    não vê generate_payment, cliente VENDA-only não vê check_availability.
+    Identity=None mantém TODAS as actions (default seguro pra tests e
+    chamadas legadas). A regra #1 do CLAUDE.md (description estrutural
+    com type+campos específicos) é preservada em ambos os modos.
     """
     if messaging_style == MessagingStyle.SPLIT:
         reply_property = {
@@ -1457,6 +1468,46 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
             }
         }
         required_reply = ["reply"]
+
+    # ── Description condicional por capability ──
+    # Linhas estruturais (cada action com type + campos obrigatórios).
+    # Mantém regra #1 CLAUDE.md: type é obrigatório em toda linha.
+    SCHEDULE_LINES = [
+        "- type='check_availability': (campos opcionais: urgency='urgent'|'normal', slots_to_find=5, requested_datetime, exclude_weekdays). Emita quando o lead pedir disponibilidade OU nomear um horário específico SEM você ainda ter nome+email pra create_appointment. Se o lead nomeou um horário ('segunda 14h', 'quinta de manhã'), passe requested_datetime no MESMO formato de date_time do create_appointment — o sistema checa AQUELE horário e te diz se está livre, ocupado ou fora do expediente, com alternativas reais. Se o lead RECUSOU um ou mais dias ('não posso segunda', 'qualquer dia menos terça'), passe exclude_weekdays como lista de inteiros (0=segunda, 1=terça, 2=quarta, 3=quinta, 4=sexta, 5=sábado, 6=domingo) pra não receber esses dias de volta. Sem horário nomeado, omita requested_datetime; sem recusa de dia, omita exclude_weekdays. NUNCA diga 'vou verificar' nem invente que algo está ocupado — apenas emita a action.",
+        "- type='create_appointment': lead_name, lead_email, service, date_time. Emita quando o lead escolher um horário específico e você tiver nome+email.",
+        "- type='cancel_appointment': (sem campos — só emita quando lead insistiu em cancelar após você oferecer alternativa E perguntar motivo; sistema deleta o evento no Calendar)",
+    ]
+    SELL_LINES = [
+        "- type='generate_payment': lead_name, description, amount_cents, payment_method, lead_cpf (só boleto)",
+    ]
+    PHYSICAL_LINES = [
+        "- type='check_stock': query (texto livre ou SKU). Emita quando o lead perguntar se tem o produto ('tem cadeira gamer preta?', 'a cor azul tá disponível?'). Sistema consulta inventário e devolve preço e estoque REAIS. NUNCA invente disponibilidade nem preço — APENAS emita a action.",
+        "- type='calc_shipping': sku, cep, qty (default 1). Emita SOMENTE quando o lead já passou o CEP. Sistema consulta transportadora e devolve custo e prazo REAIS. Se o lead não passou CEP ainda, peça antes — NÃO emita a action sem CEP.",
+    ]
+    UNIVERSAL_LINES = [
+        "- type='send_media': tags (lista de strings)",
+    ]
+
+    if identity is None:
+        # Modo legado / tests: todas as actions na description.
+        include_schedule = True
+        include_sell = True
+        include_physical = True
+    else:
+        caps = identity.capabilities_resolved
+        include_schedule = Capability.SCHEDULE in caps
+        include_sell = has_any_sell(caps)
+        include_physical = Capability.SELL_PHYSICAL in caps
+
+    action_lines = ["Ações especiais. Cada item DEVE ter o campo 'type' obrigatório + campos específicos:"]
+    if include_schedule:
+        action_lines.extend(SCHEDULE_LINES)
+    if include_sell:
+        action_lines.extend(SELL_LINES)
+    if include_physical:
+        action_lines.extend(PHYSICAL_LINES)
+    action_lines.extend(UNIVERSAL_LINES)
+    actions_description = "\n".join(action_lines)
 
     return {
         "name": "send_reply",
@@ -1488,14 +1539,7 @@ def _build_reply_tool_compact(messaging_style: MessagingStyle) -> dict:
                 "actions": {
                     "type": "array",
                     "items": {"type": "object"},
-                    "description": (
-                        "Ações especiais. Cada item DEVE ter o campo 'type' obrigatório + campos específicos:\n"
-                        "- type='check_availability': (campos opcionais: urgency='urgent'|'normal', slots_to_find=5, requested_datetime, exclude_weekdays). Emita quando o lead pedir disponibilidade OU nomear um horário específico SEM você ainda ter nome+email pra create_appointment. Se o lead nomeou um horário ('segunda 14h', 'quinta de manhã'), passe requested_datetime no MESMO formato de date_time do create_appointment — o sistema checa AQUELE horário e te diz se está livre, ocupado ou fora do expediente, com alternativas reais. Se o lead RECUSOU um ou mais dias ('não posso segunda', 'qualquer dia menos terça'), passe exclude_weekdays como lista de inteiros (0=segunda, 1=terça, 2=quarta, 3=quinta, 4=sexta, 5=sábado, 6=domingo) pra não receber esses dias de volta. Sem horário nomeado, omita requested_datetime; sem recusa de dia, omita exclude_weekdays. NUNCA diga 'vou verificar' nem invente que algo está ocupado — apenas emita a action.\n"
-                        "- type='create_appointment': lead_name, lead_email, service, date_time. Emita quando o lead escolher um horário específico e você tiver nome+email.\n"
-                        "- type='cancel_appointment': (sem campos — só emita quando lead insistiu em cancelar após você oferecer alternativa E perguntar motivo; sistema deleta o evento no Calendar)\n"
-                        "- type='generate_payment': lead_name, description, amount_cents, payment_method, lead_cpf (só boleto)\n"
-                        "- type='send_media': tags (lista de strings)"
-                    ),
+                    "description": actions_description,
                 },
             },
             "required": required_reply + ["intent", "sentiment", "stage_action", "confidence"],
@@ -1579,7 +1623,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     else:
         messages.append({"role": "user", "content": user_text})
 
-    reply_tool = _build_reply_tool_compact(identity.messaging_style)
+    reply_tool = _build_reply_tool_compact(identity.messaging_style, identity)
 
     # ── System blocks por tier (v11.2 — cache defensivo) ──
     if tier == 1:

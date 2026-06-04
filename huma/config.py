@@ -33,6 +33,44 @@ ELEVENLABS_MODEL = os.getenv("ELEVENLABS_MODEL", "eleven_multilingual_v2")
 # ── Transcrição de áudio ──
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# ── Estoque + Frete (Bling — Fase 2A + 2B) ──
+# Token global = Fase 2A (dev/testes). Em produção, cada cliente HUMA
+# tem o seu próprio token no ClientIdentity (preenchido via OAuth na
+# Fase 2B). Vazio = capability SELL_PHYSICAL indisponível pra clientes
+# que ainda não conectaram o Bling (modo no_credentials).
+BLING_ACCESS_TOKEN = os.getenv("BLING_ACCESS_TOKEN", "")
+BLING_BASE_URL = os.getenv("BLING_BASE_URL", "https://www.bling.com.br/Api/v3")
+
+# Credenciais do APP HUMA cadastrado no Bling (developer.bling.com.br).
+# Client ID é público (vai em URL OAuth); secret só no servidor.
+# Redirect URI tem que bater LETRA POR LETRA com o cadastrado no app
+# Bling — divergência = "redirect_uri_mismatch" e o callback nunca chega.
+BLING_CLIENT_ID = os.getenv("BLING_CLIENT_ID", "")
+BLING_CLIENT_SECRET = os.getenv("BLING_CLIENT_SECRET", "")
+BLING_REDIRECT_URI = os.getenv("BLING_REDIRECT_URI", "")
+
+# Endpoints OAuth do Bling V3. Confirmados via "Link de convite" do
+# painel dev: https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=...
+# Permitimos override por env caso o Bling mude endpoints no futuro.
+BLING_OAUTH_AUTHORIZE_URL = os.getenv(
+    "BLING_OAUTH_AUTHORIZE_URL",
+    "https://www.bling.com.br/Api/v3/oauth/authorize",
+)
+BLING_OAUTH_TOKEN_URL = os.getenv(
+    "BLING_OAUTH_TOKEN_URL",
+    "https://www.bling.com.br/Api/v3/oauth/token",
+)
+
+# State CSRF: TTL no Redis pra validar callback (10 min é folgado pra
+# OAuth típico que leva 30-60s; protege contra replays tardios).
+BLING_OAUTH_STATE_TTL_SEC = int(os.getenv("BLING_OAUTH_STATE_TTL_SEC", "600"))
+
+# Margem de segurança pra refresh: refaz token quando faltar menos
+# que isso pra expirar. 5 min cobre latência de rede + clock skew.
+BLING_TOKEN_REFRESH_MARGIN_SEC = int(
+    os.getenv("BLING_TOKEN_REFRESH_MARGIN_SEC", "300")
+)
+
 # ── Pagamentos ──
 MERCADOPAGO_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 # Sprint 1 / item 2 — webhook secret pra validar HMAC do MP (diferente do access_token)

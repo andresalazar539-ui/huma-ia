@@ -22,6 +22,7 @@
 #   - Funil customizado do dono tem prioridade
 # ================================================================
 
+from huma.core.capabilities import Capability, has_any_sell
 from huma.models.schemas import ClientIdentity, FunnelStageConfig
 from huma.utils.logger import get_logger
 
@@ -158,7 +159,9 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
     closing_instructions = ""
     closing_reqs = []
 
-    if identity.enable_scheduling:
+    caps = identity.capabilities_resolved
+
+    if Capability.SCHEDULE in caps:
         sched_fields = identity.scheduling_required_fields
         if sched_fields:
             closing_instructions += f"AGENDAMENTO: Colete {', '.join(sched_fields)} antes de confirmar.\n"
@@ -167,7 +170,7 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         else:
             closing_instructions += "AGENDAMENTO: Confirme direto.\n"
 
-    if identity.enable_payments and identity.accepted_payment_methods:
+    if has_any_sell(caps) and identity.accepted_payment_methods:
         methods = identity.accepted_payment_methods
         closing_instructions += "PAGAMENTO: Pergunte como quer pagar. "
         if "pix" in methods:

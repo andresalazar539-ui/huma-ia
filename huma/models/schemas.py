@@ -11,6 +11,8 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
+from huma.core.capabilities import Capability, derive_capabilities_from_flags
+
 
 # ================================================================
 # ENUMS
@@ -262,6 +264,38 @@ class BusinessScheduleConfig(BaseModel):
 
 
 # ================================================================
+# PRODUTO (v12.x — Fase 2A: SELL_PHYSICAL)
+# ================================================================
+
+class Product(BaseModel):
+    """
+    Produto físico com dados estruturados pra venda + cálculo de frete.
+
+    Usado por ClientIdentity.products quando a capability SELL_PHYSICAL
+    está ativa. Sincronizado a partir do InventoryProvider (Bling V3)
+    no onboarding e atualizado sob demanda durante a conversa.
+
+    Coexiste com `products_or_services` legado (list[dict]) — quem usa
+    SELL_DIGITAL ou serviço continua com o campo antigo.
+    """
+    sku: str = Field(..., description="Código único (SKU). Lookup primário.")
+    name: str = ""
+    description: str = ""
+    price_cents: int = 0
+    weight_g: int = Field(default=0, description="Peso em gramas (frete).")
+    width_cm: float = 0.0
+    height_cm: float = 0.0
+    depth_cm: float = 0.0
+    stock_qty: int = 0
+    image_url: str = ""
+    bling_id: str = Field(
+        default="",
+        description="ID interno no Bling pra speedup de lookups.",
+    )
+    stock_synced_at: Optional[datetime] = None
+
+
+# ================================================================
 # AGENDAMENTO (v6.1.0)
 # ================================================================
 
@@ -347,6 +381,17 @@ class ClientIdentity(BaseModel):
 
     # ── Produtos ──
     products_or_services: list[dict] = Field(default_factory=list)
+    # v12.x — Fase 2A: catálogo estruturado pra SELL_PHYSICAL.
+    # Sincronizado do InventoryProvider (Bling). Vazio = vertical não
+    # vende físico ou ainda não conectou provider.
+    products: list[Product] = Field(
+        default_factory=list,
+        description=(
+            "Catálogo estruturado (SKU, peso, dimensões, estoque). "
+            "Usado pela capability SELL_PHYSICAL. Sincronizado do "
+            "InventoryProvider — não preencher manualmente."
+        ),
+    )
     max_discount_percent: float = 0.0
 
     # ── Inteligência ──
@@ -377,6 +422,40 @@ class ClientIdentity(BaseModel):
     enable_payments: bool = False
     enable_scheduling: bool = False
     scheduling_platform: str = "google_meet"
+
+    # ── Capabilities (Fase 1 — refactor Modo × Vertical) ──
+    # None = derivar das flags acima (cliente legado). Setar explicitamente
+    # destrava SELL_PHYSICAL, QUALIFY, SUPPORT que não têm flag legada.
+    # Acesse via .capabilities_resolved — nunca leia .capabilities cru.
+    capabilities: Optional[list[Capability]] = Field(
+        default=None,
+        description=(
+            "Capacidades ativas do clone (SCHEDULE, SELL_DIGITAL, "
+            "SELL_PHYSICAL, QUALIFY, SUPPORT). None = derivar das flags "
+            "enable_scheduling/enable_payments (backwards-compat)."
+        ),
+    )
+
+    # ── OAuth Bling (v12.x — Fase 2B) ──
+    # Tokens por cliente preenchidos no callback do OAuth. Vazio = cliente
+    # ainda não conectou Bling; BlingAdapter cai em modo no_credentials e
+    # capability SELL_PHYSICAL não funciona. Refresh acontece automatic
+    # antes de cada request quando faltar menos que BLING_TOKEN_REFRESH_MARGIN_SEC.
+    bling_access_token: str = Field(
+        default="",
+        description="Access token OAuth do Bling. Refresh automático.",
+    )
+    bling_refresh_token: str = Field(
+        default="",
+        description="Refresh token (TTL ~30 dias). Necessário pra renovar access.",
+    )
+    bling_token_expires_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Quando o access_token expira (UTC). Refresh quando faltar "
+            "menos que BLING_TOKEN_REFRESH_MARGIN_SEC."
+        ),
+    )
 
     # ── WhatsApp Meta Cloud API (v8) ──
     waba_id: str = Field(
@@ -491,6 +570,26 @@ class ClientIdentity(BaseModel):
             "None = fallback seg-sex 8h-18h. Dono preenche via API."
         ),
     )
+
+    @property
+    def capabilities_resolved(self) -> set[Capability]:
+        """
+        Set de capabilities ativas, resolvido com backwards-compat.
+
+        Se `capabilities` foi setado explicitamente (cliente novo ou
+        migrado), usa esse valor. Se None (cliente legado), deriva
+        das flags enable_scheduling/enable_payments. Garante que
+        callers (funnel, ai_service, orchestrator) leem sempre um
+        set, sem precisar saber se o cliente é legado.
+
+        Returns:
+            set[Capability] ativas. Vazio se nenhuma capability
+            nem flag legada estiver ligada (clone só atende sem
+            agendar nem cobrar).
+        """
+        if self.capabilities is not None:
+            return set(self.capabilities)
+        return derive_capabilities_from_flags(self)
 
 
 # ================================================================
