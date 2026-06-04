@@ -164,6 +164,27 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
         conv = await db.get_conversation(client_id, phone)
 
+        # ── Fase 3 (QUALIFY): handoff humano em andamento ──
+        # Se o humano já assumiu, IA não responde. Registra a msg no
+        # histórico (pro humano ter contexto quando conferir) e sai.
+        # Reset manual via db.update_conversation_handoff_status pra
+        # devolver o lead à IA — comportamento intencional, IA não
+        # toma essa decisão sozinha pra não atrapalhar o fechamento humano.
+        if getattr(conv, "handoff_status", "active") == "handed_off":
+            log.info(
+                f"Handoff ativo | {phone} | client={client_id} | "
+                f"IA suprimida, msg registrada no histórico"
+            )
+            try:
+                conv.history.append({"role": "user", "content": unified_text})
+                await db.save_conversation(conv)
+            except Exception as e:
+                log.error(
+                    f"Erro registrando msg pós-handoff | {phone} | "
+                    f"{type(e).__name__}: {e}"
+                )
+            return
+
         # ── Reativação: lead em "lost" que volta a falar ──
         # Se alguém que foi "lost" manda mensagem, é porque tem
         # interesse de novo. Porta aberta na prática, não só no discurso.
@@ -1364,6 +1385,23 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     await _handle_appointment_action(phone, action, client_data, conv=conv)
                 else:
                     log.info(f"Action create_appointment ignorada | {phone} | já agendado")
+            elif action_type == "handoff_to_human":
+                # Fase 3 (QUALIFY): notifica humano + suprime IA dos próximos turns.
+                # Executado APÓS o reply do Claude sair — handler manda sua própria
+                # mensagem de encerramento ao lead ("vou te passar pro especialista").
+                handoff_result = await _handle_handoff_action(
+                    phone, action, client_data, conv
+                )
+                if handoff_result.get("executed"):
+                    log.info(
+                        f"Handoff action executada | {phone} | "
+                        f"stage→{conv.stage} | owner_notified=True"
+                    )
+                else:
+                    log.warning(
+                        f"Handoff action recusada | {phone} | "
+                        f"status={handoff_result.get('status')}"
+                    )
 
         # Envia confirmação de agendamento DEPOIS do reply do Claude
         # Fluxo pro lead: "vou verificar na agenda..." → (2s) → "Agendado! Quinta às 15h..."
@@ -2576,6 +2614,130 @@ async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict
         )
 
     return {"executed": True, "status": status}
+
+
+# ================================================================
+# HANDOFF HUMANO (Fase 3 — QUALIFY)
+#
+# Diferente das outras actions (que injetam marker e deixam a IA
+# responder), handoff_to_human:
+#   1. Notifica o dono via WhatsApp (owner_phone) com resumo do lead
+#   2. Marca conv.handoff_status = "handed_off" (IA não responde mais)
+#   3. Manda 1 mensagem final ao lead avisando da transferência
+#   4. Avança stage pra "won" (handoff = conversão pro QUALIFY)
+#
+# "Won" aqui é semanticamente diferente de pagamento confirmado, mas
+# pra o funil é equivalente — lead saiu do pipeline da IA com sucesso.
+# ================================================================
+
+
+async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
+    """
+    Notifica humano + marca conv.handoff_status + manda última msg ao lead.
+
+    Diferente dos handlers de data-collection, ESSA action ENVIA mensagem
+    ao lead (uma última pra avisar) e também notifica o dono via WhatsApp.
+
+    Returns:
+        {"executed": bool, "status": str, "owner_notified": bool}
+    """
+    summary = (action.get("summary") or "").strip()
+    urgency = action.get("urgency") or "normal"
+    if urgency not in ("normal", "urgent"):
+        urgency = "normal"
+
+    if not summary:
+        log.warning(
+            f"handoff sem summary | {phone} | recusando — Claude precisa "
+            f"resumir o lead antes de transferir"
+        )
+        return {"executed": False, "status": "missing_summary", "owner_notified": False}
+
+    # Import tardio pra quebrar ciclo (provider importa wa que importa orchestrator
+    # indiretamente em alguns paths)
+    from huma.providers.handoff import get_default_provider
+
+    provider = get_default_provider()
+    payload = {
+        "lead_phone": phone,
+        "lead_name": conv.lead_name_canonical or "",
+        "summary": summary,
+        "lead_facts": list(conv.lead_facts or [])[:10],
+        "urgency": urgency,
+        "stage": conv.stage,
+    }
+    notif_result = await provider.notify_human(
+        target=client_data.owner_phone or "",
+        client_id=client_data.client_id,
+        payload=payload,
+    )
+    owner_notified = notif_result.get("status") == "ok"
+
+    if not owner_notified:
+        log.error(
+            f"Handoff: notificação dono falhou | {phone} | "
+            f"client={client_data.client_id} | "
+            f"status={notif_result.get('status')} | "
+            f"detail={notif_result.get('detail', '')}"
+        )
+        # NÃO marca handed_off se a notificação falhou — lead ficaria
+        # no vácuo. Melhor IA continuar tentando e o dono ser notificado
+        # do erro pelos canais de log/alerta dele.
+        return {
+            "executed": False,
+            "status": notif_result.get("status", "error"),
+            "owner_notified": False,
+        }
+
+    # Marca estado de handoff
+    conv.handoff_status = "handed_off"
+    conv.handed_off_at = datetime.utcnow()
+    conv.handoff_summary = summary
+    if conv.stage not in TERMINAL_STAGES:
+        conv.stage = "won"
+
+    # Manda última mensagem ao lead pra ele saber que tá vindo gente
+    if urgency == "urgent":
+        final_msg = (
+            "Vou te passar agora pro nosso especialista que já vai te chamar "
+            "pra resolver isso rapidinho. Tá tudo anotado!"
+        )
+    else:
+        final_msg = (
+            "Já chamei nosso especialista pra te dar atenção total. "
+            "Em alguns minutos ele te chama por aqui mesmo. Tá tudo anotado!"
+        )
+
+    try:
+        await wa.send_text(phone, final_msg, client_id=client_data.client_id)
+        conv.history.append({"role": "assistant", "content": final_msg})
+        # Marker técnico pra debug/auditoria
+        conv.history.append({
+            "role": "assistant",
+            "content": (
+                f"[HANDOFF EXECUTADO — humano notificado via WhatsApp ({client_data.owner_phone}). "
+                f"IA suprimida até reset manual. Resumo: {summary}]"
+            ),
+        })
+        await db.save_conversation(conv)
+        log.info(
+            f"Handoff executado | {phone} | client={client_data.client_id} | "
+            f"urgency={urgency} | stage→won"
+        )
+    except Exception as e:
+        log.error(
+            f"Handoff: erro salvando estado pós-notif | {phone} | "
+            f"{type(e).__name__}: {e}"
+        )
+        # Notificação JÁ foi enviada, então retornamos executed=True mesmo
+        # se persist falhar — humano vai agir; pior caso IA responde turn
+        # adicional antes do save eventualmente persistir.
+
+    return {
+        "executed": True,
+        "status": "ok",
+        "owner_notified": True,
+    }
 
 
 # ================================================================

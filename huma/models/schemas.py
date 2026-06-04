@@ -621,6 +621,28 @@ class Conversation(BaseModel):
     lead_name_canonical: str = ""
     lead_cpf: str = ""
 
+    # v12.x — Fase 3: estado de handoff humano (capability QUALIFY).
+    # "active" = IA conduz a conversa normalmente.
+    # "handed_off" = humano assumiu, IA para de responder até reset manual.
+    handoff_status: str = Field(
+        default="active",
+        description=(
+            "Estado do handoff. 'active' = IA responde; 'handed_off' = "
+            "humano assumiu, IA suprime resposta mas continua logando."
+        ),
+    )
+    handed_off_at: Optional[datetime] = Field(
+        default=None,
+        description="Quando o handoff foi acionado (UTC). Pra logs/auditoria.",
+    )
+    handoff_summary: str = Field(
+        default="",
+        description=(
+            "Resumo gerado pela IA no momento do handoff. Vai pra "
+            "notificação do humano e fica de referência no histórico."
+        ),
+    )
+
 
 # ================================================================
 # APROVAÇÃO PENDENTE

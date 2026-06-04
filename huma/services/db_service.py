@@ -112,6 +112,9 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             lead_email=d.get("lead_email", "") or "",
             lead_name_canonical=d.get("lead_name_canonical", "") or "",
             lead_cpf=d.get("lead_cpf", "") or "",
+            handoff_status=d.get("handoff_status", "active") or "active",
+            handed_off_at=d.get("handed_off_at"),
+            handoff_summary=d.get("handoff_summary", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -136,6 +139,9 @@ async def save_conversation(conv: Conversation):
         "lead_email": conv.lead_email,
         "lead_name_canonical": conv.lead_name_canonical,
         "lead_cpf": conv.lead_cpf,
+        "handoff_status": conv.handoff_status,
+        "handed_off_at": conv.handed_off_at.isoformat() if conv.handed_off_at else None,
+        "handoff_summary": conv.handoff_summary,
         "updated_at": datetime.utcnow().isoformat(),
     }
     await run_in_threadpool(

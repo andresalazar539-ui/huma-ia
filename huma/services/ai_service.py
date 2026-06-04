@@ -1484,6 +1484,9 @@ def _build_reply_tool_compact(
         "- type='check_stock': query (texto livre ou SKU). Emita quando o lead perguntar se tem o produto ('tem cadeira gamer preta?', 'a cor azul tá disponível?'). Sistema consulta inventário e devolve preço e estoque REAIS. NUNCA invente disponibilidade nem preço — APENAS emita a action.",
         "- type='calc_shipping': sku, cep, qty (default 1). Emita SOMENTE quando o lead já passou o CEP. Sistema consulta transportadora e devolve custo e prazo REAIS. Se o lead não passou CEP ainda, peça antes — NÃO emita a action sem CEP.",
     ]
+    QUALIFY_LINES = [
+        "- type='handoff_to_human': summary (resumo do lead em 1-2 frases, ex: 'João, quer apartamento 2 quartos em Pinheiros até R$700k, urgente'), urgency='normal'|'urgent'. Emita SOMENTE quando TODOS os campos obrigatórios de coleta foram preenchidos E o lead demonstrou interesse claro. Sistema notifica humano via WhatsApp + PARA de responder. NUNCA emita sem ter coletado os campos obrigatórios — peça os dados que faltam antes.",
+    ]
     UNIVERSAL_LINES = [
         "- type='send_media': tags (lista de strings)",
     ]
@@ -1493,11 +1496,13 @@ def _build_reply_tool_compact(
         include_schedule = True
         include_sell = True
         include_physical = True
+        include_qualify = True
     else:
         caps = identity.capabilities_resolved
         include_schedule = Capability.SCHEDULE in caps
         include_sell = has_any_sell(caps)
         include_physical = Capability.SELL_PHYSICAL in caps
+        include_qualify = Capability.QUALIFY in caps
 
     action_lines = ["Ações especiais. Cada item DEVE ter o campo 'type' obrigatório + campos específicos:"]
     if include_schedule:
@@ -1506,6 +1511,8 @@ def _build_reply_tool_compact(
         action_lines.extend(SELL_LINES)
     if include_physical:
         action_lines.extend(PHYSICAL_LINES)
+    if include_qualify:
+        action_lines.extend(QUALIFY_LINES)
     action_lines.extend(UNIVERSAL_LINES)
     actions_description = "\n".join(action_lines)
 

@@ -182,6 +182,25 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         closing_instructions += "NUNCA peça dados de cartão na conversa.\n"
         closing_reqs.append("forma de pagamento confirmada")
 
+    if Capability.QUALIFY in caps:
+        qualify_fields = identity.lead_collection_fields or []
+        if qualify_fields:
+            closing_instructions += (
+                f"QUALIFICAÇÃO: Confirme TODOS esses dados antes de transferir: "
+                f"{', '.join(qualify_fields)}.\n"
+            )
+            closing_reqs.extend(qualify_fields)
+        else:
+            closing_instructions += "QUALIFICAÇÃO: Confirme nome + interesse antes de transferir.\n"
+        closing_instructions += (
+            "  HANDOFF: Quando os dados acima estiverem coletados E o lead "
+            "expressar interesse claro, EMITA action handoff_to_human com "
+            "summary (1-2 frases) e urgency. Sistema notifica o humano e "
+            "encerra a conversa do seu lado. NUNCA prometa 'alguém vai te chamar' "
+            "sem emitir a action — a action é o que aciona de verdade.\n"
+        )
+        closing_reqs.append("interesse confirmado pra handoff")
+
     closing_instructions += (
         "\n  PSICOLOGIA DO CLOSING:\n"
         "    - PRESUMA O SIM. 'Pra quando quer agendar?' (não 'quer agendar?')\n"
