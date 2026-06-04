@@ -39,6 +39,7 @@ from huma.services import scheduling_service as sched
 from huma.services import billing_service as billing
 from huma.services import message_buffer as buffer
 from huma.services import loop_detector
+from huma.providers.inventory.bling import BlingAdapter
 from huma.utils.logger import get_logger
 from huma.utils.log_masking import mask_email, mask_name
 
@@ -1045,6 +1046,130 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 log.info(
                     f"check_availability status={check_result.get('status')} | {phone} | "
                     f"reply do turn 1 continua saindo como fallback"
+                )
+
+        # ============================================================
+        # INVENTORY (Fase 2B-restante) — check_stock + calc_shipping
+        #
+        # Padrão equivalente ao check_availability:
+        #   - Captura ambas as actions de remaining_actions e remove
+        #   - Cada handler injeta marker no histórico
+        #   - Se algum executou E o reply do turn 1 NÃO foi suprimido
+        #     ainda (check_availability não rodou), re-invoca a IA pra
+        #     responder com os dados reais
+        #   - Se check_availability JÁ suprimiu/re-invocou, esses markers
+        #     ficam no histórico pro PRÓXIMO turn (combinação raríssima)
+        # ============================================================
+        inventory_actions_pending = [
+            a for a in remaining_actions
+            if isinstance(a, dict) and a.get("type") in ("check_stock", "calc_shipping")
+        ]
+        if inventory_actions_pending:
+            remaining_actions = [
+                a for a in remaining_actions
+                if not (isinstance(a, dict) and a.get("type") in ("check_stock", "calc_shipping"))
+            ]
+
+            inventory_executed = False
+            for inv_action in inventory_actions_pending:
+                inv_type = inv_action.get("type")
+                if inv_type == "check_stock":
+                    inv_result = await _handle_check_stock_action(
+                        phone, inv_action, client_data, conv
+                    )
+                elif inv_type == "calc_shipping":
+                    inv_result = await _handle_calc_shipping_action(
+                        phone, inv_action, client_data, conv
+                    )
+                else:
+                    continue
+                if inv_result.get("executed"):
+                    inventory_executed = True
+
+            # Re-invoca SÓ se: marcou algo E reply do turn 1 ainda vai sair
+            # (check_availability não suprimiu). Caso contrário, markers ficam
+            # no histórico pro Claude usar naturalmente no próximo turn.
+            if inventory_executed and not suppress_claude_reply_for_check:
+                suppress_claude_reply_for_check = True
+                log.info(
+                    f"inventory status=ok | {phone} | "
+                    f"suprimindo reply do turn 1 | re-invocando IA"
+                )
+
+                try:
+                    fresh_conv = await db.get_conversation(cid, phone)
+                except Exception as e:
+                    log.error(
+                        f"Erro recarregando conv pós inventory | {phone} | "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    fresh_conv = conv
+
+                last_user_text = ""
+                for msg in reversed(fresh_conv.history):
+                    if msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            last_user_text = content
+                            break
+
+                if last_user_text:
+                    try:
+                        followup_result = await ai.generate_response(
+                            client_data,
+                            fresh_conv,
+                            last_user_text,
+                            image_url=None,
+                            use_fast_model=False,
+                            tier=3,
+                        )
+
+                        fup_reply = (followup_result.get("reply") or "").strip()
+                        fup_parts = followup_result.get("reply_parts") or []
+
+                        if fup_parts and len(fup_parts) > 1:
+                            for i, part in enumerate(fup_parts):
+                                if not isinstance(part, str) or not part.strip():
+                                    continue
+                                delay = (
+                                    min(2.5 + len(part) * 0.04, 5.0)
+                                    if i == 0 else _typing_delay(part)
+                                )
+                                await asyncio.sleep(delay)
+                                await wa.send_text(phone, part, client_id=cid)
+                        elif fup_reply:
+                            await asyncio.sleep(_typing_delay(fup_reply))
+                            await wa.send_text(phone, fup_reply, client_id=cid)
+                        elif fup_parts and isinstance(fup_parts[0], str):
+                            single = fup_parts[0].strip()
+                            if single:
+                                await asyncio.sleep(_typing_delay(single))
+                                await wa.send_text(phone, single, client_id=cid)
+
+                        log.info(
+                            f"inventory follow-up enviado | {phone} | "
+                            f"reply_len={len(fup_reply)} | parts={len(fup_parts)}"
+                        )
+                    except Exception as e:
+                        log.error(
+                            f"inventory follow-up falhou | {phone} | "
+                            f"{type(e).__name__}: {e}"
+                        )
+                        # Safety net leve: mensagem genérica pra lead não ficar no vácuo
+                        fallback_msg = (
+                            "Tô consultando o sistema aqui, só um instante "
+                            "que já te respondo com tudo certinho."
+                        )
+                        await asyncio.sleep(_typing_delay(fallback_msg))
+                        await wa.send_text(phone, fallback_msg, client_id=cid)
+                else:
+                    log.warning(
+                        f"inventory sem user text pra re-invocar | {phone}"
+                    )
+            elif inventory_executed:
+                log.info(
+                    f"inventory marcado mas reply já suprimido por check_availability | "
+                    f"{phone} | markers ficam pro próximo turn"
                 )
 
         # ============================================================
@@ -2258,6 +2383,199 @@ async def _handle_check_availability_action(phone, action, client_data, conv):
             return specific_result
 
     return await _handle_generic_availability(phone, action, client_data, conv)
+
+
+# ================================================================
+# INVENTORY (Fase 2B-restante) — check_stock + calc_shipping
+#
+# Padrão idêntico ao check_availability:
+#   - Handler NÃO envia mensagem ao lead
+#   - Injeta um marker [ESTOQUE CONSULTADO] / [FRETE CONSULTADO] no histórico
+#   - Dispatcher decide se faz re-invoke (suppress reply do turn 1)
+#
+# Markers seguem anti-alucinação:
+#   - "Use APENAS esses dados na resposta"
+#   - "NUNCA invente preço/disponibilidade/prazo"
+# ================================================================
+
+
+def _format_price_brl(cents: int) -> str:
+    """89000 → 'R$ 890,00'. Helper local pra marker."""
+    return f"R$ {cents/100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
+    """
+    Consulta estoque via InventoryProvider (Bling) e injeta marker.
+
+    Padrão idêntico ao check_availability — NÃO envia ao lead, apenas
+    prepara contexto pra re-invocação. Caller decide se faz re-invoke.
+
+    Returns:
+        {"executed": bool, "status": str, "product": dict | None}
+        status ∈ {found, not_found, ambiguous, no_credentials, error}
+    """
+    query = (action.get("query") or "").strip()
+    if not query:
+        log.info(f"check_stock sem query | {phone}")
+        return {"executed": False, "status": "empty_query", "product": None}
+
+    adapter = BlingAdapter(identity=client_data)
+    result = await adapter.check_stock(query)
+    status = result.get("status", "error")
+
+    if status == "found":
+        name = result.get("name", query)
+        sku = result.get("sku", "")
+        price = _format_price_brl(result.get("price_cents", 0))
+        qty = result.get("stock_qty", 0)
+        available = result.get("available", False)
+        if available:
+            marker = (
+                f"[ESTOQUE CONSULTADO — produto: {name} (SKU {sku}) | "
+                f"preço: {price} | em estoque: {qty} unidades. "
+                f"Use APENAS esses dados na resposta. "
+                f"NUNCA invente outro preço nem outro número de estoque. "
+                f"Apresente ao lead com clareza e ofereça avançar pra compra.]"
+            )
+        else:
+            marker = (
+                f"[ESTOQUE CONSULTADO — produto: {name} (SKU {sku}) | "
+                f"preço: {price} | SEM ESTOQUE no momento (0 unidades). "
+                f"Avise o lead que tá esgotado, peça contato pra avisar quando "
+                f"voltar, ou ofereça produtos similares se você conhecer.]"
+            )
+    elif status == "not_found":
+        marker = (
+            f"[ESTOQUE CONSULTADO — produto '{query}' NÃO encontrado no catálogo. "
+            f"Avise o lead com clareza, peça pra detalhar o que procura "
+            f"(nome exato, cor, modelo) ou ofereça alternativas que você conhece.]"
+        )
+    elif status == "ambiguous":
+        matches = result.get("matches") or []
+        names = [m.get("name", "?") for m in matches[:5]]
+        marker = (
+            f"[ESTOQUE CONSULTADO — vários produtos batem com '{query}': "
+            f"{', '.join(names)}. Pergunte ao lead qual desses ele quer "
+            f"antes de prosseguir. NÃO invente outros.]"
+        )
+    elif status == "no_credentials":
+        marker = (
+            "[ESTOQUE INDISPONÍVEL — Bling não conectado nesse cliente. "
+            "Diga ao lead que vai confirmar a disponibilidade e retorna em "
+            "instantes. NÃO confirme estoque por conta própria.]"
+        )
+    else:
+        marker = (
+            "[ESTOQUE INDISPONÍVEL — consulta falhou por instabilidade. "
+            "Diga ao lead que vai confirmar a disponibilidade e retorna "
+            "em instantes. NÃO invente estoque nem preço.]"
+        )
+        log.warning(
+            f"check_stock fallback | {phone} | status={status} | "
+            f"detail={result.get('detail', '')}"
+        )
+
+    try:
+        conv.history.append({"role": "assistant", "content": marker})
+        await db.save_conversation(conv)
+        log.info(
+            f"check_stock marker injetado | {phone} | status={status} | "
+            f"query='{query[:40]}'"
+        )
+    except Exception as e:
+        log.error(
+            f"Erro salvando marker check_stock | {phone} | "
+            f"{type(e).__name__}: {e}"
+        )
+
+    return {
+        "executed": True,
+        "status": status,
+        "product": result if status == "found" else None,
+    }
+
+
+async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict:
+    """
+    Cota frete via InventoryProvider (Bling /logisticas/cotacoes) e
+    injeta marker. Mesmo padrão do check_stock.
+
+    Returns:
+        {"executed": bool, "status": str}
+        status ∈ {ok, invalid_cep, no_logistics_configured,
+                  no_credentials, error, missing_fields}
+    """
+    sku = (action.get("sku") or "").strip()
+    cep = (action.get("cep") or "").strip()
+    try:
+        qty = int(action.get("qty") or 1)
+    except (TypeError, ValueError):
+        qty = 1
+    if qty < 1:
+        qty = 1
+
+    if not sku or not cep:
+        log.info(
+            f"calc_shipping sem dados | {phone} | sku={'ok' if sku else 'MISSING'} | "
+            f"cep={'ok' if cep else 'MISSING'}"
+        )
+        return {"executed": False, "status": "missing_fields"}
+
+    adapter = BlingAdapter(identity=client_data)
+    result = await adapter.calc_shipping(sku, cep, qty=qty)
+    status = result.get("status", "error")
+
+    if status == "ok":
+        cost = _format_price_brl(result.get("cost_cents", 0))
+        days = result.get("days", 0)
+        service = result.get("service", "Frete")
+        marker = (
+            f"[FRETE CONSULTADO — SKU {sku} | CEP {cep} | qty {qty} | "
+            f"custo: {cost} | prazo: {days} dias úteis | serviço: {service}. "
+            f"Use APENAS esses dados na resposta. NUNCA invente custo nem "
+            f"prazo. Apresente ao lead e peça pra fechar a compra.]"
+        )
+    elif status == "invalid_cep":
+        marker = (
+            f"[FRETE — CEP inválido ('{cep}'). Peça ao lead um CEP válido "
+            f"(8 dígitos). NÃO cote sem CEP correto.]"
+        )
+    elif status == "no_logistics_configured":
+        marker = (
+            "[FRETE INDISPONÍVEL — transportadora não configurada no Bling "
+            "desse cliente. Diga ao lead que vai consultar o frete e retorna "
+            "em instantes. NÃO invente valor.]"
+        )
+    elif status == "no_credentials":
+        marker = (
+            "[FRETE INDISPONÍVEL — Bling não conectado nesse cliente. "
+            "Diga ao lead que vai consultar e retorna em instantes.]"
+        )
+    else:
+        marker = (
+            "[FRETE INDISPONÍVEL — consulta falhou por instabilidade. "
+            "Diga ao lead que vai consultar e retorna em instantes.]"
+        )
+        log.warning(
+            f"calc_shipping fallback | {phone} | status={status} | "
+            f"detail={result.get('detail', '')}"
+        )
+
+    try:
+        conv.history.append({"role": "assistant", "content": marker})
+        await db.save_conversation(conv)
+        log.info(
+            f"calc_shipping marker injetado | {phone} | status={status} | "
+            f"sku={sku} | cep={cep}"
+        )
+    except Exception as e:
+        log.error(
+            f"Erro salvando marker calc_shipping | {phone} | "
+            f"{type(e).__name__}: {e}"
+        )
+
+    return {"executed": True, "status": status}
 
 
 # ================================================================
