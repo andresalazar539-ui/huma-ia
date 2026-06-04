@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from huma.config import APP_TITLE, APP_VERSION, APP_DESCRIPTION
 from huma.routes.api import router
 from huma.routes.oauth_bling import router as oauth_bling_router
+from huma.routes.wizard import router as wizard_router
 from huma.services import redis_service as cache
 from huma.utils.logger import get_logger
 
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     # Rotas
     app.include_router(router)
     app.include_router(oauth_bling_router)
+    app.include_router(wizard_router)
 
     # Startup
     @app.on_event("startup")
