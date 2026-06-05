@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
 
 from huma.config import APP_VERSION
 from huma.core.auth import verify_webhook, verify_api_key, verify_api_key_manual, bearer_scheme
@@ -296,6 +297,135 @@ async def get_conversation_cockpit(
         "active_appointment_datetime": conv.active_appointment_datetime or "",
         "active_appointment_service": conv.active_appointment_service or "",
         "history": conv.history,
+    }
+
+
+# ── Cockpit (T3) — handoff humano + envio manual ──
+#
+# T3 entrega o ciclo de "conversas funcionais":
+#   1. Dono clica "Assumir conversa" → IA para de responder pra esse lead
+#   2. Dono digita resposta no composer e envia → vai pelo WhatsApp de verdade
+#   3. Dono clica "Devolver para HUMA" → IA volta a responder
+#
+# Orchestrator JÁ trata handoff_status='handed_off' (suprime IA, só loga
+# mensagens do lead no history). T3 só precisa flipar o flag pelo cockpit
+# e enviar a msg do dono pelo WhatsApp.
+
+
+class HandoffPayload(BaseModel):
+    """Payload pra assumir/devolver conversa."""
+    takeover: bool = Field(..., description="True = humano assume; False = devolve pra IA")
+    summary: str = Field(default="", max_length=500, description="Resumo opcional do contexto pro humano")
+
+
+class CockpitSendPayload(BaseModel):
+    """Payload pra dono enviar mensagem manual via cockpit."""
+    text: str = Field(..., min_length=1, max_length=1600)
+
+
+@router.post("/api/conversations/{client_id}/{phone}/handoff", tags=["Cockpit"])
+async def conversation_handoff_cockpit(
+    client_id: str,
+    phone: str,
+    payload: HandoffPayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    T3 — assume ou devolve a conversa pra IA.
+
+    takeover=true  → flip handoff_status='handed_off' + handed_off_at=now.
+                     Orchestrator passa a suprimir respostas da IA.
+    takeover=false → flip handoff_status='active' + handed_off_at=None.
+                     Orchestrator volta a deixar a IA responder.
+
+    Não envia mensagem pro lead — só muda o estado interno. Se o dono
+    quiser avisar o lead da transferência, manda manualmente via /send.
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+
+    if payload.takeover:
+        conv.handoff_status = "handed_off"
+        conv.handed_off_at = datetime.utcnow()
+        if payload.summary:
+            conv.handoff_summary = payload.summary
+    else:
+        conv.handoff_status = "active"
+        conv.handed_off_at = None
+        conv.handoff_summary = ""
+
+    await db.save_conversation(conv)
+
+    log.info(
+        f"Cockpit handoff | client_id={client_id} | phone={phone} | "
+        f"takeover={payload.takeover}"
+    )
+    return {
+        "status": "ok",
+        "handoff_status": conv.handoff_status,
+        "handed_off_at": conv.handed_off_at.isoformat() if conv.handed_off_at else None,
+    }
+
+
+@router.post("/api/conversations/{client_id}/{phone}/send", tags=["Cockpit"])
+async def conversation_send_cockpit(
+    client_id: str,
+    phone: str,
+    payload: CockpitSendPayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    T3 — dono envia mensagem manual pelo WhatsApp via cockpit.
+
+    Fluxo:
+      1. Envia msg via wa.send_text (Twilio/Meta)
+      2. Salva no history com marker `by='owner'` pra distinguir da IA
+      3. Atualiza last_message_at pra mover conversa pro topo da lista
+
+    Não exige handoff_status='handed_off' — dono pode mandar paralelo se quiser
+    (cenário raro mas válido). Se a IA também responder, ambos viram no histórico.
+
+    Erros:
+      400 — text vazio (Pydantic) ou muito longo
+      404 — conversa inexistente
+      502 — Twilio/Meta retornou erro (msg não foi enviada)
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(400, "text não pode ser vazio")
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+
+    msg_id = await wa.send_text(phone, text, client_id=client_id)
+    if not msg_id:
+        log.error(f"Cockpit send WA falhou | client_id={client_id} | phone={phone}")
+        raise HTTPException(502, "Falha ao enviar mensagem pelo WhatsApp")
+
+    now = datetime.utcnow()
+    conv.history.append({
+        "role": "assistant",
+        "content": text,
+        "by": "owner",
+        "timestamp": now.isoformat(),
+    })
+    conv.last_message_at = now
+    await db.save_conversation(conv)
+
+    log.info(
+        f"Cockpit send | client_id={client_id} | phone={phone} | "
+        f"chars={len(text)} | msg_id={msg_id}"
+    )
+    return {
+        "status": "sent",
+        "message_id": msg_id,
+        "timestamp": now.isoformat(),
     }
 
 

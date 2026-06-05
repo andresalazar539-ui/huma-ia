@@ -130,6 +130,7 @@ function mapHistory(history) {
       from: m.role === 'user' ? 'client' : 'huma',
       text: m.content,
       time: formatTime(m.timestamp),
+      by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
     }));
 }
 
