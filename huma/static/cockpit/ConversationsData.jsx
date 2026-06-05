@@ -100,12 +100,19 @@ function mapListItem(item) {
 }
 
 // history (GET de detalhe) -> mensagens do stream
-// IMPORTANTE: filtra role 'system' — esses são logs internos da IA
-// ("[AGENDA CONSULTADA]", "[AGENDAMENTO CONFIRMADO]", etc), nunca
-// devem ser exibidos pro dono no cockpit.
+// IMPORTANTE: filtra logs internos da IA — nunca devem aparecer pro dono.
+// 1. role 'system' — instruções injetadas no contexto
+// 2. assistant/user com prefixo "[MARKER_EM_MAIUSCULAS]" — markers de
+//    eventos internos ("[AGENDA CONSULTADA]", "[AGENDAMENTO CONFIRMADO]",
+//    "[PAGAMENTO]", "[HANDOFF]" etc) que salvam estado mas não foram pro WhatsApp.
+const INTERNAL_MARKER = /^\[[A-Z][A-Z_ ]*\]/;
 function mapHistory(history) {
   return (history || [])
     .filter(m => m.role === 'user' || m.role === 'assistant')
+    .filter(m => {
+      const c = (m.content || '').trim();
+      return c && !INTERNAL_MARKER.test(c);
+    })
     .map(m => ({
       from: m.role === 'user' ? 'client' : 'huma',
       text: m.content,

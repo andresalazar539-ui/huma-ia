@@ -227,14 +227,21 @@ async def list_conversations_cockpit(
 
     rows = await db.list_conversations_for_cockpit(client_id, filter, limit)
 
+    import re as _re
+    INTERNAL_MARKER = _re.compile(r"^\[[A-Z][A-Z_ ]*\]")
+
     items = []
     for r in rows:
         history = r.get("history") or []
         preview = ""
         for msg in reversed(history):
-            if msg.get("role") in ("user", "assistant"):
-                preview = (msg.get("content") or "")[:120]
-                break
+            if msg.get("role") not in ("user", "assistant"):
+                continue
+            content = (msg.get("content") or "").strip()
+            if not content or INTERNAL_MARKER.match(content):
+                continue
+            preview = content[:120]
+            break
         items.append({
             "phone": r.get("phone", ""),
             "lead_name": r.get("lead_name_canonical", "") or "",
