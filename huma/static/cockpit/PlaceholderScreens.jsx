@@ -59,30 +59,8 @@ const ClientesScreen = () => (
   </PlaceholderScreen>
 );
 
-const AgendaFullScreen = () => (
-  <PlaceholderScreen eyebrow="agenda" title="Quarta, 18 abr" subtitle="7 atendimentos · 1 aguardando">
-    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: 20 }}>
-      <AgendaInline />
-    </div>
-  </PlaceholderScreen>
-);
-
-const AgendaInline = () => {
-  const slots = [
-    { time: '09:00', name: 'Ana Paula Souza', service: 'Limpeza de pele', status: 'confirmed', done: true },
-    { time: '10:30', name: 'Rita Cavalcanti',  service: 'Botox testa',     status: 'confirmed', done: true },
-    { time: '11:15', name: 'Juliana Torres',   service: 'Avaliação',        status: 'confirmed', done: true },
-    { time: '14:00', name: 'Beatriz Campos',   service: 'Limpeza de pele', status: 'confirmed', now: true },
-    { time: '15:15', name: 'Camila Ribeiro',   service: 'Botox',            status: 'waiting' },
-    { time: '16:00', name: 'Fernanda Alves',   service: 'Consulta',         status: 'confirmed' },
-    { time: '17:30', name: 'Isabela Moreira',  service: 'Microagulhamento', status: 'confirmed' },
-  ];
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {slots.map((s, i) => <AgendaRow key={i} {...s} />)}
-    </div>
-  );
-};
+// AgendaFullScreen agora vive em AgendaScreen.jsx (4 views: dia/semana/mes/lista).
+// Removido daqui pra evitar redeclaracao de const no escopo global do Babel.
 
 const VozScreen = () => (
   <PlaceholderScreen eyebrow="voz" title="Voz clonada" subtitle="Dra. Marina · v_mR4nA_2024_a7f3">
@@ -139,4 +117,4 @@ const AjustesScreen = () => (
   </PlaceholderScreen>
 );
 
-Object.assign(window, { ClientesScreen, AgendaFullScreen, VozScreen, AjustesScreen });
+Object.assign(window, { ClientesScreen, VozScreen, AjustesScreen });

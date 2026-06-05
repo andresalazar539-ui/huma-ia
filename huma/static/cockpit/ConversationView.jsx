@@ -1,15 +1,52 @@
 // ConversationView.jsx — center stream of messages
 const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, onSend, handoff, onHandoff, onOpenAgenda }) => {
   const [draft, setDraft] = React.useState('');
+  const [busy, setBusy] = React.useState(false);     // handoff ou envio em andamento
+  const [toast, setToast] = React.useState(null);    // { type:'ok'|'error', text }
+  const toastTimer = React.useRef(null);
 
-  const sendIt = () => {
-    if (!draft.trim()) return;
-    onSend(draft);
+  const showToast = (type, text) => {
+    setToast({ type, text });
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), type === 'error' ? 3000 : 2000);
+  };
+  React.useEffect(() => () => clearTimeout(toastTimer.current), []);
+
+  // Assumir / devolver: só muda a UI se o backend confirmar.
+  const doHandoff = async () => {
+    if (busy) return;
+    const takeover = !handoff;
+    setBusy(true);
+    try {
+      await sendHandoff(conversation.id, takeover);
+      onHandoff(takeover);
+      showToast('ok', takeover ? 'Conversa assumida' : 'Conversa devolvida');
+    } catch (e) {
+      showToast('error', String((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Envia pelo WhatsApp. Append otimista pra feedback imediato; toast vermelho se falhar.
+  const sendIt = async () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    onSend(text);
     setDraft('');
+    setBusy(true);
+    try {
+      await sendMessage(conversation.id, text);
+      showToast('ok', 'Mensagem enviada');
+    } catch (e) {
+      showToast('error', String((e && e.message) || e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--paper)', height: '100%' }}>
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--paper)', height: '100%', position: 'relative' }}>
       {/* Header */}
       <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--paper-edge)', display: 'flex', alignItems: 'center', gap: 12 }}>
         <Avatar initials={conversation.initials} tone={conversation.tone} size={36} />
@@ -21,7 +58,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
         {onOpenAgenda && (
           <Button variant="ghost" size="sm" icon={<Icon name="calendar" size={14} />} onClick={onOpenAgenda}>Agenda</Button>
         )}
-        <Button variant={handoff ? 'primary' : 'ghost'} size="sm" onClick={onHandoff}>
+        <Button variant={handoff ? 'primary' : 'ghost'} size="sm" onClick={doHandoff} disabled={busy}>
           {handoff ? 'Devolver para HUMA' : 'Assumir conversa'}
         </Button>
       </div>
@@ -68,7 +105,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
               color: 'var(--ink)', padding: '6px 0', lineHeight: 1.4,
             }}
           />
-          <Button variant="primary" size="sm" icon={<Icon name="send" size={14} />} onClick={sendIt}>Enviar</Button>
+          <Button variant="primary" size="sm" icon={<Icon name="send" size={14} />} onClick={sendIt} disabled={busy || !draft.trim()}>{busy ? 'Enviando…' : 'Enviar'}</Button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 10, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="sparkle" size={13} /> Sugestão de HUMA</span>
@@ -77,6 +114,21 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>Enter para enviar · Shift+Enter nova linha</span>
         </div>
       </div>
+      {/* Toast (sucesso 2s / erro 3s) */}
+      {toast && (
+        <div style={{
+          position: 'absolute', bottom: 96, left: '50%', transform: 'translateX(-50%)',
+          display: 'flex', alignItems: 'center', gap: 8, zIndex: 20,
+          padding: '9px 16px', borderRadius: 999,
+          background: toast.type === 'error' ? 'var(--danger)' : 'var(--success)',
+          color: '#FFFFFF', boxShadow: 'var(--sh-3, 0 6px 24px rgba(0,0,0,0.18))',
+          fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+          maxWidth: '80%',
+        }}>
+          <Icon name={toast.type === 'error' ? 'alert' : 'check'} size={14} stroke={2.5} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toast.text}</span>
+        </div>
+      )}
     </div>
   );
 };
