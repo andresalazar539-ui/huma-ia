@@ -230,7 +230,10 @@ async def list_conversations_cockpit(
     rows = await db.list_conversations_for_cockpit(client_id, filter, limit)
 
     import re as _re
-    INTERNAL_MARKER = _re.compile(r"^\[[A-Z][A-Z_ ]*\]")
+    # Markers internos: mensagens que começam com "[MARKER..." (maiúsculas/underline/espaço).
+    # Não exige `]` próximo porque o conteúdo do marker pode ter em-dash, parênteses,
+    # números — ex: "[AGENDA CONSULTADA — próximos horários LIVRES (use APENAS...)]".
+    INTERNAL_MARKER = _re.compile(r"^\[[A-Z][A-Z_ ]+")
 
     items = []
     for r in rows:
