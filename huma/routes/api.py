@@ -443,6 +443,40 @@ async def conversation_send_cockpit(
 # pelo dono (fora do HUMA) não aparecem aqui. T-future pode sincronizar.
 
 
+def _build_briefing(conv_row: dict) -> str:
+    """
+    Monta briefing curto pro dono ler ao clicar no agendamento.
+
+    Estratégia barata (zero chamada a Claude): junta fatos coletados
+    pela IA (lead_facts) + 1-2 últimas mensagens do lead pra dar contexto
+    do que ele quer. Limitado a ~400 chars pra não estourar o drawer.
+
+    Returns:
+        String com briefing ou "" se não houver informação suficiente.
+    """
+    parts: list[str] = []
+
+    facts = conv_row.get("lead_facts") or []
+    if isinstance(facts, list) and facts:
+        facts_str = " · ".join(str(f) for f in facts[:5] if f)
+        if facts_str:
+            parts.append(facts_str)
+
+    history = conv_row.get("history") or []
+    if isinstance(history, list):
+        last_user_msgs = [
+            (m.get("content") or "").strip()
+            for m in history[-12:]
+            if m.get("role") == "user" and (m.get("content") or "").strip()
+        ][-2:]
+        if last_user_msgs:
+            quoted = " ".join(f"\"{m[:140]}\"" for m in last_user_msgs)
+            parts.append(f"Últimas msgs do lead: {quoted}")
+
+    briefing = " — ".join(parts)
+    return briefing[:400] if briefing else ""
+
+
 @router.get("/api/appointments", tags=["Cockpit"])
 async def list_appointments_cockpit(
     client_id: str,
@@ -503,6 +537,7 @@ async def list_appointments_cockpit(
             "service": r.get("active_appointment_service", "") or "",
             "status": status,
             "phone": r.get("phone", ""),
+            "briefing": _build_briefing(r),
         })
 
     log.info(f"Cockpit list_appointments | client_id={client_id} | count={len(items)}")

@@ -71,6 +71,7 @@ const AgendaFullScreen = () => {
   const [cursor, setCursor] = useState(() => atMidnight(new Date()));
   const [events, setEvents] = useState([]);
   const [state, setState] = useState('loading'); // 'loading' | 'ready' | 'error'
+  const [selected, setSelected] = useState(null); // agendamento aberto no drawer
 
   // Carrega agendamentos do backend (silent = poll, não pisca o estado de loading).
   const load = React.useCallback(async ({ silent = false } = {}) => {
@@ -161,13 +162,15 @@ const AgendaFullScreen = () => {
           <AgendaMessage text="Nenhum agendamento ainda. Quando um lead marcar, aparece aqui." />
         ) : (
           <>
-            {view === 'dia' && <DayView events={events} date={cursor} />}
-            {view === 'semana' && <WeekView events={events} date={cursor} />}
-            {view === 'mes' && <MonthView events={events} date={cursor} onPickDay={(d) => { setCursor(d); setView('dia'); }} />}
-            {view === 'lista' && <ListView events={events} date={cursor} />}
+            {view === 'dia' && <DayView events={events} date={cursor} onSelect={setSelected} />}
+            {view === 'semana' && <WeekView events={events} date={cursor} onSelect={setSelected} />}
+            {view === 'mes' && <MonthView events={events} date={cursor} onSelect={setSelected} onPickDay={(d) => { setCursor(d); setView('dia'); }} />}
+            {view === 'lista' && <ListView events={events} date={cursor} onSelect={setSelected} />}
           </>
         )}
       </div>
+
+      {selected && <AppointmentDetail ev={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 };
@@ -230,7 +233,7 @@ const HourGutter = () => (
   </div>
 );
 
-const EventBlock = ({ ev, compact }) => {
+const EventBlock = ({ ev, compact, onSelect }) => {
   const t = TONE[ev.tone] || TONE.ink;
   const top = ((ev.s - DAY_START) / 60) * HOUR_H;
   const height = Math.max(20, ((ev.e2 - ev.s) / 60) * HOUR_H - 3);
@@ -248,7 +251,7 @@ const EventBlock = ({ ev, compact }) => {
       : done ? <Icon name="check" size={11} stroke={2.5} /> : null;
 
   return (
-    <div title={`${ev.start}–${ev.end} · ${ev.name} · ${ev.service}`} style={{
+    <div onClick={() => onSelect && onSelect(ev)} title={`${ev.start}–${ev.end} · ${ev.name} · ${ev.service}`} style={{
       position: 'absolute', top, height,
       left: `calc(${ev._col * widthPct}% + 2px)`,
       width: `calc(${widthPct}% - ${gap + 2}px)`,
@@ -295,7 +298,7 @@ const NowLine = () => {
 };
 
 /* ================= DIA ================= */
-const DayView = ({ events, date }) => {
+const DayView = ({ events, date, onSelect }) => {
   const dayEvents = packDay(eventsOn(events, date));
   const isToday = sameDay(date, new Date());
   return (
@@ -309,14 +312,14 @@ const DayView = ({ events, date }) => {
             Nenhum agendamento neste dia.
           </div>
         )}
-        {dayEvents.map(ev => <EventBlock key={ev.id} ev={ev} />)}
+        {dayEvents.map(ev => <EventBlock key={ev.id} ev={ev} onSelect={onSelect} />)}
       </div>
     </div>
   );
 };
 
 /* ================= SEMANA ================= */
-const WeekView = ({ events, date }) => {
+const WeekView = ({ events, date, onSelect }) => {
   const ws = startOfWeek(date);
   const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
   const today = new Date();
@@ -352,7 +355,7 @@ const WeekView = ({ events, date }) => {
             <div key={i} style={{ flex: 1, position: 'relative', height: GRID_H, borderLeft: '1px solid var(--paper-edge)' }}>
               <HourLines />
               {isToday && nowMin >= DAY_START && nowMin <= DAY_END && <NowLine />}
-              {dayEvents.map(ev => <EventBlock key={ev.id} ev={ev} compact />)}
+              {dayEvents.map(ev => <EventBlock key={ev.id} ev={ev} compact onSelect={onSelect} />)}
             </div>
           );
         })}
@@ -362,7 +365,7 @@ const WeekView = ({ events, date }) => {
 };
 
 /* ================= MÊS ================= */
-const MonthView = ({ events, date, onPickDay }) => {
+const MonthView = ({ events, date, onSelect, onPickDay }) => {
   const first = new Date(date.getFullYear(), date.getMonth(), 1);
   const gridStart = startOfWeek(first);
   const weeks = Array.from({ length: 6 }, (_, w) => Array.from({ length: 7 }, (_, d) => addDays(gridStart, w * 7 + d)));
@@ -400,7 +403,7 @@ const MonthView = ({ events, date, onPickDay }) => {
                   {evs.slice(0, 3).map(ev => {
                     const t = TONE[ev.tone] || TONE.ink;
                     return (
-                      <div key={ev.id} style={{
+                      <div key={ev.id} onClick={(e) => { e.stopPropagation(); onSelect && onSelect(ev); }} style={{
                         display: 'flex', alignItems: 'center', gap: 5, padding: '2px 6px', borderRadius: 5,
                         background: t.bg, opacity: ev.status === 'done' ? 0.6 : 1, overflow: 'hidden',
                       }}>
@@ -424,7 +427,7 @@ const MonthView = ({ events, date, onPickDay }) => {
 };
 
 /* ================= LISTA ================= */
-const ListView = ({ events, date }) => {
+const ListView = ({ events, date, onSelect }) => {
   const ws = startOfWeek(date);
   const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i)).filter(d => eventsOn(events, d).length > 0);
   const today = new Date();
@@ -449,8 +452,8 @@ const ListView = ({ events, date }) => {
                 const done = ev.status === 'done';
                 const cancelled = ev.status === 'cancelled';
                 return (
-                  <div key={ev.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px',
+                  <div key={ev.id} onClick={() => onSelect && onSelect(ev)} style={{
+                    display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', cursor: 'pointer',
                     borderTop: j ? '1px solid var(--paper-edge)' : 'none', opacity: (done || cancelled) ? 0.6 : 1,
                   }}>
                     <div style={{ width: 96, flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>
@@ -478,5 +481,134 @@ const ListView = ({ events, date }) => {
     </div>
   );
 };
+
+/* ================= DETALHE / BRIEFING ================= */
+// Drawer lateral: abre ao clicar num agendamento. Mostra o lead, o serviço e o
+// "Resumo da HUMA" — o briefing que a IA gera pra o dono chegar preparado.
+const STATUS_INFO = {
+  confirmed: { label: 'Confirmado', bg: 'var(--terracotta-tint)', ink: 'var(--terracotta-ink)' },
+  done:      { label: 'Feito',      bg: 'var(--paper-sunk)',      ink: 'var(--ink-3)' },
+  cancelled: { label: 'Cancelado',  bg: 'var(--paper-sunk)',      ink: 'var(--danger)' },
+  waiting:   { label: 'Aguarda',    bg: 'var(--paper-sunk)',      ink: 'var(--warning)' },
+};
+
+const AppointmentDetail = ({ ev, onClose }) => {
+  const [shown, setShown] = useState(false);
+  React.useEffect(() => {
+    const r = requestAnimationFrame(() => setShown(true));
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => { cancelAnimationFrame(r); window.removeEventListener('keydown', onKey); };
+  }, [onClose]);
+
+  const t = TONE[ev.tone] || TONE.ink;
+  const d = new Date(ev.date + 'T00:00:00');
+  const dateLabel = `${DIAS_LONGOS[d.getDay()]}, ${d.getDate()} ${MESES_CURTOS[d.getMonth()]}`;
+  const durMin = toMin(ev.end) - toMin(ev.start);
+  const durLabel = durMin >= 60
+    ? `${Math.floor(durMin / 60)}h${durMin % 60 ? String(durMin % 60).padStart(2, '0') : ''}`
+    : `${durMin}min`;
+  const initials = window.initialsFrom ? window.initialsFrom(ev.name) : (ev.name || '?')[0];
+  const phone = window.maskPhone ? window.maskPhone(ev.phone) : (ev.phone || '');
+  const st = STATUS_INFO[ev.status] || STATUS_INFO.confirmed;
+  // Briefing gerado pela HUMA. Vem do backend (campo `briefing`). Sem ele → estado "Em breve".
+  const briefing = ev.briefing || ev.summary || '';
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 40,
+      background: 'rgba(40, 30, 24, 0.28)',
+      opacity: shown ? 1 : 0, transition: 'opacity 200ms var(--ease-out)',
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        position: 'absolute', top: 0, right: 0, bottom: 0, width: 400, maxWidth: '92vw',
+        background: 'var(--paper-raised)', borderLeft: '1px solid var(--paper-edge)',
+        boxShadow: '-12px 0 40px rgba(40,30,24,0.16)',
+        transform: shown ? 'translateX(0)' : 'translateX(100%)',
+        transition: 'transform 240ms var(--ease-out)',
+        display: 'flex', flexDirection: 'column', overflow: 'auto',
+      }}>
+        {/* Faixa de cor + close */}
+        <div style={{ height: 4, background: t.bar, flexShrink: 0 }} />
+        <div style={{ padding: '18px 22px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span style={{
+            fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500, padding: '3px 10px', borderRadius: 999,
+            textDecoration: ev.status === 'cancelled' ? 'none' : 'none',
+            background: st.bg, color: st.ink,
+          }}>{st.label}</span>
+          <button onClick={onClose} style={{
+            width: 32, height: 32, borderRadius: 999, border: '1px solid var(--paper-edge)',
+            background: 'var(--paper)', cursor: 'pointer', color: 'var(--ink-2)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+          }}><Icon name="x" size={16} /></button>
+        </div>
+
+        {/* Lead */}
+        <div style={{ padding: '16px 22px 18px', display: 'flex', alignItems: 'center', gap: 13, borderBottom: '1px solid var(--paper-edge)' }}>
+          <Avatar initials={initials} tone={ev.tone} size={48} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, letterSpacing: '-0.02em', color: 'var(--ink)', textDecoration: ev.status === 'cancelled' ? 'line-through' : 'none' }}>{ev.name}</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{phone}</div>
+          </div>
+        </div>
+
+        {/* Quando + serviço */}
+        <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 14, borderBottom: '1px solid var(--paper-edge)' }}>
+          <DetailRow icon="calendar" label="Quando" value={`${dateLabel} · ${ev.start}–${ev.end}`} sub={`${durLabel}`} />
+          <DetailRow icon="sparkle" label="Serviço" value={ev.service || '—'} />
+        </div>
+
+        {/* Resumo da HUMA (briefing) */}
+        <div style={{ padding: '20px 22px', flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#8E3724', background: '#FBEEE8', padding: '2px 7px', borderRadius: 4 }}>HUMA</span>
+            <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>Resumo da conversa</span>
+          </div>
+          {briefing ? (
+            <div style={{
+              fontFamily: 'var(--font-sans)', fontSize: 14, lineHeight: 1.6, color: 'var(--ink-2)',
+              background: 'var(--paper)', border: '1px solid var(--paper-edge)', borderRadius: 12, padding: '14px 16px',
+              whiteSpace: 'pre-wrap',
+            }}>{briefing}</div>
+          ) : (
+            <div style={{
+              fontFamily: 'var(--font-sans)', fontSize: 13.5, lineHeight: 1.55, color: 'var(--ink-3)',
+              background: 'var(--paper)', border: '1px dashed var(--paper-edge)', borderRadius: 12,
+              padding: '18px 16px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8,
+            }}>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-4)', background: 'var(--paper-sunk)', padding: '2px 7px', borderRadius: 4 }}>Em breve</span>
+              A HUMA vai escrever aqui um resumo do que o lead quer, pra você já chegar no atendimento sabendo o contexto — igual ao briefing que ela manda no Google Agenda.
+            </div>
+          )}
+        </div>
+
+        {/* Ação */}
+        <div style={{ padding: '0 22px 22px', marginTop: 'auto' }}>
+          <button onClick={() => { localStorage.setItem('huma_route', 'conversas'); window.location.reload(); }} style={{
+            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)',
+            padding: '11px 16px', borderRadius: 10, border: '1px solid var(--paper-edge)',
+            background: 'var(--paper)', cursor: 'pointer',
+          }}>
+            <Icon name="message" size={15} /> Abrir conversa no WhatsApp
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const DetailRow = ({ icon, label, value, sub }) => (
+  <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+    <div style={{ width: 30, height: 30, borderRadius: 8, background: 'var(--paper-sunk)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--ink-3)', flexShrink: 0 }}>
+      <Icon name={icon} size={15} />
+    </div>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{label}</div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', marginTop: 1 }}>{sub}</div>}
+    </div>
+  </div>
+);
 
 Object.assign(window, { AgendaFullScreen });

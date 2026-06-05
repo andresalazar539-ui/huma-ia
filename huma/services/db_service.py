@@ -337,7 +337,7 @@ async def list_active_appointments(limit: int = 300, client_id: str = "") -> lis
             .select(
                 "client_id,phone,active_appointment_event_id,"
                 "active_appointment_datetime,active_appointment_service,"
-                "lead_name_canonical,stage"
+                "lead_name_canonical,stage,lead_facts,history"
             )
             .neq("active_appointment_event_id", "")
             .limit(limit)
