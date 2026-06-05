@@ -100,12 +100,17 @@ function mapListItem(item) {
 }
 
 // history (GET de detalhe) -> mensagens do stream
+// IMPORTANTE: filtra role 'system' — esses são logs internos da IA
+// ("[AGENDA CONSULTADA]", "[AGENDAMENTO CONFIRMADO]", etc), nunca
+// devem ser exibidos pro dono no cockpit.
 function mapHistory(history) {
-  return (history || []).map(m => ({
-    from: m.role === 'user' ? 'client' : 'huma',
-    text: m.content,
-    time: formatTime(m.timestamp),
-  }));
+  return (history || [])
+    .filter(m => m.role === 'user' || m.role === 'assistant')
+    .map(m => ({
+      from: m.role === 'user' ? 'client' : 'huma',
+      text: m.content,
+      time: formatTime(m.timestamp),
+    }));
 }
 
 // Detalhe (GET /api/conversations/{client_id}/{phone}) -> conversa completa
