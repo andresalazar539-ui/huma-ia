@@ -1446,8 +1446,15 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         f"{type(e).__name__}: {e}"
                     )
 
-            # Marca no histórico — impede duplicação em mensagens futuras
+            # Marca no histórico — duas entries:
+            # 1) mensagem real enviada ao lead (pra aparecer no cockpit do dono)
+            # 2) marker [AGENDAMENTO CONFIRMADO] preservado pra anti-duplicação e
+            #    pra IA reconhecer o evento no contexto (ai_service depende desse string)
             try:
+                conv.history.append({
+                    "role": "assistant",
+                    "content": appointment_confirmation,
+                })
                 conv.history.append({
                     "role": "assistant",
                     "content": f"[AGENDAMENTO CONFIRMADO] {appointment_confirmation[:100]}",
