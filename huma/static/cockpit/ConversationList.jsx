@@ -2,8 +2,10 @@
 const LIST_FILTERS = [
   { label: 'Todas',        key: 'todas' },
   { label: 'Em andamento', key: 'andamento' },
+  { label: 'Aguardando',   key: 'aguardando' },
   { label: 'Confirmado',   key: 'confirmado' },
   { label: 'Feito',        key: 'feito' },
+  { label: 'Cancelado',    key: 'cancelado' },
 ];
 
 const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect }) => {
@@ -31,7 +33,7 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
         </div>
       </div>
 
-      <div style={{ padding: '8px 14px 4px', display: 'flex', gap: 6 }}>
+      <div style={{ padding: '8px 14px 4px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {LIST_FILTERS.map(({ label, key }) => {
           const on = filter === key;
           return (

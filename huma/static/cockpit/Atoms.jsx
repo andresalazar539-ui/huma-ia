@@ -55,18 +55,20 @@ function Avatar({ initials, tone = 'terracotta', size = 36 }) {
 }
 
 function StatusPill({ status }) {
-  // Pipeline de agendamento (alinhado com deriveStatus e filtros).
-  // Cores: andamento = sage (vivo), confirmado = terracotta (positivo), feito = neutro.
-  // Aliases mantidos pra retrocompat de chamadas que ainda passam 'live'/'waiting'.
+  // 5 status do pipeline (alinhado com deriveStatus e filtros).
+  // Cores: amarelo=andamento, laranja=aguardando, azul=confirmado,
+  //        verde=feito, vermelho=cancelado.
   const styles = {
-    andamento:  { bg: '#EAF0E7',           fg: '#3E5540', dot: '#4F7A4A', label: 'Em andamento' },
-    confirmado: { bg: '#FBEEE8',           fg: '#8E3724', dot: '#C8553D', label: 'Confirmado'   },
-    feito:      { bg: 'var(--paper-sunk)', fg: 'var(--ink-3)', dot: 'var(--ink-4)', label: 'Feito' },
+    andamento:  { bg: '#FBF1D6', fg: '#7A5A14', dot: '#B8831E', label: 'Em andamento' }, // amarelo
+    aguardando: { bg: '#FADFD0', fg: '#B33A18', dot: '#E2542A', label: 'Aguardando'   }, // laranja
+    confirmado: { bg: '#DBE6EE', fg: '#34556B', dot: '#4B6E87', label: 'Confirmado'   }, // azul
+    feito:      { bg: '#EAF0E7', fg: '#3E5540', dot: '#4F7A4A', label: 'Feito'        }, // verde
+    cancelado:  { bg: '#F2D4CB', fg: '#7C2E18', dot: '#A84C2E', label: 'Cancelado'    }, // vermelho
     // aliases (retrocompat — devem desaparecer ao longo dos sprints)
-    live:       { bg: '#EAF0E7',           fg: '#3E5540', dot: '#4F7A4A', label: 'Em andamento' },
-    waiting:    { bg: 'var(--paper-sunk)', fg: 'var(--ink-2)', dot: 'var(--ink-3)', label: 'Aguarda humano' },
-    confirmed:  { bg: '#FBEEE8',           fg: '#8E3724', dot: '#C8553D', label: 'Confirmado'   },
-    snoozed:    { bg: 'var(--paper-sunk)', fg: 'var(--ink-3)', dot: 'var(--ink-4)', label: 'Pausada' },
+    live:       { bg: '#FBF1D6', fg: '#7A5A14', dot: '#B8831E', label: 'Em andamento' },
+    waiting:    { bg: '#FADFD0', fg: '#B33A18', dot: '#E2542A', label: 'Aguardando'   },
+    confirmed:  { bg: '#DBE6EE', fg: '#34556B', dot: '#4B6E87', label: 'Confirmado'   },
+    snoozed:    { bg: '#EAF0E7', fg: '#3E5540', dot: '#4F7A4A', label: 'Feito'        },
   };
   const s = styles[status] || styles.andamento;
   return (

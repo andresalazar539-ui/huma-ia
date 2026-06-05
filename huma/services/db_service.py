@@ -374,14 +374,13 @@ async def list_conversations_for_cockpit(
     `active_appointment_datetime` é string livre e Supabase REST não
     compara datas dentro de string ISO de forma confiável.
 
-    filter_mode:
-      - "todas":      tudo (default)
-      - "andamento":  conversa rolando, sem agendamento confirmado ainda
-                      (sem active_appointment_datetime E stage não-terminal)
-      - "confirmado": agendamento marcado no futuro
-                      (tem active_appointment_datetime > now)
-      - "feito":      agendamento já aconteceu OU venda fechada/perdida
-                      (active_appointment_datetime < now OR stage in won/lost)
+    filter_mode (ordem de precedência ao derivar status):
+      1. "cancelado":  stage == 'lost' (lead desistiu)
+      2. "feito":      stage == 'won' OU active_appointment_datetime < now
+      3. "confirmado": active_appointment_datetime > now
+      4. "aguardando": handoff_status == 'handed_off' (humano assumiu)
+      5. "andamento":  default — conversa rolando
+      0. "todas":      sem filtro (default)
 
     Returns:
         Lista de dicts com phone, stage, handoff_status, last_message_at,
@@ -416,13 +415,19 @@ async def list_conversations_for_cockpit(
     def status_of(r: dict) -> str:
         stage = r.get("stage", "discovery")
         appt = (r.get("active_appointment_datetime") or "").strip()
-        if stage in ("won", "lost"):
+        handoff = r.get("handoff_status", "active")
+        # Ordem de precedência (primeiro match vence) — espelha frontend deriveStatus
+        if stage == "lost":
+            return "cancelado"
+        if stage == "won":
             return "feito"
         if appt:
             # Comparação ISO-string funciona se ambos no formato YYYY-MM-DDTHH:MM:SS
             if appt > now_iso:
                 return "confirmado"
             return "feito"
+        if handoff == "handed_off":
+            return "aguardando"
         return "andamento"
 
     filtered = [r for r in rows if status_of(r) == filter_mode]
