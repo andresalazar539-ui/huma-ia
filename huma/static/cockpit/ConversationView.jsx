@@ -17,7 +17,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.015em' }}>{conversation.name}</div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{conversation.phone}{conversation.since ? ` · cliente desde ${conversation.since}` : ''}</div>
         </div>
-        <StatusPill status={handoff ? 'waiting' : 'live'} />
+        <StatusPill status={conversation.status || 'andamento'} />
         {onOpenAgenda && (
           <Button variant="ghost" size="sm" icon={<Icon name="calendar" size={14} />} onClick={onOpenAgenda}>Agenda</Button>
         )}
