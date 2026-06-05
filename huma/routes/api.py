@@ -11,7 +11,7 @@
 # ================================================================
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -427,6 +427,83 @@ async def conversation_send_cockpit(
         "message_id": msg_id,
         "timestamp": now.isoformat(),
     }
+
+
+# ── Cockpit (T4) — Agenda real ──
+#
+# Fonte: Supabase (conversations com active_appointment_*). Não chama
+# Google Calendar API diretamente — agendamentos criados pelo HUMA já
+# estão espelhados no banco via orchestrator. Vantagem: rápido, único
+# por cliente, sem auth Google por client_id.
+#
+# Limitação aceita (MVP): eventos criados manualmente no Google Calendar
+# pelo dono (fora do HUMA) não aparecem aqui. T-future pode sincronizar.
+
+
+@router.get("/api/appointments", tags=["Cockpit"])
+async def list_appointments_cockpit(
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    T4 — lista agendamentos ativos do cliente pra renderizar a Agenda.
+
+    Frontend (AgendaScreen) filtra por data e renderiza Dia/Semana/Mês/Lista.
+    Backend devolve tudo (até 300 eventos). Em escala maior, adicionar
+    query params from/to pra range filtering server-side.
+
+    Shape de cada item (alinhado com AGENDA_EVENTS do AgendaScreen.jsx):
+      - date: "YYYY-MM-DD"  (parsed de active_appointment_datetime)
+      - start: "HH:MM"      (parsed)
+      - end: "HH:MM"        (start + 60min default — duração do appointment)
+      - name: lead_name_canonical
+      - service: active_appointment_service
+      - status: "confirmed" | "done" | "cancelled" (derivado de stage + data)
+      - phone: pra cockpit linkar com a conversa
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    rows = await db.list_active_appointments(limit=300, client_id=client_id)
+
+    now = datetime.utcnow()
+    items: list[dict] = []
+    for r in rows:
+        raw_dt = (r.get("active_appointment_datetime") or "").strip()
+        if not raw_dt:
+            continue
+
+        # Parse defensivo: aceita "YYYY-MM-DDTHH:MM:SS" e "YYYY-MM-DD HH:MM:SS"
+        try:
+            dt = datetime.fromisoformat(raw_dt.replace(" ", "T"))
+        except (ValueError, TypeError):
+            log.warning(f"Cockpit appointments | datetime inválido | client_id={client_id} | raw={raw_dt[:40]}")
+            continue
+
+        # Status derivado
+        stage = r.get("stage", "")
+        if stage == "lost":
+            status = "cancelled"
+        elif stage == "won" or dt < now:
+            status = "done"
+        else:
+            status = "confirmed"
+
+        start_hm = dt.strftime("%H:%M")
+        end_dt = dt + timedelta(minutes=60)
+        end_hm = end_dt.strftime("%H:%M")
+
+        items.append({
+            "date": dt.strftime("%Y-%m-%d"),
+            "start": start_hm,
+            "end": end_hm,
+            "name": r.get("lead_name_canonical", "") or "",
+            "service": r.get("active_appointment_service", "") or "",
+            "status": status,
+            "phone": r.get("phone", ""),
+        })
+
+    log.info(f"Cockpit list_appointments | client_id={client_id} | count={len(items)}")
+    return {"items": items, "total": len(items)}
 
 
 # ── Identidade ──

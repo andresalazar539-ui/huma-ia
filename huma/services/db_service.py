@@ -313,7 +313,7 @@ async def list_unanswered_conversations(
     return resp.data or []
 
 
-async def list_active_appointments(limit: int = 300) -> list[dict]:
+async def list_active_appointments(limit: int = 300, client_id: str = "") -> list[dict]:
     """
     Sprint 6 / itens 24, 28 — busca conversas com agendamento ativo
     pra os jobs de lembrete pré-consulta e NPS pós-atendimento.
@@ -321,13 +321,17 @@ async def list_active_appointments(limit: int = 300) -> list[dict]:
     Filtragem por janela de tempo é feita em Python (active_appointment_datetime
     é string em formato livre). Limite alto pra cobrir muitos clientes.
 
+    T4 (Cockpit): `client_id` opcional permite filtrar pra renderizar a
+    agenda só do dono no dashboard, mantendo compat com jobs existentes
+    que não passam esse parâmetro (consultam todos os clientes).
+
     Returns:
         Lista de dicts com client_id, phone, active_appointment_event_id,
         active_appointment_datetime, active_appointment_service,
         lead_name_canonical, stage.
     """
     def query():
-        return (
+        q = (
             get_supabase()
             .table("conversations")
             .select(
@@ -337,8 +341,10 @@ async def list_active_appointments(limit: int = 300) -> list[dict]:
             )
             .neq("active_appointment_event_id", "")
             .limit(limit)
-            .execute()
         )
+        if client_id:
+            q = q.eq("client_id", client_id)
+        return q.execute()
 
     resp = await run_in_threadpool(query)
     return resp.data or []
