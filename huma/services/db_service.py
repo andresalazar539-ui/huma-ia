@@ -359,3 +359,50 @@ async def get_conversation_metrics(client_id: str) -> dict:
         stages[stage] = stages.get(stage, 0) + 1
 
     return {"total": len(resp.data), "by_stage": stages}
+
+
+async def list_conversations_for_cockpit(
+    client_id: str,
+    filter_mode: str = "todas",
+    limit: int = 50,
+) -> list[dict]:
+    """
+    T2 (Cockpit) — lista conversas pra renderizar no cockpit do dono.
+
+    Ordenadas por last_message_at desc. Filtros derivados de handoff_status
+    e stage — backend não inventa categoria, devolve campos crus e o
+    frontend deriva o `status` visual ("live", "waiting", etc).
+
+    filter_mode:
+      - "todas":  tudo (default)
+      - "huma":   handoff_status == 'active' e stage não-terminal
+      - "aguarda": handoff_status == 'handed_off' (humano assumiu)
+      - "feitas": stage in ['won', 'lost'] (decidida)
+
+    Returns:
+        Lista de dicts com phone, stage, handoff_status, last_message_at,
+        history (raw), lead_name_canonical, active_appointment_*.
+    """
+    def query():
+        q = (
+            get_supabase()
+            .table("conversations")
+            .select(
+                "phone,stage,handoff_status,last_message_at,history,"
+                "lead_name_canonical,active_appointment_datetime,"
+                "active_appointment_service"
+            )
+            .eq("client_id", client_id)
+            .order("last_message_at", desc=True)
+            .limit(limit)
+        )
+        if filter_mode == "huma":
+            q = q.eq("handoff_status", "active").not_.in_("stage", ["won", "lost"])
+        elif filter_mode == "aguarda":
+            q = q.eq("handoff_status", "handed_off")
+        elif filter_mode == "feitas":
+            q = q.in_("stage", ["won", "lost"])
+        return q.execute()
+
+    resp = await run_in_threadpool(query)
+    return resp.data or []

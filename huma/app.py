@@ -5,13 +5,17 @@
 import asyncio
 import uuid
 
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from huma.config import APP_TITLE, APP_VERSION, APP_DESCRIPTION
 from huma.routes.api import router
+from huma.routes.cockpit import router as cockpit_router
 from huma.routes.oauth_bling import router as oauth_bling_router
 from huma.routes.wizard import router as wizard_router
 from huma.services import redis_service as cache
@@ -81,8 +85,14 @@ def create_app() -> FastAPI:
             content={"status": "error", "detail": "Erro interno. Tente novamente."},
         )
 
+    # Static files (cockpit assets — CSS, JSX)
+    static_dir = Path(__file__).resolve().parent / "static"
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
     # Rotas
     app.include_router(router)
+    app.include_router(cockpit_router)
     app.include_router(oauth_bling_router)
     app.include_router(wizard_router)
 

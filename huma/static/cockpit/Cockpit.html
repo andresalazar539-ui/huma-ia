@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=1280"/>
+<title>HUMA · Cockpit</title>
+<link rel="stylesheet" href="/static/cockpit/colors_and_type.css"/>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  #root { height: 100vh; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--ink-line); border-radius: 999px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  button { font-family: inherit; }
+
+  /* Screen transitions */
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .screen-enter {
+    animation: fadeInUp 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Skeleton shimmer (loading states) */
+  @keyframes shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, var(--paper-sunk) 25%, var(--paper-edge) 37%, var(--paper-sunk) 63%);
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+    border-radius: 8px;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="/static/cockpit/Atoms.jsx"></script>
+<script type="text/babel" src="/static/cockpit/ConversationsData.jsx"></script>
+<script type="text/babel" src="/static/cockpit/Sidebar.jsx"></script>
+<script type="text/babel" src="/static/cockpit/ConversationList.jsx"></script>
+<script type="text/babel" src="/static/cockpit/ConversationView.jsx"></script>
+<script type="text/babel" src="/static/cockpit/AgendaPanel.jsx"></script>
+<script type="text/babel" src="/static/cockpit/ReportsScreen.jsx"></script>
+<script type="text/babel" src="/static/cockpit/IntegrationsScreen.jsx"></script>
+<script type="text/babel" src="/static/cockpit/PlaceholderScreens.jsx"></script>
+<script type="text/babel" src="/static/cockpit/UsageScreens.jsx"></script>
+<script type="text/babel" src="/static/cockpit/SettingsScreens.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+function useNarrow(bp = 1400) {
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.innerWidth < bp);
+  useEffect(() => {
+    const onR = () => setNarrow(window.innerWidth < bp);
+    window.addEventListener('resize', onR);
+    return () => window.removeEventListener('resize', onR);
+  }, [bp]);
+  return narrow;
+}
+
+function ConversasScreen({
+  conversations, listState, filter, onFilter, onRetryList,
+  activeId, onSelect, active, detailState, onRetryDetail,
+  onSend, handoff, onHandoff, narrow, onOpenAgenda,
+}) {
+  return (
+    <>
+      <ConversationList
+        items={conversations}
+        state={listState}
+        filter={filter}
+        onFilter={onFilter}
+        onRetry={onRetryList}
+        activeId={activeId}
+        onSelect={onSelect}
+      />
+      {active && (
+        <ConversationView
+          conversation={active}
+          detailState={detailState}
+          onRetryDetail={onRetryDetail}
+          onSend={onSend}
+          handoff={handoff}
+          onHandoff={onHandoff}
+          onOpenAgenda={narrow ? onOpenAgenda : null}
+        />
+      )}
+    </>
+  );
+}
+
+function App() {
+  const [route, setRoute] = useState(() => localStorage.getItem('huma_route') || 'conversas');
+  const [handoff, setHandoff] = useState(false);
+  const narrow = useNarrow(1400);
+  const [agendaOpen, setAgendaOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+
+  // --- Conversas (dados reais via API) ---
+  const [filter, setFilter] = useState('todas');
+  const [conversations, setConversations] = useState([]);
+  const [listState, setListState] = useState('loading'); // 'loading' | 'ready' | 'error'
+  const [activeId, setActiveId] = useState(null);         // = phone do contato
+  const [detail, setDetail] = useState(null);
+  const [detailState, setDetailState] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'error'
+
+  useEffect(() => { localStorage.setItem('huma_route', route); }, [route]);
+
+  // Carrega a lista (silent = atualização de poll, sem piscar skeleton)
+  const loadList = useCallback(async (f, { silent = false } = {}) => {
+    if (!silent) setListState('loading');
+    try {
+      const data = await fetchConversations(f);
+      const items = (data.items || []).map(mapListItem);
+      setConversations(items);
+      setListState('ready');
+      setActiveId(prev => prev ?? (items[0] ? items[0].id : null));
+    } catch (e) {
+      console.error('Conversas | falha ao listar | filter=' + f, e);
+      if (!silent) setListState('error');
+    }
+  }, []);
+
+  // (Re)carrega ao trocar filtro
+  useEffect(() => { loadList(filter); }, [filter, loadList]);
+
+  // Poll a cada 15s (silencioso)
+  useEffect(() => {
+    const t = setInterval(() => loadList(filter, { silent: true }), 15000);
+    return () => clearInterval(t);
+  }, [filter, loadList]);
+
+  // Carrega o detalhe da conversa selecionada
+  const loadDetail = useCallback(async (phone) => {
+    if (!phone) { setDetail(null); setDetailState('idle'); return; }
+    setDetailState('loading');
+    try {
+      const d = await fetchConversationDetail(phone);
+      setDetail(mapDetail(d));
+      setDetailState('ready');
+    } catch (e) {
+      console.error('Conversas | falha no detalhe | phone=' + phone, e);
+      setDetailState('error');
+    }
+  }, []);
+
+  useEffect(() => { loadDetail(activeId); }, [activeId, loadDetail]);
+
+  // Conversa ativa: usa o detalhe quando pronto, senão o card da lista (sem mensagens)
+  const activeCard = conversations.find(c => c.id === activeId) || null;
+  const active = activeId
+    ? (detail && detail.id === activeId
+        ? detail
+        : (activeCard ? { ...activeCard, messages: [] } : null))
+    : null;
+
+  // Composer otimista (visual; envio real é T3). Não mexe no backend.
+  const send = (text) => {
+    setDetail(d => (d && d.id === activeId) ? {
+      ...d,
+      messages: [...d.messages, {
+        from: handoff ? 'owner' : 'huma',
+        text,
+        time: formatTime(new Date().toISOString()),
+      }],
+    } : d);
+  };
+
+  const showAgendaPanel = route === 'conversas';
+  const fullBleed = route === 'negocio' || route === 'perfil';
+
+  let screen;
+  switch (route) {
+    case 'conversas':
+      screen = <ConversasScreen
+        conversations={conversations} listState={listState}
+        filter={filter} onFilter={setFilter}
+        onRetryList={() => loadList(filter)}
+        activeId={activeId}
+        onSelect={id => { setActiveId(id); setHandoff(false); }}
+        active={active} detailState={detailState}
+        onRetryDetail={() => loadDetail(activeId)}
+        onSend={send} handoff={handoff}
+        onHandoff={() => setHandoff(h => !h)}
+        narrow={narrow} onOpenAgenda={() => setAgendaOpen(true)}
+      />;
+      break;
+    case 'agenda':      screen = <AgendaFullScreen />; break;
+    case 'clientes':    screen = <ClientesScreen />; break;
+    case 'voz':         screen = <VozScreen />; break;
+    case 'relatorios':  screen = <ReportsScreen />; break;
+    case 'integracoes': screen = <IntegrationsScreen />; break;
+    case 'ajustes':     screen = <AjustesScreen />; break;
+    case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
+    case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;
+    case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} />; break;
+    case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} />; break;
+    case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
+    case 'perfil':      screen = <PerfilScreen />; break;
+    default:            screen = <ClientesScreen />;
+  }
+
+  return (
+    <div style={{ display: 'flex', height: '100vh', background: 'var(--paper)', position: 'relative' }}>
+      <SidebarNav active={route} onNav={setRoute} onInvite={() => setInviteOpen(true)} />
+      <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0 }}>
+        {screen}
+      </div>
+      {showAgendaPanel && !narrow && <AgendaPanel />}
+      {showAgendaPanel && narrow && agendaOpen && <AgendaPanel asDrawer onClose={() => setAgendaOpen(false)} />}
+      {inviteOpen && <InviteModal onClose={() => setInviteOpen(false)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

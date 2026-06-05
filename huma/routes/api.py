@@ -195,6 +195,102 @@ async def get_metrics(client_id: str, _=Depends(verify_api_key)):
     return await db.get_conversation_metrics(client_id)
 
 
+# ── Cockpit (T2) ──
+
+@router.get("/api/conversations", tags=["Cockpit"])
+async def list_conversations_cockpit(
+    client_id: str,
+    filter: str = "todas",
+    limit: int = 50,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    T2 — lista conversas do cliente pra renderizar no cockpit.
+
+    Backend devolve dados crus (stage, handoff_status, last_message_at).
+    Frontend deriva o badge visual ("HUMA atendendo", "Aguarda", etc.)
+    a partir desses campos — evita acoplar lógica de UI ao backend.
+
+    Query params:
+      - client_id (required)
+      - filter: "todas" | "huma" | "aguarda" | "feitas" (default "todas")
+      - limit: 1-200 (default 50)
+
+    Auth: Bearer com api_key do client_id. IDOR enforced em verify_api_key_manual.
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    if filter not in ("todas", "huma", "aguarda", "feitas"):
+        raise HTTPException(400, "filter deve ser: todas, huma, aguarda, feitas")
+    if limit < 1 or limit > 200:
+        raise HTTPException(400, "limit deve estar entre 1 e 200")
+
+    rows = await db.list_conversations_for_cockpit(client_id, filter, limit)
+
+    items = []
+    for r in rows:
+        history = r.get("history") or []
+        preview = ""
+        for msg in reversed(history):
+            if msg.get("role") in ("user", "assistant"):
+                preview = (msg.get("content") or "")[:120]
+                break
+        items.append({
+            "phone": r.get("phone", ""),
+            "lead_name": r.get("lead_name_canonical", "") or "",
+            "stage": r.get("stage", "discovery"),
+            "handoff_status": r.get("handoff_status", "active"),
+            "last_message_at": r.get("last_message_at"),
+            "last_message_preview": preview,
+            "active_appointment_datetime": r.get("active_appointment_datetime", "") or "",
+            "active_appointment_service": r.get("active_appointment_service", "") or "",
+        })
+
+    log.info(
+        f"Cockpit list_conversations | client_id={client_id} | "
+        f"filter={filter} | count={len(items)}"
+    )
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/api/conversations/{client_id}/{phone}", tags=["Cockpit"])
+async def get_conversation_cockpit(
+    client_id: str,
+    phone: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    T2 — detalhe completo de uma conversa pra render no cockpit.
+
+    Devolve history cru ([{role, content, ...}]). Frontend formata bolhas,
+    horários, indicadores de áudio etc.
+
+    404 se conversa nunca recebeu mensagem (history vazio e sem last_message_at).
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+
+    log.info(
+        f"Cockpit get_conversation | client_id={client_id} | "
+        f"phone={phone} | history_len={len(conv.history)}"
+    )
+    return {
+        "client_id": conv.client_id,
+        "phone": conv.phone,
+        "lead_name": conv.lead_name_canonical or "",
+        "lead_email": conv.lead_email or "",
+        "stage": conv.stage,
+        "handoff_status": conv.handoff_status,
+        "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
+        "active_appointment_datetime": conv.active_appointment_datetime or "",
+        "active_appointment_service": conv.active_appointment_service or "",
+        "history": conv.history,
+    }
+
+
 # ── Identidade ──
 
 @router.post("/api/clients/{client_id}/import-whatsapp", tags=["Identidade"])
