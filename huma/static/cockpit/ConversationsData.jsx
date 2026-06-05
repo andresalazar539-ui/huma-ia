@@ -23,12 +23,20 @@ async function fetchConversationDetail(phone) {
 }
 
 // --- Derivações visuais (backend devolve cru, frontend mapeia) ---
+// Pipeline de agendamento, 3 status (alinhado com filtros do backend):
+//   andamento  → conversa rolando, sem agendamento ainda
+//   confirmado → agendamento marcado no futuro
+//   feito      → agendamento aconteceu OU stage won/lost
 function deriveStatus(conv) {
-  if (conv.handoff_status === 'handed_off') return 'waiting';
-  if (conv.stage === 'won')  return 'confirmed';
-  if (conv.stage === 'lost') return 'snoozed';
-  if (conv.active_appointment_datetime) return 'confirmed';
-  return 'live';
+  const stage = conv.stage || 'discovery';
+  const appt = (conv.active_appointment_datetime || '').trim();
+  if (stage === 'won' || stage === 'lost') return 'feito';
+  if (appt) {
+    const apptDate = new Date(appt);
+    if (!isNaN(apptDate.getTime()) && apptDate.getTime() > Date.now()) return 'confirmado';
+    return 'feito';
+  }
+  return 'andamento';
 }
 
 function initialsFrom(name) {

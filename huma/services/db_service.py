@@ -369,22 +369,29 @@ async def list_conversations_for_cockpit(
     """
     T2 (Cockpit) — lista conversas pra renderizar no cockpit do dono.
 
-    Ordenadas por last_message_at desc. Filtros derivados de handoff_status
-    e stage — backend não inventa categoria, devolve campos crus e o
-    frontend deriva o `status` visual ("live", "waiting", etc).
+    Ordenadas por last_message_at desc. Filtros baseados em pipeline
+    de agendamento (não em handoff). Backend filtra em Python porque
+    `active_appointment_datetime` é string livre e Supabase REST não
+    compara datas dentro de string ISO de forma confiável.
 
     filter_mode:
-      - "todas":  tudo (default)
-      - "huma":   handoff_status == 'active' e stage não-terminal
-      - "aguarda": handoff_status == 'handed_off' (humano assumiu)
-      - "feitas": stage in ['won', 'lost'] (decidida)
+      - "todas":      tudo (default)
+      - "andamento":  conversa rolando, sem agendamento confirmado ainda
+                      (sem active_appointment_datetime E stage não-terminal)
+      - "confirmado": agendamento marcado no futuro
+                      (tem active_appointment_datetime > now)
+      - "feito":      agendamento já aconteceu OU venda fechada/perdida
+                      (active_appointment_datetime < now OR stage in won/lost)
 
     Returns:
         Lista de dicts com phone, stage, handoff_status, last_message_at,
         history (raw), lead_name_canonical, active_appointment_*.
     """
+    # Busca tudo do cliente (até 200) e filtra em Python.
+    fetch_limit = max(limit, 200) if filter_mode != "todas" else limit
+
     def query():
-        q = (
+        return (
             get_supabase()
             .table("conversations")
             .select(
@@ -394,15 +401,29 @@ async def list_conversations_for_cockpit(
             )
             .eq("client_id", client_id)
             .order("last_message_at", desc=True)
-            .limit(limit)
+            .limit(fetch_limit)
+            .execute()
         )
-        if filter_mode == "huma":
-            q = q.eq("handoff_status", "active").not_.in_("stage", ["won", "lost"])
-        elif filter_mode == "aguarda":
-            q = q.eq("handoff_status", "handed_off")
-        elif filter_mode == "feitas":
-            q = q.in_("stage", ["won", "lost"])
-        return q.execute()
 
     resp = await run_in_threadpool(query)
-    return resp.data or []
+    rows = resp.data or []
+
+    if filter_mode == "todas":
+        return rows[:limit]
+
+    now_iso = datetime.utcnow().isoformat()
+
+    def status_of(r: dict) -> str:
+        stage = r.get("stage", "discovery")
+        appt = (r.get("active_appointment_datetime") or "").strip()
+        if stage in ("won", "lost"):
+            return "feito"
+        if appt:
+            # Comparação ISO-string funciona se ambos no formato YYYY-MM-DDTHH:MM:SS
+            if appt > now_iso:
+                return "confirmado"
+            return "feito"
+        return "andamento"
+
+    filtered = [r for r in rows if status_of(r) == filter_mode]
+    return filtered[:limit]

@@ -1,9 +1,9 @@
 // ConversationList.jsx — left rail in the Conversas view
 const LIST_FILTERS = [
-  { label: 'Todas',   key: 'todas' },
-  { label: 'HUMA',    key: 'huma' },
-  { label: 'Aguarda', key: 'aguarda' },
-  { label: 'Feitas',  key: 'feitas' },
+  { label: 'Todas',        key: 'todas' },
+  { label: 'Em andamento', key: 'andamento' },
+  { label: 'Confirmado',   key: 'confirmado' },
+  { label: 'Feito',        key: 'feito' },
 ];
 
 const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect }) => {

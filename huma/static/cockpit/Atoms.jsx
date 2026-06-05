@@ -55,13 +55,20 @@ function Avatar({ initials, tone = 'terracotta', size = 36 }) {
 }
 
 function StatusPill({ status }) {
+  // Pipeline de agendamento (alinhado com deriveStatus e filtros).
+  // Cores: andamento = sage (vivo), confirmado = terracotta (positivo), feito = neutro.
+  // Aliases mantidos pra retrocompat de chamadas que ainda passam 'live'/'waiting'.
   const styles = {
-    live:     { bg: '#EAF0E7', fg: '#3E5540', dot: '#4F7A4A', label: 'HUMA atendendo' },
-    waiting:  { bg: 'var(--paper-sunk)', fg: 'var(--ink-2)', dot: 'var(--ink-3)', label: 'Aguarda humano' },
-    confirmed:{ bg: '#FBEEE8', fg: '#8E3724', dot: '#C8553D', label: 'Confirmado' },
-    snoozed:  { bg: 'var(--paper-sunk)', fg: 'var(--ink-3)', dot: 'var(--ink-4)', label: 'Pausada' },
+    andamento:  { bg: '#EAF0E7',           fg: '#3E5540', dot: '#4F7A4A', label: 'Em andamento' },
+    confirmado: { bg: '#FBEEE8',           fg: '#8E3724', dot: '#C8553D', label: 'Confirmado'   },
+    feito:      { bg: 'var(--paper-sunk)', fg: 'var(--ink-3)', dot: 'var(--ink-4)', label: 'Feito' },
+    // aliases (retrocompat — devem desaparecer ao longo dos sprints)
+    live:       { bg: '#EAF0E7',           fg: '#3E5540', dot: '#4F7A4A', label: 'Em andamento' },
+    waiting:    { bg: 'var(--paper-sunk)', fg: 'var(--ink-2)', dot: 'var(--ink-3)', label: 'Aguarda humano' },
+    confirmed:  { bg: '#FBEEE8',           fg: '#8E3724', dot: '#C8553D', label: 'Confirmado'   },
+    snoozed:    { bg: 'var(--paper-sunk)', fg: 'var(--ink-3)', dot: 'var(--ink-4)', label: 'Pausada' },
   };
-  const s = styles[status];
+  const s = styles[status] || styles.andamento;
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,

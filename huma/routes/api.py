@@ -220,8 +220,8 @@ async def list_conversations_cockpit(
     """
     await verify_api_key_manual(client_id, creds)
 
-    if filter not in ("todas", "huma", "aguarda", "feitas"):
-        raise HTTPException(400, "filter deve ser: todas, huma, aguarda, feitas")
+    if filter not in ("todas", "andamento", "confirmado", "feito"):
+        raise HTTPException(400, "filter deve ser: todas, andamento, confirmado, feito")
     if limit < 1 or limit > 200:
         raise HTTPException(400, "limit deve estar entre 1 e 200")
 

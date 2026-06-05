@@ -139,21 +139,30 @@ function App() {
     return () => clearInterval(t);
   }, [filter, loadList]);
 
-  // Carrega o detalhe da conversa selecionada
-  const loadDetail = useCallback(async (phone) => {
+  // Carrega o detalhe da conversa selecionada.
+  // silent = poll: não pisca skeleton, falha vira no-op (mantém último ok visível).
+  const loadDetail = useCallback(async (phone, { silent = false } = {}) => {
     if (!phone) { setDetail(null); setDetailState('idle'); return; }
-    setDetailState('loading');
+    if (!silent) setDetailState('loading');
     try {
       const d = await fetchConversationDetail(phone);
       setDetail(mapDetail(d));
       setDetailState('ready');
     } catch (e) {
       console.error('Conversas | falha no detalhe | phone=' + phone, e);
-      setDetailState('error');
+      if (!silent) setDetailState('error');
     }
   }, []);
 
   useEffect(() => { loadDetail(activeId); }, [activeId, loadDetail]);
+
+  // Poll do detalhe a cada 15s — atualiza histórico em near-realtime
+  // sem precisar refresh manual. Só roda quando há conversa ativa.
+  useEffect(() => {
+    if (!activeId) return;
+    const t = setInterval(() => loadDetail(activeId, { silent: true }), 15000);
+    return () => clearInterval(t);
+  }, [activeId, loadDetail]);
 
   // Conversa ativa: usa o detalhe quando pronto, senão o card da lista (sem mensagens)
   const activeCard = conversations.find(c => c.id === activeId) || null;
