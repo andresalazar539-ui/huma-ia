@@ -184,3 +184,14 @@ async function sendMessage(phone, text) {
 }
 
 Object.assign(window, { sendHandoff, sendMessage });
+
+/* ---------------- T4: Agenda (appointments) ---------------- */
+async function fetchAppointments() {
+  const url = `/api/appointments?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  const data = await r.json();
+  // Adiciona tone determinístico (mesma lógica das conversas, cor estável por contato)
+  return (data.items || []).map(ev => ({ ...ev, tone: toneFrom(ev.phone) }));
+}
+Object.assign(window, { fetchAppointments });

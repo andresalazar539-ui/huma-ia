@@ -26,38 +26,11 @@ const TONE = {
   ink:        { bg: 'var(--paper-sunk)',      bar: 'var(--ink-3)',      ink: 'var(--ink-2)' },
 };
 
-/* ---------------- Amostra de eventos (T4 substitui) ----------------
-   dayOffset = dias a partir de hoje, pra agenda sempre ter conteúdo qualquer dia que abrir. */
-const HOJE0 = atMidnight(new Date());
-const _ev = (dayOffset, start, end, name, service, status, tone) => ({
-  id: `${dayOffset}-${start}-${name}`,
-  date: isoDate(addDays(HOJE0, dayOffset)),
-  start, end, name, service, status, tone,
-});
-const AGENDA_EVENTS = [
-  _ev(-2, '11:00', '11:45', 'Patrícia Lemos', 'Limpeza de pele', 'done', 'sage'),
-  _ev(-1, '09:30', '10:15', 'Larissa Fontes', 'Botox', 'done', 'terracotta'),
-  _ev(-1, '15:00', '16:00', 'Vanessa Dias', 'Microagulhamento', 'done', 'ink'),
-  _ev(0, '09:00', '09:45', 'Ana Paula Souza', 'Limpeza de pele', 'done', 'sage'),
-  _ev(0, '10:30', '11:00', 'Rita Cavalcanti', 'Botox testa', 'done', 'terracotta'),
-  _ev(0, '11:15', '12:00', 'Juliana Torres', 'Avaliação', 'done', 'ink'),
-  _ev(0, '14:00', '15:00', 'Beatriz Campos', 'Limpeza de pele', 'confirmed', 'terracotta'),
-  _ev(0, '15:15', '16:00', 'Camila Ribeiro', 'Botox', 'waiting', 'sage'),
-  _ev(0, '16:00', '16:45', 'Fernanda Alves', 'Consulta', 'confirmed', 'ink'),
-  _ev(0, '17:30', '18:30', 'Isabela Moreira', 'Microagulhamento', 'confirmed', 'terracotta'),
-  _ev(1, '10:00', '10:45', 'Sofia Andrade', 'Avaliação', 'confirmed', 'sage'),
-  _ev(1, '11:00', '12:00', 'Marina Reis', 'Preenchimento', 'confirmed', 'terracotta'),
-  _ev(1, '14:30', '15:15', 'Helena Prado', 'Limpeza de pele', 'waiting', 'ink'),
-  _ev(2, '09:30', '10:30', 'Bruna Castro', 'Botox', 'confirmed', 'terracotta'),
-  _ev(2, '13:00', '13:45', 'Letícia Nunes', 'Consulta', 'confirmed', 'sage'),
-  _ev(3, '16:00', '17:00', 'Carolina Maia', 'Microagulhamento', 'confirmed', 'ink'),
-  _ev(4, '10:00', '11:00', 'Débora Pinto', 'Preenchimento', 'confirmed', 'terracotta'),
-  _ev(5, '11:30', '12:15', 'Renata Lima', 'Avaliação', 'confirmed', 'sage'),
-];
-
-const eventsOn = (d) => AGENDA_EVENTS
+/* ---------------- Eventos vêm do backend (T4) ---------------- */
+// Filtra os eventos de um dia, adiciona id estável + minutos (s/e2) e ordena.
+const eventsOn = (events, d) => (events || [])
   .filter(e => e.date === isoDate(d))
-  .map(e => ({ ...e, s: toMin(e.start), e2: toMin(e.end) }))
+  .map(e => ({ ...e, id: e.id || `${e.date}-${e.start}-${e.name}`, s: toMin(e.start), e2: toMin(e.end) }))
   .sort((a, b) => a.s - b.s);
 
 /* Empacota eventos sobrepostos em colunas lado a lado (clusters) */
@@ -96,6 +69,28 @@ const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.ge
 const AgendaFullScreen = () => {
   const [view, setView] = useState('dia');     // 'dia' | 'semana' | 'mes' | 'lista'
   const [cursor, setCursor] = useState(() => atMidnight(new Date()));
+  const [events, setEvents] = useState([]);
+  const [state, setState] = useState('loading'); // 'loading' | 'ready' | 'error'
+
+  // Carrega agendamentos do backend (silent = poll, não pisca o estado de loading).
+  const load = React.useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setState('loading');
+    try {
+      const items = await fetchAppointments();
+      setEvents(items);
+      setState('ready');
+    } catch (e) {
+      console.error('Agenda | falha ao carregar agendamentos', e);
+      if (!silent) setState('error');
+    }
+  }, []);
+
+  React.useEffect(() => { load(); }, [load]);
+  // Poll 30s (agenda muda menos que conversas).
+  React.useEffect(() => {
+    const t = setInterval(() => load({ silent: true }), 30000);
+    return () => clearInterval(t);
+  }, [load]);
 
   const goToday = () => setCursor(atMidnight(new Date()));
   const step = (dir) => {
@@ -149,20 +144,43 @@ const AgendaFullScreen = () => {
             onChange={setView}
             options={[['dia', 'Dia'], ['semana', 'Semana'], ['mes', 'Mês'], ['lista', 'Lista']]}
           />
-          <Button variant="primary" size="sm" icon={<Icon name="plus" size={14} />}>Novo agendamento</Button>
+          <Button variant="primary" size="sm" icon={<Icon name="plus" size={14} />} onClick={() => {}}>Novo agendamento</Button>
         </div>
       </div>
 
       {/* Body */}
       <div style={{ flex: 1 }}>
-        {view === 'dia' && <DayView date={cursor} />}
-        {view === 'semana' && <WeekView date={cursor} />}
-        {view === 'mes' && <MonthView date={cursor} onPickDay={(d) => { setCursor(d); setView('dia'); }} />}
-        {view === 'lista' && <ListView date={cursor} />}
+        {state === 'loading' ? (
+          <AgendaMessage text="Carregando agenda…" />
+        ) : state === 'error' ? (
+          <AgendaMessage
+            text="Não consegui carregar a agenda."
+            action={<Button variant="ghost" size="sm" onClick={() => load()}>Tentar de novo</Button>}
+          />
+        ) : events.length === 0 ? (
+          <AgendaMessage text="Nenhum agendamento ainda. Quando um lead marcar, aparece aqui." />
+        ) : (
+          <>
+            {view === 'dia' && <DayView events={events} date={cursor} />}
+            {view === 'semana' && <WeekView events={events} date={cursor} />}
+            {view === 'mes' && <MonthView events={events} date={cursor} onPickDay={(d) => { setCursor(d); setView('dia'); }} />}
+            {view === 'lista' && <ListView events={events} date={cursor} />}
+          </>
+        )}
       </div>
     </div>
   );
 };
+
+const AgendaMessage = ({ text, action }) => (
+  <div style={{
+    padding: '64px 28px', textAlign: 'center',
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14,
+  }}>
+    <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', lineHeight: 1.5, maxWidth: 320 }}>{text}</div>
+    {action}
+  </div>
+);
 
 const NavBtn = ({ onClick, icon }) => (
   <button onClick={onClick} style={{
@@ -219,11 +237,15 @@ const EventBlock = ({ ev, compact }) => {
   const gap = 3;
   const widthPct = 100 / ev._cols;
   const done = ev.status === 'done';
+  const cancelled = ev.status === 'cancelled';
   // Layout adaptativo à altura disponível, pra nunca cortar o nome.
   const tier = height < 38 ? 'mini' : height < 62 ? 'small' : 'full';
-  const dot = ev.status === 'waiting'
-    ? <span style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--warning)', flexShrink: 0 }} />
-    : done ? <Icon name="check" size={11} stroke={2.5} /> : null;
+  const nameDecoration = cancelled ? 'line-through' : 'none';
+  const dot = cancelled
+    ? <Icon name="x" size={11} stroke={2.5} />
+    : ev.status === 'waiting'
+      ? <span style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--warning)', flexShrink: 0 }} />
+      : done ? <Icon name="check" size={11} stroke={2.5} /> : null;
 
   return (
     <div title={`${ev.start}–${ev.end} · ${ev.name} · ${ev.service}`} style={{
@@ -232,7 +254,7 @@ const EventBlock = ({ ev, compact }) => {
       width: `calc(${widthPct}% - ${gap + 2}px)`,
       background: t.bg, borderLeft: `3px solid ${t.bar}`, borderRadius: 7,
       padding: tier === 'mini' ? '0 8px' : '4px 9px', overflow: 'hidden',
-      opacity: done ? 0.6 : 1, boxSizing: 'border-box', cursor: 'pointer',
+      opacity: (done || cancelled) ? 0.55 : 1, boxSizing: 'border-box', cursor: 'pointer',
       display: 'flex',
       flexDirection: tier === 'mini' ? 'row' : 'column',
       alignItems: tier === 'mini' ? 'center' : 'stretch',
@@ -241,7 +263,7 @@ const EventBlock = ({ ev, compact }) => {
       {tier === 'mini' ? (
         <>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: t.ink, fontWeight: 500, flexShrink: 0 }}>{ev.start}</span>
-          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{ev.name}</span>
+          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600, color: 'var(--ink)', textDecoration: nameDecoration, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{ev.name}</span>
           {dot}
         </>
       ) : (
@@ -250,7 +272,7 @@ const EventBlock = ({ ev, compact }) => {
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: t.ink, fontWeight: 500 }}>{ev.start}</span>
             {dot}
           </div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: compact ? 11.5 : 12.5, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.name}</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: compact ? 11.5 : 12.5, fontWeight: 600, color: 'var(--ink)', textDecoration: nameDecoration, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.name}</div>
           {tier === 'full' && (
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, color: t.ink, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.service}</div>
           )}
@@ -273,8 +295,8 @@ const NowLine = () => {
 };
 
 /* ================= DIA ================= */
-const DayView = ({ date }) => {
-  const events = packDay(eventsOn(date));
+const DayView = ({ events, date }) => {
+  const dayEvents = packDay(eventsOn(events, date));
   const isToday = sameDay(date, new Date());
   return (
     <div style={{ padding: '20px 28px 48px', display: 'flex', maxWidth: 960 }}>
@@ -282,19 +304,19 @@ const DayView = ({ date }) => {
       <div style={{ flex: 1, position: 'relative', height: GRID_H, borderLeft: '1px solid var(--paper-edge)', marginLeft: 4 }}>
         <HourLines />
         {isToday && <NowLine />}
-        {events.length === 0 && (
+        {dayEvents.length === 0 && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-4)' }}>
             Nenhum agendamento neste dia.
           </div>
         )}
-        {events.map(ev => <EventBlock key={ev.id} ev={ev} />)}
+        {dayEvents.map(ev => <EventBlock key={ev.id} ev={ev} />)}
       </div>
     </div>
   );
 };
 
 /* ================= SEMANA ================= */
-const WeekView = ({ date }) => {
+const WeekView = ({ events, date }) => {
   const ws = startOfWeek(date);
   const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
   const today = new Date();
@@ -324,13 +346,13 @@ const WeekView = ({ date }) => {
       <div style={{ display: 'flex', borderTop: '1px solid var(--paper-edge)', paddingTop: 8 }}>
         <HourGutter />
         {days.map((d, i) => {
-          const events = packDay(eventsOn(d));
+          const dayEvents = packDay(eventsOn(events, d));
           const isToday = sameDay(d, today);
           return (
             <div key={i} style={{ flex: 1, position: 'relative', height: GRID_H, borderLeft: '1px solid var(--paper-edge)' }}>
               <HourLines />
               {isToday && nowMin >= DAY_START && nowMin <= DAY_END && <NowLine />}
-              {events.map(ev => <EventBlock key={ev.id} ev={ev} compact />)}
+              {dayEvents.map(ev => <EventBlock key={ev.id} ev={ev} compact />)}
             </div>
           );
         })}
@@ -340,7 +362,7 @@ const WeekView = ({ date }) => {
 };
 
 /* ================= MÊS ================= */
-const MonthView = ({ date, onPickDay }) => {
+const MonthView = ({ events, date, onPickDay }) => {
   const first = new Date(date.getFullYear(), date.getMonth(), 1);
   const gridStart = startOfWeek(first);
   const weeks = Array.from({ length: 6 }, (_, w) => Array.from({ length: 7 }, (_, d) => addDays(gridStart, w * 7 + d)));
@@ -359,7 +381,7 @@ const MonthView = ({ date, onPickDay }) => {
             {week.map((d, di) => {
               const inMonth = d.getMonth() === date.getMonth();
               const on = sameDay(d, today);
-              const evs = eventsOn(d);
+              const evs = eventsOn(events, d);
               return (
                 <div key={di} onClick={() => onPickDay(d)} style={{
                   minHeight: 104, padding: 8, cursor: 'pointer',
@@ -402,9 +424,9 @@ const MonthView = ({ date, onPickDay }) => {
 };
 
 /* ================= LISTA ================= */
-const ListView = ({ date }) => {
+const ListView = ({ events, date }) => {
   const ws = startOfWeek(date);
-  const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i)).filter(d => eventsOn(d).length > 0);
+  const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i)).filter(d => eventsOn(events, d).length > 0);
   const today = new Date();
   return (
     <div style={{ padding: '20px 28px 48px', maxWidth: 760 }}>
@@ -422,27 +444,30 @@ const ListView = ({ date }) => {
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{d.getDate()} {MESES_CURTOS[d.getMonth()]}</span>
             </div>
             <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 14, overflow: 'hidden', background: 'var(--paper-raised)' }}>
-              {eventsOn(d).map((ev, j) => {
+              {eventsOn(events, d).map((ev, j) => {
                 const t = TONE[ev.tone] || TONE.ink;
                 const done = ev.status === 'done';
+                const cancelled = ev.status === 'cancelled';
                 return (
                   <div key={ev.id} style={{
                     display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px',
-                    borderTop: j ? '1px solid var(--paper-edge)' : 'none', opacity: done ? 0.6 : 1,
+                    borderTop: j ? '1px solid var(--paper-edge)' : 'none', opacity: (done || cancelled) ? 0.6 : 1,
                   }}>
                     <div style={{ width: 96, flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>
                       {ev.start}<span style={{ color: 'var(--ink-4)' }}>–{ev.end}</span>
                     </div>
                     <span style={{ width: 8, height: 8, borderRadius: 999, background: t.bar, flexShrink: 0 }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{ev.name}</div>
+                      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)', textDecoration: cancelled ? 'line-through' : 'none' }}>{ev.name}</div>
                       <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)' }}>{ev.service}</div>
                     </div>
                     {done
                       ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)' }}><Icon name="check" size={13} stroke={2.5} /> Feito</span>
-                      : ev.status === 'waiting'
-                        ? <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)', color: 'var(--warning)' }}>Aguarda</span>
-                        : <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--terracotta-tint)', color: 'var(--terracotta-ink)' }}>Confirmado</span>}
+                      : cancelled
+                        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)', color: 'var(--danger)' }}>Cancelado</span>
+                        : ev.status === 'waiting'
+                          ? <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)', color: 'var(--warning)' }}>Aguarda</span>
+                          : <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--terracotta-tint)', color: 'var(--terracotta-ink)' }}>Confirmado</span>}
                   </div>
                 );
               })}
