@@ -8,6 +8,8 @@
 # testes nas Fases B/E.
 # ================================================================
 
+import asyncio
+
 import pytest
 
 from huma.models.schemas import ClientIdentity, Conversation
@@ -64,3 +66,44 @@ class TestCRMModelDefaults:
         # CRM não é Capability: conectar CRM não muda o set resolvido.
         i = _identity(crm_provider="pipedrive", crm_pipeline_id="7")
         assert i.capabilities_resolved == _identity().capabilities_resolved
+
+
+class TestGetClientNullTolerance:
+    """
+    Regressão: colunas novas criadas via ALTER ADD COLUMN nascem NULL.
+    O get_client NÃO pode quebrar ao receber None num campo str — tem
+    que cair no default do model. (Incidente 2026-06-07: crm_* NULL
+    derrubou todo get_client em produção.)
+    """
+
+    def test_get_client_tolerates_null_columns(self, monkeypatch):
+        from huma.services import db_service
+
+        row = {
+            "client_id": "c1", "business_name": "X",
+            # colunas NULL no banco chegam como None:
+            "crm_provider": None, "crm_access_token": None,
+            "crm_refresh_token": None, "crm_pipeline_id": None,
+            "crm_stage_id": None, "crm_owner_id": None,
+            "crm_api_base_url": None, "crm_api_token": None,
+            "bling_access_token": None,
+        }
+
+        class _Resp:
+            data = [row]
+
+        class _Q:
+            def select(self, *a, **k): return self
+            def eq(self, *a, **k): return self
+            def execute(self): return _Resp()
+
+        class _Supa:
+            def table(self, *a, **k): return _Q()
+
+        monkeypatch.setattr(db_service, "get_supabase", lambda: _Supa())
+
+        ident = asyncio.run(db_service.get_client("c1"))
+        assert ident is not None
+        assert ident.crm_provider == ""
+        assert ident.crm_access_token == ""
+        assert ident.bling_access_token == ""

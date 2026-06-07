@@ -57,9 +57,13 @@ async def get_client(client_id: str) -> ClientIdentity | None:
 
     data = resp.data[0]
     log.info(f"DB raw | enable_audio={data.get('enable_audio')} | voice_id={data.get('voice_id')} | triggers={data.get('audio_trigger_stages')}")
+    # Descarta valores None (colunas NULL no banco) pra que o default do
+    # campo no model valha. Sem isso, uma coluna str nova criada via
+    # ALTER ... ADD COLUMN (que nasce NULL) é passada como None pra um
+    # campo `str` e o Pydantic estoura — quebrando TODO get_client.
     valid_fields = {
         k: v for k, v in data.items()
-        if k in ClientIdentity.model_fields
+        if k in ClientIdentity.model_fields and v is not None
     }
     return ClientIdentity(**valid_fields)
 
