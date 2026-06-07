@@ -1485,7 +1485,7 @@ def _build_reply_tool_compact(
         "- type='calc_shipping': sku, cep, qty (default 1). Emita SOMENTE quando o lead já passou o CEP. Sistema consulta transportadora e devolve custo e prazo REAIS. Se o lead não passou CEP ainda, peça antes — NÃO emita a action sem CEP.",
     ]
     QUALIFY_LINES = [
-        "- type='handoff_to_human': summary (resumo do lead em 1-2 frases, ex: 'João, quer apartamento 2 quartos em Pinheiros até R$700k, urgente'), urgency='normal'|'urgent'. Emita SOMENTE quando TODOS os campos obrigatórios de coleta foram preenchidos E o lead demonstrou interesse claro. Sistema notifica humano via WhatsApp + PARA de responder. NUNCA emita sem ter coletado os campos obrigatórios — peça os dados que faltam antes.",
+        "- type='handoff_to_human': lead_name (primeiro nome do lead, como ele se apresentou), summary (resumo do lead em 1-2 frases, ex: 'João, quer apartamento 2 quartos em Pinheiros até R$700k, urgente'), urgency='normal'|'urgent'. Emita SOMENTE quando TODOS os campos obrigatórios de coleta foram preenchidos E o lead demonstrou interesse claro. Sistema notifica humano via WhatsApp + PARA de responder. NUNCA emita sem ter coletado os campos obrigatórios — peça os dados que faltam antes.",
     ]
     UNIVERSAL_LINES = [
         "- type='send_media': tags (lista de strings)",

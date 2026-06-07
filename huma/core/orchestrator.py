@@ -2687,6 +2687,13 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
     if urgency not in ("normal", "urgent"):
         urgency = "normal"
 
+    # Promove o nome coletado pra lead_name_canonical. No modo qualificar
+    # não há agendamento (que era quem setava o nome estável), então sem
+    # isso o CRM e o alerta do dono saíam com o telefone no lugar do nome.
+    lead_name = (action.get("lead_name") or "").strip()
+    if lead_name and conv and not conv.lead_name_canonical:
+        conv.lead_name_canonical = lead_name
+
     if not summary:
         log.warning(
             f"handoff sem summary | {phone} | recusando — Claude precisa "
