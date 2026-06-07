@@ -41,6 +41,27 @@ def _resolve_module(provider: str):
     return module
 
 
+async def _detect_crm_defaults(provider: str, updates: dict) -> dict:
+    """
+    Detecta pipeline/estágio padrão logo após conectar (zero-config).
+
+    Usa o token recém-obtido (ainda em `updates`, não persistido) pra
+    instanciar o adapter e perguntar ao CRM qual o pipeline padrão.
+    Só Pipedrive por ora; outros providers retornam {} até implementarem.
+
+    Returns:
+        Dict com crm_pipeline_id/crm_stage_id, ou {} se não detectou.
+    """
+    if provider == "pipedrive":
+        from huma.providers.crm.pipedrive import PipedriveAdapter
+        adapter = PipedriveAdapter(
+            access_token=updates.get("crm_access_token", ""),
+            base_url=updates.get("crm_api_base_url", ""),
+        )
+        return await adapter.detect_default_pipeline()
+    return {}
+
+
 # ================================================================
 # START
 # ================================================================
@@ -148,6 +169,23 @@ async def callback(
     # com vazio se não veio.
     if result.get("api_domain"):
         updates["crm_api_base_url"] = result["api_domain"]
+
+    # Zero-config: detecta pipeline + estágio padrão da conta pra o dono
+    # não precisar configurar nada. Falha aqui NÃO bloqueia a conexão —
+    # sem mapeamento, o negócio cai no pipeline default do CRM.
+    try:
+        defaults = await _detect_crm_defaults(provider_norm, updates)
+        if defaults:
+            updates.update(defaults)
+            log.info(
+                f"CRM defaults detectados | provider={provider_norm} | "
+                f"client_id={client_id_huma} | pipeline={defaults.get('crm_pipeline_id')}"
+            )
+    except Exception as e:
+        log.warning(
+            f"CRM auto-detect pipeline falhou (segue sem) | client_id={client_id_huma} | "
+            f"{type(e).__name__}: {e}"
+        )
 
     try:
         await db.update_client(client_id_huma, updates)

@@ -433,6 +433,54 @@ class PipedriveAdapter(CRMProvider):
         except (ValueError, TypeError):
             return ("", "")
 
+    # ── detect_default_pipeline (zero-config no connect) ───────
+
+    async def detect_default_pipeline(self) -> dict:
+        """
+        Detecta o pipeline + 1º estágio padrão da conta, pro connect ser
+        zero-config (o dono não precisa escolher nada).
+
+        Escolhe o pipeline marcado como `selected` (ou o de menor order_nr)
+        e, dentro dele, o estágio de menor order_nr (o início do funil =
+        "lead qualificado entrou aqui").
+
+        Returns:
+            {"crm_pipeline_id": str, "crm_stage_id": str} pronto pra
+            update_client. Dict vazio se não der pra detectar (caller
+            segue sem mapeamento — negócio cai no default do Pipedrive).
+        """
+        if not self._has_creds:
+            return {}
+
+        st, body = await self._request("GET", "/pipelines")
+        pipelines = ((body or {}).get("data") or []) if st == 200 else []
+        if not pipelines:
+            return {}
+
+        # selected primeiro, depois menor order_nr
+        pipelines.sort(
+            key=lambda p: (not p.get("selected", False), p.get("order_nr", 9999))
+        )
+        pipeline_id = str(pipelines[0].get("id") or "")
+        if not pipeline_id:
+            return {}
+
+        result = {"crm_pipeline_id": pipeline_id, "crm_stage_id": ""}
+
+        st2, body2 = await self._request(
+            "GET", "/stages", params={"pipeline_id": pipeline_id},
+        )
+        stages = ((body2 or {}).get("data") or []) if st2 == 200 else []
+        if stages:
+            stages.sort(key=lambda s: s.get("order_nr", 9999))
+            result["crm_stage_id"] = str(stages[0].get("id") or "")
+
+        log.info(
+            f"Pipedrive detect_default_pipeline | pipeline={result['crm_pipeline_id']} | "
+            f"stage={result['crm_stage_id']}"
+        )
+        return result
+
     # ── parse_outcome (inbound webhook → atribuição) ───────────
 
     def parse_outcome(self, payload: dict, headers: dict) -> dict:

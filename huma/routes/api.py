@@ -544,6 +544,45 @@ async def list_appointments_cockpit(
     return {"items": items, "total": len(items)}
 
 
+@router.get("/api/crm/status", tags=["Cockpit"])
+async def crm_status(
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    Status da conexão de CRM do cliente, pro Cockpit mostrar
+    "Conectar Pipedrive" ou "✓ Conectado".
+
+    Returns:
+        connected: tem provider + token configurados
+        provider: "pipedrive" | "rd_station" | ""
+        pipeline_ready: pipeline/estágio detectados (zero-config OK)
+        account_url: base da conta (Pipedrive) pra linkar, se houver
+        connect_url: pra onde o botão "Conectar" deve apontar
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    identity = await db.get_client(client_id)
+    if identity is None:
+        raise HTTPException(404, f"Cliente {client_id} não encontrado")
+
+    provider = (getattr(identity, "crm_provider", "") or "").strip()
+    has_token = bool(
+        getattr(identity, "crm_access_token", "")
+        or getattr(identity, "crm_api_token", "")
+    )
+    connected = bool(provider and has_token)
+    pipeline_ready = bool(getattr(identity, "crm_pipeline_id", ""))
+
+    return {
+        "connected": connected,
+        "provider": provider,
+        "pipeline_ready": pipeline_ready,
+        "account_url": getattr(identity, "crm_api_base_url", "") or "",
+        "connect_url": f"/oauth/crm/pipedrive/start?client_id={client_id}",
+    }
+
+
 # ── Identidade ──
 
 @router.post("/api/clients/{client_id}/import-whatsapp", tags=["Identidade"])

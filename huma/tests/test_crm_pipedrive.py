@@ -224,6 +224,34 @@ class TestLogActivity:
 # ================================================================
 
 
+class TestDetectDefaultPipeline:
+    def test_picks_selected_pipeline_and_first_stage(self):
+        a = _make_adapter()
+        _mock_request(a, [
+            # pipelines: id 2 é selected (ganha mesmo com order_nr maior)
+            (200, {"data": [
+                {"id": 1, "selected": False, "order_nr": 0},
+                {"id": 2, "selected": True, "order_nr": 5},
+            ]}),
+            # stages do pipeline: menor order_nr ganha (id 4)
+            (200, {"data": [
+                {"id": 5, "order_nr": 2},
+                {"id": 4, "order_nr": 1},
+            ]}),
+        ])
+        r = asyncio.run(a.detect_default_pipeline())
+        assert r == {"crm_pipeline_id": "2", "crm_stage_id": "4"}
+
+    def test_empty_when_no_pipelines(self):
+        a = _make_adapter()
+        _mock_request(a, [(200, {"data": []})])
+        assert asyncio.run(a.detect_default_pipeline()) == {}
+
+    def test_no_creds(self):
+        a = _make_adapter(token="")
+        assert asyncio.run(a.detect_default_pipeline()) == {}
+
+
 class TestParseOutcome:
     def test_classic_shape_won(self):
         a = _make_adapter()
