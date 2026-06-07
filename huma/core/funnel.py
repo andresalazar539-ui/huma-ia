@@ -195,9 +195,18 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         closing_instructions += (
             "  HANDOFF: Quando os dados acima estiverem coletados E o lead "
             "expressar interesse claro, EMITA action handoff_to_human com "
-            "summary (1-2 frases) e urgency. Sistema notifica o humano e "
-            "encerra a conversa do seu lado. NUNCA prometa 'alguém vai te chamar' "
-            "sem emitir a action — a action é o que aciona de verdade.\n"
+            "lead_name (primeiro nome dele), summary (1-2 frases) e urgency. "
+            "Sistema notifica o humano e encerra a conversa do seu lado. "
+            "NUNCA prometa 'alguém vai te chamar' sem emitir a action, "
+            "a action é o que aciona de verdade.\n"
+        )
+        closing_instructions += (
+            "  ANTES DE TRANSFERIR: SE o lead fizer uma pergunta ou pedir algo "
+            "no mesmo momento (explicar como funciona, mandar um áudio, tirar "
+            "uma dúvida), RESPONDA primeiro de forma completa e calorosa nesse "
+            "mesmo turno (preencha audio_text se ele pediu áudio) e SÓ DEPOIS "
+            "emita o handoff. Nunca corte o lead no meio nem ignore o que ele "
+            "pediu, mesmo que já vá transferir.\n"
         )
         closing_reqs.append("interesse confirmado pra handoff")
 

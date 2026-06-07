@@ -1471,7 +1471,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             await _sync_lead_to_crm(
                 client_data,
                 conv,
-                deal_title=f"{_nm} — {_svc or 'agendamento'} (HUMA)",
+                deal_title=f"{_nm} ({_svc or 'agendamento'} via HUMA)",
                 activity_kind="meeting",
                 activity_summary=(
                     f"Reunião agendada: {_svc}".strip().rstrip(":")
@@ -2063,7 +2063,7 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
             await _sync_lead_to_crm(
                 client_data,
                 conv,
-                deal_title=f"{_nm} — {_svc or 'agendamento'} (HUMA)",
+                deal_title=f"{_nm} ({_svc or 'agendamento'} via HUMA)",
                 activity_kind="meeting",
                 activity_summary=(
                     f"Reunião agendada: {_svc}".strip().rstrip(":")
@@ -2786,7 +2786,7 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
     await _sync_lead_to_crm(
         client_data,
         conv,
-        deal_title=f"{conv.lead_name_canonical or phone} — lead qualificado (HUMA)",
+        deal_title=f"{conv.lead_name_canonical or phone} (lead qualificado pela HUMA)",
         activity_kind="note",
         activity_summary=summary,
     )

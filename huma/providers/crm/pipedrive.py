@@ -397,7 +397,7 @@ class PipedriveAdapter(CRMProvider):
         else:
             # Nota na timeline — carrega o resumo + marcador de origem.
             content = summary or _ORIGIN_TAG
-            content = f"{content}\n\n— {_ORIGIN_TAG}"
+            content = f"{content}\n\n{_ORIGIN_TAG}"
             body = {
                 "content": content,
                 "deal_id": int(deal_id) if deal_id.isdigit() else deal_id,
