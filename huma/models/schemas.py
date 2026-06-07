@@ -457,6 +457,67 @@ class ClientIdentity(BaseModel):
         ),
     )
 
+    # ── Integração de CRM (v12.x — Fase CRM) ──
+    # CRM NÃO é Capability — é espelhamento de pipeline. Quando o lead
+    # vira pipeline (qualificado/agendado), o orchestrator reflete no CRM
+    # do dono pra fechar o loop de atribuição. Tudo vazio = dono não
+    # conectou CRM; get_provider_for devolve None e não há sync (degrada
+    # gracioso). Refresh do token é automático antes de cada request
+    # quando faltar menos que CRM_TOKEN_REFRESH_MARGIN_SEC.
+    crm_provider: str = Field(
+        default="",
+        description='CRM ativo: "" (nenhum) | "pipedrive" | "rd_station".',
+    )
+    crm_access_token: str = Field(
+        default="",
+        description="Access token OAuth do CRM. Refresh automático.",
+    )
+    crm_refresh_token: str = Field(
+        default="",
+        description="Refresh token do CRM. Necessário pra renovar access.",
+    )
+    crm_token_expires_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Quando o access_token do CRM expira (UTC). Refresh quando "
+            "faltar menos que CRM_TOKEN_REFRESH_MARGIN_SEC."
+        ),
+    )
+    crm_pipeline_id: str = Field(
+        default="",
+        description="ID do pipeline no CRM onde os negócios da HUMA entram.",
+    )
+    crm_stage_id: str = Field(
+        default="",
+        description=(
+            "ID do estágio QUALIFICADO onde o negócio entra. NUNCA é "
+            "'ganho' — venda fechada é decisão do humano, descoberta via "
+            "webhook de atribuição."
+        ),
+    )
+    crm_owner_id: str = Field(
+        default="",
+        description="ID do dono/vendedor no CRM pra atribuir o negócio (opcional).",
+    )
+    crm_api_base_url: str = Field(
+        default="",
+        description=(
+            "Base URL da API do CRM, específica da conta. No Pipedrive "
+            "vem como 'api_domain' no callback OAuth (ex: "
+            "https://empresa.pipedrive.com). Vazio = adapter usa o "
+            "default do provider."
+        ),
+    )
+    crm_api_token: str = Field(
+        default="",
+        description=(
+            "Token de API pessoal do CRM (autentica via query param, não "
+            "OAuth Bearer). Alternativa ao OAuth pra providers token-based "
+            "(RD Station) ou conexão rápida. Se preenchido, o adapter usa "
+            "ele em vez do crm_access_token."
+        ),
+    )
+
     # ── WhatsApp Meta Cloud API (v8) ──
     waba_id: str = Field(
         default="",
@@ -640,6 +701,34 @@ class Conversation(BaseModel):
         description=(
             "Resumo gerado pela IA no momento do handoff. Vai pra "
             "notificação do humano e fica de referência no histórico."
+        ),
+    )
+
+    # v12.x — Fase CRM: estado do espelhamento no CRM do dono.
+    # Populados pelo orchestrator quando o lead vira pipeline
+    # (handoff/agendamento). Vazio = ainda não sincronizado (ou dono
+    # sem CRM conectado). crm_deal_id é a chave que fecha o loop de
+    # atribuição: o webhook de ganho/perdido casa por ele.
+    crm_contact_id: str = Field(
+        default="",
+        description="ID do contato no CRM (do upsert_lead). Vazio = não sincronizado.",
+    )
+    crm_deal_id: str = Field(
+        default="",
+        description=(
+            "ID do negócio no CRM (do upsert_deal). Chave de dedup do "
+            "negócio e de atribuição (casa com o webhook de ganho/perdido)."
+        ),
+    )
+    crm_synced_at: Optional[datetime] = Field(
+        default=None,
+        description="Quando o último sync pro CRM rodou (UTC). Pra logs/auditoria.",
+    )
+    crm_outcome: str = Field(
+        default="",
+        description=(
+            "Resultado do negócio no CRM, setado pelo webhook de "
+            'atribuição: "" (em aberto) | "won" | "lost".'
         ),
     )
 

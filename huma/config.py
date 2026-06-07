@@ -71,6 +71,42 @@ BLING_TOKEN_REFRESH_MARGIN_SEC = int(
     os.getenv("BLING_TOKEN_REFRESH_MARGIN_SEC", "300")
 )
 
+# ── CRM (espelhamento de pipeline — Fase CRM) ──
+# Cada CRM é um app OAuth separado (client_id/secret próprios). O token
+# por cliente vive no ClientIdentity (preenchido no callback do OAuth).
+# Knobs compartilhados entre providers; credenciais de app são por
+# provider. Vazio = OAuth daquele CRM indisponível no servidor.
+
+# TTL do state CSRF no Redis pra validar callback OAuth do CRM.
+CRM_OAUTH_STATE_TTL_SEC = int(os.getenv("CRM_OAUTH_STATE_TTL_SEC", "600"))
+
+# Margem pra refresh do token de CRM (mesmo racional do Bling).
+CRM_TOKEN_REFRESH_MARGIN_SEC = int(
+    os.getenv("CRM_TOKEN_REFRESH_MARGIN_SEC", "300")
+)
+
+# Pipedrive (developer.pipedrive.com). Client ID público (vai na URL
+# OAuth); secret só no servidor. Redirect URI tem que bater letra por
+# letra com o cadastrado no app Pipedrive. base_url da API é por conta
+# (company domain), descoberto no callback e guardado por cliente.
+PIPEDRIVE_CLIENT_ID = os.getenv("PIPEDRIVE_CLIENT_ID", "")
+PIPEDRIVE_CLIENT_SECRET = os.getenv("PIPEDRIVE_CLIENT_SECRET", "")
+PIPEDRIVE_REDIRECT_URI = os.getenv("PIPEDRIVE_REDIRECT_URI", "")
+PIPEDRIVE_OAUTH_AUTHORIZE_URL = os.getenv(
+    "PIPEDRIVE_OAUTH_AUTHORIZE_URL",
+    "https://oauth.pipedrive.com/oauth/authorize",
+)
+PIPEDRIVE_OAUTH_TOKEN_URL = os.getenv(
+    "PIPEDRIVE_OAUTH_TOKEN_URL",
+    "https://oauth.pipedrive.com/oauth/token",
+)
+
+# Webhook de atribuição (Pipedrive manda Basic auth se configurado na
+# criação do webhook). Se ambos setados, a rota /webhook/crm/pipedrive
+# exige Basic auth batendo; vazios = aceita sem auth (dev/sandbox).
+PIPEDRIVE_WEBHOOK_USER = os.getenv("PIPEDRIVE_WEBHOOK_USER", "")
+PIPEDRIVE_WEBHOOK_PASSWORD = os.getenv("PIPEDRIVE_WEBHOOK_PASSWORD", "")
+
 # ── Pagamentos ──
 MERCADOPAGO_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 # Sprint 1 / item 2 — webhook secret pra validar HMAC do MP (diferente do access_token)

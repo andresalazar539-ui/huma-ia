@@ -1463,6 +1463,23 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             except Exception as e:
                 log.error(f"Erro salvando confirmação no histórico | {phone} | {e}")
 
+            # CRM sync (fire-and-forget) — lead agendado vira negócio no CRM do
+            # dono, com a reunião linkada na timeline. Roda depois das mensagens
+            # já enviadas; nunca quebra o fluxo do lead.
+            _svc = (appointment_meta or {}).get("service") or ""
+            _nm = (appointment_meta or {}).get("lead_name") or phone
+            await _sync_lead_to_crm(
+                client_data,
+                conv,
+                deal_title=f"{_nm} — {_svc or 'agendamento'} (HUMA)",
+                activity_kind="meeting",
+                activity_summary=(
+                    f"Reunião agendada: {_svc}".strip().rstrip(":")
+                    if _svc else "Reunião agendada via HUMA"
+                ),
+                activity_when=conv.active_appointment_datetime or "",
+            )
+
         # ============================================================
         # ÁUDIO
         # ============================================================
@@ -2037,6 +2054,23 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
                 await db.save_conversation(conv)
             except Exception as e:
                 log.error(f"Erro salvando event_id na conv | {type(e).__name__}: {e}")
+
+            # CRM sync (fire-and-forget) — mesmo do caminho PRE-FLIGHT.
+            _svc = result.get("service", "") or ""
+            _nm = action.get("lead_name", "") or (
+                conv.lead_name_canonical if conv else ""
+            ) or phone
+            await _sync_lead_to_crm(
+                client_data,
+                conv,
+                deal_title=f"{_nm} — {_svc or 'agendamento'} (HUMA)",
+                activity_kind="meeting",
+                activity_summary=(
+                    f"Reunião agendada: {_svc}".strip().rstrip(":")
+                    if _svc else "Reunião agendada via HUMA"
+                ),
+                activity_when=conv.active_appointment_datetime or "",
+            )
 
     elif result.get("status") == "conflict":
         await asyncio.sleep(1.0)
@@ -2740,11 +2774,141 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
         # se persist falhar — humano vai agir; pior caso IA responde turn
         # adicional antes do save eventualmente persistir.
 
+    # CRM sync (fire-and-forget) — lead qualificado vira negócio no CRM do
+    # dono, com o resumo na timeline. Roda depois das mensagens já enviadas.
+    await _sync_lead_to_crm(
+        client_data,
+        conv,
+        deal_title=f"{conv.lead_name_canonical or phone} — lead qualificado (HUMA)",
+        activity_kind="note",
+        activity_summary=summary,
+    )
+
     return {
         "executed": True,
         "status": "ok",
         "owner_notified": True,
     }
+
+
+# ================================================================
+# CRM SYNC (Fase CRM — espelhamento de pipeline)
+#
+# Efeito colateral SILENCIOSO: quando o lead vira pipeline (qualificado
+# via handoff, ou agendado), reflete no CRM do dono. NÃO é action da IA
+# — atribuição confiável + custo zero de token.
+#
+# Regras de ouro (igual notify_owner: roda DEPOIS das mensagens do lead
+# já terem saído, então latência aqui não afeta a resposta percebida):
+#   1. NUNCA levanta exceção — falha de CRM jamais quebra a conversa.
+#   2. Dono sem CRM conectado → get_provider_for devolve None → no-op.
+#   3. Idempotente: reusa conv.crm_deal_id pra ATUALIZAR o negócio em vez
+#      de criar outro a cada turn.
+#   4. O negócio entra no estágio QUALIFICADO (crm_stage_id), nunca "ganho".
+# ================================================================
+
+
+async def _sync_lead_to_crm(
+    client_data,
+    conv,
+    *,
+    deal_title: str,
+    value_cents: int = 0,
+    activity_kind: str = "note",
+    activity_summary: str = "",
+    activity_when: str = "",
+) -> None:
+    """
+    Espelha o lead/negócio no CRM do dono. Fire-and-forget — nunca levanta.
+
+    Fluxo: upsert_lead (dedup) → upsert_deal (idempotente via crm_deal_id)
+    → log_activity (nota/reunião). Persiste os IDs do CRM na Conversation
+    pra fechar o loop de atribuição depois (webhook de ganho/perdido).
+
+    Args:
+        client_data: ClientIdentity (carrega credenciais + mapeamento CRM).
+        conv: Conversation do lead (fonte de phone/nome/email/facts + onde
+            os IDs do CRM são gravados).
+        deal_title: título do negócio no CRM.
+        value_cents: valor estimado do negócio (0 = sem valor).
+        activity_kind: "note" (resumo) | "meeting" (agendamento).
+        activity_summary: texto da nota / assunto da reunião.
+        activity_when: ISO datetime da reunião (só usado em meeting).
+    """
+    try:
+        from huma.providers.crm import get_provider_for
+
+        provider = get_provider_for(client_data)
+        if provider is None:
+            return  # dono não conectou CRM — no-op silencioso
+
+        cid = client_data.client_id
+
+        # 1. Contato (dedup por telefone/email)
+        lead_res = await provider.upsert_lead(client_data, {
+            "phone": conv.phone,
+            "name": conv.lead_name_canonical or "",
+            "email": conv.lead_email or "",
+            "facts": list(conv.lead_facts or [])[:10],
+        })
+        if lead_res.get("status") != "ok":
+            log.warning(
+                f"CRM upsert_lead falhou | client={cid} | phone={conv.phone} | "
+                f"status={lead_res.get('status')} | detail={lead_res.get('detail', '')}"
+            )
+            return
+        contact_id = lead_res.get("crm_contact_id", "")
+
+        # 2. Negócio (atualiza se já existe crm_deal_id; senão cria no estágio qualificado)
+        deal_res = await provider.upsert_deal(client_data, {
+            "crm_contact_id": contact_id,
+            "crm_deal_id": conv.crm_deal_id or "",
+            "title": deal_title,
+            "value_cents": value_cents,
+        })
+        if deal_res.get("status") != "ok":
+            log.warning(
+                f"CRM upsert_deal falhou | client={cid} | phone={conv.phone} | "
+                f"status={deal_res.get('status')} | detail={deal_res.get('detail', '')}"
+            )
+            return
+        deal_id = deal_res.get("crm_deal_id", "")
+
+        # 3. Atividade na timeline (resumo da conversa / reunião)
+        if deal_id and activity_summary:
+            act_res = await provider.log_activity(client_data, {
+                "crm_deal_id": deal_id,
+                "kind": activity_kind,
+                "summary": activity_summary,
+                "when": activity_when,
+            })
+            if act_res.get("status") != "ok":
+                log.warning(
+                    f"CRM log_activity falhou | client={cid} | phone={conv.phone} | "
+                    f"status={act_res.get('status')} | detail={act_res.get('detail', '')}"
+                )
+
+        # 4. Persiste IDs na conversa (chave de atribuição)
+        conv.crm_contact_id = contact_id
+        conv.crm_deal_id = deal_id
+        conv.crm_synced_at = datetime.utcnow()
+        try:
+            await db.save_conversation(conv)
+        except Exception as e:
+            log.error(
+                f"CRM sync: erro salvando IDs na conv | {conv.phone} | "
+                f"{type(e).__name__}: {e}"
+            )
+
+        log.info(
+            f"CRM sync OK | client={cid} | phone={conv.phone} | "
+            f"contact={contact_id} | deal={deal_id} | kind={activity_kind}"
+        )
+    except Exception as e:
+        log.error(
+            f"CRM sync falhou (inesperado) | client={getattr(client_data, 'client_id', '?')} | "
+            f"phone={getattr(conv, 'phone', '?')} | {type(e).__name__}: {e}"
+        )
 
 
 # ================================================================

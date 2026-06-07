@@ -115,9 +115,47 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             handoff_status=d.get("handoff_status", "active") or "active",
             handed_off_at=d.get("handed_off_at"),
             handoff_summary=d.get("handoff_summary", "") or "",
+            crm_contact_id=d.get("crm_contact_id", "") or "",
+            crm_deal_id=d.get("crm_deal_id", "") or "",
+            crm_synced_at=d.get("crm_synced_at"),
+            crm_outcome=d.get("crm_outcome", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
+
+
+async def get_conversation_by_crm_deal_id(deal_id: str) -> Conversation | None:
+    """
+    Busca a conversa vinculada a um negócio do CRM (atribuição).
+
+    Usado pelo webhook /webhook/crm/{provider}: o CRM avisa "negócio X
+    ganho/perdido" e precisamos achar a conversa que gerou esse negócio.
+    Usa o índice parcial idx_conversations_crm_deal_id.
+
+    Carrega a conversa COMPLETA (via get_conversation) pra que o save
+    de volta não apague history/campos — só localiza client_id+phone
+    aqui e delega o load completo.
+
+    Args:
+        deal_id: crm_deal_id guardado na Conversation no momento do sync.
+
+    Returns:
+        Conversation completa, ou None se nenhum negócio casa (ou deal_id
+        vazio).
+    """
+    deal_id = (deal_id or "").strip()
+    if not deal_id:
+        return None
+
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("conversations")
+            .select("client_id,phone").eq("crm_deal_id", deal_id).limit(1).execute()
+    )
+    if not resp.data:
+        return None
+
+    row = resp.data[0]
+    return await get_conversation(row["client_id"], row["phone"])
 
 
 async def save_conversation(conv: Conversation):
@@ -142,6 +180,10 @@ async def save_conversation(conv: Conversation):
         "handoff_status": conv.handoff_status,
         "handed_off_at": conv.handed_off_at.isoformat() if conv.handed_off_at else None,
         "handoff_summary": conv.handoff_summary,
+        "crm_contact_id": conv.crm_contact_id,
+        "crm_deal_id": conv.crm_deal_id,
+        "crm_synced_at": conv.crm_synced_at.isoformat() if conv.crm_synced_at else None,
+        "crm_outcome": conv.crm_outcome,
         "updated_at": datetime.utcnow().isoformat(),
     }
     await run_in_threadpool(
