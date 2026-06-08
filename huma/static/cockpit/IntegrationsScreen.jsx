@@ -103,12 +103,24 @@ const INTEGRATIONS = [
   },
 ];
 
-const IntegrationsScreen = ({ client, clientId } = {}) => {
+const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   // Em produção o client_id vem da sessão (cookie). No dev usamos o bypass ?client_id=X.
   const resolvedClientId =
     clientId ||
     new URLSearchParams(window.location.search).get('client_id') ||
     'dev';
+
+  // Handler genérico de disconnect: chama backend e recarrega status no parent.
+  // Mostra toast simples via alert (UI estável, sem dependência); MELHORIA futura
+  // usar componente Toast do ConversationView quando for componentizado.
+  const handleDisconnect = async (integrationId) => {
+    try {
+      await disconnectIntegration(integrationId);
+      if (onReloadStatus) await onReloadStatus();
+    } catch (e) {
+      window.alert(`Não consegui desconectar: ${(e && e.message) || e}`);
+    }
+  };
 
   // Bling: status derivado do token real. Sem token = desconectado (sem mock).
   const blingConnected = Boolean(client && client.bling_access_token);
@@ -131,6 +143,7 @@ const IntegrationsScreen = ({ client, clientId } = {}) => {
       window.location.href =
         '/oauth/bling/start?client_id=' + encodeURIComponent(resolvedClientId);
     },
+    onDisconnect: () => handleDisconnect('bling'),
   };
 
   // Pipedrive: connected = crm_provider == 'pipedrive' E tem token OAuth válido.
@@ -159,6 +172,7 @@ const IntegrationsScreen = ({ client, clientId } = {}) => {
       window.location.href =
         '/oauth/crm/pipedrive/start?client_id=' + encodeURIComponent(resolvedClientId);
     },
+    onDisconnect: () => handleDisconnect('pipedrive'),
   };
 
   const integrations = [...INTEGRATIONS, blingCard, pipedriveCard];
@@ -204,9 +218,14 @@ const IntegrationsScreen = ({ client, clientId } = {}) => {
   );
 };
 
-const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect }) => {
+const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect, onDisconnect }) => {
   const connected = status === 'connected';
   const error = status === 'error';
+  const handleDisconnect = () => {
+    if (!onDisconnect) return;
+    if (!window.confirm(`Desconectar ${name}? A HUMA vai parar de sincronizar com essa integração.`)) return;
+    onDisconnect();
+  };
   return (
     <div style={{
       border: '1px solid var(--paper-edge)', borderRadius: 16,
@@ -252,11 +271,20 @@ const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect 
       <div style={{ display: 'flex', gap: 8 }}>
         {connected ? (
           <>
-            <Button variant="ghost" size="sm" icon={<Icon name="settings" size={13}/>}>Configurar</Button>
-            <Button variant="plain" size="sm">Desconectar</Button>
+            <Button
+              variant="ghost" size="sm"
+              icon={<Icon name="settings" size={13}/>}
+              onClick={onConnect}
+              disabled={!onConnect}
+            >Reautorizar</Button>
+            <Button
+              variant="plain" size="sm"
+              onClick={handleDisconnect}
+              disabled={!onDisconnect}
+            >Desconectar</Button>
           </>
         ) : error ? (
-          <Button variant="primary" size="sm">Reconectar</Button>
+          <Button variant="primary" size="sm" onClick={onConnect}>Reconectar</Button>
         ) : (
           <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={onConnect}>Conectar</Button>
         )}

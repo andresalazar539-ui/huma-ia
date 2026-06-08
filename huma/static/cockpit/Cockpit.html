@@ -224,7 +224,7 @@ function App() {
     case 'clientes':    screen = <ClientesScreen />; break;
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
-    case 'integracoes': screen = <IntegrationsScreen client={client} />; break;
+    case 'integracoes': screen = <IntegrationsScreen client={client} onReloadStatus={reloadIntegrationsStatus} />; break;
     case 'ajustes':     screen = <AjustesScreen />; break;
     case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
     case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;

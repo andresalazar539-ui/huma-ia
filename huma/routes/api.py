@@ -597,6 +597,61 @@ async def integrations_status(
     }
 
 
+@router.post("/api/integrations/{integration_id}/disconnect", tags=["Cockpit"])
+async def integrations_disconnect(
+    integration_id: str,
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    Bloco C — desconecta uma integração: limpa tokens OAuth do ClientIdentity.
+
+    Hoje suporta apenas as integrações dinâmicas que o cockpit lista:
+    `bling` (limpa bling_*) e `pipedrive` (limpa crm_*). Outras (hubspot,
+    nuvemshop, tray) ainda são hardcoded como Desconectadas — disconnect
+    delas é no-op por agora.
+
+    NÃO revoga o token no provider (Bling/Pipedrive ficam com token
+    válido até expirar do lado deles). Apenas para o HUMA de usar.
+    Disconnect total verdadeiro = revogar via API do provider — sprint
+    futuro se virar requisito de compliance.
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    integration_id = (integration_id or "").strip().lower()
+
+    if integration_id == "bling":
+        updates = {
+            "bling_access_token": "",
+            "bling_refresh_token": "",
+            "bling_token_expires_at": None,
+        }
+    elif integration_id == "pipedrive":
+        updates = {
+            "crm_access_token": "",
+            "crm_refresh_token": "",
+            "crm_token_expires_at": None,
+            "crm_provider": "",
+            "crm_api_base_url": "",
+            "crm_pipeline_id": "",
+            "crm_stage_id": "",
+            "crm_owner_id": "",
+            "crm_api_token": "",
+        }
+    else:
+        raise HTTPException(
+            400,
+            f"Integração '{integration_id}' não suporta disconnect ainda. "
+            f"Disponíveis: bling, pipedrive.",
+        )
+
+    await db.update_client(client_id, updates)
+    log.info(
+        f"Cockpit disconnect | client_id={client_id} | integration={integration_id}"
+    )
+    return {"status": "ok", "integration": integration_id}
+
+
 @router.get("/api/crm/status", tags=["Cockpit"])
 async def crm_status(
     client_id: str,

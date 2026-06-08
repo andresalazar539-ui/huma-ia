@@ -208,4 +208,16 @@ async function fetchIntegrationsStatus() {
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
-Object.assign(window, { fetchIntegrationsStatus });
+
+// Desconecta integração (limpa tokens no backend). integration_id ∈ {bling, pipedrive}.
+async function disconnectIntegration(integrationId) {
+  const url = `/api/integrations/${encodeURIComponent(integrationId)}/disconnect?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+Object.assign(window, { fetchIntegrationsStatus, disconnectIntegration });
