@@ -27,7 +27,7 @@
 # ================================================================
 
 from __future__ import annotations
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -125,6 +125,12 @@ class PipedriveAdapter(CRMProvider):
         expires = getattr(self.identity, "crm_token_expires_at", None)
         if expires is not None:
             now = datetime.utcnow()
+            # Supabase devolve TIMESTAMPTZ como datetime COM fuso (tz-aware);
+            # utcnow() é SEM fuso (naive). Comparar os dois levanta
+            # TypeError "can't compare offset-naive and offset-aware". Normaliza
+            # pra naive UTC antes de comparar.
+            if getattr(expires, "tzinfo", None) is not None:
+                expires = expires.astimezone(timezone.utc).replace(tzinfo=None)
             margin = timedelta(seconds=CRM_TOKEN_REFRESH_MARGIN_SEC)
             if expires > now + margin:
                 return  # ainda válido

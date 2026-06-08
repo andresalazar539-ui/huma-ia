@@ -382,6 +382,20 @@ class TestAdapterRefresh:
         assert persisted["crm_api_base_url"] == "https://nova.pipedrive.com"
 
 
+    def test_tz_aware_expires_nao_quebra(self):
+        # Regressão: Supabase devolve crm_token_expires_at COM fuso (tz-aware),
+        # utcnow() é naive. Sem normalizar, a comparação levanta TypeError e
+        # derruba o sync inteiro (incidente prod 2026-06-08).
+        from datetime import timezone
+        identity = _FakeIdentity(
+            expires=datetime.now(timezone.utc) + timedelta(hours=10)
+        )
+        a = PipedriveAdapter(identity=identity)
+        # Não pode levantar. Token longe da margem → no-op (não refresca).
+        asyncio.run(a._ensure_fresh_token())
+        assert a.access_token == "tok"
+
+
 class TestAdapterConstruction:
     def test_identity_mode_uses_api_base_from_identity(self):
         a = PipedriveAdapter(identity=_FakeIdentity(api_base="https://acme.pipedrive.com"))
