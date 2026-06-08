@@ -78,7 +78,40 @@ const INTEGRATIONS = [
   },
 ];
 
-const IntegrationsScreen = () => {
+const IntegrationsScreen = ({ client, clientId } = {}) => {
+  // Em produção o client_id vem da sessão (cookie). No dev usamos o bypass ?client_id=X.
+  const resolvedClientId =
+    clientId ||
+    new URLSearchParams(window.location.search).get('client_id') ||
+    'dev';
+
+  // Bling: status derivado do token real. Sem token = desconectado (sem mock).
+  const blingConnected = Boolean(client && client.bling_access_token);
+  const blingCard = {
+    id: 'bling',
+    name: 'Bling ERP',
+    category: 'Estoque & Frete',
+    glyph: { type: 'bling' },
+    status: blingConnected ? 'connected' : 'disconnected',
+    meta: blingConnected
+      ? [['STATUS', 'Conectado']]
+      : [
+          ['SINCRONIZA', 'Estoque, pedidos e NF-e'],
+          ['CALCULA', 'Frete no checkout'],
+        ],
+    note: blingConnected
+      ? 'Estoque e pedidos sincronizados com a Bling'
+      : 'Conecte a Bling para HUMA consultar estoque e calcular frete nas conversas',
+    onConnect: () => {
+      window.location.href =
+        '/oauth/bling/start?client_id=' + encodeURIComponent(resolvedClientId);
+    },
+  };
+
+  const integrations = [...INTEGRATIONS, blingCard];
+  const connectedCount = integrations.filter(i => i.status === 'connected').length;
+  const availableCount = integrations.length - connectedCount;
+
   return (
     <div style={{
       flex: 1, overflow: 'auto', background: 'var(--paper)',
@@ -98,7 +131,7 @@ const IntegrationsScreen = () => {
             Conectado ao seu negócio
           </div>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-            4 conectadas · 2 disponíveis
+            {connectedCount} {connectedCount === 1 ? 'conectada' : 'conectadas'} · {availableCount} {availableCount === 1 ? 'disponível' : 'disponíveis'}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -112,13 +145,13 @@ const IntegrationsScreen = () => {
         display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
         gap: 14, maxWidth: 1280,
       }}>
-        {INTEGRATIONS.map(i => <IntegrationCard key={i.id} {...i} />)}
+        {integrations.map(i => <IntegrationCard key={i.id} {...i} />)}
       </div>
     </div>
   );
 };
 
-const IntegrationCard = ({ name, category, glyph, status, meta, note }) => {
+const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect }) => {
   const connected = status === 'connected';
   const error = status === 'error';
   return (
@@ -172,7 +205,7 @@ const IntegrationCard = ({ name, category, glyph, status, meta, note }) => {
         ) : error ? (
           <Button variant="primary" size="sm">Reconectar</Button>
         ) : (
-          <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>}>Conectar</Button>
+          <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={onConnect}>Conectar</Button>
         )}
       </div>
     </div>
@@ -242,6 +275,10 @@ const IntegrationGlyph = ({ type }) => {
           <circle cx="12" cy="12" r="4"/>
           <circle cx="17" cy="7" r="0.9" fill="#FFFFFF"/>
         </svg>
+      ));
+    case 'bling':
+      return wrap('linear-gradient(135deg, #FDB913, #F58220)', (
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 20, color: '#FFFFFF', lineHeight: 1 }}>B</span>
       ));
     case 'doctoralia':
       return wrap('#00A5A7', (
