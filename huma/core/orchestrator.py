@@ -50,7 +50,7 @@ log = get_logger("orchestrator")
 # TIERED INTELLIGENCE v11.0 — seleção de tier e modelo
 # ================================================================
 
-def _select_tier(classification, conv: Conversation, text: str, image_url) -> tuple[int, bool]:
+def _select_tier(classification, conv: Conversation, text: str, image_url, client_data=None) -> tuple[int, bool]:
     """
     Retorna (tier, use_sonnet) baseado em classificação, stage e conteúdo.
 
@@ -59,9 +59,15 @@ def _select_tier(classification, conv: Conversation, text: str, image_url) -> tu
     (40% do custo total de uma conversa de 14 msgs). Sonnet agora só em imagem
     ou objeção/complex explícita pela classificação.
 
+    Fase CRM — modo qualificador (QUALIFY) sempre usa Sonnet: conversa de SDR
+    exige rastrear o que o lead já disse e seguir regras à risca. Haiku
+    re-pergunta e ignora contexto, queimando o lead. O lead qualificado vale
+    caro demais pra arriscar no modelo barato (qualidade > custo, custo é teto).
+
     Regras:
       - Imagem → Tier 3 + Sonnet (precisa de image intelligence)
       - objection/complex → Tier 3 + Sonnet
+      - Modo QUALIFY → Tier 3 + Sonnet (coerência de SDR)
       - Tudo mais → Tier 2 + Haiku (com cache)
     """
     msg_type = classification.msg_type.value
@@ -70,6 +76,15 @@ def _select_tier(classification, conv: Conversation, text: str, image_url) -> tu
         return 3, True
     if msg_type in ("objection", "complex"):
         return 3, True
+
+    # Modo qualificador (SDR): sempre Sonnet pela coerência.
+    if client_data is not None:
+        try:
+            from huma.core.capabilities import Capability
+            if Capability.QUALIFY in client_data.capabilities_resolved:
+                return 3, True
+        except Exception:
+            pass
 
     # Tudo mais: Tier 2 + Haiku. Simples, consistente, cacheável.
     return 2, False
@@ -317,7 +332,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             )
         else:
             # Roteamento Tiered Intelligence v11.0
-            tier, use_sonnet = _select_tier(classification, conv, unified_text, unified_image)
+            tier, use_sonnet = _select_tier(classification, conv, unified_text, unified_image, client_data)
 
             # ============================================================
             # ANTI-CHURN POLICY v12 (6.B) — pré-processamento
