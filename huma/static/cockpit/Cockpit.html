@@ -114,6 +114,22 @@ function App() {
   const [detail, setDetail] = useState(null);
   const [detailState, setDetailState] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'error'
 
+  // --- Status das integrações (Bloco C) — alimenta IntegrationsScreen ---
+  // Carrega uma vez no mount + repoll quando o dono navega pra "integracoes".
+  const [client, setClient] = useState(null);
+  const reloadIntegrationsStatus = useCallback(async () => {
+    try {
+      const c = await fetchIntegrationsStatus();
+      setClient(c);
+    } catch (e) {
+      console.error('Integrações | falha ao carregar status', e);
+    }
+  }, []);
+  useEffect(() => { reloadIntegrationsStatus(); }, [reloadIntegrationsStatus]);
+  useEffect(() => {
+    if (route === 'integracoes') reloadIntegrationsStatus();
+  }, [route, reloadIntegrationsStatus]);
+
   useEffect(() => { localStorage.setItem('huma_route', route); }, [route]);
 
   // Carrega a lista (silent = atualização de poll, sem piscar skeleton)
@@ -208,7 +224,7 @@ function App() {
     case 'clientes':    screen = <ClientesScreen />; break;
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
-    case 'integracoes': screen = <IntegrationsScreen />; break;
+    case 'integracoes': screen = <IntegrationsScreen client={client} />; break;
     case 'ajustes':     screen = <AjustesScreen />; break;
     case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
     case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;

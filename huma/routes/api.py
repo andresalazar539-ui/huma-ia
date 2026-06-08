@@ -544,6 +544,59 @@ async def list_appointments_cockpit(
     return {"items": items, "total": len(items)}
 
 
+@router.get("/api/integrations/status", tags=["Cockpit"])
+async def integrations_status(
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """
+    Bloco C — status REAL de todas as integrações do cliente, pro
+    IntegrationsScreen render Conectado/Desconectado sem mock.
+
+    NÃO retorna tokens — só marcadores truthy/falsy ("ok" | "") pros
+    cards do cockpit checarem com `client.bling_access_token` etc.
+    Campos não-secretos (voice_id, phone_number_id) vão crus pra meta.
+
+    Shape compatível com o que IntegrationsScreen.jsx já consome:
+    `client.bling_access_token`, `client.crm_access_token`, etc.
+    """
+    await verify_api_key_manual(client_id, creds)
+
+    identity = await db.get_client(client_id)
+    if identity is None:
+        raise HTTPException(404, f"Cliente {client_id} não encontrado")
+
+    def _truthy(v) -> str:
+        """'ok' se truthy, '' caso contrário. Pra frontend checar sem expor token."""
+        return "ok" if v else ""
+
+    return {
+        # Bling (Inventory) — card do T1 já checa client.bling_access_token
+        "bling_access_token": _truthy(getattr(identity, "bling_access_token", "")),
+        "bling_token_expires_at": (
+            identity.bling_token_expires_at.isoformat()
+            if getattr(identity, "bling_token_expires_at", None)
+            else None
+        ),
+        # CRM (Pipedrive/RD)
+        "crm_access_token": _truthy(
+            getattr(identity, "crm_access_token", "")
+            or getattr(identity, "crm_api_token", "")
+        ),
+        "crm_provider": getattr(identity, "crm_provider", "") or "",
+        "crm_api_base_url": getattr(identity, "crm_api_base_url", "") or "",
+        "crm_pipeline_ready": bool(getattr(identity, "crm_pipeline_id", "")),
+        # ElevenLabs (voz clonada) — voice_id não é secret, devolve cru pra meta
+        "voice_id": getattr(identity, "voice_id", "") or "",
+        "enable_audio": bool(getattr(identity, "enable_audio", False)),
+        # WhatsApp Meta Cloud API — phone_number_id não é secret
+        "phone_number_id": getattr(identity, "phone_number_id", "") or "",
+        "waba_id": getattr(identity, "waba_id", "") or "",
+        # Notificações pro dono
+        "owner_phone": getattr(identity, "owner_phone", "") or "",
+    }
+
+
 @router.get("/api/crm/status", tags=["Cockpit"])
 async def crm_status(
     client_id: str,

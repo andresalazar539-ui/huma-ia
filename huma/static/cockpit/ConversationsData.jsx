@@ -197,3 +197,15 @@ async function fetchAppointments() {
   return (data.items || []).map(ev => ({ ...ev, tone: toneFrom(ev.phone) }));
 }
 Object.assign(window, { fetchAppointments });
+
+/* ---------------- Bloco C: Status real das integrações ---------------- */
+// Retorna { bling_access_token, crm_access_token, crm_provider, voice_id, ... }
+// Frontend usa pra decidir Conectado/Desconectado nos cards de Integrações.
+// Tokens vêm como "ok"|"" (sem expor valor real). Demais campos vêm crus.
+async function fetchIntegrationsStatus() {
+  const url = `/api/integrations/status?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+Object.assign(window, { fetchIntegrationsStatus });
