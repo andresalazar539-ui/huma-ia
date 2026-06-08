@@ -2860,9 +2860,32 @@ async def _sync_lead_to_crm(
     try:
         from huma.providers.crm import get_provider_for
 
+        # Recarrega o cliente FRESCO do banco (sem cache). O client_data
+        # do início da mensagem pode estar com cache velho — ex: CRM
+        # conectado/reconectado depois daquele load, servindo crm_provider
+        # vazio e fazendo o sync sair silencioso. Como o sync roda DEPOIS
+        # das mensagens já enviadas, 1 leitura extra é barata e garante a
+        # conexão + token atuais.
+        try:
+            fresh = await db.get_client(client_data.client_id)
+            if fresh is not None:
+                client_data = fresh
+        except Exception as e:
+            log.warning(
+                f"CRM sync: reload do cliente falhou, usando cache | "
+                f"{type(e).__name__}: {e}"
+            )
+
         provider = get_provider_for(client_data)
         if provider is None:
-            return  # dono não conectou CRM — no-op silencioso
+            # Logado (não mais silencioso) pra diagnosticar: dono sem CRM,
+            # ou cache/estado inesperado.
+            log.info(
+                f"CRM sync pulado (sem provider) | "
+                f"client={getattr(client_data, 'client_id', '?')} | "
+                f"crm_provider={getattr(client_data, 'crm_provider', '')!r}"
+            )
+            return
 
         cid = client_data.client_id
 

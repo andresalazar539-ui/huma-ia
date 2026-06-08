@@ -69,13 +69,18 @@ def _conv(**kw) -> Conversation:
 
 
 def _patch(monkeypatch, provider, saved: list):
-    """Mocka get_provider_for + db.save_conversation."""
+    """Mocka get_provider_for + db.save_conversation + db.get_client (reload fresco)."""
     import huma.providers.crm as crm_pkg
     monkeypatch.setattr(crm_pkg, "get_provider_for", lambda identity: provider)
 
     async def fake_save(c):
         saved.append(c)
     monkeypatch.setattr(orch.db, "save_conversation", fake_save)
+
+    # _sync_lead_to_crm recarrega o cliente fresco; None faz cair no client_data passado.
+    async def fake_get_client(cid):
+        return None
+    monkeypatch.setattr(orch.db, "get_client", fake_get_client)
 
 
 # ================================================================
@@ -92,6 +97,10 @@ class TestSyncLeadToCRM:
         async def fake_save(c):
             saved.append(c)
         monkeypatch.setattr(orch.db, "save_conversation", fake_save)
+
+        async def fake_get_client(cid):
+            return None
+        monkeypatch.setattr(orch.db, "get_client", fake_get_client)
 
         conv = _conv()
         asyncio.run(orch._sync_lead_to_crm(
