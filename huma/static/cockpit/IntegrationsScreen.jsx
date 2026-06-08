@@ -27,30 +27,31 @@ const INTEGRATIONS = [
     note: 'HUMA atende em tempo real',
   },
   {
-    id: 'eleven',
-    name: 'ElevenLabs',
-    category: 'Voz',
-    glyph: { type: 'eleven' },
+    id: 'rdstation',
+    name: 'RD Station',
+    category: 'CRM & Marketing',
+    glyph: { type: 'rdstation' },
     status: 'connected',
     meta: [
-      ['VOZ CLONADA', 'Dra. Marina'],
-      ['VOICE ID', 'v_mR4nA_2024_a7f3'],
-      ['ÚLT. ATUALIZAÇÃO', 'há 3 dias'],
+      ['CONTA', 'Estúdio Marina'],
+      ['LEADS ESTA SEMANA', '23 novos'],
+      ['ÚLT. SINC', 'há 8 minutos'],
     ],
-    note: '32 áudios enviados esta semana',
+    note: 'HUMA cria e atualiza leads automaticamente',
   },
+  // Pipedrive vive dinâmico dentro do IntegrationsScreen (espelha padrão do Bling),
+  // pra status real e botão Conectar funcionar via OAuth.
   {
-    id: 'supabase',
-    name: 'Supabase',
-    category: 'Banco de dados',
-    glyph: { type: 'supabase' },
-    status: 'connected',
+    id: 'hubspot',
+    name: 'HubSpot',
+    category: 'CRM & Marketing',
+    glyph: { type: 'hubspot' },
+    status: 'disconnected',
     meta: [
-      ['PROJETO', 'estudio-marina-prod'],
-      ['REGIÃO', 'sa-east-1'],
-      ['SINCRONIZADO', 'em tempo real'],
+      ['CONTA SUGERIDA', 'Estúdio Marina'],
+      ['REQUER', 'OAuth HubSpot'],
     ],
-    note: 'Clientes, agendamentos e histórico',
+    note: 'Registra contatos e conversas no CRM da HubSpot',
   },
   {
     id: 'instagram',
@@ -75,6 +76,30 @@ const INTEGRATIONS = [
       ['REQUER', 'Token de API Premium'],
     ],
     note: 'Sincroniza agenda e recebe novos pacientes',
+  },
+  {
+    id: 'nuvemshop',
+    name: 'Nuvemshop',
+    category: 'E-commerce',
+    glyph: { type: 'nuvemshop' },
+    status: 'disconnected',
+    meta: [
+      ['LOJA SUGERIDA', 'estudiomarina.lojavirtualnuvem.com.br'],
+      ['SINCRONIZA', 'Produtos, pedidos e estoque'],
+    ],
+    note: 'HUMA consulta produtos e acompanha pedidos da sua loja Nuvemshop',
+  },
+  {
+    id: 'tray',
+    name: 'Tray',
+    category: 'E-commerce',
+    glyph: { type: 'tray' },
+    status: 'disconnected',
+    meta: [
+      ['LOJA SUGERIDA', 'estudiomarina.tray.com.br'],
+      ['REQUER', 'Chave e token da API Tray'],
+    ],
+    note: 'Conecta catálogo e pedidos da Tray às conversas da HUMA',
   },
 ];
 
@@ -108,7 +133,35 @@ const IntegrationsScreen = ({ client, clientId } = {}) => {
     },
   };
 
-  const integrations = [...INTEGRATIONS, blingCard];
+  // Pipedrive: connected = crm_provider == 'pipedrive' E tem token OAuth válido.
+  const pipedriveConnected = Boolean(
+    client && client.crm_provider === 'pipedrive' && client.crm_access_token
+  );
+  const pipedriveCard = {
+    id: 'pipedrive',
+    name: 'Pipedrive',
+    category: 'CRM',
+    glyph: { type: 'pipedrive' },
+    status: pipedriveConnected ? 'connected' : 'disconnected',
+    meta: pipedriveConnected
+      ? [
+          ['STATUS', 'Conectado'],
+          ['PIPELINE', client.crm_pipeline_ready ? 'Configurado' : 'Pendente'],
+        ]
+      : [
+          ['SINCRONIZA', 'Negócios + estágios'],
+          ['REQUER', 'Conta Pipedrive'],
+        ],
+    note: pipedriveConnected
+      ? 'HUMA cria negócios no funil quando o lead qualifica'
+      : 'Conecte o Pipedrive para HUMA mover automaticamente os cards do seu funil',
+    onConnect: () => {
+      window.location.href =
+        '/oauth/crm/pipedrive/start?client_id=' + encodeURIComponent(resolvedClientId);
+    },
+  };
+
+  const integrations = [...INTEGRATIONS, blingCard, pipedriveCard];
   const connectedCount = integrations.filter(i => i.status === 'connected').length;
   const availableCount = integrations.length - connectedCount;
 
@@ -255,17 +308,23 @@ const IntegrationGlyph = ({ type }) => {
           <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
         </svg>
       ));
-    case 'eleven':
-      return wrap('#0F0F0F', (
-        <svg width="20" height="20" viewBox="0 0 24 24">
-          <rect x="5" y="4" width="4" height="16" fill="#FFFFFF"/>
-          <rect x="15" y="4" width="4" height="16" fill="#FFFFFF"/>
+    case 'rdstation':
+      return wrap('#1668E3', (
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 15, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.04em' }}>RD</span>
+      ));
+    case 'pipedrive':
+      return wrap('#1C8A4B', (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="#FFFFFF">
+          <path d="M9 3 H14 a6 6 0 0 1 0 12 H12 v6 H9 Z M12 6 V12 h2 a3 3 0 0 0 0 -6 Z"/>
         </svg>
       ));
-    case 'supabase':
-      return wrap('#1C1C1C', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="#3ECF8E">
-          <path d="M12 2 L20 12 L12 12 L12 22 L4 12 L12 12 Z"/>
+    case 'hubspot':
+      return wrap('#FF7A59', (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2">
+          <circle cx="7" cy="16" r="3"/>
+          <circle cx="17" cy="9" r="3"/>
+          <circle cx="17" cy="4" r="1.2" fill="#FFFFFF"/>
+          <path d="M9.5 14.5 L14.5 10.5 M17 6 V6"/>
         </svg>
       ));
     case 'instagram':
@@ -285,6 +344,16 @@ const IntegrationGlyph = ({ type }) => {
         <svg width="22" height="22" viewBox="0 0 24 24">
           <text x="12" y="17" textAnchor="middle" fontFamily="system-ui" fontSize="16" fontWeight="700" fill="#FFFFFF">d</text>
         </svg>
+      ));
+    case 'nuvemshop':
+      return wrap('#029CDC', (
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="#FFFFFF">
+          <path d="M6.6 18.5 C4.1 18.5 3 16.6 3 15 C3 13.3 4.3 12 6 11.9 C6.3 9 8.7 6.8 11.7 6.8 C14.3 6.8 16.5 8.6 17.2 11 C19.3 11.1 21 12.8 21 14.9 C21 16.9 19.4 18.5 17.4 18.5 Z"/>
+        </svg>
+      ));
+    case 'tray':
+      return wrap('#E6196E', (
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 19, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.04em' }}>t</span>
       ));
     default:
       return wrap('var(--paper-sunk)', <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600 }}>?</span>);
