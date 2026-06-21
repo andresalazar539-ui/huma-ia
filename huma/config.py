@@ -34,6 +34,11 @@ META_GRAPH_BASE_URL = os.getenv("META_GRAPH_BASE_URL", "https://graph.facebook.c
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
 
+# URL pública da própria HUMA (Railway). Usada pra dizer ao Evolution
+# pra onde mandar o webhook de entrada (PUBLIC_BASE_URL/webhook/evolution)
+# na hora de criar a instância do cliente. Sem barra no fim.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
+
 # ── Twilio (teste via Sandbox) ──
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")

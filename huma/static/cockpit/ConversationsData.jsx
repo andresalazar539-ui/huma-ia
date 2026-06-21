@@ -221,3 +221,29 @@ async function disconnectIntegration(integrationId) {
 }
 
 Object.assign(window, { fetchIntegrationsStatus, disconnectIntegration });
+
+/* ---------------- WhatsApp: conexão via Evolution (QR) ---------------- */
+// Fluxo zero-toque: connect cria a instância + devolve QR; status faz polling
+// até conectar; disconnect faz logout. Backend: routes/whatsapp_connect.py.
+async function whatsappConnect() {
+  const url = `/whatsapp/connect?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${API_KEY}` } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function whatsappStatus() {
+  const url = `/whatsapp/status?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function whatsappDisconnect() {
+  const url = `/whatsapp/disconnect?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${API_KEY}` } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+Object.assign(window, { whatsappConnect, whatsappStatus, whatsappDisconnect });

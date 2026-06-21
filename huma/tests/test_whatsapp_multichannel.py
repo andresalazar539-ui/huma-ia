@@ -314,6 +314,96 @@ def test_transcribe_bytes_curto_retorna_none():
     assert asyncio.run(transcribe_bytes(None)) is None
 
 
+# ── rotas de conexão WhatsApp (Evolution connect/status) ──
+
+class TestWhatsAppConnectRoutes:
+    def test_instance_name_sanitiza(self):
+        from huma.routes.whatsapp_connect import _instance_name
+        assert _instance_name("cli_abc-123") == "cli_abc-123"
+        n = _instance_name("Loja do Zé!!")
+        assert " " not in n and "!" not in n and n
+        assert _instance_name("") == "cliente"
+
+    def test_connect_cria_instancia_e_retorna_qr(self, monkeypatch):
+        import huma.routes.whatsapp_connect as wc
+
+        monkeypatch.setattr(wc, "EVOLUTION_API_URL", "https://evo")
+        monkeypatch.setattr(wc, "EVOLUTION_API_KEY", "k")
+        monkeypatch.setattr(wc, "PUBLIC_BASE_URL", "https://huma")
+
+        async def noop_auth(cid, creds):
+            return None
+
+        async def exists(inst):
+            return False
+
+        async def create(inst, hook):
+            assert hook == "https://huma/webhook/evolution"
+            return {"qrcode": {"base64": "data:image/png;base64,XXX", "pairingCode": "P1"}}
+
+        async def state(inst):
+            return "connecting"
+
+        updates = {}
+
+        async def upd(cid, u):
+            updates.update(u)
+
+        monkeypatch.setattr(wc, "verify_api_key_manual", noop_auth)
+        monkeypatch.setattr(wc.wa, "evo_instance_exists", exists)
+        monkeypatch.setattr(wc.wa, "evo_create_instance", create)
+        monkeypatch.setattr(wc.wa, "evo_connection_state", state)
+        monkeypatch.setattr(wc.db, "update_client", upd)
+
+        out = asyncio.run(wc.whatsapp_connect("cli_x", None))
+        assert out["qr_base64"] == "data:image/png;base64,XXX"
+        assert out["connected"] is False
+        assert updates["whatsapp_provider"] == "evolution"
+        assert updates["evolution_instance"] == "cli_x"
+
+    def test_status_conectado(self, monkeypatch):
+        import huma.routes.whatsapp_connect as wc
+
+        async def noop_auth(cid, creds):
+            return None
+
+        class _C:
+            evolution_instance = "cli_x"
+
+        async def getc(cid):
+            return _C()
+
+        async def state(inst):
+            return "open"
+
+        monkeypatch.setattr(wc, "verify_api_key_manual", noop_auth)
+        monkeypatch.setattr(wc.db, "get_client", getc)
+        monkeypatch.setattr(wc.wa, "evo_connection_state", state)
+
+        out = asyncio.run(wc.whatsapp_status("cli_x", None))
+        assert out["connected"] is True
+        assert out["state"] == "open"
+
+    def test_status_sem_instancia(self, monkeypatch):
+        import huma.routes.whatsapp_connect as wc
+
+        async def noop_auth(cid, creds):
+            return None
+
+        class _C:
+            evolution_instance = ""
+
+        async def getc(cid):
+            return _C()
+
+        monkeypatch.setattr(wc, "verify_api_key_manual", noop_auth)
+        monkeypatch.setattr(wc.db, "get_client", getc)
+
+        out = asyncio.run(wc.whatsapp_status("cli_x", None))
+        assert out["connected"] is False
+        assert out["state"] == "not_configured"
+
+
 # ── _digits ──
 
 def test_digits_normaliza():

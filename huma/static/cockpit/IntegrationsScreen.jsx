@@ -14,19 +14,6 @@ const INTEGRATIONS = [
     note: 'Bidirecional · HUMA lê e escreve horários',
   },
   {
-    id: 'whatsapp',
-    name: 'WhatsApp Business',
-    category: 'Canal',
-    glyph: { type: 'whatsapp' },
-    status: 'connected',
-    meta: [
-      ['NÚMERO', '+55 11 9****-3847'],
-      ['API', 'Meta Cloud API v19.0'],
-      ['STATUS', 'Respondendo ativa'],
-    ],
-    note: 'HUMA atende em tempo real',
-  },
-  {
     id: 'rdstation',
     name: 'RD Station',
     category: 'CRM & Marketing',
@@ -212,11 +199,173 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
         display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
         gap: 14, maxWidth: 1280,
       }}>
+        <WhatsAppCard key="whatsapp" />
         {integrations.map(i => <IntegrationCard key={i.id} {...i} />)}
       </div>
     </div>
   );
 };
+
+// WhatsAppCard — card dinâmico com fluxo de conexão por QR (Evolution).
+// Diferente dos cards OAuth (redirect), aqui abrimos um modal com o QR e
+// fazemos polling do status até o cliente escanear. Zero passo manual.
+const WhatsAppCard = () => {
+  const [state, setState] = React.useState('loading'); // loading|connected|disconnected|error
+  const [qr, setQr] = React.useState('');
+  const [modal, setModal] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const pollRef = React.useRef(null);
+
+  const refresh = React.useCallback(async () => {
+    try {
+      const s = await window.whatsappStatus();
+      if (s.connected) { setState('connected'); setQr(''); }
+      else { setState('disconnected'); if (s.qr_base64) setQr(s.qr_base64); }
+      return s;
+    } catch (e) {
+      setState('error');
+      return null;
+    }
+  }, []);
+
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  // Enquanto o modal estiver aberto, faz polling: atualiza o QR (ele rotaciona)
+  // e fecha sozinho quando conectar.
+  React.useEffect(() => {
+    if (!modal) { clearInterval(pollRef.current); return; }
+    pollRef.current = setInterval(async () => {
+      const s = await refresh();
+      if (s && s.connected) { setModal(false); clearInterval(pollRef.current); }
+    }, 3000);
+    return () => clearInterval(pollRef.current);
+  }, [modal, refresh]);
+
+  const openConnect = async () => {
+    setModal(true); setBusy(true); setQr('');
+    try {
+      const r = await window.whatsappConnect();
+      if (r.connected) { setState('connected'); setModal(false); }
+      else if (r.qr_base64) setQr(r.qr_base64);
+    } catch (e) {
+      window.alert(`Não consegui iniciar a conexão: ${(e && e.message) || e}`);
+      setModal(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doDisconnect = async () => {
+    if (!window.confirm('Desconectar o WhatsApp? A HUMA vai parar de atender nesse número.')) return;
+    try { await window.whatsappDisconnect(); await refresh(); }
+    catch (e) { window.alert(`Não consegui desconectar: ${(e && e.message) || e}`); }
+  };
+
+  const connected = state === 'connected';
+  const status = connected ? 'connected' : (state === 'error' ? 'error' : 'disconnected');
+  const meta = connected
+    ? [['STATUS', 'Conectado'], ['CANAL', 'WhatsApp (Evolution)']]
+    : [['CANAL', 'WhatsApp via QR code'], ['LEVA', '~30 segundos']];
+  const note = connected
+    ? 'HUMA atende seu WhatsApp em tempo real'
+    : 'Escaneie um QR code com o WhatsApp do seu negócio e a HUMA começa a atender sozinha';
+
+  return (
+    <div style={{
+      border: '1px solid var(--paper-edge)', borderRadius: 16,
+      background: 'var(--paper-raised)', padding: 20,
+      display: 'flex', flexDirection: 'column', gap: 14, minHeight: 240,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <IntegrationGlyph type="whatsapp"/>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.01em' }}>WhatsApp</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 1 }}>Canal</div>
+        </div>
+        <StatusDot status={state === 'loading' ? 'disconnected' : status}/>
+      </div>
+
+      <div style={{
+        display: 'flex', flexDirection: 'column', gap: 6,
+        padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10,
+        background: 'var(--paper-sunk)',
+      }}>
+        {meta.map(([k, v], i) => (
+          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, letterSpacing: '0.06em', color: 'var(--ink-3)' }}>{k}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45, flex: 1 }}>
+        {note}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        {connected ? (
+          <Button variant="plain" size="sm" onClick={doDisconnect}>Desconectar</Button>
+        ) : (
+          <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={openConnect} disabled={state === 'loading'}>
+            Conectar WhatsApp
+          </Button>
+        )}
+      </div>
+
+      {modal && <WhatsAppQRModal qr={qr} busy={busy} onClose={() => setModal(false)} />}
+    </div>
+  );
+};
+
+// Modal com o QR + instruções. O QR atualiza via polling do card pai.
+const WhatsAppQRModal = ({ qr, busy, onClose }) => (
+  <div
+    onClick={onClose}
+    style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}
+  >
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)',
+        borderRadius: 18, padding: 28, width: 'min(420px, 92vw)',
+        display: 'flex', flexDirection: 'column', gap: 16, alignItems: 'center',
+      }}
+    >
+      <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, color: 'var(--ink)', letterSpacing: '-0.01em', alignSelf: 'flex-start' }}>
+        Conectar WhatsApp
+      </div>
+
+      <ol style={{ margin: 0, paddingLeft: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6, alignSelf: 'flex-start' }}>
+        <li>Abra o WhatsApp no celular do seu negócio</li>
+        <li>Toque em <b>Aparelhos conectados</b></li>
+        <li>Toque em <b>Conectar um aparelho</b></li>
+        <li>Aponte a câmera para o código abaixo</li>
+      </ol>
+
+      <div style={{
+        width: 264, height: 264, borderRadius: 12, background: '#FFFFFF',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        border: '1px solid var(--paper-edge)',
+      }}>
+        {qr
+          ? <img src={qr} alt="QR code do WhatsApp" style={{ width: 248, height: 248 }}/>
+          : <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
+              {busy ? 'Gerando QR code...' : 'Carregando...'}
+            </span>}
+      </div>
+
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', textAlign: 'center', lineHeight: 1.45 }}>
+        O código atualiza sozinho. Assim que você escanear, a conexão é feita automaticamente.
+      </div>
+
+      <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+    </div>
+  </div>
+);
 
 const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect, onDisconnect }) => {
   const connected = status === 'connected';
@@ -388,4 +537,4 @@ const IntegrationGlyph = ({ type }) => {
   }
 };
 
-Object.assign(window, { IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot });
+Object.assign(window, { IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal });

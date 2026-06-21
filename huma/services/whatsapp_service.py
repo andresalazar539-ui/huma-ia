@@ -516,6 +516,118 @@ async def fetch_media_evolution(client_id: str, message: dict) -> tuple[bytes | 
 
 
 # ================================================================
+# ADMIN DE INSTÂNCIAS EVOLUTION (conectar / QR / estado)
+#
+# Usam a apikey GLOBAL do servidor (não a credencial do cliente) porque
+# operam sobre a instância pelo nome. Contrato confirmado ao vivo na
+# Evolution v2.2.3: create devolve qrcode.base64 (data URL) na hora;
+# connect renova o QR; connectionState.instance.state == 'open' = conectado.
+# ================================================================
+
+def _evo_base() -> str:
+    return EVOLUTION_API_URL.rstrip("/")
+
+
+async def evo_instance_exists(instance: str) -> bool:
+    """True se a instância já existe no servidor Evolution."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(
+                f"{_evo_base()}/instance/fetchInstances",
+                headers=_evo_headers(), params={"instanceName": instance},
+            )
+            if resp.status_code != 200:
+                return False
+            data = resp.json()
+        if isinstance(data, list):
+            return len(data) > 0
+        return bool(data)
+    except Exception as e:
+        log.error(f"Evolution fetchInstances erro | instance={instance} | {type(e).__name__}: {e}")
+        return False
+
+
+async def evo_create_instance(instance: str, webhook_url: str) -> dict | None:
+    """
+    Cria a instância já com o webhook apontando pra HUMA. Retorna o dict
+    cru da Evolution (inclui qrcode.base64) ou None em falha.
+    """
+    body = {
+        "instanceName": instance,
+        "integration": "WHATSAPP-BAILEYS",
+        "qrcode": True,
+        "webhook": {
+            "url": webhook_url,
+            "byEvents": False,
+            "base64": True,
+            "events": ["MESSAGES_UPSERT"],
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            resp = await http.post(f"{_evo_base()}/instance/create", headers=_evo_headers(), json=body)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        log.error(f"Evolution create_instance HTTP {e.response.status_code} | instance={instance} | {e.response.text[:200]}")
+        return None
+    except Exception as e:
+        log.error(f"Evolution create_instance erro | instance={instance} | {type(e).__name__}: {e}")
+        return None
+
+
+async def evo_get_qr(instance: str) -> dict:
+    """
+    Renova/pega o QR atual da instância. Retorna
+    {base64 (data URL), code, pairing_code} ou {} se indisponível.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.get(f"{_evo_base()}/instance/connect/{instance}", headers=_evo_headers())
+            if resp.status_code != 200:
+                return {}
+            data = resp.json()
+        if not isinstance(data, dict):
+            return {}
+        return {
+            "base64": data.get("base64", "") or "",
+            "code": data.get("code", "") or "",
+            "pairing_code": data.get("pairingCode", "") or "",
+        }
+    except Exception as e:
+        log.error(f"Evolution get_qr erro | instance={instance} | {type(e).__name__}: {e}")
+        return {}
+
+
+async def evo_connection_state(instance: str) -> str:
+    """Estado da conexão: 'open' (conectado), 'connecting', 'close' ou 'unknown'."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(f"{_evo_base()}/instance/connectionState/{instance}", headers=_evo_headers())
+            if resp.status_code != 200:
+                return "unknown"
+            data = resp.json()
+        inst = data.get("instance") if isinstance(data, dict) else None
+        if isinstance(inst, dict):
+            return inst.get("state", "unknown") or "unknown"
+        return "unknown"
+    except Exception as e:
+        log.error(f"Evolution connectionState erro | instance={instance} | {type(e).__name__}: {e}")
+        return "unknown"
+
+
+async def evo_logout(instance: str) -> bool:
+    """Desconecta o número da instância (mantém a instância pra novo QR)."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.delete(f"{_evo_base()}/instance/logout/{instance}", headers=_evo_headers())
+            return resp.status_code in (200, 201)
+    except Exception as e:
+        log.error(f"Evolution logout erro | instance={instance} | {type(e).__name__}: {e}")
+        return False
+
+
+# ================================================================
 # PARSE DE WEBHOOKS DE ENTRADA
 # ================================================================
 
