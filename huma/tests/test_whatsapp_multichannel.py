@@ -71,6 +71,66 @@ class TestParseEvolutionWebhook:
         assert wa.parse_evolution_webhook({"data": "string"}) is None
 
 
+# ── @lid: parser marca + destino responde no jid exato ──
+
+class TestEvolutionLid:
+    def test_parser_marca_lid_e_expoe_jid(self):
+        env = {
+            "event": "messages.upsert",
+            "instance": "cli",
+            "data": {
+                "key": {"remoteJid": "80414706286776@lid", "fromMe": False, "id": "A"},
+                "message": {"conversation": "oi"},
+            },
+        }
+        p = wa.parse_evolution_webhook(env)
+        assert p["remote_jid"] == "80414706286776@lid"
+        assert p["is_lid"] is True
+        assert p["phone"] == "80414706286776"
+
+    def test_parser_numero_normal_nao_e_lid(self):
+        env = {
+            "event": "messages.upsert",
+            "instance": "cli",
+            "data": {
+                "key": {"remoteJid": "5511999998888@s.whatsapp.net", "fromMe": False, "id": "B"},
+                "message": {"conversation": "oi"},
+            },
+        }
+        p = wa.parse_evolution_webhook(env)
+        assert p["is_lid"] is False
+        assert p["remote_jid"] == "5511999998888@s.whatsapp.net"
+
+    def test_destination_usa_jid_mapeado(self, monkeypatch):
+        import huma.services.redis_service as rs
+
+        async def fake_get(key):
+            assert key == "wajid:cli:80414706286776"
+            return "80414706286776@lid"
+
+        monkeypatch.setattr(rs, "get_value", fake_get)
+
+        class _C:
+            client_id = "cli"
+
+        out = asyncio.run(wa._evo_destination(_C(), "80414706286776"))
+        assert out == "80414706286776@lid"
+
+    def test_destination_fallback_digitos(self, monkeypatch):
+        import huma.services.redis_service as rs
+
+        async def fake_get(key):
+            return None
+
+        monkeypatch.setattr(rs, "get_value", fake_get)
+
+        class _C:
+            client_id = "cli"
+
+        out = asyncio.run(wa._evo_destination(_C(), "+55 11 99999-8888"))
+        assert out == "5511999998888"
+
+
 # ── _resolve_channel (dispatcher) ──
 
 class TestResolveChannel:

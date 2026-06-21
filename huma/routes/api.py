@@ -1180,6 +1180,14 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
         log.warning(f"Webhook Evolution | instância sem cliente | instance={instance}")
         return {"status": "ignored", "reason": "unknown_instance"}
 
+    # Guarda o endereço EXATO de entrada (dígitos -> jid completo) pra que a
+    # resposta saia no MESMO jid. Crítico pra contatos @lid: o número real é
+    # mascarado pelo WhatsApp, então responder pros dígitos não entrega —
+    # responder pro jid @lid entrega. TTL 30 dias cobre a vida da conversa.
+    remote_jid = parsed.get("remote_jid") or ""
+    if remote_jid:
+        await cache.set_with_ttl(f"wajid:{client.client_id}:{phone}", remote_jid, ttl=2592000)
+
     # Áudio/imagem do lead: baixa + processa em background (responde já).
     if media_type in ("audio", "image"):
         bg.add_task(

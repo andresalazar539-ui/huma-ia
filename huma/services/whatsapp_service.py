@@ -261,8 +261,29 @@ async def _evo_send(identity, path: str, body: dict) -> str | None:
         return None
 
 
+async def _evo_destination(identity, phone: str) -> str:
+    """
+    Endereço pra ENVIAR no Evolution. Prefere o jid EXATO que chegou na
+    entrada (mapa Redis dígitos→jid gravado pelo webhook) — essencial pra
+    contatos @lid, cujo número real é mascarado: responder pros dígitos do
+    @lid não entrega; responder pro jid @lid entrega. Fallback: dígitos.
+    """
+    digits = _digits(phone)
+    client_id = getattr(identity, "client_id", "") or ""
+    if not client_id:
+        return digits
+    try:
+        from huma.services import redis_service as cache
+        jid = await cache.get_value(f"wajid:{client_id}:{digits}")
+        if jid:
+            return jid
+    except Exception as e:
+        log.warning(f"Evolution _evo_destination lookup falhou | client={client_id} | {type(e).__name__}: {e}")
+    return digits
+
+
 async def _evo_send_text(identity, phone: str, message: str, reply_to: str | None) -> str | None:
-    body: dict = {"number": _digits(phone), "text": message}
+    body: dict = {"number": await _evo_destination(identity, phone), "text": message}
     if reply_to:
         body["quoted"] = {"key": {"id": reply_to}}
     return await _evo_send(identity, "message/sendText", body)
@@ -276,13 +297,14 @@ async def _evo_send_media(
     media_kind em image|video|document → endpoint sendMedia.
     audio → endpoint sendWhatsAppAudio (mensagem de voz).
     """
+    dest = await _evo_destination(identity, phone)
     if media_kind == "audio":
         return await _evo_send(
             identity, "message/sendWhatsAppAudio",
-            {"number": _digits(phone), "audio": media_url},
+            {"number": dest, "audio": media_url},
         )
     body: dict = {
-        "number": _digits(phone),
+        "number": dest,
         "mediatype": media_kind,
         "media": media_url,
     }
@@ -711,6 +733,11 @@ def parse_evolution_webhook(body: dict) -> dict | None:
     return {
         "instance": instance,
         "phone": phone,
+        # endereço EXATO que chegou (pode ser <num>@s.whatsapp.net OU <id>@lid).
+        # Guardado pra RESPONDER no mesmo endereço — com @lid o número real é
+        # mascarado pelo WhatsApp e responder pro número "limpo" não entrega.
+        "remote_jid": remote_jid,
+        "is_lid": remote_jid.endswith("@lid"),
         "text": (text or "").strip(),
         "message_id": message_id,
         "from_me": from_me,
