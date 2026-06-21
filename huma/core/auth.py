@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from huma.config import MERCADOPAGO_WEBHOOK_SECRET, WEBHOOK_SECRET
+from huma.config import MERCADOPAGO_WEBHOOK_SECRET, META_APP_SECRET, WEBHOOK_SECRET
 from huma.services.db_service import get_client
 from huma.utils.logger import get_logger
 
@@ -111,3 +111,40 @@ def verify_mercadopago_signature(
     ).hexdigest()
 
     return hmac.compare_digest(v1, expected)
+
+
+# ================================================================
+# Validação HMAC do webhook Meta WhatsApp Cloud API
+# ================================================================
+
+def verify_meta_signature(raw_body: bytes, signature_header: str) -> bool:
+    """
+    Valida X-Hub-Signature-256 da Meta.
+
+    A Meta assina o CORPO CRU (bytes) com HMAC-SHA256 usando o
+    META_APP_SECRET. Header no formato "sha256=<hex>". Por isso a rota
+    precisa ler request.body() ANTES de fazer json.loads — qualquer
+    re-serialização muda os bytes e quebra a assinatura.
+
+    Modo dev: se META_APP_SECRET vazio, retorna True com warning. Em
+    produção, configure META_APP_SECRET (painel Meta → App → Configurações).
+
+    Returns:
+        True se assinatura válida (ou modo dev), False se inválida.
+    """
+    if not META_APP_SECRET:
+        log.warning("META_APP_SECRET vazio — validação Meta pulada (DEV/SANDBOX)")
+        return True
+
+    if not signature_header or not signature_header.startswith("sha256="):
+        log.warning(f"Meta signature ausente ou malformada | present={bool(signature_header)}")
+        return False
+
+    received = signature_header.split("=", 1)[1].strip()
+    expected = hmac.new(
+        META_APP_SECRET.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(received, expected)

@@ -74,7 +74,7 @@ async def approve_message(payload: ApprovalPayload, bg: BackgroundTasks, creds=D
     final_text = payload.edited_text or pending["ai_response"]
 
     if payload.approved:
-        bg.add_task(wa.send_text, payload.phone, final_text)
+        bg.add_task(wa.send_text, payload.phone, final_text, client_id=payload.client_id)
         await cache.delete_pending(payload.client_id, payload.phone)
 
         if payload.edited_text and payload.edited_text != pending["ai_response"]:
@@ -1078,6 +1078,151 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
         content='<Response></Response>',
         media_type="application/xml",
     )
+
+
+# ================================================================
+# WEBHOOK EVOLUTION API v2 (WhatsApp não-oficial, self-hosted)
+#
+# Fluxo:
+#   1. Lead manda mensagem → Evolution dispara messages.upsert
+#   2. Parseia (instance, phone, text) — ignora eco do próprio número e grupos
+#   3. Descobre o cliente HUMA pela instância (instance → client_id)
+#   4. Monta MessagePayload e delega pro handle_message (mesmo motor do resto)
+#
+# Sem auth de assinatura (Evolution v2 não assina por padrão). Roteamento
+# depende da instância existir cadastrada num cliente — instância
+# desconhecida é ignorada. Hardening (token compartilhado) = sprint futuro.
+# ================================================================
+
+@router.post("/webhook/evolution", tags=["Webhook"])
+async def evolution_webhook(request: Request, bg: BackgroundTasks):
+    """Recebe mensagem do Evolution API v2 e delega pro motor."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"status": "ignored", "reason": "bad_json"}
+
+    parsed = wa.parse_evolution_webhook(body)
+    if not parsed:
+        return {"status": "ignored", "reason": "no_message"}
+
+    # Só processa ENTRADA do lead — ignora eco do próprio número e grupos.
+    if parsed["from_me"] or parsed["is_group"]:
+        return {"status": "ignored", "reason": "from_me_or_group"}
+
+    instance = parsed["instance"]
+    phone = parsed["phone"]
+    text = parsed["text"]
+    media_type = parsed.get("media_type", "")
+
+    if not instance or not phone:
+        return {"status": "ignored", "reason": "no_instance_or_phone"}
+
+    client = await db.get_client_by_evolution_instance(instance)
+    if not client:
+        log.warning(f"Webhook Evolution | instância sem cliente | instance={instance}")
+        return {"status": "ignored", "reason": "unknown_instance"}
+
+    # Mídia ainda não processada no canal Evolution (texto-first no MVP).
+    # Placeholder pra IA não ignorar o lead — paridade com o fallback Twilio.
+    if not text and media_type:
+        text = f"[{media_type} do lead - processamento de mídia no Evolution em breve]"
+
+    if not text:
+        return {"status": "ignored", "reason": "empty"}
+
+    payload = MessagePayload(client_id=client.client_id, phone=phone, text=text)
+    bg.add_task(handle_message, payload, bg)
+    log.info(
+        f"Webhook Evolution | client={client.client_id} | instance={instance} | "
+        f"phone={phone} | chars={len(text)}"
+    )
+    return {"status": "received"}
+
+
+# ================================================================
+# WEBHOOK META WHATSAPP CLOUD API (produção oficial)
+#
+# GET  /webhook/meta → verificação do webhook (hub.challenge) no setup
+# POST /webhook/meta → recebe mensagens. Valida X-Hub-Signature-256 com
+#                      o corpo CRU, roteia phone_number_id → client_id e
+#                      delega pro handle_message (mesmo motor do resto).
+#
+# Uma notificação pode trazer várias mensagens (batch) — processa todas.
+# Atualizações de status (sent/delivered/read) são ignoradas no parser.
+# ================================================================
+
+@router.get("/webhook/meta", tags=["Webhook"])
+async def meta_webhook_verify(request: Request):
+    """Verificação do webhook Meta (handshake do setup no painel)."""
+    from huma.config import META_WEBHOOK_VERIFY_TOKEN
+
+    params = request.query_params
+    mode = params.get("hub.mode", "")
+    token = params.get("hub.verify_token", "")
+    challenge = params.get("hub.challenge", "")
+
+    if mode == "subscribe" and token == META_WEBHOOK_VERIFY_TOKEN:
+        log.info("Webhook Meta verificado com sucesso")
+        return Response(content=challenge, media_type="text/plain")
+
+    log.warning(f"Webhook Meta verify falhou | mode={mode} | token_ok={token == META_WEBHOOK_VERIFY_TOKEN}")
+    raise HTTPException(403, "Verificação do webhook falhou")
+
+
+@router.post("/webhook/meta", tags=["Webhook"])
+async def meta_webhook(request: Request, bg: BackgroundTasks):
+    """Recebe mensagens da Meta Cloud API e delega pro motor."""
+    # Corpo CRU pra validar a assinatura ANTES de parsear (re-serializar muda os bytes).
+    raw = await request.body()
+
+    from huma.core.auth import verify_meta_signature
+    signature = request.headers.get("x-hub-signature-256", "")
+    if not verify_meta_signature(raw, signature):
+        log.warning("Webhook Meta REJEITADO | assinatura inválida")
+        raise HTTPException(401, "Assinatura inválida")
+
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return {"status": "ignored", "reason": "bad_json"}
+
+    messages = wa.parse_meta_webhook(body)
+    if not messages:
+        return {"status": "ignored", "reason": "no_message"}
+
+    processed = 0
+    for m in messages:
+        pnid = m["phone_number_id"]
+        phone = m["phone"]
+        text = m["text"]
+        media_type = m.get("media_type", "")
+
+        if not pnid or not phone:
+            continue
+
+        client = await db.get_client_by_phone_number_id(pnid)
+        if not client:
+            log.warning(f"Webhook Meta | phone_number_id sem cliente | pnid={pnid}")
+            continue
+
+        # Mídia ainda não processada no canal Meta (texto-first no MVP).
+        # Placeholder pra IA não ignorar o lead — paridade com Twilio/Evolution.
+        if not text and media_type:
+            text = f"[{media_type} do lead - processamento de mídia no Meta em breve]"
+
+        if not text:
+            continue
+
+        payload = MessagePayload(client_id=client.client_id, phone=phone, text=text)
+        bg.add_task(handle_message, payload, bg)
+        processed += 1
+        log.info(
+            f"Webhook Meta | client={client.client_id} | pnid={pnid} | "
+            f"phone={phone} | chars={len(text)}"
+        )
+
+    return {"status": "received", "processed": processed}
 
 
 # ================================================================

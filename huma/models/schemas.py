@@ -527,6 +527,40 @@ class ClientIdentity(BaseModel):
         default="",
         description="Phone Number ID no Meta (gerado no Embedded Signup).",
     )
+
+    # ── Canal de WhatsApp (multi-provider — v12) ──
+    # Seleciona POR ONDE este cliente envia/recebe. A entrada é roteada
+    # pelo identificador do canal (phone_number_id no Meta, instance no
+    # Evolution) — ver db_service.get_client_by_phone_number_id /
+    # get_client_by_evolution_instance. A saída roteia por este campo
+    # dentro do whatsapp_service. Default 'twilio' mantém o sandbox de
+    # teste funcionando sem migração de comportamento.
+    whatsapp_provider: str = Field(
+        default="twilio",
+        description=(
+            "Canal de WhatsApp ATIVO: 'twilio' (sandbox/teste), 'meta' "
+            "(Cloud API oficial) ou 'evolution' (Evolution API self-hosted). "
+            "Define o backend de envio. Vazio é tratado como 'twilio'."
+        ),
+    )
+    meta_access_token: str = Field(
+        default="",
+        description=(
+            "Token de acesso da Meta Cloud API deste cliente (System User "
+            "permanente ou Embedded Signup). Usado pra ENVIAR via Graph API "
+            "junto com phone_number_id. Vazio = canal Meta indisponível."
+        ),
+    )
+    evolution_instance: str = Field(
+        default="",
+        description=(
+            "Nome da instância deste cliente no servidor Evolution global da "
+            "HUMA (EVOLUTION_API_URL). 1 instância = 1 número. Roteia ENTRADA "
+            "(instance→client_id) e identifica o número no ENVIO. Vazio = "
+            "canal Evolution indisponível."
+        ),
+    )
+
     owner_phone: str = Field(
         default="",
         description="Telefone do dono pra notificações (saldo, alertas).",

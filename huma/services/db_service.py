@@ -68,6 +68,63 @@ async def get_client(client_id: str) -> ClientIdentity | None:
     return ClientIdentity(**valid_fields)
 
 
+def _identity_from_row(data: dict) -> ClientIdentity:
+    """
+    Constrói um ClientIdentity a partir de uma linha crua do Supabase.
+
+    Descarta valores None (colunas NULL) pra que o default do campo no
+    model valha — mesmo racional do get_client (uma coluna nova nascida
+    via ALTER ... ADD COLUMN é NULL e estouraria um campo `str`).
+    """
+    valid_fields = {
+        k: v for k, v in data.items()
+        if k in ClientIdentity.model_fields and v is not None
+    }
+    return ClientIdentity(**valid_fields)
+
+
+async def get_client_by_phone_number_id(phone_number_id: str) -> ClientIdentity | None:
+    """
+    Roteamento de ENTRADA do canal Meta: descobre QUAL cliente HUMA dono
+    do número recebeu a mensagem, a partir do phone_number_id que a Meta
+    manda no webhook (metadata.phone_number_id).
+
+    Usa o índice parcial idx_clients_phone_number_id. Retorna None se
+    phone_number_id vazio ou nenhum cliente casa (número não cadastrado).
+    """
+    phone_number_id = (phone_number_id or "").strip()
+    if not phone_number_id:
+        return None
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("*")
+            .eq("phone_number_id", phone_number_id).limit(1).execute()
+    )
+    if not resp.data:
+        return None
+    return _identity_from_row(resp.data[0])
+
+
+async def get_client_by_evolution_instance(instance: str) -> ClientIdentity | None:
+    """
+    Roteamento de ENTRADA do canal Evolution: descobre o cliente HUMA a
+    partir do nome da instância que o Evolution manda no webhook (campo
+    `instance`). 1 instância = 1 número = 1 cliente.
+
+    Usa o índice parcial idx_clients_evolution_instance. Retorna None se
+    instance vazio ou nenhum cliente casa.
+    """
+    instance = (instance or "").strip()
+    if not instance:
+        return None
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("*")
+            .eq("evolution_instance", instance).limit(1).execute()
+    )
+    if not resp.data:
+        return None
+    return _identity_from_row(resp.data[0])
+
+
 async def update_client(client_id: str, updates: dict):
     """
     Atualiza campos de um cliente.

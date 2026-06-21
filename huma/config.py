@@ -21,6 +21,18 @@ REDIS_URL = os.getenv("REDIS_URL")
 META_APP_ID = os.getenv("META_APP_ID", "")
 META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 META_WEBHOOK_VERIFY_TOKEN = os.getenv("META_WEBHOOK_VERIFY_TOKEN", "huma_verify_2026")
+# Versão do Graph API + base. O token de envio é POR CLIENTE
+# (ClientIdentity.meta_access_token); aqui só ficam os knobs globais.
+META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v21.0")
+META_GRAPH_BASE_URL = os.getenv("META_GRAPH_BASE_URL", "https://graph.facebook.com")
+
+# ── Evolution API (WhatsApp não-oficial, self-hosted) ──
+# Modelo PLG: UM servidor Evolution da HUMA, muitos clientes. Cada cliente
+# é uma "instance" (ClientIdentity.evolution_instance). URL + apikey global
+# do servidor ficam aqui; o nome da instância vive no ClientIdentity.
+# Vazio = canal Evolution indisponível (envio degrada gracioso, webhook 503).
+EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "")
+EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
 
 # ── Twilio (teste via Sandbox) ──
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")

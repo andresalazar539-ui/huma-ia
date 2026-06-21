@@ -3777,13 +3777,20 @@ class TestSprint5OwnerNotifications:
         assert release_called["flag"] is True
 
     def test_whatsapp_service_uses_retry(self):
-        """Estrutural: send_text e send_image usam decorator with_retry."""
+        """Estrutural: envio de texto e mídia usam decorator with_retry.
+
+        v12 multi-canal: cada backend (twilio/meta/evolution) tem sua função
+        raw decorada com @with_retry. Verifica que o retry está presente nos
+        três canais — não acopla a nome de função específico.
+        """
         import inspect
         from huma.services import whatsapp_service
         src = inspect.getsource(whatsapp_service)
         assert "@with_retry" in src
-        assert "_send_text_with_retry" in src
-        assert "_send_image_with_retry" in src
+        assert "_twilio_send_text_raw" in src
+        assert "_twilio_send_media_raw" in src
+        assert "_meta_post_raw" in src
+        assert "_evo_post_raw" in src
 
     def test_nps_job_registered(self):
         """Estrutural: job de NPS pós-atendimento registrado em _jobs."""
