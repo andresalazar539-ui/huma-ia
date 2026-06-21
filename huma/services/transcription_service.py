@@ -43,13 +43,28 @@ async def transcribe_audio(audio_url: str, auth: tuple | None = None) -> str | N
     if not audio_bytes:
         return None
 
-    # 2. Tenta Groq primeiro
+    # 2. Transcreve os bytes (Groq → OpenAI)
+    return await transcribe_bytes(audio_bytes)
+
+
+async def transcribe_bytes(audio_bytes: bytes) -> str | None:
+    """
+    Transcreve bytes de áudio (Groq → OpenAI) pra texto em português.
+
+    Usado quando o download é feito pelo caller — canais cujo áudio não é
+    uma URL pública simples: Meta (precisa Bearer) e Evolution (entrega
+    base64 via endpoint próprio). Mesma cascata de providers do
+    transcribe_audio. Retorna texto ou None (degrade gracioso).
+    """
+    if not audio_bytes or len(audio_bytes) < 500:
+        log.warning(f"Áudio vazio ou muito pequeno pra transcrever | size={len(audio_bytes or b'')}")
+        return None
+
     if GROQ_API_KEY:
         text = await _transcribe_groq(audio_bytes)
         if text:
             return text
 
-    # 3. Fallback: OpenAI Whisper
     if OPENAI_API_KEY:
         text = await _transcribe_openai(audio_bytes)
         if text:

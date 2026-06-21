@@ -1081,6 +1081,63 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
 
 
 # ================================================================
+# INGESTÃO DE MÍDIA DE ENTRADA (áudio/imagem do lead) — Meta + Evolution
+#
+# Rodam em background pra o webhook responder rápido (a Meta espera 200
+# ágil). Baixam a mídia pelo canal certo, transcrevem áudio / convertem
+# imagem em data URL, e delegam pro handle_message (mesmo motor).
+# ================================================================
+
+async def _ingest_media_message(
+    client_id: str,
+    phone: str,
+    media_type: str,
+    caption: str,
+    raw_bytes: Optional[bytes],
+    content_type: str,
+    bg: BackgroundTasks,
+) -> None:
+    """Monta o MessagePayload a partir de mídia já baixada e processa."""
+    text = caption or ""
+    image_url = ""
+
+    if media_type == "audio":
+        if raw_bytes:
+            from huma.services.transcription_service import transcribe_bytes
+            transcribed = await transcribe_bytes(raw_bytes)
+            if transcribed:
+                text = transcribed
+        if not text:
+            text = "[áudio do lead - transcrição indisponível]"
+    elif media_type == "image":
+        if raw_bytes:
+            import base64
+            b64 = base64.b64encode(raw_bytes).decode("utf-8")
+            image_url = f"data:{content_type or 'image/jpeg'};base64,{b64}"
+        if not raw_bytes and not text:
+            text = "[imagem do lead - não consegui carregar]"
+
+    payload = MessagePayload(client_id=client_id, phone=phone, text=text, image_url=image_url)
+    await handle_message(payload, bg)
+
+
+async def _ingest_meta_media(
+    client_id: str, phone: str, media_type: str, media_id: str, caption: str, bg: BackgroundTasks,
+) -> None:
+    """Baixa mídia do Meta (Graph) e delega pra ingestão comum."""
+    raw, ct = await wa.fetch_media_meta(client_id, media_id)
+    await _ingest_media_message(client_id, phone, media_type, caption, raw, ct, bg)
+
+
+async def _ingest_evolution_media(
+    client_id: str, phone: str, media_type: str, message: dict, caption: str, bg: BackgroundTasks,
+) -> None:
+    """Baixa mídia do Evolution (base64) e delega pra ingestão comum."""
+    raw, ct = await wa.fetch_media_evolution(client_id, message)
+    await _ingest_media_message(client_id, phone, media_type, caption, raw, ct, bg)
+
+
+# ================================================================
 # WEBHOOK EVOLUTION API v2 (WhatsApp não-oficial, self-hosted)
 #
 # Fluxo:
@@ -1123,8 +1180,16 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
         log.warning(f"Webhook Evolution | instância sem cliente | instance={instance}")
         return {"status": "ignored", "reason": "unknown_instance"}
 
-    # Mídia ainda não processada no canal Evolution (texto-first no MVP).
-    # Placeholder pra IA não ignorar o lead — paridade com o fallback Twilio.
+    # Áudio/imagem do lead: baixa + processa em background (responde já).
+    if media_type in ("audio", "image"):
+        bg.add_task(
+            _ingest_evolution_media,
+            client.client_id, phone, media_type, parsed.get("raw") or {}, text, bg,
+        )
+        log.info(f"Webhook Evolution | mídia {media_type} | client={client.client_id} | phone={phone}")
+        return {"status": "received"}
+
+    # Outras mídias (vídeo/doc): placeholder pra IA não ignorar o lead.
     if not text and media_type:
         text = f"[{media_type} do lead - processamento de mídia no Evolution em breve]"
 
@@ -1206,8 +1271,19 @@ async def meta_webhook(request: Request, bg: BackgroundTasks):
             log.warning(f"Webhook Meta | phone_number_id sem cliente | pnid={pnid}")
             continue
 
-        # Mídia ainda não processada no canal Meta (texto-first no MVP).
-        # Placeholder pra IA não ignorar o lead — paridade com Twilio/Evolution.
+        media_id = m.get("media_id", "")
+
+        # Áudio/imagem do lead: baixa + processa em background (responde já).
+        if media_type in ("audio", "image") and media_id:
+            bg.add_task(
+                _ingest_meta_media,
+                client.client_id, phone, media_type, media_id, text, bg,
+            )
+            processed += 1
+            log.info(f"Webhook Meta | mídia {media_type} | client={client.client_id} | phone={phone}")
+            continue
+
+        # Outras mídias (vídeo/doc): placeholder pra IA não ignorar o lead.
         if not text and media_type:
             text = f"[{media_type} do lead - processamento de mídia no Meta em breve]"
 

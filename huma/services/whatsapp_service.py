@@ -445,6 +445,77 @@ async def mark_as_read(message_id: str, client_id: str = "", **kwargs):
 
 
 # ================================================================
+# DOWNLOAD DE MÍDIA DE ENTRADA (áudio/imagem do lead)
+# ================================================================
+
+async def fetch_media_meta(client_id: str, media_id: str) -> tuple[bytes | None, str]:
+    """
+    Baixa mídia de entrada do Meta. A Graph API entrega a mídia em 2 passos:
+    GET /{media_id} (com Bearer) → URL temporária; depois GET nessa URL
+    (também com Bearer) → bytes. Retorna (bytes|None, content_type).
+    """
+    if not media_id:
+        return None, ""
+    _, identity = await _resolve_channel(client_id)
+    token = (getattr(identity, "meta_access_token", "") if identity else "") or ""
+    if not token:
+        log.error(f"Meta fetch_media sem token | client={client_id}")
+        return None, ""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            info_resp = await http.get(
+                f"{META_GRAPH_BASE_URL}/{META_GRAPH_VERSION}/{media_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            info_resp.raise_for_status()
+            info = info_resp.json()
+            url = info.get("url", "") or ""
+            ct = info.get("mime_type", "") or ""
+            if not url:
+                log.warning(f"Meta fetch_media sem url | client={client_id} | media_id={media_id}")
+                return None, ct
+            bin_resp = await http.get(url, headers={"Authorization": f"Bearer {token}"})
+            bin_resp.raise_for_status()
+            return bin_resp.content, (ct or bin_resp.headers.get("content-type", ""))
+    except Exception as e:
+        log.error(f"Meta fetch_media erro | client={client_id} | {type(e).__name__}: {e}")
+        return None, ""
+
+
+async def fetch_media_evolution(client_id: str, message: dict) -> tuple[bytes | None, str]:
+    """
+    Baixa mídia de entrada do Evolution via getBase64FromMediaMessage
+    (a mídia chega criptografada no WhatsApp; o Evolution descriptografa e
+    devolve base64). `message` é o objeto cru da mensagem (parsed['raw']).
+    Retorna (bytes|None, content_type).
+    """
+    import base64 as _b64
+
+    _, identity = await _resolve_channel(client_id)
+    instance = (getattr(identity, "evolution_instance", "") if identity else "") or ""
+    if not EVOLUTION_API_URL or not EVOLUTION_API_KEY or not instance:
+        log.error(f"Evolution fetch_media sem config | client={client_id}")
+        return None, ""
+    url = f"{EVOLUTION_API_URL.rstrip('/')}/chat/getBase64FromMediaMessage/{instance}"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.post(url, headers=_evo_headers(), json={"message": message})
+            resp.raise_for_status()
+            data = resp.json()
+        if not isinstance(data, dict):
+            return None, ""
+        b64 = data.get("base64", "") or ""
+        ct = data.get("mimetype", "") or ""
+        if not b64:
+            log.warning(f"Evolution fetch_media sem base64 | client={client_id}")
+            return None, ct
+        return _b64.b64decode(b64), ct
+    except Exception as e:
+        log.error(f"Evolution fetch_media erro | client={client_id} | {type(e).__name__}: {e}")
+        return None, ""
+
+
+# ================================================================
 # PARSE DE WEBHOOKS DE ENTRADA
 # ================================================================
 
@@ -535,6 +606,9 @@ def parse_evolution_webhook(body: dict) -> dict | None:
         "push_name": push_name,
         "media_type": media_type,
         "event": event,
+        # objeto cru da mensagem — necessário pro getBase64FromMediaMessage
+        # baixar a mídia (Evolution não manda URL pública).
+        "raw": data,
     }
 
 
@@ -580,20 +654,28 @@ def parse_meta_webhook(body: dict) -> list[dict]:
                 mtype = msg.get("type", "") or ""
                 text = ""
                 media_type = ""
+                media_id = ""
 
                 if mtype == "text":
                     text = (msg.get("text") or {}).get("body", "") or ""
                 elif mtype == "image":
                     media_type = "image"
-                    text = (msg.get("image") or {}).get("caption", "") or ""
+                    img = msg.get("image") or {}
+                    text = img.get("caption", "") or ""
+                    media_id = img.get("id", "") or ""
                 elif mtype == "audio":
                     media_type = "audio"
+                    media_id = (msg.get("audio") or {}).get("id", "") or ""
                 elif mtype == "video":
                     media_type = "video"
-                    text = (msg.get("video") or {}).get("caption", "") or ""
+                    vid = msg.get("video") or {}
+                    text = vid.get("caption", "") or ""
+                    media_id = vid.get("id", "") or ""
                 elif mtype == "document":
                     media_type = "document"
-                    text = (msg.get("document") or {}).get("caption", "") or ""
+                    doc = msg.get("document") or {}
+                    text = doc.get("caption", "") or ""
+                    media_id = doc.get("id", "") or ""
                 elif mtype == "button":
                     text = (msg.get("button") or {}).get("text", "") or ""
                 elif mtype == "interactive":
@@ -609,6 +691,7 @@ def parse_meta_webhook(body: dict) -> list[dict]:
                     "text": (text or "").strip(),
                     "message_id": msg.get("id", "") or "",
                     "media_type": media_type,
+                    "media_id": media_id,
                     "push_name": push_name,
                     "type": mtype,
                 })

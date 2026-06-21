@@ -234,6 +234,86 @@ class TestVerifyMetaSignature:
         assert auth.verify_meta_signature(b"corpo", "") is False
 
 
+# ── mídia: media_id (Meta) + raw (Evolution) nos parsers ──
+
+class TestParsersMidia:
+    def test_meta_imagem_tem_media_id(self):
+        env = TestParseMetaWebhook()._envelope(
+            {"from": "5511999998888", "id": "w", "type": "image", "image": {"id": "MID1", "caption": "x"}}
+        )
+        m = wa.parse_meta_webhook(env)[0]
+        assert m["media_id"] == "MID1"
+        assert m["media_type"] == "image"
+
+    def test_meta_audio_tem_media_id(self):
+        env = TestParseMetaWebhook()._envelope(
+            {"from": "5511999998888", "id": "w", "type": "audio", "audio": {"id": "AID1"}}
+        )
+        m = wa.parse_meta_webhook(env)[0]
+        assert m["media_id"] == "AID1"
+
+    def test_evolution_inclui_raw(self):
+        env = TestParseEvolutionWebhook()._envelope({"audioMessage": {"url": "x"}})
+        p = wa.parse_evolution_webhook(env)
+        assert isinstance(p["raw"], dict)
+        assert p["raw"]["key"]["id"] == "ABC123"
+
+
+# ── ingestão de mídia (_ingest_media_message) ──
+
+class TestMediaIngestion:
+    def test_audio_transcreve_vira_texto(self, monkeypatch):
+        import huma.routes.api as api
+        import huma.services.transcription_service as ts
+
+        captured = {}
+
+        async def fake_handle(payload, bg):
+            captured["payload"] = payload
+
+        async def fake_transcribe(b):
+            return "oi quero agendar"
+
+        monkeypatch.setattr(api, "handle_message", fake_handle)
+        monkeypatch.setattr(ts, "transcribe_bytes", fake_transcribe)
+
+        asyncio.run(api._ingest_media_message("cli", "5511999998888", "audio", "", b"x" * 600, "audio/ogg", None))
+        assert captured["payload"].text == "oi quero agendar"
+        assert captured["payload"].image_url == ""
+
+    def test_audio_sem_bytes_usa_placeholder(self, monkeypatch):
+        import huma.routes.api as api
+
+        captured = {}
+
+        async def fake_handle(payload, bg):
+            captured["payload"] = payload
+
+        monkeypatch.setattr(api, "handle_message", fake_handle)
+        asyncio.run(api._ingest_media_message("cli", "5511999998888", "audio", "", None, "", None))
+        assert "transcrição indisponível" in captured["payload"].text
+
+    def test_imagem_vira_data_url(self, monkeypatch):
+        import huma.routes.api as api
+
+        captured = {}
+
+        async def fake_handle(payload, bg):
+            captured["payload"] = payload
+
+        monkeypatch.setattr(api, "handle_message", fake_handle)
+        asyncio.run(api._ingest_media_message("cli", "5511999998888", "image", "olha isso", b"\x89PNG\r\n", "image/png", None))
+        assert captured["payload"].image_url.startswith("data:image/png;base64,")
+        assert captured["payload"].text == "olha isso"
+
+
+def test_transcribe_bytes_curto_retorna_none():
+    from huma.services.transcription_service import transcribe_bytes
+    assert asyncio.run(transcribe_bytes(b"tiny")) is None
+    assert asyncio.run(transcribe_bytes(b"")) is None
+    assert asyncio.run(transcribe_bytes(None)) is None
+
+
 # ── _digits ──
 
 def test_digits_normaliza():
