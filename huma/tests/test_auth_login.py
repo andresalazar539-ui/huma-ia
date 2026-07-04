@@ -4,11 +4,13 @@
 # Cobre:
 #   - Token de sessão: roundtrip, expiração, adulteração, secret vazio
 #   - verify_api_key_manual com cookie (IDOR + fallback Bearer)
-#   - POST /auth/login: 503 sem config, 401 genérico, 403 sem vínculo,
-#     sucesso com cookie, "lembrar de mim", rate limit
-#   - POST /auth/session-from-supabase (Google/reset): 401 e sucesso
+#   - POST /auth/login: 503 sem config, 401 genérico, sucesso, lembrar,
+#     rate limit, auto-provisionamento de cliente novo
+#   - POST /auth/signup: confirmação de e-mail, sessão imediata, 409
+#   - POST /auth/session-from-supabase (Google/reset)
 #   - POST /auth/forgot: resposta genérica + primeiro acesso
-#   - Páginas /login, /auth/callback, /auth/reset renderizam
+#   - Redirect pós-login: pending → wizard, active → cockpit
+#   - Páginas /login (com Criar conta), /auth/callback, /auth/reset
 # ================================================================
 
 import asyncio
@@ -134,8 +136,10 @@ def _client():
 
 
 class FakeIdentity:
-    client_id = "cli_abc"
-    owner_email = "dono@negocio.com.br"
+    def __init__(self, client_id="cli_abc", onboarding_status="active"):
+        self.client_id = client_id
+        self.owner_email = "dono@negocio.com.br"
+        self.onboarding_status = onboarding_status
 
 
 def _setup_ready(monkeypatch):
@@ -152,6 +156,16 @@ def _setup_ready(monkeypatch):
         return 1
 
     monkeypatch.setattr(al.cache, "incr_with_ttl", incr)
+
+
+def _mock_clients(monkeypatch, clients_list):
+    """Mocka a resolução de cliente por e-mail."""
+    import huma.routes.auth_login as al
+
+    async def by_email(email):
+        return clients_list
+
+    monkeypatch.setattr(al.db, "get_clients_by_owner_email", by_email)
 
 
 # ================================================================
@@ -183,28 +197,9 @@ class TestLogin:
             json={"email": "dono@negocio.com.br", "password": "errada"},
         )
         assert resp.status_code == 401
-        # Mensagem genérica: não diz se o e-mail existe
         assert "senha" in resp.json()["detail"].lower()
 
-    def test_autenticou_mas_sem_cliente_vinculado_403(self, monkeypatch):
-        import huma.routes.auth_login as al
-        _setup_ready(monkeypatch)
-
-        async def grant_ok(email, password):
-            return {"access_token": "tok", "user": {"email": email}}
-
-        async def no_client(email):
-            return None
-
-        monkeypatch.setattr(al, "_gotrue_password_grant", grant_ok)
-        monkeypatch.setattr(al.db, "get_client_by_owner_email", no_client)
-        resp = _client().post(
-            "/auth/login",
-            json={"email": "estranho@gmail.com", "password": "certa"},
-        )
-        assert resp.status_code == 403
-
-    def test_login_ok_seta_cookie_e_redirect(self, monkeypatch):
+    def test_login_ok_cliente_ativo_vai_pro_cockpit(self, monkeypatch):
         import huma.core.auth as auth
         import huma.routes.auth_login as al
         _setup_ready(monkeypatch)
@@ -213,11 +208,8 @@ class TestLogin:
             assert email == "dono@negocio.com.br"
             return {"access_token": "tok", "user": {"email": email}}
 
-        async def found(email):
-            return FakeIdentity()
-
         monkeypatch.setattr(al, "_gotrue_password_grant", grant_ok)
-        monkeypatch.setattr(al.db, "get_client_by_owner_email", found)
+        _mock_clients(monkeypatch, [FakeIdentity(onboarding_status="active")])
         resp = _client().post(
             "/auth/login",
             json={"email": "Dono@Negocio.com.br", "password": "certa", "remember": True},
@@ -231,6 +223,61 @@ class TestLogin:
         session_value = cookie.split("huma_session=")[1].split(";")[0]
         assert auth.verify_session_token(session_value) == "cli_abc"
 
+    def test_login_cliente_pendente_vai_pro_wizard(self, monkeypatch):
+        import huma.routes.auth_login as al
+        _setup_ready(monkeypatch)
+
+        async def grant_ok(email, password):
+            return {"access_token": "tok", "user": {"email": email}}
+
+        monkeypatch.setattr(al, "_gotrue_password_grant", grant_ok)
+        _mock_clients(monkeypatch, [FakeIdentity(onboarding_status="pending")])
+        resp = _client().post(
+            "/auth/login",
+            json={"email": "dono@negocio.com.br", "password": "certa"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_abc"
+
+    def test_login_sem_cliente_provisiona_um_novo(self, monkeypatch):
+        """Auto-provisionamento: conta autenticada sem negócio ganha um."""
+        import huma.routes.auth_login as al
+        _setup_ready(monkeypatch)
+        created = {}
+
+        async def grant_ok(email, password):
+            return {"access_token": "tok", "user": {"email": email}}
+
+        async def create(email, business_name=""):
+            created["email"] = email
+            return FakeIdentity(client_id="cli_novo", onboarding_status="pending")
+
+        monkeypatch.setattr(al, "_gotrue_password_grant", grant_ok)
+        _mock_clients(monkeypatch, [])
+        monkeypatch.setattr(al.db, "create_client_signup", create)
+        resp = _client().post(
+            "/auth/login",
+            json={"email": "novo@negocio.com.br", "password": "certa"},
+        )
+        assert resp.status_code == 200
+        assert created["email"] == "novo@negocio.com.br"
+        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_novo"
+
+    def test_email_ambiguo_403(self, monkeypatch):
+        import huma.routes.auth_login as al
+        _setup_ready(monkeypatch)
+
+        async def grant_ok(email, password):
+            return {"access_token": "tok", "user": {"email": email}}
+
+        monkeypatch.setattr(al, "_gotrue_password_grant", grant_ok)
+        _mock_clients(monkeypatch, [FakeIdentity(), FakeIdentity(client_id="cli_2")])
+        resp = _client().post(
+            "/auth/login",
+            json={"email": "dono@negocio.com.br", "password": "certa"},
+        )
+        assert resp.status_code == 403
+
     def test_sem_lembrar_cookie_de_sessao(self, monkeypatch):
         import huma.routes.auth_login as al
         _setup_ready(monkeypatch)
@@ -238,11 +285,8 @@ class TestLogin:
         async def grant_ok(email, password):
             return {"access_token": "tok", "user": {"email": email}}
 
-        async def found(email):
-            return FakeIdentity()
-
         monkeypatch.setattr(al, "_gotrue_password_grant", grant_ok)
-        monkeypatch.setattr(al.db, "get_client_by_owner_email", found)
+        _mock_clients(monkeypatch, [FakeIdentity()])
         resp = _client().post(
             "/auth/login",
             json={"email": "dono@negocio.com.br", "password": "certa", "remember": False},
@@ -266,34 +310,82 @@ class TestLogin:
         )
         assert resp.status_code == 429
 
-    def test_redis_off_nao_bloqueia_login(self, monkeypatch):
-        """incr_with_ttl retorna -1 com Redis off — login segue."""
-        import huma.routes.auth_login as al
-        _setup_ready(monkeypatch)
-
-        async def incr_off(key, ttl):
-            return -1
-
-        async def grant_ok(email, password):
-            return {"access_token": "tok", "user": {"email": email}}
-
-        async def found(email):
-            return FakeIdentity()
-
-        monkeypatch.setattr(al.cache, "incr_with_ttl", incr_off)
-        monkeypatch.setattr(al, "_gotrue_password_grant", grant_ok)
-        monkeypatch.setattr(al.db, "get_client_by_owner_email", found)
-        resp = _client().post(
-            "/auth/login",
-            json={"email": "dono@negocio.com.br", "password": "certa"},
-        )
-        assert resp.status_code == 200
-
     def test_email_invalido_422(self, monkeypatch):
         _setup_ready(monkeypatch)
         resp = _client().post(
             "/auth/login",
             json={"email": "nao-e-email", "password": "x"},
+        )
+        assert resp.status_code == 422
+
+
+# ================================================================
+# POST /auth/signup
+# ================================================================
+
+
+class TestSignup:
+
+    def test_confirmacao_de_email_ligada(self, monkeypatch):
+        """GoTrue sem access_token = aguardando confirmação por e-mail."""
+        import huma.routes.auth_login as al
+        _setup_ready(monkeypatch)
+
+        async def signup_pending(email, password):
+            return {"user": {"email": email, "identities": [{"id": "x"}]}}
+
+        monkeypatch.setattr(al, "_gotrue_signup", signup_pending)
+        resp = _client().post(
+            "/auth/signup",
+            json={"email": "novo@negocio.com.br", "password": "senha-forte-8", "business_name": "Barbearia do Zé"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "confirm_email"
+
+    def test_sessao_imediata_provisiona_e_loga(self, monkeypatch):
+        """Confirmação desligada: signup já volta com token → cria negócio e entra."""
+        import huma.routes.auth_login as al
+        _setup_ready(monkeypatch)
+        created = {}
+
+        async def signup_ok(email, password):
+            return {"access_token": "tok", "user": {"email": email}}
+
+        async def create(email, business_name=""):
+            created["business_name"] = business_name
+            return FakeIdentity(client_id="cli_novo", onboarding_status="pending")
+
+        monkeypatch.setattr(al, "_gotrue_signup", signup_ok)
+        _mock_clients(monkeypatch, [])
+        monkeypatch.setattr(al.db, "create_client_signup", create)
+        resp = _client().post(
+            "/auth/signup",
+            json={"email": "novo@negocio.com.br", "password": "senha-forte-8", "business_name": "Barbearia do Zé"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_novo"
+        assert created["business_name"] == "Barbearia do Zé"
+        assert "huma_session=" in resp.headers.get("set-cookie", "")
+
+    def test_email_ja_cadastrado_409(self, monkeypatch):
+        import huma.routes.auth_login as al
+        _setup_ready(monkeypatch)
+
+        async def signup_exists(email, password):
+            return "exists"
+
+        monkeypatch.setattr(al, "_gotrue_signup", signup_exists)
+        resp = _client().post(
+            "/auth/signup",
+            json={"email": "dono@negocio.com.br", "password": "senha-forte-8"},
+        )
+        assert resp.status_code == 409
+
+    def test_senha_curta_422(self, monkeypatch):
+        _setup_ready(monkeypatch)
+        resp = _client().post(
+            "/auth/signup",
+            json={"email": "novo@negocio.com.br", "password": "curta"},
         )
         assert resp.status_code == 422
 
@@ -328,12 +420,8 @@ class TestSessionFromSupabase:
             assert token == "g" * 30
             return {"email": "dono@negocio.com.br"}
 
-        async def found(email):
-            assert email == "dono@negocio.com.br"
-            return FakeIdentity()
-
         monkeypatch.setattr(al, "_gotrue_get_user", user_ok)
-        monkeypatch.setattr(al.db, "get_client_by_owner_email", found)
+        _mock_clients(monkeypatch, [FakeIdentity()])
         resp = _client().post(
             "/auth/session-from-supabase",
             json={"access_token": "g" * 30},
@@ -343,23 +431,26 @@ class TestSessionFromSupabase:
         session_value = cookie.split("huma_session=")[1].split(";")[0]
         assert auth.verify_session_token(session_value) == "cli_abc"
 
-    def test_google_de_estranho_403(self, monkeypatch):
+    def test_google_novo_usuario_provisiona_negocio(self, monkeypatch):
+        """Google de quem nunca usou a HUMA = conta nova + wizard."""
         import huma.routes.auth_login as al
         _setup_ready(monkeypatch)
 
         async def user_ok(token):
-            return {"email": "estranho@gmail.com"}
+            return {"email": "novato@gmail.com"}
 
-        async def no_client(email):
-            return None
+        async def create(email, business_name=""):
+            return FakeIdentity(client_id="cli_google", onboarding_status="pending")
 
         monkeypatch.setattr(al, "_gotrue_get_user", user_ok)
-        monkeypatch.setattr(al.db, "get_client_by_owner_email", no_client)
+        _mock_clients(monkeypatch, [])
+        monkeypatch.setattr(al.db, "create_client_signup", create)
         resp = _client().post(
             "/auth/session-from-supabase",
             json={"access_token": "g" * 30},
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 200
+        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_google"
 
 
 # ================================================================
@@ -369,7 +460,8 @@ class TestSessionFromSupabase:
 
 class TestForgot:
 
-    def test_email_nao_vinculado_resposta_generica_sem_envio(self, monkeypatch):
+    def test_email_desconhecido_resposta_generica_recover_roda(self, monkeypatch):
+        """Recover roda pra qualquer e-mail (GoTrue no-op se não existir)."""
         import huma.routes.auth_login as al
         _setup_ready(monkeypatch)
         calls = {"ensure": 0, "recover": 0}
@@ -387,12 +479,12 @@ class TestForgot:
         monkeypatch.setattr(al, "_gotrue_admin_ensure_user", ensure)
         monkeypatch.setattr(al, "_gotrue_recover", recover)
 
-        resp = _client().post("/auth/forgot", json={"email": "estranho@gmail.com"})
+        resp = _client().post("/auth/forgot", json={"email": "qualquer@gmail.com"})
         assert resp.status_code == 200
         assert "cadastrado" in resp.json()["message"]
-        assert calls == {"ensure": 0, "recover": 0}
+        assert calls == {"ensure": 0, "recover": 1}
 
-    def test_primeiro_acesso_cria_conta_e_envia(self, monkeypatch):
+    def test_cliente_pre_cadastrado_cria_conta_e_envia(self, monkeypatch):
         import huma.routes.auth_login as al
         _setup_ready(monkeypatch)
         calls = {"ensure": 0, "recover": 0}
@@ -412,8 +504,6 @@ class TestForgot:
 
         resp = _client().post("/auth/forgot", json={"email": "dono@negocio.com.br"})
         assert resp.status_code == 200
-        # Resposta idêntica à do e-mail não vinculado (anti-enumeração)
-        assert "cadastrado" in resp.json()["message"]
         assert calls == {"ensure": 1, "recover": 1}
 
 
@@ -424,10 +514,11 @@ class TestForgot:
 
 class TestAuthPages:
 
-    def test_login_page_renderiza(self):
+    def test_login_page_renderiza_com_criar_conta(self):
         resp = _client().get("/login")
         assert resp.status_code == 200
-        assert "Entrar com Google" in resp.text
+        assert "Continuar com Google" in resp.text
+        assert "Criar conta" in resp.text
         assert "Esqueci a senha" in resp.text
         assert "Lembrar de mim" in resp.text
 

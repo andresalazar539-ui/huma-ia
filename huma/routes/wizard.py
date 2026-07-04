@@ -380,8 +380,10 @@ def _render_wizard_html(client_id: str) -> str:
 
 <script>
 const CLIENT_ID = {client_id!r};
+// Com ?api_key= na URL usa Bearer (legado); sem, o cookie de sessão
+// httpOnly autentica sozinho (fetch same-origin envia o cookie).
 const API_KEY = new URLSearchParams(location.search).get('api_key') || '';
-const AUTH_HEADERS = {{"Authorization": `Bearer ${{API_KEY}}`}};
+const AUTH_HEADERS = API_KEY ? {{"Authorization": `Bearer ${{API_KEY}}`}} : {{}};
 const $ = (id) => document.getElementById(id);
 
 async function loadState() {{

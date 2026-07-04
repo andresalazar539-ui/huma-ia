@@ -76,6 +76,14 @@ class LoginRequest(BaseModel):
     _norm_email = field_validator("email")(classmethod(lambda cls, v: _validate_email(v)))
 
 
+class SignupRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+    business_name: str = Field(default="", max_length=80)
+
+    _norm_email = field_validator("email")(classmethod(lambda cls, v: _validate_email(v)))
+
+
 class ForgotRequest(BaseModel):
     email: str = Field(..., max_length=254)
 
@@ -190,10 +198,85 @@ async def _gotrue_recover(email: str) -> None:
         log.error(f"Login | erro http | service=supabase_auth | op=recover | {type(e).__name__}: {e}")
 
 
-def _session_response(client_id: str, remember: bool) -> JSONResponse:
+async def _gotrue_signup(email: str, password: str) -> dict | str | None:
+    """
+    Cria conta no GoTrue (signup self-service).
+
+    Retorna:
+        dict  — resposta do GoTrue (com access_token se confirmação de
+                e-mail estiver desligada; sem, se o usuário precisa
+                confirmar o e-mail primeiro)
+        "exists" — e-mail já cadastrado
+        None  — recusado (senha fraca etc.)
+    Levanta HTTPException 503 em indisponibilidade.
+    """
+    redirect = f"{PUBLIC_BASE_URL.rstrip('/')}/auth/callback" if PUBLIC_BASE_URL else "/auth/callback"
+    url = f"{SUPABASE_URL}/auth/v1/signup?redirect_to={redirect}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.post(
+                url,
+                headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+                json={"email": email, "password": password},
+            )
+    except httpx.TimeoutException:
+        log.error("Signup | timeout | service=supabase_auth | op=signup")
+        raise HTTPException(503, "Cadastro temporariamente indisponível. Tente de novo.")
+    except httpx.HTTPError as e:
+        log.error(f"Signup | erro http | service=supabase_auth | op=signup | {type(e).__name__}: {e}")
+        raise HTTPException(503, "Cadastro temporariamente indisponível. Tente de novo.")
+
+    if resp.status_code == 200:
+        data = resp.json()
+        # GoTrue com confirmação ligada devolve user SEM identities novas
+        # quando o e-mail já existe (anti-enumeração do próprio Supabase).
+        identities = (data.get("user") or data).get("identities")
+        if identities == []:
+            return "exists"
+        return data
+    if resp.status_code in (400, 422):
+        body = resp.text.lower()
+        if "already" in body or "registered" in body:
+            return "exists"
+        log.warning(f"Signup | recusado pelo GoTrue | status={resp.status_code}")
+        return None
+    log.warning(f"Signup | status inesperado | status={resp.status_code}")
+    return None
+
+
+async def _resolve_or_provision_client(email: str, business_name: str = ""):
+    """
+    Resolve o cliente do e-mail autenticado — criando um novo se não
+    existir (signup self-service: qualquer conta válida ganha negócio).
+
+    403 apenas no caso ambíguo (2+ clientes com o mesmo e-mail).
+    """
+    clients = await db.get_clients_by_owner_email(email)
+    if len(clients) == 1:
+        return clients[0]
+    if len(clients) > 1:
+        log.warning(f"Login | e-mail vinculado a 2+ clientes | email=***@{email.split('@')[-1]}")
+        raise HTTPException(403, "Este e-mail está vinculado a mais de uma conta. Fale com o suporte.")
+
+    client = await db.create_client_signup(email, business_name)
+    if not client:
+        raise HTTPException(503, "Não foi possível criar sua conta agora. Tente de novo.")
+    return client
+
+
+def _post_login_redirect(client) -> str:
+    """Conta nova/incompleta cai no wizard; conta ativa cai no Cockpit."""
+    status = getattr(client.onboarding_status, "value", client.onboarding_status)
+    if str(status) == "active":
+        return f"/cockpit?client_id={client.client_id}"
+    return f"/wizard/page?client_id={client.client_id}"
+
+
+def _session_response(client, remember: bool) -> JSONResponse:
     """Monta a resposta de login OK: cookie de sessão + redirect."""
+    client_id = client.client_id
     session = create_session_token(client_id)
-    resp = JSONResponse({"status": "ok", "redirect": f"/cockpit?client_id={client_id}"})
+    resp = JSONResponse({"status": "ok", "redirect": _post_login_redirect(client)})
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session,
@@ -238,13 +321,10 @@ async def login(payload: LoginRequest) -> JSONResponse:
         raise HTTPException(401, "E-mail ou senha incorretos.")
 
     user_email = ((grant.get("user") or {}).get("email") or email).strip().lower()
-    client = await db.get_client_by_owner_email(user_email)
-    if not client:
-        log.warning(f"Login | autenticou mas sem cliente vinculado | email=***@{user_email.split('@')[-1]}")
-        raise HTTPException(403, "Este e-mail não está vinculado a nenhuma conta HUMA.")
+    client = await _resolve_or_provision_client(user_email)
 
     log.info(f"Login | senha ok | client={client.client_id}")
-    return _session_response(client.client_id, payload.remember)
+    return _session_response(client, payload.remember)
 
 
 # ================================================================
@@ -268,13 +348,10 @@ async def session_from_supabase(payload: SupabaseSessionRequest) -> JSONResponse
         raise HTTPException(401, "Sessão inválida ou expirada. Entre de novo.")
 
     email = user["email"].strip().lower()
-    client = await db.get_client_by_owner_email(email)
-    if not client:
-        log.warning(f"Login | Google/reset sem cliente vinculado | email=***@{email.split('@')[-1]}")
-        raise HTTPException(403, "Este e-mail não está vinculado a nenhuma conta HUMA.")
+    client = await _resolve_or_provision_client(email)
 
     log.info(f"Login | sessão via supabase token | client={client.client_id}")
-    return _session_response(client.client_id, payload.remember)
+    return _session_response(client, payload.remember)
 
 
 # ================================================================
@@ -287,9 +364,10 @@ async def forgot_password(payload: ForgotRequest) -> dict:
     """
     Envia e-mail de (re)definição de senha via Supabase.
 
-    Serve também de PRIMEIRO ACESSO: se o e-mail está vinculado a um
-    cliente mas ainda não tem conta no Auth, a conta é criada na hora.
-    Resposta sempre genérica (anti-enumeração).
+    Se o e-mail está vinculado a um cliente mas ainda não tem conta no
+    Auth (pré-cadastro feito pelo suporte), a conta é criada na hora.
+    O /recover roda pra QUALQUER e-mail — o GoTrue silenciosamente não
+    envia nada pra e-mail desconhecido. Resposta sempre genérica.
     """
     if not _gotrue_ready():
         raise HTTPException(503, "Serviço temporariamente indisponível. Tente mais tarde.")
@@ -306,14 +384,56 @@ async def forgot_password(payload: ForgotRequest) -> dict:
         return generic
 
     client = await db.get_client_by_owner_email(email)
-    if not client:
-        log.info(f"Login | forgot pra e-mail não vinculado | email=***@{email.split('@')[-1]}")
-        return generic
+    if client:
+        # Pré-cadastro (suporte criou o cliente antes da conta existir)
+        await _gotrue_admin_ensure_user(email)
 
-    await _gotrue_admin_ensure_user(email)
     await _gotrue_recover(email)
-    log.info(f"Login | e-mail de senha enviado | client={client.client_id}")
+    log.info(f"Login | recover disparado | vinculado={bool(client)}")
     return generic
+
+
+# ================================================================
+# POST /auth/signup — criar conta (self-service)
+# ================================================================
+
+
+@router.post("/auth/signup")
+async def signup(payload: SignupRequest) -> JSONResponse:
+    """
+    Cadastro self-service: qualquer pessoa cria conta com e-mail+senha.
+
+    Com confirmação de e-mail LIGADA no Supabase (default), devolve
+    status=confirm_email e o usuário entra pelo link do e-mail (que cai
+    no /auth/callback e provisiona o negócio). Com confirmação
+    desligada, já entra direto com o negócio criado.
+    """
+    if not _gotrue_ready():
+        raise HTTPException(503, "Cadastro temporariamente indisponível. Tente mais tarde.")
+
+    email = payload.email
+    attempts = await cache.incr_with_ttl(f"login:signup:{email}", LOGIN_RATE_LIMIT_WINDOW)
+    if attempts > LOGIN_RATE_LIMIT_MAX:
+        raise HTTPException(429, "Muitas tentativas. Aguarde alguns minutos e tente de novo.")
+
+    result = await _gotrue_signup(email, payload.password)
+    if result == "exists":
+        raise HTTPException(409, "Este e-mail já tem conta. Use Entrar ou 'Esqueci a senha'.")
+    if result is None:
+        raise HTTPException(400, "Cadastro recusado. Confira o e-mail e use uma senha mais forte.")
+
+    access_token = result.get("access_token", "")
+    if not access_token:
+        # Confirmação de e-mail ligada: conta criada, falta clicar no link
+        log.info(f"Signup | aguardando confirmação | email=***@{email.split('@')[-1]}")
+        return JSONResponse({
+            "status": "confirm_email",
+            "message": "Conta criada! Enviamos um link de confirmação pro seu e-mail — clica nele pra entrar.",
+        })
+
+    client = await _resolve_or_provision_client(email, payload.business_name)
+    log.info(f"Signup | conta criada e logada | client={client.client_id}")
+    return _session_response(client, remember=True)
 
 
 # ================================================================
@@ -378,6 +498,19 @@ _BASE_STYLE = """
     .msg { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 14px; display: none; }
     .msg.ok { background: #14532d; color: #bbf7d0; display: block; }
     .msg.err { background: #7f1d1d; color: #fecaca; display: block; }
+    .hidden { display: none; }
+    .tabs { display: flex; gap: 4px; background: #0f172a; border-radius: 10px; padding: 4px; margin-bottom: 24px; }
+    .tab {
+      flex: 1; padding: 10px; border: 0; border-radius: 8px;
+      background: transparent; color: #94a3b8; font-size: 14px;
+      font-weight: 600; cursor: pointer;
+    }
+    .tab.active { background: #334155; color: #fff; }
+    input[type=text] {
+      width: 100%; padding: 12px 14px; border-radius: 8px;
+      border: 1px solid #334155; background: #0f172a; color: #e2e8f0;
+      font-size: 16px; outline: none;
+    }
 """
 
 _GOOGLE_ICON = (
@@ -409,26 +542,49 @@ async def login_page() -> HTMLResponse:
 </head>
 <body>
   <div class="card">
-    <h1>Entrar no Cockpit</h1>
-    <p class="sub">Use o e-mail cadastrado na sua conta HUMA.</p>
-
-    <label for="email">E-mail</label>
-    <input id="email" type="email" placeholder="voce@suaempresa.com.br" autocomplete="email">
-
-    <label for="password">Senha</label>
-    <input id="password" type="password" placeholder="••••••••" autocomplete="current-password">
-
-    <div class="row">
-      <label class="remember" style="margin:0;">
-        <input id="remember" type="checkbox" checked> Lembrar de mim
-      </label>
-      <button class="link" id="forgot">Esqueci a senha / primeiro acesso</button>
+    <div class="tabs">
+      <button class="tab active" id="tab-login">Entrar</button>
+      <button class="tab" id="tab-signup">Criar conta</button>
     </div>
 
-    <button class="primary" id="enter">Entrar</button>
+    <div id="pane-login">
+      <h1>Entrar no Cockpit</h1>
+      <p class="sub">Bom te ver de novo.</p>
+
+      <label for="email">E-mail</label>
+      <input id="email" type="email" placeholder="voce@suaempresa.com.br" autocomplete="email">
+
+      <label for="password">Senha</label>
+      <input id="password" type="password" placeholder="••••••••" autocomplete="current-password">
+
+      <div class="row">
+        <label class="remember" style="margin:0;">
+          <input id="remember" type="checkbox" checked> Lembrar de mim
+        </label>
+        <button class="link" id="forgot">Esqueci a senha</button>
+      </div>
+
+      <button class="primary" id="enter">Entrar</button>
+    </div>
+
+    <div id="pane-signup" class="hidden">
+      <h1>Criar sua conta</h1>
+      <p class="sub">Em minutos sua IA está vendendo no seu WhatsApp.</p>
+
+      <label for="s-business">Nome do seu negócio</label>
+      <input id="s-business" type="text" placeholder="Ex.: Clínica Bella Pele" maxlength="80">
+
+      <label for="s-email">E-mail</label>
+      <input id="s-email" type="email" placeholder="voce@suaempresa.com.br" autocomplete="email">
+
+      <label for="s-password">Senha (mínimo 8 caracteres)</label>
+      <input id="s-password" type="password" autocomplete="new-password">
+
+      <button class="primary" id="signup">Criar conta</button>
+    </div>
 
     <div class="divider">ou</div>
-    <button class="google" id="google">{_GOOGLE_ICON} Entrar com Google</button>
+    <button class="google" id="google">{_GOOGLE_ICON} Continuar com Google</button>
 
     <div id="msg" class="msg"></div>
   </div>
@@ -440,6 +596,16 @@ function show(kind, text) {{
   $("msg").className = "msg " + kind;
   $("msg").textContent = text;
 }}
+
+function setTab(signup) {{
+  $("pane-login").className = signup ? "hidden" : "";
+  $("pane-signup").className = signup ? "" : "hidden";
+  $("tab-login").className = "tab" + (signup ? "" : " active");
+  $("tab-signup").className = "tab" + (signup ? " active" : "");
+  $("msg").className = "msg";
+}}
+$("tab-login").addEventListener("click", () => setTab(false));
+$("tab-signup").addEventListener("click", () => setTab(true));
 
 async function doLogin() {{
   const email = $("email").value.trim();
@@ -461,6 +627,31 @@ async function doLogin() {{
   $("enter").disabled = false;
 }}
 
+async function doSignup() {{
+  const email = $("s-email").value.trim();
+  const password = $("s-password").value;
+  const business_name = $("s-business").value.trim();
+  if (!email || password.length < 8) {{
+    show("err", "Preencha o e-mail e uma senha com pelo menos 8 caracteres.");
+    return;
+  }}
+  $("signup").disabled = true;
+  try {{
+    const r = await fetch("/auth/signup", {{
+      method: "POST",
+      headers: {{"Content-Type": "application/json"}},
+      body: JSON.stringify({{email, password, business_name}}),
+    }});
+    const data = await r.json();
+    if (r.ok && data.redirect) {{ location.href = data.redirect; return; }}
+    if (r.ok) {{ show("ok", data.message); }}
+    else {{ show("err", data.detail || "Não foi possível criar a conta."); }}
+  }} catch (e) {{
+    show("err", "Erro de conexão. Tente de novo.");
+  }}
+  $("signup").disabled = false;
+}}
+
 async function doForgot() {{
   const email = $("email").value.trim();
   if (!email) {{ show("err", "Digite seu e-mail no campo acima e clique de novo."); return; }}
@@ -479,6 +670,8 @@ async function doForgot() {{
 
 $("enter").addEventListener("click", doLogin);
 $("password").addEventListener("keydown", (e) => {{ if (e.key === "Enter") doLogin(); }});
+$("s-password").addEventListener("keydown", (e) => {{ if (e.key === "Enter") doSignup(); }});
+$("signup").addEventListener("click", doSignup);
 $("forgot").addEventListener("click", doForgot);
 $("google").addEventListener("click", () => {{
   if (!AUTHORIZE_URL) {{ show("err", "Login com Google não configurado neste ambiente."); return; }}

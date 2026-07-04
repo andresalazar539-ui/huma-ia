@@ -125,30 +125,73 @@ async def get_client_by_evolution_instance(instance: str) -> ClientIdentity | No
     return _identity_from_row(resp.data[0])
 
 
-async def get_client_by_owner_email(email: str) -> ClientIdentity | None:
+async def get_clients_by_owner_email(email: str) -> list[ClientIdentity]:
     """
-    Login do Cockpit: descobre o cliente HUMA a partir do e-mail do DONO
-    (owner_email), depois que o Supabase Auth validou a identidade.
-
-    Comparação case-insensitive (ilike sem wildcard = igualdade exata
-    ignorando caixa). Retorna None se vazio, sem match, ou match ambíguo
-    (2+ clientes com o mesmo e-mail — resolver manualmente, não logar
-    ninguém no cliente errado).
+    Todos os clientes vinculados a um e-mail de dono (máx. 2 — o caller
+    só precisa distinguir 0, 1 ou "mais de 1"). Comparação
+    case-insensitive (ilike sem wildcard = igualdade exata sem caixa).
     """
     email = (email or "").strip().lower()
     if not email or "@" not in email:
-        return None
+        return []
 
     resp = await run_in_threadpool(
         lambda: get_supabase().table("clients").select("*")
             .ilike("owner_email", email).limit(2).execute()
     )
-    rows = resp.data or []
-    if len(rows) != 1:
-        if len(rows) > 1:
-            log.warning(f"Login | owner_email ambíguo | email=***@{email.split('@')[1]} | matches={len(rows)}")
+    return [_identity_from_row(row) for row in (resp.data or [])]
+
+
+async def get_client_by_owner_email(email: str) -> ClientIdentity | None:
+    """
+    Login do Cockpit: descobre o cliente HUMA a partir do e-mail do DONO.
+
+    Retorna None se vazio, sem match, ou match ambíguo (2+ clientes com
+    o mesmo e-mail — resolver manualmente, não logar ninguém no errado).
+    """
+    clients = await get_clients_by_owner_email(email)
+    if len(clients) != 1:
+        if len(clients) > 1:
+            domain = (email or "").split("@")[-1]
+            log.warning(f"Login | owner_email ambíguo | email=***@{domain} | matches={len(clients)}")
         return None
-    return _identity_from_row(rows[0])
+    return clients[0]
+
+
+async def create_client_signup(owner_email: str, business_name: str = "") -> ClientIdentity | None:
+    """
+    Signup self-service: cria o cliente mínimo pro dono recém-cadastrado.
+
+    Só client_id e business_name são NOT NULL na tabela — o resto nasce
+    com default e vai sendo preenchido no wizard/settings. api_key é
+    gerada na hora (uso legado/integrações; o Cockpit usa cookie).
+
+    Retorna a identidade criada ou None em falha (caller decide o erro).
+    """
+    import secrets
+
+    email = (owner_email or "").strip().lower()
+    if not email or "@" not in email:
+        return None
+
+    client_id = f"cli_{secrets.token_hex(6)}"
+    row = {
+        "client_id": client_id,
+        "business_name": (business_name or "").strip()[:80] or "Meu negócio",
+        "owner_email": email,
+        "api_key": secrets.token_urlsafe(32),
+        "onboarding_status": OnboardingStatus.PENDING.value,
+    }
+    try:
+        await run_in_threadpool(
+            lambda: get_supabase().table("clients").insert(row).execute()
+        )
+    except Exception as e:
+        log.error(f"Signup | insert falhou | client={client_id} | {type(e).__name__}: {e}")
+        return None
+
+    log.info(f"Signup | cliente provisionado | client={client_id} | email=***@{email.split('@')[-1]}")
+    return await get_client(client_id)
 
 
 async def update_client(client_id: str, updates: dict):
