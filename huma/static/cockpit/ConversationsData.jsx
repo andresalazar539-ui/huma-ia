@@ -249,3 +249,26 @@ async function whatsappDisconnect() {
 }
 
 Object.assign(window, { whatsappConnect, whatsappStatus, whatsappDisconnect });
+
+/* ---------------- Settings (Sprint 2: o Salvar salva de verdade) ---------------- */
+// GET devolve { settings: {business_name, tone_of_voice, ...} } — só campos editáveis.
+// PATCH aceita subconjunto desses campos; backend valida e ignora o resto.
+async function fetchSettings() {
+  const url = `/api/clients/${encodeURIComponent(CLIENT_ID)}/settings`;
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function saveSettings(partial) {
+  const url = `/api/clients/${encodeURIComponent(CLIENT_ID)}/settings`;
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(partial),
+  });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+Object.assign(window, { fetchSettings, saveSettings });

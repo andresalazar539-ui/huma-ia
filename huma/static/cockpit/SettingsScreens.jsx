@@ -1,10 +1,38 @@
 // SettingsScreens.jsx — Negócio, Perfil, e modal Convidar Equipe
-const { useState: useStateS } = React;
+const { useState: useStateS, useEffect: useEffectS } = React;
+
+// ---------- Horário de atendimento: grid ↔ string do backend ----------
+// Backend guarda working_hours como TEXTO legível (vai direto pro prompt
+// da IA). Serializamos só os dias abertos: "Seg 08:00-20:00, Sab 09:00-14:00".
+const DAY_ORDER = ['Seg','Ter','Qua','Qui','Sex','Sab','Dom'];
+
+function serializeWorkingHours(days) {
+  return DAY_ORDER
+    .filter(d => days[d.toLowerCase()]?.on)
+    .map(d => { const x = days[d.toLowerCase()]; return `${d} ${x.from}-${x.to}`; })
+    .join(', ');
+}
+
+// Tenta reconstruir o grid a partir da string. Só reconhece o formato
+// que nós mesmos serializamos — string legada em outro formato mantém
+// o grid default (e não é sobrescrita até o usuário mexer nele).
+function parseWorkingHours(str) {
+  if (!str) return null;
+  const grid = {};
+  DAY_ORDER.forEach(d => { grid[d.toLowerCase()] = { on: false, from: '08:00', to: '18:00' }; });
+  const tokens = str.split(',').map(t => t.trim()).filter(Boolean);
+  for (const t of tokens) {
+    const m = t.match(/^(Seg|Ter|Qua|Qui|Sex|Sab|Dom)\s+(\d{2}:\d{2})-(\d{2}:\d{2})$/);
+    if (!m) return null;
+    grid[m[1].toLowerCase()] = { on: true, from: m[2], to: m[3] };
+  }
+  return grid;
+}
 
 // ============================================================
 // Shared shell — sidebar interna + header + content
 // ============================================================
-const SettingsShell = ({ eyebrow, title, subtitle, tabs, activeTab, onTabChange, onSave, children }) => {
+const SettingsShell = ({ eyebrow, title, subtitle, tabs, activeTab, onTabChange, onSave, saveLabel, children }) => {
   return (
     <div style={{ flex: 1, display: 'flex', minWidth: 0, background: 'var(--paper)' }}>
       {/* Sidebar interna */}
@@ -56,7 +84,7 @@ const SettingsShell = ({ eyebrow, title, subtitle, tabs, activeTab, onTabChange,
               </div>
             )}
           </div>
-          {onSave && <Button variant="dark" size="md" onClick={onSave}>Salvar</Button>}
+          {onSave && <Button variant="dark" size="md" onClick={onSave}>{saveLabel || 'Salvar'}</Button>}
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px 48px' }}>
           <div style={{ maxWidth: 900, display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -157,6 +185,42 @@ const Toggle = ({ checked, onChange, label }) => (
 // ============================================================
 const NegocioScreen = ({ onNavMain }) => {
   const [tab, setTab] = useStateS('info');
+  // Settings REAIS do backend (Sprint 2): carrega no mount, salva só o
+  // que o usuário mexeu (dirty tracking) via PATCH /settings.
+  const [settings, setSettings] = useStateS(null);
+  const [dirty, setDirty] = useStateS({});
+  const [saveLabel, setSaveLabel] = useStateS('Salvar');
+
+  useEffectS(() => {
+    fetchSettings()
+      .then(d => setSettings(d.settings || {}))
+      .catch(() => setSettings({}));
+  }, []);
+
+  const patch = (k, v) => {
+    setSettings(s => ({ ...s, [k]: v }));
+    setDirty(d => ({ ...d, [k]: true }));
+  };
+
+  const doSave = async () => {
+    const payload = {};
+    Object.keys(dirty).forEach(k => { payload[k] = settings[k]; });
+    if (!Object.keys(payload).length) {
+      setSaveLabel('Nada mudou');
+      setTimeout(() => setSaveLabel('Salvar'), 1600);
+      return;
+    }
+    setSaveLabel('Salvando…');
+    try {
+      await saveSettings(payload);
+      setDirty({});
+      setSaveLabel('Salvo ✓');
+    } catch (e) {
+      setSaveLabel('Erro — tente de novo');
+    }
+    setTimeout(() => setSaveLabel('Salvar'), 2200);
+  };
+
   const tabs = [
     { id: 'info',       label: 'Informações do negócio', icon: 'building' },
     { id: 'knowledge',  label: 'HUMA entende seu negócio', icon: 'sparkle' },
@@ -165,9 +229,10 @@ const NegocioScreen = ({ onNavMain }) => {
     { id: 'channels',   label: 'Canais ativos', icon: 'message' },
   ];
 
+  const loading = <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)' }}>Carregando…</div>;
   let body;
-  if (tab === 'info')       body = <NegocioInfo/>;
-  else if (tab === 'knowledge') body = <NegocioKnowledge/>;
+  if (tab === 'info')       body = settings ? <NegocioInfo settings={settings} patch={patch}/> : loading;
+  else if (tab === 'knowledge') body = settings ? <NegocioKnowledge settings={settings} patch={patch}/> : loading;
   else if (tab === 'kb')    body = <NegocioKB/>;
   else if (tab === 'integ') body = <NegocioIntegShortcut onNavMain={onNavMain}/>;
   else                      body = <NegocioChannels/>;
@@ -179,38 +244,50 @@ const NegocioScreen = ({ onNavMain }) => {
       tabs={tabs}
       activeTab={tab}
       onTabChange={setTab}
-      onSave={tab === 'info' || tab === 'knowledge' ? () => {} : null}
+      onSave={tab === 'info' || tab === 'knowledge' ? doSave : null}
+      saveLabel={saveLabel}
     >
       {body}
     </SettingsShell>
   );
 };
 
-const NegocioInfo = () => {
-  const [days, setDays] = useStateS({
-    seg: { on: true, from: '08:00', to: '20:00' },
-    ter: { on: true, from: '08:00', to: '20:00' },
-    qua: { on: true, from: '08:00', to: '20:00' },
-    qui: { on: true, from: '08:00', to: '20:00' },
-    sex: { on: true, from: '08:00', to: '19:00' },
-    sab: { on: true, from: '09:00', to: '14:00' },
+const NegocioInfo = ({ settings, patch }) => {
+  const defaultGrid = {
+    seg: { on: true, from: '08:00', to: '18:00' },
+    ter: { on: true, from: '08:00', to: '18:00' },
+    qua: { on: true, from: '08:00', to: '18:00' },
+    qui: { on: true, from: '08:00', to: '18:00' },
+    sex: { on: true, from: '08:00', to: '18:00' },
+    sab: { on: false, from: '09:00', to: '14:00' },
     dom: { on: false, from: '09:00', to: '14:00' },
-  });
+  };
+  const [days, setDays] = useStateS(() => parseWorkingHours(settings.working_hours) || defaultGrid);
   const order = ['seg','ter','qua','qui','sex','sab','dom'];
   const names = { seg:'Segunda', ter:'Terça', qua:'Quarta', qui:'Quinta', sex:'Sexta', sab:'Sábado', dom:'Domingo' };
 
+  // Qualquer mexida no grid vira a string do backend (vai pro prompt da IA)
+  const updateDays = (updater) => {
+    setDays(d => {
+      const next = typeof updater === 'function' ? updater(d) : updater;
+      patch('working_hours', serializeWorkingHours(next));
+      return next;
+    });
+  };
+
   return (
     <>
-      <Card title="Dados da clínica">
+      <Card title="Dados do negócio">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
-          <Field label="Nome comercial" half><Input defaultValue="Estúdio Marina"/></Field>
-          <Field label="CNPJ" half><Input defaultValue="28.473.190/0001-42"/></Field>
-          <Field label="Endereço"><Input defaultValue="Rua Pamplona, 1234 · 4º andar"/></Field>
-          <Field label="Cidade" half><Input defaultValue="São Paulo"/></Field>
-          <Field label="Estado" half><Input defaultValue="SP"/></Field>
-          <Field label="CEP" half><Input defaultValue="01405-002"/></Field>
-          <Field label="Telefone principal" half><Input defaultValue="+55 11 3456-7890"/></Field>
-          <Field label="Email de contato"><Input defaultValue="contato@estudiomarina.com.br"/></Field>
+          <Field label="Nome comercial" half>
+            <Input value={settings.business_name || ''} onChange={e => patch('business_name', e.target.value)}/>
+          </Field>
+          <Field label="O que seu negócio faz" hint="A HUMA usa isso pra se apresentar e responder certo.">
+            <Textarea rows={2} value={settings.business_description || ''} onChange={e => patch('business_description', e.target.value)}/>
+          </Field>
+          <Field label="WhatsApp do dono (avisos da HUMA)" half hint="Agendamentos, pagamentos e alertas chegam aqui.">
+            <Input value={settings.owner_phone || ''} onChange={e => patch('owner_phone', e.target.value)} placeholder="5511987654321"/>
+          </Field>
         </div>
       </Card>
 
@@ -224,12 +301,16 @@ const NegocioInfo = () => {
               border: '1px solid var(--paper-edge)',
             }}>
               <div style={{ width: 100 }}>
-                <Toggle checked={days[k].on} onChange={() => setDays(d => ({ ...d, [k]: { ...d[k], on: !d[k].on }}))} label={names[k]}/>
+                <Toggle checked={days[k].on} onChange={() => updateDays(d => ({ ...d, [k]: { ...d[k], on: !d[k].on }}))} label={names[k]}/>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, opacity: days[k].on ? 1 : 0.4 }}>
-                <Input defaultValue={days[k].from} disabled={!days[k].on} style={{ width: 92, padding: '7px 10px', fontSize: 13 }}/>
+                <Input value={days[k].from} disabled={!days[k].on}
+                       onChange={e => updateDays(d => ({ ...d, [k]: { ...d[k], from: e.target.value }}))}
+                       style={{ width: 92, padding: '7px 10px', fontSize: 13 }}/>
                 <span style={{ color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>até</span>
-                <Input defaultValue={days[k].to} disabled={!days[k].on} style={{ width: 92, padding: '7px 10px', fontSize: 13 }}/>
+                <Input value={days[k].to} disabled={!days[k].on}
+                       onChange={e => updateDays(d => ({ ...d, [k]: { ...d[k], to: e.target.value }}))}
+                       style={{ width: 92, padding: '7px 10px', fontSize: 13 }}/>
               </div>
               <div style={{ flex: 1 }}/>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
@@ -266,8 +347,20 @@ const NegocioInfo = () => {
   );
 };
 
-const NegocioKnowledge = () => {
-  const [tone, setTone] = useStateS('acolhedor');
+const NegocioKnowledge = ({ settings, patch }) => {
+  // tone_of_voice no backend é texto livre (vai pro prompt). Os radios
+  // mapeiam pra frases canônicas; texto legado cai no mais próximo.
+  const TONES = { formal: 'Formal e profissional', acolhedor: 'Acolhedor e próximo', leve: 'Descontraído e leve' };
+  const toneIdFrom = (txt) => {
+    const t = (txt || '').toLowerCase();
+    if (t.includes('formal')) return 'formal';
+    if (t.includes('descontra') || t.includes('leve')) return 'leve';
+    return 'acolhedor';
+  };
+  const [tone, setTone] = useStateS(() => toneIdFrom(settings.tone_of_voice));
+  const pickTone = (id) => { setTone(id); patch('tone_of_voice', TONES[id]); };
+  const products = settings.products_or_services || [];
+
   return (
     <>
       <div style={{
@@ -278,7 +371,7 @@ const NegocioKnowledge = () => {
           fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
           color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance',
         }}>
-          HUMA aprendeu estas coisas sobre o Estúdio Marina no onboarding. Você pode ajustar a qualquer momento — quanto mais HUMA sabe, melhor ela atende.
+          HUMA aprendeu estas coisas sobre {settings.business_name || 'seu negócio'} no onboarding. Você pode ajustar a qualquer momento — quanto mais HUMA sabe, melhor ela atende.
         </div>
       </div>
 
@@ -295,7 +388,7 @@ const NegocioKnowledge = () => {
               border: '1px solid ' + (tone === o.id ? 'var(--ink)' : 'var(--paper-edge)'),
               background: tone === o.id ? 'var(--paper-sunk)' : 'transparent',
             }}>
-              <input type="radio" checked={tone === o.id} onChange={() => setTone(o.id)}
+              <input type="radio" checked={tone === o.id} onChange={() => pickTone(o.id)}
                      style={{ accentColor: 'var(--ink)' }}/>
               <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{o.label}</div>
@@ -304,8 +397,8 @@ const NegocioKnowledge = () => {
             </label>
           ))}
         </div>
-        <Field label="Observações específicas" hint="Ex: nunca fale sobre valores de procedimentos antes da avaliação.">
-          <Textarea rows={3} defaultValue="Sempre ofereça avaliação gratuita antes do orçamento. Dra. Marina não atende no primeiro contato — triagem sempre com a recepção."/>
+        <Field label="Observações específicas" hint="Regras que a HUMA segue à risca. Ex: nunca fale valores antes da avaliação.">
+          <Textarea rows={3} value={settings.custom_rules || ''} onChange={e => patch('custom_rules', e.target.value)}/>
         </Field>
       </Card>
 
@@ -319,60 +412,42 @@ const NegocioKnowledge = () => {
           }}>
             <div>Nome</div><div>Duração</div><div>Preço</div><div>Descrição</div><div></div>
           </div>
-          {[
-            { n: 'Limpeza de pele',    d: '60 min', p: 'R$ 280',       desc: 'Extração, esfoliação, máscara' },
-            { n: 'Botox testa',        d: '30 min', p: 'R$ 890',       desc: 'Aplicação + consulta de retorno' },
-            { n: 'Microagulhamento',   d: '75 min', p: 'R$ 450',       desc: 'Facial completo com anestésico' },
-            { n: 'Preenchimento labial', d: '45 min', p: 'R$ 1.200',   desc: 'Ácido hialurônico premium' },
-            { n: 'Avaliação',          d: '30 min', p: 'Grátis',       desc: 'Primeira consulta, sem compromisso' },
-          ].map((p, i) => (
+          {products.length === 0 && (
+            <div style={{
+              padding: '16px 14px', borderTop: '1px solid var(--paper-edge)',
+              fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)',
+            }}>
+              Nenhum produto ou serviço cadastrado ainda — a HUMA não fala preço que não conhece.
+            </div>
+          )}
+          {products.map((p, i) => (
             <div key={i} style={{
               display: 'grid', gridTemplateColumns: '1.6fr 0.6fr 0.8fr 1.8fr 60px',
               padding: '12px 14px', alignItems: 'center',
               borderTop: '1px solid var(--paper-edge)',
               fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)',
             }}>
-              <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{p.n}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>{p.d}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>{p.p}</div>
-              <div style={{ color: 'var(--ink-3)' }}>{p.desc}</div>
-              <div><Button variant="plain" size="sm">Editar</Button></div>
+              <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{p.name || '—'}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>{p.duration || '—'}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>{p.price ? `R$ ${p.price}` : '—'}</div>
+              <div style={{ color: 'var(--ink-3)' }}>{p.description || ''}</div>
+              <div></div>
             </div>
           ))}
         </div>
       </Card>
 
-      <Card title="Perguntas frequentes" action={<Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>}>Novo par</Button>}>
+      <Card title="Perguntas frequentes">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {[
-            { q: 'Vocês atendem convênio?', a: 'Trabalhamos apenas particular, mas emitimos NF para reembolso.' },
-            { q: 'Precisa de avaliação antes?', a: 'Sim. A primeira consulta é gratuita e agendável pelo WhatsApp.' },
-            { q: 'Onde fica a clínica?', a: 'Rua Pamplona, 1234 — 4º andar, Jardins. Estacionamento conveniado no prédio.' },
-          ].map((p, i) => (
-            <div key={i} style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)' }}>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{p.q}</div>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 4, lineHeight: 1.5 }}>{p.a}</div>
+          {(settings.faq || []).length === 0 && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
+              Nenhuma pergunta frequente cadastrada — a HUMA responde na hora o que estiver aqui, sem gastar IA.
             </div>
-          ))}
-        </div>
-      </Card>
-
-      <Card title="Regras específicas" action={<Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>}>Nova regra</Button>}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {[
-            'Não agendar botox em sextas à tarde (Dra. Marina viaja)',
-            'Limpeza de pele só após avaliação — nunca de primeira vez',
-            'Preenchimento requer assinatura de termo de consentimento antes da consulta',
-            'Clientes novas: primeira consulta sempre com triagem da Sofia',
-          ].map((r, i) => (
-            <div key={i} style={{
-              display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-              border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)',
-              fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)',
-            }}>
-              <span style={{ color: 'var(--terracotta)' }}>·</span>
-              <span style={{ flex: 1 }}>{r}</span>
-              <Button variant="plain" size="sm">Editar</Button>
+          )}
+          {(settings.faq || []).map((p, i) => (
+            <div key={i} style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)' }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{p.question}</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 4, lineHeight: 1.5 }}>{p.answer}</div>
             </div>
           ))}
         </div>
@@ -558,7 +633,7 @@ const PerfilScreen = () => {
       tabs={tabs}
       activeTab={tab}
       onTabChange={setTab}
-      onSave={tab === 'you' ? () => {} : null}
+      onSave={null}
     >
       {body}
     </SettingsShell>

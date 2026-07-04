@@ -201,6 +201,70 @@ async def get_metrics(client_id: str, _=Depends(verify_api_key)):
     return await db.get_conversation_metrics(client_id)
 
 
+# ── Settings do Cockpit (Sprint 2 — o botão Salvar salva de verdade) ──
+
+# Whitelist de campos do ClientIdentity editáveis pela tela de Ajustes.
+# NUNCA aceitar campo arbitrário: api_key, tokens OAuth, evolution_instance,
+# capabilities e onboarding_status têm fluxos próprios e ficam de fora.
+SETTINGS_EDITABLE_FIELDS = frozenset({
+    "business_name", "business_description", "tone_of_voice", "working_hours",
+    "custom_rules", "products_or_services", "faq", "forbidden_words",
+    "personality_traits", "use_emojis", "fallback_message",
+    "silent_hours_start", "silent_hours_end", "silent_hours_message",
+    "owner_phone",
+    "notify_owner_on_appointment", "notify_owner_on_payment",
+    "notify_owner_on_cancellation", "notify_owner_on_stuck_lead",
+    "max_discount_percent", "max_installments", "accepted_payment_methods",
+})
+
+
+@router.get("/api/clients/{client_id}/settings", tags=["Cockpit"])
+async def get_settings(client_id: str, _=Depends(verify_api_key)) -> dict:
+    """Valores atuais dos campos editáveis (pra tela de Ajustes carregar dados reais)."""
+    client = await db.get_client(client_id)
+    if not client:
+        raise HTTPException(404, "Cliente não encontrado")
+    data = client.model_dump()
+    return {"settings": {k: data.get(k) for k in SETTINGS_EDITABLE_FIELDS}}
+
+
+@router.patch("/api/clients/{client_id}/settings", tags=["Cockpit"])
+async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_key)) -> dict:
+    """
+    Salva campos editáveis do ClientIdentity (botão Salvar do Cockpit).
+
+    Segurança: só aceita campos da whitelist — o resto é ignorado e
+    reportado em "ignored". Validação: o payload mesclado é revalidado
+    pelo model ClientIdentity ANTES de persistir; valor com tipo errado
+    vira 422 e nada é gravado.
+    """
+    client = await db.get_client(client_id)
+    if not client:
+        raise HTTPException(404, "Cliente não encontrado")
+
+    accepted = {k: v for k, v in (updates or {}).items() if k in SETTINGS_EDITABLE_FIELDS}
+    ignored = sorted(set(updates or {}) - set(accepted))
+    if not accepted:
+        raise HTTPException(400, "Nenhum campo editável no payload.")
+
+    # Revalida o identity inteiro com os novos valores (tipos/enums)
+    from pydantic import ValidationError
+    merged = {**client.model_dump(), **accepted}
+    try:
+        from huma.models.schemas import ClientIdentity
+        validated = ClientIdentity(**merged)
+    except ValidationError as e:
+        first = e.errors()[0] if e.errors() else {}
+        campo = ".".join(str(p) for p in first.get("loc", []))
+        raise HTTPException(422, f"Valor inválido em '{campo}'.")
+
+    # Persiste SÓ o que mudou (valores já normalizados pelo model)
+    persisted = {k: validated.model_dump()[k] for k in accepted}
+    await db.update_client(client_id, persisted)
+    log.info(f"Settings salvos | client={client_id} | fields={sorted(accepted.keys())}")
+    return {"status": "ok", "updated": sorted(accepted.keys()), "ignored": ignored}
+
+
 # ── Cockpit (T2) ──
 
 @router.get("/api/conversations", tags=["Cockpit"])
@@ -786,6 +850,25 @@ async def health_deep():
     except Exception:
         services["supabase"] = "unavailable"
 
+    # Supabase AUTH (login do Cockpit) — checagem real via GoTrue /health.
+    # Pega apikey inválida/mal colada e GoTrue fora do ar (bug de 2026-07-04:
+    # anon key com quebra de linha derrubava o login sem nenhum sinal aqui).
+    from huma.config import SUPABASE_ANON_KEY, SUPABASE_URL
+    if not (SUPABASE_URL and SUPABASE_ANON_KEY):
+        services["supabase_auth"] = "not_configured"
+    else:
+        try:
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=5.0) as http:
+                r = await http.get(
+                    f"{SUPABASE_URL}/auth/v1/health",
+                    headers={"apikey": SUPABASE_ANON_KEY},
+                )
+            services["supabase_auth"] = "ok" if r.status_code == 200 else "unavailable"
+        except Exception as e:
+            log.error(f"Health | supabase_auth | {type(e).__name__}: {e}")
+            services["supabase_auth"] = "unavailable"
+
     # APIs externas — só checagem de presença de credencial (zero custo)
     services["anthropic"] = "configured" if ANTHROPIC_API_KEY else "not_configured"
     services["twilio"] = "configured" if (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN) else "not_configured"
@@ -795,10 +878,14 @@ async def health_deep():
     services["elevenlabs"] = "configured" if ELEVENLABS_API_KEY else "not_configured"
     services["google_calendar"] = "configured" if GOOGLE_CALENDAR_CREDENTIALS else "not_configured"
 
-    # Overall: down se algum crítico off, degraded se Redis off, ok caso contrário
+    # Overall: down se algum crítico off, degraded se Redis/login/IA com problema
     if services["supabase"] == "unavailable":
         overall = "down"
-    elif services["redis"] == "unavailable" or services["anthropic"] == "not_configured":
+    elif (
+        services["redis"] == "unavailable"
+        or services["anthropic"] == "not_configured"
+        or services["supabase_auth"] == "unavailable"
+    ):
         overall = "degraded"
     else:
         overall = "ok"

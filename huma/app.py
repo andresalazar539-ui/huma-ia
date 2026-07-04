@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from huma.config import APP_TITLE, APP_VERSION, APP_DESCRIPTION
+from huma.config import APP_TITLE, APP_VERSION, APP_DESCRIPTION, SENTRY_DSN
 from huma.routes.api import router
 from huma.routes.auth_login import router as auth_login_router
 from huma.routes.cockpit import router as cockpit_router
@@ -30,6 +30,21 @@ log = get_logger("app")
 
 def create_app() -> FastAPI:
     """Cria e configura a aplicação FastAPI."""
+
+    # Sentry (Sprint 2 — erro de produção com nome e stack trace, não caça às
+    # cegas). Sem SENTRY_DSN = desligado; falha de init nunca derruba o app.
+    if SENTRY_DSN:
+        try:
+            import sentry_sdk
+            sentry_sdk.init(
+                dsn=SENTRY_DSN,
+                release=f"huma-ia@{APP_VERSION}",
+                traces_sample_rate=0.05,   # 5% de traces de performance (custo baixo)
+                send_default_pii=False,    # LGPD: sem telefone/nome de lead nos eventos
+            )
+            log.info("Sentry ativo")
+        except Exception as e:
+            log.error(f"Sentry init falhou | {type(e).__name__}: {e}")
 
     app = FastAPI(
         title=APP_TITLE,

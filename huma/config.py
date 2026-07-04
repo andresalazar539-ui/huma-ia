@@ -64,11 +64,15 @@ EVOLUTION_WEBHOOK_TOKEN = clean_secret_env("EVOLUTION_WEBHOOK_TOKEN")
 # na hora de criar a instância do cliente. Sem barra no fim.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 
-# ── Login T0 (magic link via WhatsApp + cookie de sessão) ──
+# ── Login do Cockpit (Supabase Auth + cookie de sessão) ──
 # Segredo que assina o cookie de sessão do Cockpit (HMAC-SHA256).
 # Vazio = login por cookie DESABILITADO (só Bearer api_key funciona).
 # Gere com: python -c "import secrets; print(secrets.token_urlsafe(48))"
 SESSION_SECRET = clean_secret_env("SESSION_SECRET")
+
+# ── Observabilidade ──
+# DSN do Sentry (error tracking). Vazio = Sentry desligado (dev/testes).
+SENTRY_DSN = clean_secret_env("SENTRY_DSN")
 
 # ── Twilio (teste via Sandbox) ──
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
