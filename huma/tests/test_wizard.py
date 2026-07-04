@@ -223,3 +223,42 @@ class TestCapabilityCards:
         assert "ready" in d
         assert "blocking_providers" in d
         assert isinstance(d["blocking_providers"], list)
+
+
+# ================================================================
+# AUTH DAS ROTAS /wizard/* (Sprint 1 do lançamento)
+#
+# As rotas client-scoped exigem Bearer api_key (mesma verify_api_key
+# do resto da API). Sem header → 401. /wizard/verticals segue
+# público (dado estático, não vaza nada).
+# ================================================================
+
+
+class TestWizardRoutesAuth:
+    """Rotas do wizard trancadas com api_key."""
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from huma.app import app
+        return TestClient(app)
+
+    def test_state_requires_auth(self):
+        resp = self._client().get("/wizard/cli_x/state")
+        assert resp.status_code == 401
+
+    def test_vertical_requires_auth(self):
+        resp = self._client().post("/wizard/cli_x/vertical", json={"vertical": "clinica"})
+        assert resp.status_code == 401
+
+    def test_capabilities_requires_auth(self):
+        resp = self._client().post("/wizard/cli_x/capabilities", json={"capabilities": []})
+        assert resp.status_code == 401
+
+    def test_activate_requires_auth(self):
+        resp = self._client().post("/wizard/cli_x/activate")
+        assert resp.status_code == 401
+
+    def test_verticals_list_stays_public(self):
+        resp = self._client().get("/wizard/verticals")
+        assert resp.status_code == 200
+        assert "verticals" in resp.json()

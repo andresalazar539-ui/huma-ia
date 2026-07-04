@@ -13,10 +13,11 @@
 # nunca consegue ativar SELL_PHYSICAL sem Bling, mesmo via curl.
 # ================================================================
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from huma.core.auth import verify_api_key
 from huma.core.capabilities import Capability
 from huma.models.schemas import BusinessCategory, OnboardingStatus
 from huma.onboarding import wizard
@@ -81,7 +82,7 @@ async def _get_identity_or_404(client_id: str):
 
 
 @router.get("/{client_id}/state")
-async def get_state(client_id: str):
+async def get_state(client_id: str, _=Depends(verify_api_key)):
     """
     Estado completo do wizard pra esse cliente.
 
@@ -161,7 +162,7 @@ async def list_verticals():
 
 
 @router.post("/{client_id}/vertical")
-async def select_vertical(client_id: str, payload: VerticalSelection):
+async def select_vertical(client_id: str, payload: VerticalSelection, _=Depends(verify_api_key)):
     """
     Define a vertical do cliente. Limpa capabilities ativas (vai re-escolher
     no próximo passo conforme a vertical nova).
@@ -190,7 +191,7 @@ async def select_vertical(client_id: str, payload: VerticalSelection):
 
 
 @router.post("/{client_id}/capabilities")
-async def set_capabilities(client_id: str, payload: CapabilitiesSelection):
+async def set_capabilities(client_id: str, payload: CapabilitiesSelection, _=Depends(verify_api_key)):
     """
     Ativa o set de capabilities pedido.
 
@@ -229,7 +230,7 @@ async def set_capabilities(client_id: str, payload: CapabilitiesSelection):
 
 
 @router.post("/{client_id}/activate")
-async def activate(client_id: str):
+async def activate(client_id: str, _=Depends(verify_api_key)):
     """
     Última etapa: marca o cliente como ACTIVE (clone começa a responder).
 
@@ -379,10 +380,13 @@ def _render_wizard_html(client_id: str) -> str:
 
 <script>
 const CLIENT_ID = {client_id!r};
+const API_KEY = new URLSearchParams(location.search).get('api_key') || '';
+const AUTH_HEADERS = {{"Authorization": `Bearer ${{API_KEY}}`}};
 const $ = (id) => document.getElementById(id);
 
 async function loadState() {{
-  const r = await fetch(`/wizard/${{CLIENT_ID}}/state`);
+  const r = await fetch(`/wizard/${{CLIENT_ID}}/state`, {{headers: AUTH_HEADERS}});
+  if (r.status === 401) {{ showErr("Link inválido ou expirado. Peça um novo link de configuração."); return null; }}
   if (!r.ok) {{ showErr("Cliente não encontrado: " + CLIENT_ID); return null; }}
   return await r.json();
 }}
@@ -403,7 +407,7 @@ async function loadVerticals(currentVertical) {{
 
 async function selectVertical(slug) {{
   const r = await fetch(`/wizard/${{CLIENT_ID}}/vertical`, {{
-    method: "POST", headers: {{"Content-Type": "application/json"}},
+    method: "POST", headers: {{"Content-Type": "application/json", ...AUTH_HEADERS}},
     body: JSON.stringify({{vertical: slug}}),
   }});
   if (!r.ok) {{ showErr(await r.text()); return; }}
@@ -435,7 +439,7 @@ async function saveCaps() {{
   const selected = Array.from(document.querySelectorAll('input[data-cap]:checked'))
     .map(el => el.dataset.cap);
   const r = await fetch(`/wizard/${{CLIENT_ID}}/capabilities`, {{
-    method: "POST", headers: {{"Content-Type": "application/json"}},
+    method: "POST", headers: {{"Content-Type": "application/json", ...AUTH_HEADERS}},
     body: JSON.stringify({{capabilities: selected}}),
   }});
   if (!r.ok) {{ showErr((await r.json()).detail || "Erro ao salvar"); return; }}
@@ -444,7 +448,7 @@ async function saveCaps() {{
 }}
 
 async function activate() {{
-  const r = await fetch(`/wizard/${{CLIENT_ID}}/activate`, {{method: "POST"}});
+  const r = await fetch(`/wizard/${{CLIENT_ID}}/activate`, {{method: "POST", headers: AUTH_HEADERS}});
   if (!r.ok) {{ showErr((await r.json()).detail || "Erro ao ativar"); return; }}
   showOk("✓ Clone ativado! Já está respondendo no WhatsApp.");
   await render();
