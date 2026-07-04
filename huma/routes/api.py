@@ -265,6 +265,43 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
     return {"status": "ok", "updated": sorted(accepted.keys()), "ignored": ignored}
 
 
+# ── Billing / Assinatura HUMA (recorrência via MP Assinaturas) ──
+
+class SubscribeBody(BaseModel):
+    plan: str = Field(..., min_length=1, max_length=30)
+
+
+@router.get("/api/clients/{client_id}/billing", tags=["Billing"])
+async def billing_status(client_id: str, _=Depends(verify_api_key)) -> dict:
+    """Plano atual, status da assinatura e saldo de conversas (Cockpit)."""
+    from huma.services import subscription_service as subs
+    return await subs.get_billing_status(client_id)
+
+
+@router.post("/api/clients/{client_id}/billing/subscribe", tags=["Billing"])
+async def billing_subscribe(client_id: str, payload: SubscribeBody, client=Depends(verify_api_key)) -> dict:
+    """
+    Inicia assinatura recorrente: cria o preapproval no Mercado Pago e
+    devolve checkout_url (cliente cadastra o cartão lá). A ativação e o
+    crédito de conversas acontecem via webhook, nunca aqui.
+    """
+    from huma.services import subscription_service as subs
+    result = await subs.create_checkout(client_id, payload.plan, getattr(client, "owner_email", "") or "")
+    if result.get("status") != "ok":
+        raise HTTPException(400, result.get("detail", "Não foi possível iniciar a assinatura."))
+    return result
+
+
+@router.post("/api/clients/{client_id}/billing/cancel", tags=["Billing"])
+async def billing_cancel(client_id: str, _=Depends(verify_api_key)) -> dict:
+    """Cancela a assinatura no MP (saldo já pago permanece na carteira)."""
+    from huma.services import subscription_service as subs
+    result = await subs.cancel_subscription(client_id)
+    if result.get("status") != "ok":
+        raise HTTPException(400, result.get("detail", "Não foi possível cancelar."))
+    return result
+
+
 # ── Cockpit (T2) ──
 
 @router.get("/api/conversations", tags=["Cockpit"])
@@ -1449,6 +1486,30 @@ async def mercadopago_webhook(request: Request, bg: BackgroundTasks):
     action = body.get("action", "")
 
     log.info(f"Webhook MP recebido | type={topic} | action={action} | body={json.dumps(body)[:500]}")
+
+    # Assinatura HUMA (recorrência): eventos de preapproval do MP.
+    # subscription_preapproval = mudança de status (ativou/pausou/cancelou);
+    # subscription_authorized_payment = cobrança do mês (credita conversas).
+    if topic in ("subscription_preapproval", "subscription_authorized_payment"):
+        resource_id = ""
+        if "data" in body and isinstance(body["data"], dict):
+            resource_id = str(body["data"].get("id", ""))
+        if not resource_id:
+            resource_id = str(body.get("id", ""))
+        if not resource_id:
+            log.warning(f"Webhook MP assinatura sem resource_id | topic={topic}")
+            return {"status": "ignored", "reason": "no_resource_id"}
+
+        from huma.core.auth import verify_mercadopago_signature
+        x_signature = request.headers.get("x-signature", "")
+        x_request_id = request.headers.get("x-request-id", "")
+        if not verify_mercadopago_signature(x_signature, x_request_id, resource_id):
+            log.warning(f"Webhook MP assinatura REJEITADO | id={resource_id}")
+            raise HTTPException(401, "Assinatura inválida")
+
+        from huma.services import subscription_service as subs
+        bg.add_task(subs.process_subscription_event, topic, resource_id)
+        return {"status": "received"}
 
     # Só processa notificações de pagamento
     if topic in ("payment", "payment.updated"):

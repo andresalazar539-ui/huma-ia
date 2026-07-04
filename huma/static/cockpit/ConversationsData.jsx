@@ -272,3 +272,34 @@ async function saveSettings(partial) {
 }
 
 Object.assign(window, { fetchSettings, saveSettings });
+
+/* ---------------- Billing (assinatura recorrente MP) ---------------- */
+async function fetchBillingStatus() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+// Cria a assinatura no MP e devolve { checkout_url } — o caller redireciona.
+async function subscribePlan(plan) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ plan }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Erro ao iniciar assinatura');
+  return data;
+}
+
+async function cancelPlan() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/cancel`, {
+    method: 'POST',
+    headers: { ...AUTH_HEADERS },
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Erro ao cancelar');
+  return data;
+}
+
+Object.assign(window, { fetchBillingStatus, subscribePlan, cancelPlan });

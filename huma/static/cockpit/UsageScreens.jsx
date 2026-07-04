@@ -1,5 +1,5 @@
 // UsageScreens.jsx — Uso + sub-telas (Indicação, Comprar créditos, Planos)
-const { useState: useStateU } = React;
+const { useState: useStateU, useEffect: useEffectU } = React;
 
 // ============================================================
 // USO — tela principal
@@ -564,52 +564,78 @@ const CreditosScreen = ({ onBack }) => {
 // ============================================================
 // PLANOS — sub-tela
 // ============================================================
+// IDs espelham o Plan enum do backend (billing_service.PLAN_CONFIG) —
+// o botão manda esse id pro POST /billing/subscribe. Preços/franquias
+// PRECISAM bater com o PLAN_CONFIG (fonte da verdade da cobrança).
+const HUMA_PLANS = [
+  {
+    id: 'starter', name: 'Starter', price: 'R$ 97,90',
+    features: [
+      'Clone de vendas WhatsApp 24/7',
+      'Agendamento automático',
+      'Pagamentos (Pix, boleto, cartão)',
+      'Suporte por email',
+    ],
+    limit: '400 conversas/mês',
+  },
+  {
+    id: 'pro', name: 'Pro', price: 'R$ 397,90',
+    popular: true,
+    features: [
+      'Tudo do Starter',
+      'Voz clonada do dono (áudios IA)',
+      'Follow-ups automáticos',
+      'Templates de campanha outbound',
+    ],
+    limit: '1.500 conversas/mês',
+  },
+  {
+    id: 'scale', name: 'Scale', price: 'R$ 697,90',
+    features: [
+      'Tudo do Pro',
+      'Multi-número (até 5 WhatsApps)',
+      'Vozes regionais',
+      'Suporte prioritário',
+    ],
+    limit: '3.000 conversas/mês',
+  },
+  {
+    id: 'elite', name: 'Elite', price: 'R$ 997,90',
+    features: [
+      'Tudo do Scale',
+      'Integração CRM (Pipedrive)',
+      'Até 10 números',
+      'Acesso à API',
+    ],
+    limit: '4.500 conversas/mês',
+  },
+];
+
 const PlanosScreen = ({ onBack }) => {
-  const plans = [
-    {
-      id: 'essencial', name: 'Essencial', price: 'R$ 197',
-      features: [
-        'Assistente WhatsApp 24/7',
-        'Agendamento automático',
-        'Relatório mensal',
-        'Suporte por email',
-      ],
-      limit: '500 conversas/mês',
-    },
-    {
-      id: 'profissional', name: 'Profissional', price: 'R$ 397',
-      current: true, popular: true,
-      features: [
-        'Tudo do Essencial',
-        'Voz humanizada (clone IA)',
-        'Followups automáticos',
-        'Relatório semanal',
-        'Suporte prioritário WhatsApp',
-      ],
-      limit: '1.500 conversas/mês',
-    },
-    {
-      id: 'business', name: 'Business', price: 'R$ 697',
-      features: [
-        'Tudo do Profissional',
-        'Integração ERP',
-        'Dashboard tempo real',
-        'Treinamento personalizado da IA',
-      ],
-      limit: '3.500 conversas/mês',
-    },
-    {
-      id: 'enterprise', name: 'Enterprise', price: 'R$ 997',
-      features: [
-        'Tudo do Business',
-        'Setup API oficial Meta incluso',
-        'Onboarding dedicado',
-        'SLA de resposta',
-        'Gerente de conta',
-      ],
-      limit: 'Sob medida',
-    },
-  ];
+  const [currentPlan, setCurrentPlan] = useStateU(null);
+  const [busy, setBusy] = useStateU('');
+  const [err, setErr] = useStateU('');
+
+  useEffectU(() => {
+    fetchBillingStatus()
+      .then(d => setCurrentPlan(d.subscription_status === 'active' ? d.plan : null))
+      .catch(() => setCurrentPlan(null));
+  }, []);
+
+  const doSubscribe = async (planId) => {
+    setBusy(planId);
+    setErr('');
+    try {
+      const data = await subscribePlan(planId);
+      // Checkout hospedado do Mercado Pago (cliente cadastra o cartão lá)
+      location.href = data.checkout_url;
+    } catch (e) {
+      setErr(String(e.message || 'Erro ao iniciar assinatura. Tente de novo.'));
+      setBusy('');
+    }
+  };
+
+  const plans = HUMA_PLANS.map(p => ({ ...p, current: p.id === currentPlan }));
 
   return (
     <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
@@ -627,8 +653,15 @@ const PlanosScreen = ({ onBack }) => {
           letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 4,
         }}>Planos HUMA</div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-          Números ilimitados em todos os planos. Pague só pelo uso.
+          Assinatura mensal no cartão, renovação automática. Cancele quando quiser — conversas já pagas continuam valendo.
         </div>
+        {err && (
+          <div style={{
+            marginTop: 10, padding: '10px 14px', borderRadius: 10,
+            background: 'var(--ember-tint, #fdecea)', color: 'var(--ember-ink, #7f1d1d)',
+            fontFamily: 'var(--font-sans)', fontSize: 13,
+          }}>{err}</div>
+        )}
       </div>
 
       <div style={{
@@ -709,14 +742,14 @@ const PlanosScreen = ({ onBack }) => {
               Limite base · {p.limit}
             </div>
 
-            <button disabled={p.current} style={{
+            <button disabled={p.current || busy === p.id} onClick={() => doSubscribe(p.id)} style={{
               padding: '11px 16px', borderRadius: 10,
               background: p.current ? 'var(--paper-sunk)' : 'var(--ink)',
               color:      p.current ? 'var(--ink-3)'     : 'var(--paper)',
               border: 'none', cursor: p.current ? 'default' : 'pointer',
               fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
             }}>
-              {p.current ? 'Plano atual' : `Mudar para ${p.name}`}
+              {p.current ? 'Plano atual' : busy === p.id ? 'Abrindo checkout…' : `Assinar ${p.name}`}
             </button>
           </div>
         ))}
