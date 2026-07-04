@@ -125,38 +125,30 @@ async def get_client_by_evolution_instance(instance: str) -> ClientIdentity | No
     return _identity_from_row(resp.data[0])
 
 
-async def get_client_by_owner_phone(phone: str) -> ClientIdentity | None:
+async def get_client_by_owner_email(email: str) -> ClientIdentity | None:
     """
-    Login T0: descobre o cliente HUMA a partir do telefone do DONO
-    (owner_phone), pra enviar o magic link no WhatsApp dele.
+    Login do Cockpit: descobre o cliente HUMA a partir do e-mail do DONO
+    (owner_email), depois que o Supabase Auth validou a identidade.
 
-    Comparação por dígitos: normaliza o input e o valor salvo (o
-    owner_phone pode ter sido salvo com/sem +55, espaços etc.).
-    Retorna None se vazio, sem match, ou match ambíguo (2+ clientes
-    com o mesmo dono — resolver manualmente, não logar ninguém).
+    Comparação case-insensitive (ilike sem wildcard = igualdade exata
+    ignorando caixa). Retorna None se vazio, sem match, ou match ambíguo
+    (2+ clientes com o mesmo e-mail — resolver manualmente, não logar
+    ninguém no cliente errado).
     """
-    digits = "".join(c for c in (phone or "") if c.isdigit())
-    if len(digits) < 10:
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
         return None
 
-    # Busca candidatos pelos últimos 8 dígitos (tolerante a formato)
-    # e confirma a igualdade completa em Python.
     resp = await run_in_threadpool(
         lambda: get_supabase().table("clients").select("*")
-            .like("owner_phone", f"%{digits[-8:]}").limit(5).execute()
+            .ilike("owner_email", email).limit(2).execute()
     )
-    matches = []
-    for row in (resp.data or []):
-        stored = "".join(c for c in (row.get("owner_phone") or "") if c.isdigit())
-        # Igualdade tolerante a prefixo de país: 5511987654321 == 11987654321
-        if stored == digits or stored.endswith(digits) or digits.endswith(stored):
-            matches.append(row)
-
-    if len(matches) != 1:
-        if len(matches) > 1:
-            log.warning(f"Login | owner_phone ambíguo | digits=***{digits[-4:]} | matches={len(matches)}")
+    rows = resp.data or []
+    if len(rows) != 1:
+        if len(rows) > 1:
+            log.warning(f"Login | owner_email ambíguo | email=***@{email.split('@')[1]} | matches={len(rows)}")
         return None
-    return _identity_from_row(matches[0])
+    return _identity_from_row(rows[0])
 
 
 async def update_client(client_id: str, updates: dict):

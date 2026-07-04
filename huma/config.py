@@ -15,6 +15,11 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Chave PÚBLICA (anon) do Supabase — usada no login (GoTrue REST) e
+# embutida nas páginas de auth (é pública por design, protegida por RLS).
+# Painel Supabase → Settings → API → anon public.
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 REDIS_URL = os.getenv("REDIS_URL")
 
 # ── Meta WhatsApp Cloud API ──

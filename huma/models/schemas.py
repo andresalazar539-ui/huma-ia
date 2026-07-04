@@ -565,6 +565,13 @@ class ClientIdentity(BaseModel):
         default="",
         description="Telefone do dono pra notificações (saldo, alertas).",
     )
+    owner_email: str = Field(
+        default="",
+        description=(
+            "E-mail do dono — chave de login do Cockpit (Supabase Auth). "
+            "Só e-mails vinculados a um cliente conseguem entrar."
+        ),
+    )
     # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe
     # tudo até desligar conscientemente. notify_on_payment já era enviado.
     notify_owner_on_appointment: bool = Field(
