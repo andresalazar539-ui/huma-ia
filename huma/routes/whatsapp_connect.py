@@ -15,7 +15,7 @@
 
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
 from huma.config import EVOLUTION_API_URL, EVOLUTION_API_KEY, PUBLIC_BASE_URL
@@ -49,9 +49,10 @@ def _qr_from_create(created: dict) -> dict:
 async def whatsapp_connect(
     client_id: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
 ) -> dict:
     """Cria/garante a instância do cliente e devolve o QR pra escanear."""
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     if not EVOLUTION_API_URL or not EVOLUTION_API_KEY:
         raise HTTPException(503, "Evolution não configurado no servidor")
@@ -95,9 +96,10 @@ async def whatsapp_connect(
 async def whatsapp_status(
     client_id: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
 ) -> dict:
     """Estado da conexão do cliente. Se não conectado, devolve o QR atual."""
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     client = await db.get_client(client_id)
     if client is None:
@@ -131,9 +133,10 @@ async def whatsapp_status(
 async def whatsapp_disconnect(
     client_id: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
 ) -> dict:
     """Desconecta o número (logout). A instância permanece pra novo QR."""
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     client = await db.get_client(client_id)
     if client is None:

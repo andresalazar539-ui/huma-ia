@@ -446,7 +446,7 @@ class TestWhatsAppConnectRoutes:
         monkeypatch.setattr(wc, "EVOLUTION_API_KEY", "k")
         monkeypatch.setattr(wc, "PUBLIC_BASE_URL", "https://huma")
 
-        async def noop_auth(cid, creds):
+        async def noop_auth(cid, creds, session=None):
             return None
 
         async def exists(inst):
@@ -479,7 +479,7 @@ class TestWhatsAppConnectRoutes:
     def test_status_conectado(self, monkeypatch):
         import huma.routes.whatsapp_connect as wc
 
-        async def noop_auth(cid, creds):
+        async def noop_auth(cid, creds, session=None):
             return None
 
         class _C:
@@ -502,7 +502,7 @@ class TestWhatsAppConnectRoutes:
     def test_status_sem_instancia(self, monkeypatch):
         import huma.routes.whatsapp_connect as wc
 
-        async def noop_auth(cid, creds):
+        async def noop_auth(cid, creds, session=None):
             return None
 
         class _C:

@@ -2,22 +2,24 @@
 // Backend cru -> shape que os componentes consomem. Sem mock: o que a API não manda,
 // fica ausente (ex.: "cliente desde", responseTime, áudio).
 
-// --- Auth: bypass dev por enquanto ---
-// Quando a T0 (magic-link + cookie httpOnly) entrar, troca o header Bearer por
-// { credentials: 'include' } e remove a API_KEY daqui. Não inventar cookie agora.
-const API_KEY = new URLSearchParams(location.search).get('api_key') || 'DEV_KEY_AQUI';
+// --- Auth: cookie de sessão (T0) OU Bearer api_key (legado/dev) ---
+// Fluxo normal: login via /login (magic link no WhatsApp) seta o cookie
+// httpOnly huma_session; fetches same-origin enviam o cookie sozinhos e
+// AUTH_HEADERS fica vazio. Com ?api_key= na URL, o Bearer tem precedência.
+const API_KEY = new URLSearchParams(location.search).get('api_key') || '';
 const CLIENT_ID = new URLSearchParams(location.search).get('client_id') || 'dev';
+const AUTH_HEADERS = API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {};
 
 async function fetchConversations(filter = 'todas') {
   const url = `/api/conversations?client_id=${encodeURIComponent(CLIENT_ID)}&filter=${encodeURIComponent(filter)}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 async function fetchConversationDetail(phone) {
   const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
@@ -167,7 +169,7 @@ async function sendHandoff(phone, takeover, summary = '') {
   const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/handoff`;
   const r = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY}` },
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
     body: JSON.stringify({ takeover, summary }),
   });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
@@ -178,7 +180,7 @@ async function sendMessage(phone, text) {
   const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/send`;
   const r = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${API_KEY}` },
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
     body: JSON.stringify({ text }),
   });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
@@ -190,7 +192,7 @@ Object.assign(window, { sendHandoff, sendMessage });
 /* ---------------- T4: Agenda (appointments) ---------------- */
 async function fetchAppointments() {
   const url = `/api/appointments?client_id=${encodeURIComponent(CLIENT_ID)}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   const data = await r.json();
   // Adiciona tone determinístico (mesma lógica das conversas, cor estável por contato)
@@ -204,7 +206,7 @@ Object.assign(window, { fetchAppointments });
 // Tokens vêm como "ok"|"" (sem expor valor real). Demais campos vêm crus.
 async function fetchIntegrationsStatus() {
   const url = `/api/integrations/status?client_id=${encodeURIComponent(CLIENT_ID)}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
@@ -214,7 +216,7 @@ async function disconnectIntegration(integrationId) {
   const url = `/api/integrations/${encodeURIComponent(integrationId)}/disconnect?client_id=${encodeURIComponent(CLIENT_ID)}`;
   const r = await fetch(url, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${API_KEY}` },
+    headers: { ...AUTH_HEADERS },
   });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
@@ -227,21 +229,21 @@ Object.assign(window, { fetchIntegrationsStatus, disconnectIntegration });
 // até conectar; disconnect faz logout. Backend: routes/whatsapp_connect.py.
 async function whatsappConnect() {
   const url = `/whatsapp/connect?client_id=${encodeURIComponent(CLIENT_ID)}`;
-  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${API_KEY}` } });
+  const r = await fetch(url, { method: 'POST', headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 async function whatsappStatus() {
   const url = `/whatsapp/status?client_id=${encodeURIComponent(CLIENT_ID)}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${API_KEY}` } });
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
 
 async function whatsappDisconnect() {
   const url = `/whatsapp/disconnect?client_id=${encodeURIComponent(CLIENT_ID)}`;
-  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${API_KEY}` } });
+  const r = await fetch(url, { method: 'POST', headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }

@@ -14,7 +14,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
@@ -62,9 +62,14 @@ async def receive_message(payload: MessagePayload, bg: BackgroundTasks, _=Depend
 # ── Aprovação ──
 
 @router.post("/api/approve", tags=["Clone"])
-async def approve_message(payload: ApprovalPayload, bg: BackgroundTasks, creds=Depends(bearer_scheme)):
+async def approve_message(
+    payload: ApprovalPayload,
+    bg: BackgroundTasks,
+    creds=Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+):
     """Aprova ou rejeita resposta pendente."""
-    await verify_api_key_manual(payload.client_id, creds)
+    await verify_api_key_manual(payload.client_id, creds, huma_session)
 
     raw = await cache.get_pending(payload.client_id, payload.phone)
     if not raw:
@@ -204,6 +209,7 @@ async def list_conversations_cockpit(
     filter: str = "todas",
     limit: int = 50,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     T2 — lista conversas do cliente pra renderizar no cockpit.
@@ -219,7 +225,7 @@ async def list_conversations_cockpit(
 
     Auth: Bearer com api_key do client_id. IDOR enforced em verify_api_key_manual.
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     valid_filters = ("todas", "andamento", "confirmado", "feito", "aguardando", "cancelado")
     if filter not in valid_filters:
@@ -270,6 +276,7 @@ async def get_conversation_cockpit(
     client_id: str,
     phone: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     T2 — detalhe completo de uma conversa pra render no cockpit.
@@ -279,7 +286,7 @@ async def get_conversation_cockpit(
 
     404 se conversa nunca recebeu mensagem (history vazio e sem last_message_at).
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
@@ -332,6 +339,7 @@ async def conversation_handoff_cockpit(
     phone: str,
     payload: HandoffPayload,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     T3 — assume ou devolve a conversa pra IA.
@@ -344,7 +352,7 @@ async def conversation_handoff_cockpit(
     Não envia mensagem pro lead — só muda o estado interno. Se o dono
     quiser avisar o lead da transferência, manda manualmente via /send.
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
@@ -379,6 +387,7 @@ async def conversation_send_cockpit(
     phone: str,
     payload: CockpitSendPayload,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     T3 — dono envia mensagem manual pelo WhatsApp via cockpit.
@@ -396,7 +405,7 @@ async def conversation_send_cockpit(
       404 — conversa inexistente
       502 — Twilio/Meta retornou erro (msg não foi enviada)
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     text = payload.text.strip()
     if not text:
@@ -481,6 +490,7 @@ def _build_briefing(conv_row: dict) -> str:
 async def list_appointments_cockpit(
     client_id: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     T4 — lista agendamentos ativos do cliente pra renderizar a Agenda.
@@ -498,7 +508,7 @@ async def list_appointments_cockpit(
       - status: "confirmed" | "done" | "cancelled" (derivado de stage + data)
       - phone: pra cockpit linkar com a conversa
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     rows = await db.list_active_appointments(limit=300, client_id=client_id)
 
@@ -548,6 +558,7 @@ async def list_appointments_cockpit(
 async def integrations_status(
     client_id: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     Bloco C — status REAL de todas as integrações do cliente, pro
@@ -560,7 +571,7 @@ async def integrations_status(
     Shape compatível com o que IntegrationsScreen.jsx já consome:
     `client.bling_access_token`, `client.crm_access_token`, etc.
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     identity = await db.get_client(client_id)
     if identity is None:
@@ -602,6 +613,7 @@ async def integrations_disconnect(
     integration_id: str,
     client_id: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     Bloco C — desconecta uma integração: limpa tokens OAuth do ClientIdentity.
@@ -616,7 +628,7 @@ async def integrations_disconnect(
     Disconnect total verdadeiro = revogar via API do provider — sprint
     futuro se virar requisito de compliance.
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     integration_id = (integration_id or "").strip().lower()
 
@@ -656,6 +668,7 @@ async def integrations_disconnect(
 async def crm_status(
     client_id: str,
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     Status da conexão de CRM do cliente, pro Cockpit mostrar
@@ -668,7 +681,7 @@ async def crm_status(
         account_url: base da conta (Pipedrive) pra linkar, se houver
         connect_url: pra onde o botão "Conectar" deve apontar
     """
-    await verify_api_key_manual(client_id, creds)
+    await verify_api_key_manual(client_id, creds, huma_session)
 
     identity = await db.get_client(client_id)
     if identity is None:

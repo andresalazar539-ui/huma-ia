@@ -2,17 +2,20 @@
 # huma/core/auth.py — Autenticação de webhook e API keys
 # ================================================================
 
+import base64
 import hashlib
 import hmac
+import time
 from typing import Optional
 
-from fastapi import Depends, HTTPException, Header, Request
+from fastapi import Cookie, Depends, HTTPException, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from huma.config import (
     EVOLUTION_WEBHOOK_TOKEN,
     MERCADOPAGO_WEBHOOK_SECRET,
     META_APP_SECRET,
+    SESSION_SECRET,
     WEBHOOK_SECRET,
 )
 from huma.services.db_service import get_client
@@ -50,18 +53,94 @@ async def _verify_key(client_id: str, api_key: str):
 async def verify_api_key(
     client_id: str,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
 ):
-    """Dependency do FastAPI pra proteger endpoints."""
-    if not credentials:
-        raise HTTPException(401, "API key ausente no header Authorization")
-    return await _verify_key(client_id, credentials.credentials)
+    """Dependency do FastAPI: aceita Bearer api_key OU cookie de sessão (T0)."""
+    return await verify_api_key_manual(client_id, credentials, huma_session)
 
 
-async def verify_api_key_manual(client_id: str, credentials):
-    """Verificação manual (pra endpoints que não usam path param)."""
-    if not credentials:
-        raise HTTPException(401, "API key ausente")
-    return await _verify_key(client_id, credentials.credentials)
+async def verify_api_key_manual(
+    client_id: str,
+    credentials,
+    session_token: Optional[str] = None,
+):
+    """
+    Verificação manual: Bearer api_key OU cookie de sessão (login T0).
+
+    Ordem: Bearer tem precedência (compatibilidade com o fluxo atual).
+    Sem Bearer, tenta a sessão — o client_id do token TEM que bater com
+    o client_id pedido (IDOR enforced). Sem nenhum dos dois → 401.
+    """
+    if credentials:
+        return await _verify_key(client_id, credentials.credentials)
+
+    session_client = verify_session_token(session_token or "")
+    if session_client:
+        if session_client != client_id:
+            raise HTTPException(403, "Sessão não corresponde a este cliente")
+        client = await get_client(client_id)
+        if not client:
+            raise HTTPException(404, "Cliente não encontrado")
+        return client
+
+    raise HTTPException(401, "API key ausente")
+
+
+# ================================================================
+# Login T0 — cookie de sessão assinado (magic link via WhatsApp)
+# ================================================================
+
+SESSION_COOKIE_NAME = "huma_session"
+SESSION_TTL_SECONDS = 30 * 86400  # 30 dias
+
+
+def create_session_token(client_id: str, ttl_seconds: int = SESSION_TTL_SECONDS) -> str:
+    """
+    Gera token de sessão stateless: base64url("client_id|exp|hmac").
+
+    Assinado com SESSION_SECRET (HMAC-SHA256). Sem estado no servidor —
+    revogação individual não existe no T0; o TTL de 30 dias limita a janela.
+
+    Raises:
+        RuntimeError: se SESSION_SECRET não configurado.
+    """
+    if not SESSION_SECRET:
+        raise RuntimeError("SESSION_SECRET não configurado — login por sessão indisponível")
+    exp = int(time.time()) + ttl_seconds
+    payload = f"{client_id}|{exp}"
+    sig = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{sig}".encode("utf-8")).decode("ascii")
+
+
+def verify_session_token(token: str) -> Optional[str]:
+    """
+    Valida token de sessão. Retorna client_id se válido, None caso contrário.
+
+    None também quando SESSION_SECRET está vazio (feature desligada) —
+    nunca degrada pra "aceita qualquer um".
+    """
+    if not SESSION_SECRET or not token:
+        return None
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        client_id, exp_str, sig = decoded.split("|")
+    except ValueError:
+        # binascii.Error e UnicodeDecodeError são subclasses de ValueError:
+        # token malformado = inválido, sem log (input não confiável).
+        return None
+
+    payload = f"{client_id}|{exp_str}"
+    expected = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+
+    try:
+        if int(exp_str) < time.time():
+            return None
+    except ValueError:
+        return None
+
+    return client_id or None
 
 
 # ================================================================

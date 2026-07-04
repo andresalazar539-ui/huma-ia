@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from huma.config import APP_TITLE, APP_VERSION, APP_DESCRIPTION
 from huma.routes.api import router
+from huma.routes.auth_login import router as auth_login_router
 from huma.routes.cockpit import router as cockpit_router
 from huma.routes.crm_webhook import router as crm_webhook_router
 from huma.routes.oauth_bling import router as oauth_bling_router
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
 
     # Rotas
     app.include_router(router)
+    app.include_router(auth_login_router)
     app.include_router(cockpit_router)
     app.include_router(oauth_bling_router)
     app.include_router(oauth_crm_router)
