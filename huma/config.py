@@ -11,15 +11,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def clean_secret_env(name: str) -> str:
+    """
+    Lê env var de segredo removendo TODO whitespace (espaço, \\n, \\r, tab).
+
+    Segredos colados na textarea do Railway podem vir com quebras de linha
+    invisíveis — um header HTTP com \\n faz o httpx recusar a requisição
+    antes de enviar (LocalProtocolError), quebrando o login em produção
+    com erro silencioso. JWTs e tokens urlsafe nunca contêm whitespace,
+    então remover é sempre seguro.
+    """
+    return "".join((os.getenv(name, "") or "").split())
+
+
 # ── APIs Principais ──
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip() or None
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Chave PÚBLICA (anon) do Supabase — usada no login (GoTrue REST) e
 # embutida nas páginas de auth (é pública por design, protegida por RLS).
 # Painel Supabase → Settings → API → anon public.
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_ANON_KEY = clean_secret_env("SUPABASE_ANON_KEY")
 REDIS_URL = os.getenv("REDIS_URL")
 
 # ── Meta WhatsApp Cloud API ──
@@ -43,7 +57,7 @@ EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
 # x-huma-webhook-token de cada webhook (configurado na criação da
 # instância). Vazio = validação pulada (dev). ATENÇÃO: ao definir em
 # produção, reconecte as instâncias existentes (criadas sem o header).
-EVOLUTION_WEBHOOK_TOKEN = os.getenv("EVOLUTION_WEBHOOK_TOKEN", "")
+EVOLUTION_WEBHOOK_TOKEN = clean_secret_env("EVOLUTION_WEBHOOK_TOKEN")
 
 # URL pública da própria HUMA (Railway). Usada pra dizer ao Evolution
 # pra onde mandar o webhook de entrada (PUBLIC_BASE_URL/webhook/evolution)
@@ -54,7 +68,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 # Segredo que assina o cookie de sessão do Cockpit (HMAC-SHA256).
 # Vazio = login por cookie DESABILITADO (só Bearer api_key funciona).
 # Gere com: python -c "import secrets; print(secrets.token_urlsafe(48))"
-SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+SESSION_SECRET = clean_secret_env("SESSION_SECRET")
 
 # ── Twilio (teste via Sandbox) ──
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")

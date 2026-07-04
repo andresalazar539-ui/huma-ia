@@ -126,7 +126,10 @@ async def _gotrue_password_grant(email: str, password: str) -> Optional[dict]:
 
     if resp.status_code == 200:
         return resp.json()
-    # 400/401/403 = credencial inválida — nunca detalhar o motivo pro caller
+    # 400/401/403 = credencial inválida — nunca detalhar o motivo pro caller.
+    # Status fora disso (429, 5xx, apikey inválida) merece log pra diagnóstico.
+    if resp.status_code not in (400, 401, 403):
+        log.error(f"Login | grant status inesperado | service=supabase_auth | status={resp.status_code}")
     return None
 
 
@@ -148,6 +151,8 @@ async def _gotrue_get_user(access_token: str) -> Optional[dict]:
 
     if resp.status_code == 200:
         return resp.json()
+    if resp.status_code not in (401, 403):
+        log.error(f"Login | get_user status inesperado | service=supabase_auth | status={resp.status_code}")
     return None
 
 

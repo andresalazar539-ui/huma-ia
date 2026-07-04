@@ -536,3 +536,28 @@ class TestAuthPages:
         resp = _client().post("/auth/logout")
         assert resp.status_code == 200
         assert 'huma_session=""' in resp.headers.get("set-cookie", "")
+
+
+# ================================================================
+# HIGIENE DE SEGREDOS COLADOS (bug real de produção 2026-07-04:
+# SUPABASE_ANON_KEY colada no Railway com quebras de linha —
+# header HTTP ilegal, httpx recusava antes de enviar)
+# ================================================================
+
+
+class TestCleanSecretEnv:
+
+    def test_remove_quebras_de_linha_e_espacos(self, monkeypatch):
+        from huma.config import clean_secret_env
+        monkeypatch.setenv("TESTE_SECRET_X", "eyJhbGci\nOiJIUzI1\r\nNiIsInR5 cCI6\t")
+        assert clean_secret_env("TESTE_SECRET_X") == "eyJhbGciOiJIUzI1NiIsInR5cCI6"
+
+    def test_valor_limpo_passa_intacto(self, monkeypatch):
+        from huma.config import clean_secret_env
+        monkeypatch.setenv("TESTE_SECRET_X", "abc123-DEF_456")
+        assert clean_secret_env("TESTE_SECRET_X") == "abc123-DEF_456"
+
+    def test_ausente_retorna_vazio(self, monkeypatch):
+        from huma.config import clean_secret_env
+        monkeypatch.delenv("TESTE_SECRET_X", raising=False)
+        assert clean_secret_env("TESTE_SECRET_X") == ""
