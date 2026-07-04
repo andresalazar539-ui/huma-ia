@@ -574,16 +574,23 @@ async def evo_create_instance(instance: str, webhook_url: str) -> dict | None:
     Cria a instância já com o webhook apontando pra HUMA. Retorna o dict
     cru da Evolution (inclui qrcode.base64) ou None em falha.
     """
+    from huma.config import EVOLUTION_WEBHOOK_TOKEN
+
+    webhook_cfg: dict = {
+        "url": webhook_url,
+        "byEvents": False,
+        "base64": True,
+        "events": ["MESSAGES_UPSERT"],
+    }
+    # Token compartilhado: a HUMA valida este header na rota /webhook/evolution.
+    if EVOLUTION_WEBHOOK_TOKEN:
+        webhook_cfg["headers"] = {"x-huma-webhook-token": EVOLUTION_WEBHOOK_TOKEN}
+
     body = {
         "instanceName": instance,
         "integration": "WHATSAPP-BAILEYS",
         "qrcode": True,
-        "webhook": {
-            "url": webhook_url,
-            "byEvents": False,
-            "base64": True,
-            "events": ["MESSAGES_UPSERT"],
-        },
+        "webhook": webhook_cfg,
     }
     try:
         async with httpx.AsyncClient(timeout=30.0) as http:

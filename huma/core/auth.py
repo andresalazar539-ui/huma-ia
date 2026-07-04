@@ -9,7 +9,12 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from huma.config import MERCADOPAGO_WEBHOOK_SECRET, META_APP_SECRET, WEBHOOK_SECRET
+from huma.config import (
+    EVOLUTION_WEBHOOK_TOKEN,
+    MERCADOPAGO_WEBHOOK_SECRET,
+    META_APP_SECRET,
+    WEBHOOK_SECRET,
+)
 from huma.services.db_service import get_client
 from huma.utils.logger import get_logger
 
@@ -111,6 +116,34 @@ def verify_mercadopago_signature(
     ).hexdigest()
 
     return hmac.compare_digest(v1, expected)
+
+
+# ================================================================
+# Validação do webhook Evolution API v2 (token compartilhado)
+# ================================================================
+
+def verify_evolution_token(received_token: str) -> bool:
+    """
+    Valida o token compartilhado do webhook Evolution.
+
+    A Evolution v2 não assina o corpo — a instância é criada com um
+    header fixo (x-huma-webhook-token) que só a HUMA e o servidor
+    Evolution conhecem. Comparação em tempo constante.
+
+    Modo dev: se EVOLUTION_WEBHOOK_TOKEN vazio, retorna True com warning
+    (mesma convenção de META_APP_SECRET / MERCADOPAGO_WEBHOOK_SECRET).
+
+    Returns:
+        True se token válido (ou modo dev), False se inválido.
+    """
+    if not EVOLUTION_WEBHOOK_TOKEN:
+        log.warning("EVOLUTION_WEBHOOK_TOKEN vazio — validação Evolution pulada (DEV)")
+        return True
+
+    if not received_token:
+        return False
+
+    return hmac.compare_digest(received_token, EVOLUTION_WEBHOOK_TOKEN)
 
 
 # ================================================================

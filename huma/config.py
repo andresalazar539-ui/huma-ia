@@ -34,6 +34,12 @@ META_GRAPH_BASE_URL = os.getenv("META_GRAPH_BASE_URL", "https://graph.facebook.c
 EVOLUTION_API_URL = os.getenv("EVOLUTION_API_URL", "")
 EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
 
+# Token compartilhado que o Evolution envia de volta no header
+# x-huma-webhook-token de cada webhook (configurado na criação da
+# instância). Vazio = validação pulada (dev). ATENÇÃO: ao definir em
+# produção, reconecte as instâncias existentes (criadas sem o header).
+EVOLUTION_WEBHOOK_TOKEN = os.getenv("EVOLUTION_WEBHOOK_TOKEN", "")
+
 # URL pública da própria HUMA (Railway). Usada pra dizer ao Evolution
 # pra onde mandar o webhook de entrada (PUBLIC_BASE_URL/webhook/evolution)
 # na hora de criar a instância do cliente. Sem barra no fim.

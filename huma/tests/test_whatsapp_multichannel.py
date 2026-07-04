@@ -294,6 +294,61 @@ class TestVerifyMetaSignature:
         assert auth.verify_meta_signature(b"corpo", "") is False
 
 
+# ── verify_evolution_token (token compartilhado do webhook) ──
+
+class TestVerifyEvolutionToken:
+    def test_dev_mode_sem_token_passa(self, monkeypatch):
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "")
+        assert auth.verify_evolution_token("qualquer") is True
+        assert auth.verify_evolution_token("") is True
+
+    def test_token_valido(self, monkeypatch):
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "tok_secreto")
+        assert auth.verify_evolution_token("tok_secreto") is True
+
+    def test_token_invalido(self, monkeypatch):
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "tok_secreto")
+        assert auth.verify_evolution_token("tok_errado") is False
+
+    def test_header_ausente(self, monkeypatch):
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "tok_secreto")
+        assert auth.verify_evolution_token("") is False
+
+    def test_rota_rejeita_token_errado(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        import huma.core.auth as auth
+        from huma.app import app
+
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "tok_secreto")
+        client = TestClient(app)
+        resp = client.post(
+            "/webhook/evolution",
+            json={"event": "messages.upsert"},
+            headers={"x-huma-webhook-token": "tok_errado"},
+        )
+        assert resp.status_code == 401
+
+    def test_rota_aceita_token_correto(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        import huma.core.auth as auth
+        from huma.app import app
+
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "tok_secreto")
+        client = TestClient(app)
+        resp = client.post(
+            "/webhook/evolution",
+            json={"event": "outro_evento"},
+            headers={"x-huma-webhook-token": "tok_secreto"},
+        )
+        # Auth passou; payload sem mensagem é só ignorado
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+
+
 # ── mídia: media_id (Meta) + raw (Evolution) nos parsers ──
 
 class TestParsersMidia:

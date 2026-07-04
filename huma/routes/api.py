@@ -1146,14 +1146,21 @@ async def _ingest_evolution_media(
 #   3. Descobre o cliente HUMA pela instância (instance → client_id)
 #   4. Monta MessagePayload e delega pro handle_message (mesmo motor do resto)
 #
-# Sem auth de assinatura (Evolution v2 não assina por padrão). Roteamento
-# depende da instância existir cadastrada num cliente — instância
-# desconhecida é ignorada. Hardening (token compartilhado) = sprint futuro.
+# Auth: token compartilhado no header x-huma-webhook-token, configurado
+# na criação da instância (evo_create_instance). Evolution v2 não assina
+# o corpo, então o token é a barreira. EVOLUTION_WEBHOOK_TOKEN vazio =
+# validação pulada (dev). Roteamento segue dependendo da instância
+# existir cadastrada num cliente — instância desconhecida é ignorada.
 # ================================================================
 
 @router.post("/webhook/evolution", tags=["Webhook"])
 async def evolution_webhook(request: Request, bg: BackgroundTasks):
     """Recebe mensagem do Evolution API v2 e delega pro motor."""
+    from huma.core.auth import verify_evolution_token
+    if not verify_evolution_token(request.headers.get("x-huma-webhook-token", "")):
+        log.warning("Webhook Evolution REJEITADO | token inválido")
+        raise HTTPException(401, "Token inválido")
+
     try:
         body = await request.json()
     except Exception:
