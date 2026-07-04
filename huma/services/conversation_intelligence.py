@@ -357,15 +357,31 @@ def _check_price_query(text: str, identity: ClientIdentity, lead_name: str) -> O
     )
 
 
+# Padrões ESTREITOS de horário de funcionamento (texto já normalizado: sem acento).
+# Perguntas ambíguas ("qual o horário?") vão pra IA de propósito.
 HOURS_PATTERNS = [
-    r"(horário|horario|hora|abre|fecha|funciona|atende)\s*(de)?\s*(funcionamento|atendimento)?",
-    r"que horas?\s*(abre|fecha|funciona|atende)",
-    r"aberto\s*(hoje|amanhã|amanha|agora|sabado|sábado|domingo)",
+    r"horario\s+de\s+(funcionamento|atendimento)",
+    r"que\s+horas\s+(voces?\s+)?(abre|abrem|fecha|fecham|funciona|funcionam|atende|atendem)",
+    r"(abre|abrem|fecha|fecham)\s+(que|a\s+que)\s+horas",
+    r"ate\s+que\s+horas",
+    r"(esta|estao|ta|tao)?\s*aberto\s+(hoje|agora|amanha|sabado|domingo|feriado)",
+    r"(funciona|funcionam|atende|atendem|abre|abrem)\s+(no\s+|nos\s+|aos?\s+)?(sabado|domingo|feriado|fim\s+de\s+semana)",
 ]
 
+# Guarda: pergunta de DISPONIBILIDADE ("tem horario amanha?", "quero marcar um
+# horario") é agendamento, não horário de funcionamento. Sem esta guarda, este
+# checker sequestra o fluxo de agendamento e responde a hora errada.
+_HOURS_SCHEDULING_GUARD = re.compile(
+    r"(marcar|agendar|reservar|remarcar|reagendar|encaixe|encaixar|desmarcar|cancelar"
+    r"|disponibilidade|disponivel|vaga"
+    r"|(tem|teria|ha|tinha|algum|alguma)\s+horario)"
+)
+
 def _check_hours_query(text: str, identity: ClientIdentity, lead_name: str) -> Optional[ClassificationResult]:
-    """Responde sobre horário de funcionamento."""
-    return None
+    """Responde sobre horário de funcionamento (sem IA)."""
+    if _HOURS_SCHEDULING_GUARD.search(text):
+        return None  # disponibilidade/agendamento — deixa fluir pros checkers de intent
+
     is_hours = any(re.search(p, text) for p in HOURS_PATTERNS)
     if not is_hours or not identity.working_hours:
         return None

@@ -4466,3 +4466,63 @@ class TestFactualJudge:
         assert "18." in prompt
         assert "INAPROPRIADO" in prompt or "inapropriado" in prompt.lower()
         assert "pivote" in prompt.lower() or "pivotar" in prompt.lower()
+
+
+# ================================================================
+# TESTES DO HOURS_QUERY RELIGADO (com guarda anti-agendamento)
+#
+# Contexto: hours_query foi desligado (return None) porque os
+# patterns antigos capturavam mensagens de agendamento
+# ("tem horário amanhã?"). Religado com patterns estreitos +
+# guarda. Estes testes garantem que a regressão não volta.
+# ================================================================
+
+class TestHoursQueryReligado:
+    """Horário de funcionamento por regra, sem sequestrar agendamento."""
+
+    def test_horario_de_funcionamento_por_regra(self, clinica_identity, empty_conversation):
+        """Pergunta clássica de funcionamento resolve sem IA."""
+        from huma.services.conversation_intelligence import classify_message, MessageType
+        result = classify_message("qual o horário de funcionamento?", clinica_identity, empty_conversation)
+        assert result.msg_type == MessageType.HOURS_QUERY
+        assert result.can_resolve_without_llm is True
+        assert "Seg-Sex 8h-18h" in result.suggested_response
+
+    def test_que_horas_abre_por_regra(self, clinica_identity, empty_conversation):
+        """'Que horas vocês abrem?' resolve sem IA."""
+        from huma.services.conversation_intelligence import classify_message, MessageType
+        result = classify_message("que horas vocês abrem?", clinica_identity, empty_conversation)
+        assert result.msg_type == MessageType.HOURS_QUERY
+        assert result.can_resolve_without_llm is True
+
+    def test_abre_sabado_por_regra(self, clinica_identity, empty_conversation):
+        """'Vocês abrem sábado?' resolve sem IA."""
+        from huma.services.conversation_intelligence import classify_message, MessageType
+        result = classify_message("vocês abrem sábado?", clinica_identity, empty_conversation)
+        assert result.msg_type == MessageType.HOURS_QUERY
+
+    def test_tem_horario_amanha_NAO_e_funcionamento(self, clinica_identity, empty_conversation):
+        """REGRESSÃO ORIGINAL: 'tem horário amanhã?' é agendamento, não funcionamento."""
+        from huma.services.conversation_intelligence import classify_message, MessageType
+        result = classify_message("tem horário amanhã?", clinica_identity, empty_conversation)
+        assert result.msg_type == MessageType.SCHEDULE_INTENT
+        assert result.can_resolve_without_llm is False
+
+    def test_quero_marcar_horario_NAO_e_funcionamento(self, clinica_identity, empty_conversation):
+        """'Quero marcar um horário' vai pra IA conduzir agendamento."""
+        from huma.services.conversation_intelligence import classify_message, MessageType
+        result = classify_message("quero marcar um horário", clinica_identity, empty_conversation)
+        assert result.msg_type == MessageType.SCHEDULE_INTENT
+        assert result.can_resolve_without_llm is False
+
+    def test_guarda_unit_disponibilidade(self, clinica_identity):
+        """Unit: guarda barra texto de disponibilidade antes dos patterns."""
+        from huma.services.conversation_intelligence import _check_hours_query
+        assert _check_hours_query("teria horario para sexta?", clinica_identity, "") is None
+        assert _check_hours_query("quero remarcar meu horario", clinica_identity, "") is None
+
+    def test_sem_working_hours_nao_classifica(self, ecommerce_identity, empty_conversation):
+        """Cliente sem working_hours configurado nunca vira HOURS_QUERY."""
+        from huma.services.conversation_intelligence import classify_message, MessageType
+        result = classify_message("que horas vocês abrem?", ecommerce_identity, empty_conversation)
+        assert result.msg_type != MessageType.HOURS_QUERY
