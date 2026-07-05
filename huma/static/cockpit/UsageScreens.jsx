@@ -569,45 +569,27 @@ const CreditosScreen = ({ onBack }) => {
 // PRECISAM bater com o PLAN_CONFIG (fonte da verdade da cobrança).
 const HUMA_PLANS = [
   {
-    id: 'starter', name: 'Starter', price: 'R$ 97,90',
+    id: 'start', name: 'Start', price: 'R$ 347,70',
     features: [
-      'Clone de vendas WhatsApp 24/7',
-      'Agendamento automático',
-      'Pagamentos (Pix, boleto, cartão)',
-      'Suporte por email',
+      'Clone de vendas no WhatsApp 24/7',
+      'Agendamento automático (Google Agenda)',
+      'Cobrança dos seus clientes (Pix, boleto, cartão)',
+      'Follow-up automático de leads parados',
+      'Cockpit completo (conversas, agenda, relatórios)',
     ],
-    limit: '400 conversas/mês',
+    limit: '500 conversas/mês',
   },
   {
-    id: 'pro', name: 'Pro', price: 'R$ 397,90',
+    id: 'on', name: 'ON', price: 'R$ 547,70',
     popular: true,
     features: [
-      'Tudo do Starter',
-      'Voz clonada do dono (áudios IA)',
-      'Follow-ups automáticos',
-      'Templates de campanha outbound',
-    ],
-    limit: '1.500 conversas/mês',
-  },
-  {
-    id: 'scale', name: 'Scale', price: 'R$ 697,90',
-    features: [
-      'Tudo do Pro',
-      'Multi-número (até 5 WhatsApps)',
-      'Vozes regionais',
+      'Tudo do Start',
+      'Voz clonada — sua IA manda áudios com a SUA voz',
+      'Campanhas outbound (reativação de leads)',
+      'Integração com CRM (Pipedrive)',
       'Suporte prioritário',
     ],
-    limit: '3.000 conversas/mês',
-  },
-  {
-    id: 'elite', name: 'Elite', price: 'R$ 997,90',
-    features: [
-      'Tudo do Scale',
-      'Integração CRM (Pipedrive)',
-      'Até 10 números',
-      'Acesso à API',
-    ],
-    limit: '4.500 conversas/mês',
+    limit: '1.500 conversas/mês',
   },
 ];
 

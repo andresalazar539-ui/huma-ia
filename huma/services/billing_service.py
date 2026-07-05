@@ -8,11 +8,9 @@
 #   - HUMA = inteligência pura (assinatura)
 #   - Margem mínima 50% no pior cenário
 #
-# Planos (conversas):
-#   Starter  R$ 97,90  → 400 conversas
-#   Pro      R$ 397,90 → 1.500 conversas
-#   Scale    R$ 697,90 → 3.000 conversas
-#   Elite    R$ 997,90 → 4.500 conversas
+# Planos (definidos pelo André em 2026-07-04, meta de margem >= 80%):
+#   Start  R$ 347,70 → 500 conversas
+#   ON     R$ 547,70 → 1.500 conversas + voz clonada + outbound + CRM
 #
 # Pacotes extras:
 #   200 conversas → R$ 39,90
@@ -40,72 +38,40 @@ log = get_logger("billing")
 # ================================================================
 
 class Plan(str, Enum):
-    STARTER = "starter"
-    PRO = "pro"
-    SCALE = "scale"
-    ELITE = "elite"
+    START = "start"
+    ON = "on"
 
 
 PLAN_CONFIG = {
-    Plan.STARTER: {
-        "name": "Starter",
-        "price_brl": 97.90,
-        "included_conversations": 400,
+    Plan.START: {
+        "name": "Start",
+        "price_brl": 347.70,
+        "included_conversations": 500,
         "max_ia_calls_per_conversation": 50,
         "audio_enabled": False,
         "multi_clone": False,
         "max_numbers": 1,
         "regional_voices": False,
-        "max_products": 10,
+        "max_products": 50,
         "outbound_templates": False,
         "priority_support": False,
         "crm_integration": False,
         "api_access": False,
     },
-    Plan.PRO: {
-        "name": "Pro",
-        "price_brl": 397.90,
+    Plan.ON: {
+        "name": "ON",
+        "price_brl": 547.70,
         "included_conversations": 1500,
         "max_ia_calls_per_conversation": 50,
         "audio_enabled": True,
         "multi_clone": False,
         "max_numbers": 1,
-        "regional_voices": False,
-        "max_products": 50,
-        "outbound_templates": True,
-        "priority_support": False,
-        "crm_integration": False,
-        "api_access": False,
-    },
-    Plan.SCALE: {
-        "name": "Scale",
-        "price_brl": 697.90,
-        "included_conversations": 3000,
-        "max_ia_calls_per_conversation": 50,
-        "audio_enabled": True,
-        "multi_clone": True,
-        "max_numbers": 5,
-        "regional_voices": True,
-        "max_products": 200,
-        "outbound_templates": True,
-        "priority_support": True,
-        "crm_integration": False,
-        "api_access": False,
-    },
-    Plan.ELITE: {
-        "name": "Elite",
-        "price_brl": 997.90,
-        "included_conversations": 4500,
-        "max_ia_calls_per_conversation": 50,
-        "audio_enabled": True,
-        "multi_clone": True,
-        "max_numbers": 10,
         "regional_voices": True,
         "max_products": -1,
         "outbound_templates": True,
         "priority_support": True,
         "crm_integration": True,
-        "api_access": True,
+        "api_access": False,
     },
 }
 
@@ -163,11 +129,12 @@ async def create_subscription(client_id: str, plan: Plan, payment_provider_id: s
 async def get_client_plan_config(client_id: str) -> dict:
     sub = await get_subscription(client_id)
     if not sub:
-        return PLAN_CONFIG[Plan.STARTER]
+        return PLAN_CONFIG[Plan.START]
     try:
-        return PLAN_CONFIG[Plan(sub.get("plan", "starter"))]
+        return PLAN_CONFIG[Plan(sub.get("plan", "start"))]
     except ValueError:
-        return PLAN_CONFIG[Plan.STARTER]
+        # Plano legado/desconhecido na tabela → features do Start
+        return PLAN_CONFIG[Plan.START]
 
 
 # ================================================================
