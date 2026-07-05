@@ -38,6 +38,24 @@ const Grid = ({ children, cols = 3 }) => (
   </div>
 );
 
+const ExportButton = ({ label, format, days }) => {
+  const [busy, setBusy] = useStateR(false);
+  const doExport = async () => {
+    setBusy(true);
+    try { await downloadReportExport(format, days); }
+    catch (e) { console.error('Export | falha', e); }
+    setBusy(false);
+  };
+  return (
+    <button onClick={doExport} disabled={busy} style={{
+      padding: '8px 14px', borderRadius: 10, cursor: busy ? 'default' : 'pointer',
+      border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)',
+      color: 'var(--ink-2)', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+      opacity: busy ? 0.6 : 1, whiteSpace: 'nowrap',
+    }}>{busy ? 'Gerando…' : label}</button>
+  );
+};
+
 const ReportsScreen = () => {
   const [days, setDays] = useStateR(30);
   const [report, setReport] = useStateR(null);
@@ -72,16 +90,20 @@ const ReportsScreen = () => {
             O que a HUMA entregou de resultado — números reais, do seu negócio.
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 4, background: 'var(--paper-sunk)', borderRadius: 10, padding: 4 }}>
-          {[{ v: 7, l: '7 dias' }, { v: 30, l: '30 dias' }, { v: 90, l: '90 dias' }].map(p => (
-            <button key={p.v} onClick={() => setDays(p.v)} style={{
-              padding: '7px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
-              background: days === p.v ? 'var(--paper-raised)' : 'transparent',
-              color: days === p.v ? 'var(--ink)' : 'var(--ink-3)',
-              fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-              boxShadow: days === p.v ? '0 1px 3px rgba(28,23,20,0.1)' : 'none',
-            }}>{p.l}</button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <ExportButton label="⬇ Planilha (.xlsx)" format="xlsx" days={days}/>
+          <ExportButton label="⬇ Apresentação (.pptx)" format="pptx" days={days}/>
+          <div style={{ display: 'flex', gap: 4, background: 'var(--paper-sunk)', borderRadius: 10, padding: 4 }}>
+            {[{ v: 7, l: '7 dias' }, { v: 30, l: '30 dias' }, { v: 90, l: '90 dias' }].map(p => (
+              <button key={p.v} onClick={() => setDays(p.v)} style={{
+                padding: '7px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                background: days === p.v ? 'var(--paper-raised)' : 'transparent',
+                color: days === p.v ? 'var(--ink)' : 'var(--ink-3)',
+                fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+                boxShadow: days === p.v ? '0 1px 3px rgba(28,23,20,0.1)' : 'none',
+              }}>{p.l}</button>
+            ))}
+          </div>
         </div>
       </div>
 

@@ -307,3 +307,129 @@ class TestReportFrequencyValidation:
     def test_valor_invalido_recusado(self):
         with pytest.raises(Exception):
             ClientIdentity(client_id="x", business_name="B", report_frequency="sempre")
+
+
+# ================================================================
+# EXPORTAÇÃO (.xlsx e .pptx)
+# ================================================================
+
+_FAKE_REPORT = {
+    "period_days": 30,
+    "sections": {
+        "atendimento": {"conversas_ativas": 47, "conversas_novas": 12, "fora_do_horario": 9},
+        "vendas": {"receita_display": "R$ 3.240,00", "receita_cents": 324000,
+                   "pagamentos": 6, "ticket_display": "R$ 540,00", "fechadas_sem_humano": 2},
+        "funil": {"descoberta": 20, "negociando": 15, "compromissados": 5, "ganhos": 7, "perdidos": 4},
+        "follow_up": {"leads_reengajados": 5, "voltaram_a_negociar": 3},
+        "inteligencia": {"top_assuntos": [{"tipo": "preço", "vezes": 14}], "objecoes": 5, "perguntas_preco": 14},
+    },
+}
+
+
+class TestExport:
+
+    def test_xlsx_gera_e_reabre_com_dados(self):
+        from io import BytesIO
+        from openpyxl import load_workbook
+        from huma.services import export_service
+
+        data = export_service.report_to_xlsx(_identity(["sell_digital"]), _FAKE_REPORT)
+        assert data[:2] == b"PK"  # zip válido (xlsx)
+
+        wb = load_workbook(BytesIO(data))
+        ws = wb.active
+        textos = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
+        blob = " | ".join(textos)
+        assert "Clínica Relatório" in blob
+        assert "R$ 3.240,00" in blob
+        assert "Receita confirmada" in blob
+        assert "preço" in blob
+
+    def test_pptx_gera_slides_por_secao(self):
+        from io import BytesIO
+        from pptx import Presentation
+        from huma.services import export_service
+
+        data = export_service.report_to_pptx(_identity(["sell_digital"]), _FAKE_REPORT)
+        assert data[:2] == b"PK"
+
+        prs = Presentation(BytesIO(data))
+        # capa + atendimento + vendas + funil + follow_up + inteligência + fechamento
+        assert len(prs.slides) == 7
+        textos = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    textos.append(shape.text_frame.text)
+        blob = " | ".join(textos)
+        assert "Clínica Relatório" in blob
+        assert "R$ 3.240,00" in blob
+        assert "Vendas" in blob
+
+    def test_secao_ausente_nao_gera_slide(self):
+        from io import BytesIO
+        from pptx import Presentation
+        from huma.services import export_service
+
+        report = {"period_days": 7, "sections": {
+            "atendimento": {"conversas_ativas": 3, "conversas_novas": 1, "fora_do_horario": 0},
+            "funil": {"descoberta": 2, "negociando": 1, "compromissados": 0, "ganhos": 0, "perdidos": 0},
+            "follow_up": {"leads_reengajados": 0, "voltaram_a_negociar": 0},
+            "inteligencia": {"top_assuntos": []},
+        }}
+        data = export_service.report_to_pptx(_identity(["qualify"]), report)
+        prs = Presentation(BytesIO(data))
+        blob = " | ".join(
+            shape.text_frame.text for slide in prs.slides
+            for shape in slide.shapes if shape.has_text_frame
+        )
+        assert "Vendas" not in blob  # sem seção vendas, sem slide de vendas
+
+
+class TestExportEndpoint:
+
+    def test_sem_auth_401(self):
+        from fastapi.testclient import TestClient
+        from huma.app import app
+        resp = TestClient(app).get("/api/clients/cli_rep/reports/export?format=xlsx")
+        assert resp.status_code == 401
+
+    def test_formato_invalido_400(self, monkeypatch):
+        import huma.core.auth as auth_mod
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        async def get_client(cid):
+            return _identity(["sell_digital"])
+
+        monkeypatch.setattr(auth_mod, "get_client", get_client)
+        monkeypatch.setattr(auth_mod, "SESSION_SECRET", "segredo-teste")
+        cookies = {"huma_session": auth_mod.create_session_token("cli_rep")}
+        resp = TestClient(app).get("/api/clients/cli_rep/reports/export?format=pdf", cookies=cookies)
+        assert resp.status_code == 400
+
+    def test_download_xlsx_com_headers(self, monkeypatch):
+        import huma.core.auth as auth_mod
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        identity = _identity(["sell_digital"])
+
+        async def get_client(cid):
+            return identity if cid == "cli_rep" else None
+
+        async def fake_build(client, days=30):
+            return _FAKE_REPORT
+
+        monkeypatch.setattr(auth_mod, "get_client", get_client)
+        monkeypatch.setattr(auth_mod, "SESSION_SECRET", "segredo-teste")
+        monkeypatch.setattr(rs, "build_report", fake_build)
+
+        cookies = {"huma_session": auth_mod.create_session_token("cli_rep")}
+        resp = TestClient(app).get(
+            "/api/clients/cli_rep/reports/export?format=xlsx&days=30", cookies=cookies,
+        )
+        assert resp.status_code == 200
+        assert "spreadsheetml" in resp.headers["content-type"]
+        assert 'huma-relatorio-30d.xlsx' in resp.headers["content-disposition"]
+        assert resp.content[:2] == b"PK"

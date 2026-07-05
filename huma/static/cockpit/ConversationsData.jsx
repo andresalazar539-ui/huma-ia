@@ -340,4 +340,19 @@ async function fetchReport(days = 30) {
   return r.json();
 }
 
-Object.assign(window, { fetchReport });
+// Baixa o export (.xlsx ou .pptx) via blob — funciona com cookie e com Bearer
+async function downloadReportExport(format, days = 30) {
+  const url = `/api/clients/${encodeURIComponent(CLIENT_ID)}/reports/export?format=${format}&days=${days}`;
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  const blob = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `huma-relatorio-${days}d.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+Object.assign(window, { fetchReport, downloadReportExport });

@@ -245,6 +245,40 @@ async def get_reports(client_id: str, days: int = 30, client=Depends(verify_api_
     return await report_service.build_report(client, days=days)
 
 
+@router.get("/api/clients/{client_id}/reports/export", tags=["Cockpit"])
+async def export_report(
+    client_id: str,
+    format: str = "xlsx",
+    days: int = 30,
+    client=Depends(verify_api_key),
+):
+    """
+    Exporta o relatório do período: planilha (.xlsx) ou apresentação
+    (.pptx, editável no PowerPoint). Respeita as seções por meta.
+    """
+    if format not in ("xlsx", "pptx"):
+        raise HTTPException(400, "Formato inválido. Use xlsx ou pptx.")
+    days = max(1, min(days, 90))
+
+    from huma.services import export_service, report_service
+    report = await report_service.build_report(client, days=days)
+
+    if format == "xlsx":
+        payload = export_service.report_to_xlsx(client, report)
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        payload = export_service.report_to_pptx(client, report)
+        media = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+    filename = f"huma-relatorio-{days}d.{format}"
+    log.info(f"Relatório exportado | client={client_id} | format={format} | days={days}")
+    return Response(
+        content=payload,
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Settings do Cockpit (Sprint 2 — o botão Salvar salva de verdade) ──
 
 # Whitelist de campos do ClientIdentity editáveis pela tela de Ajustes.
