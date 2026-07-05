@@ -615,6 +615,9 @@ const PlanosScreen = ({ onBack }) => {
   const [currentPlan, setCurrentPlan] = useStateU(null);
   const [busy, setBusy] = useStateU('');
   const [err, setErr] = useStateU('');
+  const [ok, setOk] = useStateU('');
+  const [coupon, setCoupon] = useStateU('');
+  const [couponInfo, setCouponInfo] = useStateU(null); // {percent_off} depois de validar
 
   useEffectU(() => {
     fetchBillingStatus()
@@ -622,11 +625,39 @@ const PlanosScreen = ({ onBack }) => {
       .catch(() => setCurrentPlan(null));
   }, []);
 
+  const doValidateCoupon = async () => {
+    const code = coupon.trim();
+    if (!code) { setCouponInfo(null); return; }
+    setErr(''); setOk('');
+    try {
+      const data = await validateCoupon(code, HUMA_PLANS[0].id);
+      if (data.valid) {
+        setCouponInfo(data);
+        setOk(data.percent_off >= 100
+          ? `Cupom ${code.toUpperCase()} válido: 100% — 1 mês de cortesia ao assinar.`
+          : `Cupom ${code.toUpperCase()} válido: ${data.percent_off}% de desconto todo mês.`);
+      } else {
+        setCouponInfo(null);
+        setErr(data.detail || 'Cupom inválido ou expirado.');
+      }
+    } catch (e) {
+      setCouponInfo(null);
+      setErr(String(e.message || 'Erro ao validar cupom.'));
+    }
+  };
+
   const doSubscribe = async (planId) => {
     setBusy(planId);
-    setErr('');
+    setErr(''); setOk('');
     try {
-      const data = await subscribePlan(planId);
+      const data = await subscribePlan(planId, coupon.trim());
+      if (data.comp) {
+        // Cortesia 100%: plano ativado na hora, sem checkout
+        setOk(data.detail || 'Plano ativado com cortesia!');
+        setCurrentPlan(planId);
+        setBusy('');
+        return;
+      }
       // Checkout hospedado do Mercado Pago (cliente cadastra o cartão lá)
       location.href = data.checkout_url;
     } catch (e) {
@@ -655,6 +686,32 @@ const PlanosScreen = ({ onBack }) => {
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
           Assinatura mensal no cartão, renovação automática. Cancele quando quiser — conversas já pagas continuam valendo.
         </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 14, maxWidth: 420 }}>
+          <input
+            value={coupon}
+            onChange={e => setCoupon(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') doValidateCoupon(); }}
+            placeholder="Tem um cupom? Digite aqui"
+            style={{
+              flex: 1, padding: '10px 12px', borderRadius: 10,
+              border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)',
+              color: 'var(--ink)', fontFamily: 'var(--font-sans)', fontSize: 13,
+              outline: 'none', textTransform: 'uppercase',
+            }}
+          />
+          <button onClick={doValidateCoupon} style={{
+            padding: '10px 16px', borderRadius: 10, border: '1px solid var(--paper-edge)',
+            background: 'var(--paper-sunk)', color: 'var(--ink)', cursor: 'pointer',
+            fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+          }}>Aplicar</button>
+        </div>
+        {ok && (
+          <div style={{
+            marginTop: 10, padding: '10px 14px', borderRadius: 10,
+            background: 'var(--sage-tint, #e8f3ea)', color: 'var(--sage-ink, #14532d)',
+            fontFamily: 'var(--font-sans)', fontSize: 13,
+          }}>{ok}</div>
+        )}
         {err && (
           <div style={{
             marginTop: 10, padding: '10px 14px', borderRadius: 10,

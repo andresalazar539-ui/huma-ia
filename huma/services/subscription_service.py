@@ -52,16 +52,21 @@ def _headers() -> dict:
     }
 
 
-def _build_ext_ref(client_id: str, plan: str) -> str:
-    return f"{EXT_REF_PREFIX}|{client_id}|{plan}"
+def _build_ext_ref(client_id: str, plan: str, coupon: str = "") -> str:
+    base = f"{EXT_REF_PREFIX}|{client_id}|{plan}"
+    return f"{base}|{coupon}" if coupon else base
 
 
 def _parse_ext_ref(ref: str) -> Optional[dict]:
-    """'humasub|cli_x|pro' → {client_id, plan}; None se não for nosso."""
+    """'humasub|cli_x|pro[|CUPOM]' → {client_id, plan, coupon}; None se não for nosso."""
     parts = (ref or "").split("|")
-    if len(parts) != 3 or parts[0] != EXT_REF_PREFIX:
+    if len(parts) not in (3, 4) or parts[0] != EXT_REF_PREFIX:
         return None
-    return {"client_id": parts[1], "plan": parts[2]}
+    return {
+        "client_id": parts[1],
+        "plan": parts[2],
+        "coupon": parts[3] if len(parts) == 4 else "",
+    }
 
 
 async def _mp_get(path: str) -> Optional[dict]:
@@ -82,16 +87,114 @@ async def _mp_get(path: str) -> Optional[dict]:
 
 
 # ================================================================
+# CUPONS DE DESCONTO
+#
+# Validação 100% server-side (tabela coupons no Supabase). Regras:
+#   - percent_off 1-99: desconto PERMANENTE no valor do preapproval
+#     (o assinante trava aquele preço). Resgate contabilizado só na
+#     ATIVAÇÃO da assinatura (webhook) — abandono de checkout não
+#     queima cupom. Dedup por índice único no preapproval_id.
+#   - percent_off 100: cortesia interna — não passa pelo MP. Ativa o
+#     plano e credita 1 mês de conversas POR RESGATE (renovar = usar
+#     de novo). Feito pra testes e parcerias.
+# O contador de usos é o COUNT vivo de coupon_redemptions (fonte da
+# verdade), não um contador desnormalizado.
+# ================================================================
+
+
+async def validate_coupon(code: str, plan_value: str) -> dict:
+    """
+    Valida um cupom pro plano. Retorna:
+        {"valid": True, "percent_off": N, "price_original": X, "price_final": Y}
+        ou {"valid": False, "detail": "..."} — mensagem genérica (anti-enumeração).
+    """
+    generic = {"valid": False, "detail": "Cupom inválido ou expirado."}
+    code = (code or "").strip().upper()
+    if not code or len(code) > 40:
+        return generic
+
+    try:
+        plan = Plan(plan_value)
+    except ValueError:
+        return {"valid": False, "detail": f"Plano inválido: {plan_value}"}
+
+    supa = get_supabase()
+    resp = await run_in_threadpool(
+        lambda: supa.table("coupons").select("*").eq("code", code).limit(1).execute()
+    )
+    coupon = resp.data[0] if resp.data else None
+    if not coupon or not coupon.get("active"):
+        return generic
+
+    expires_at = coupon.get("expires_at")
+    if expires_at:
+        try:
+            exp = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+            if exp.timestamp() < datetime.utcnow().timestamp():
+                return generic
+        except ValueError:
+            log.error(f"Cupom com expires_at malformado | code={code}")
+            return generic
+
+    max_red = coupon.get("max_redemptions")
+    if max_red is not None:
+        used = await run_in_threadpool(
+            lambda: supa.table("coupon_redemptions").select("id", count="exact")
+                .eq("code", code).execute()
+        )
+        if (used.count or 0) >= max_red:
+            return generic
+
+    percent = int(coupon.get("percent_off", 0))
+    price = PLAN_CONFIG[plan]["price_brl"]
+    price_final = round(price * (100 - percent) / 100, 2)
+    return {
+        "valid": True,
+        "percent_off": percent,
+        "price_original": price,
+        "price_final": price_final,
+    }
+
+
+async def _record_redemption(code: str, client_id: str, plan: str, preapproval_id: str = "") -> bool:
+    """
+    Registra o resgate (auditoria + contagem). Retorna False se já
+    registrado pro mesmo preapproval (reentrega de webhook) ou em erro.
+    """
+    supa = get_supabase()
+    try:
+        await run_in_threadpool(
+            lambda: supa.table("coupon_redemptions").insert({
+                "code": code,
+                "client_id": client_id,
+                "plan": plan,
+                "preapproval_id": preapproval_id,
+            }).execute()
+        )
+        log.info(f"Cupom resgatado | code={code} | client={client_id} | plan={plan} | pre={preapproval_id or 'cortesia'}")
+        return True
+    except Exception as e:
+        # Índice único no preapproval_id: reentrega cai aqui — esperado.
+        log.info(f"Resgate não registrado (provável duplicata) | code={code} | {type(e).__name__}")
+        return False
+
+
+# ================================================================
 # CHECKOUT — cria a assinatura pendente e devolve a URL
 # ================================================================
 
 
-async def create_checkout(client_id: str, plan_value: str, payer_email: str) -> dict:
+async def create_checkout(client_id: str, plan_value: str, payer_email: str, coupon: str = "") -> dict:
     """
     Cria o preapproval (pendente) no MP e devolve o link de checkout.
 
+    Com cupom 1-99%: valor mensal do preapproval sai com desconto
+    permanente. Com cupom 100%: cortesia interna (sem MP) — ativa o
+    plano e credita 1 mês de conversas.
+
     Returns:
         {"status": "ok", "checkout_url": ..., "preapproval_id": ...}
+        ou {"status": "ok", "comp": True} (cortesia)
         ou {"status": "error", "detail": ...} — nunca levanta exceção.
     """
     if not MERCADOPAGO_ACCESS_TOKEN:
@@ -107,15 +210,43 @@ async def create_checkout(client_id: str, plan_value: str, payer_email: str) -> 
     if "@" not in payer_email:
         return {"status": "error", "detail": "Cliente sem e-mail cadastrado — faça login e tente de novo."}
 
+    coupon_code = (coupon or "").strip().upper()
+    amount = config["price_brl"]
+    if coupon_code:
+        result = await validate_coupon(coupon_code, plan.value)
+        if not result.get("valid"):
+            return {"status": "error", "detail": result.get("detail", "Cupom inválido ou expirado.")}
+
+        if result["percent_off"] >= 100:
+            # Cortesia: sem MP. Resgate contado JÁ (é o "pagamento").
+            await _record_redemption(coupon_code, client_id, plan.value)
+            await _upsert_subscription(client_id, plan.value, f"coupon:{coupon_code}", "active")
+            await billing.add_conversations(
+                client_id, config["included_conversations"],
+                source="cupom_cortesia",
+                description=f"cupom={coupon_code} plano {plan.value}",
+            )
+            log.info(f"CORTESIA ATIVADA | client={client_id} | plan={plan.value} | cupom={coupon_code}")
+            return {
+                "status": "ok",
+                "comp": True,
+                "detail": f"Plano {config['name']} ativado com o cupom {coupon_code} — 1 mês de cortesia!",
+            }
+
+        amount = result["price_final"]
+
     back_url = f"{PUBLIC_BASE_URL.rstrip('/')}/cockpit?client_id={client_id}" if PUBLIC_BASE_URL else ""
+    reason = f"HUMA IA — Plano {config['name']}"
+    if coupon_code:
+        reason += f" (cupom {coupon_code})"
     body = {
-        "reason": f"HUMA IA — Plano {config['name']}",
-        "external_reference": _build_ext_ref(client_id, plan.value),
+        "reason": reason,
+        "external_reference": _build_ext_ref(client_id, plan.value, coupon_code),
         "payer_email": payer_email,
         "auto_recurring": {
             "frequency": 1,
             "frequency_type": "months",
-            "transaction_amount": config["price_brl"],
+            "transaction_amount": amount,
             "currency_id": "BRL",
         },
         "back_url": back_url,
@@ -270,6 +401,12 @@ async def _handle_preapproval_change(preapproval_id: str) -> None:
         return
 
     await _upsert_subscription(client_id, plan, preapproval_id, local_status)
+
+    # Cupom com desconto %: o resgate conta na ATIVAÇÃO (checkout
+    # abandonado não queima cupom). Índice único dedupa reentrega.
+    if local_status == "active" and ref.get("coupon"):
+        await _record_redemption(ref["coupon"], client_id, plan, preapproval_id)
+
     log.info(f"Assinatura {local_status} | client={client_id} | plan={plan} | preapproval={preapproval_id}")
 
 

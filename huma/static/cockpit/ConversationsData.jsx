@@ -281,14 +281,27 @@ async function fetchBillingStatus() {
 }
 
 // Cria a assinatura no MP e devolve { checkout_url } — o caller redireciona.
-async function subscribePlan(plan) {
+// Com cupom 100% devolve { comp: true } (plano ativado na hora, sem checkout).
+async function subscribePlan(plan, coupon = '') {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/subscribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
-    body: JSON.stringify({ plan }),
+    body: JSON.stringify({ plan, coupon }),
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data.detail || 'Erro ao iniciar assinatura');
+  return data;
+}
+
+// Pré-valida cupom pra dar feedback antes de assinar
+async function validateCoupon(coupon, plan) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/validate-coupon`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ coupon, plan }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Erro ao validar cupom');
   return data;
 }
 
@@ -302,4 +315,4 @@ async function cancelPlan() {
   return data;
 }
 
-Object.assign(window, { fetchBillingStatus, subscribePlan, cancelPlan });
+Object.assign(window, { fetchBillingStatus, subscribePlan, cancelPlan, validateCoupon });

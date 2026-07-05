@@ -26,7 +26,7 @@ class TestExtRef:
 
     def test_roundtrip(self):
         ref = subs._build_ext_ref("cli_x", "pro")
-        assert subs._parse_ext_ref(ref) == {"client_id": "cli_x", "plan": "pro"}
+        assert subs._parse_ext_ref(ref) == {"client_id": "cli_x", "plan": "pro", "coupon": ""}
 
     def test_alheio_retorna_none(self):
         assert subs._parse_ext_ref("outra|coisa") is None
@@ -314,7 +314,7 @@ class TestBillingEndpoints:
         _mock_auth_client(monkeypatch)
         cookies = _session_cookie(monkeypatch)
 
-        async def fake_checkout(cid, plan, email):
+        async def fake_checkout(cid, plan, email, coupon=""):
             assert cid == "cli_bil"
             assert plan == "pro"
             assert email == "dono@negocio.com.br"
@@ -333,7 +333,7 @@ class TestBillingEndpoints:
         _mock_auth_client(monkeypatch)
         cookies = _session_cookie(monkeypatch)
 
-        async def fake_checkout(cid, plan, email):
+        async def fake_checkout(cid, plan, email, coupon=""):
             return {"status": "error", "detail": "Plano inválido: x"}
 
         monkeypatch.setattr(subs, "create_checkout", fake_checkout)
@@ -354,3 +354,210 @@ class TestBillingEndpoints:
         monkeypatch.setattr(subs, "cancel_subscription", fake_cancel)
         resp = self._client().post("/api/clients/cli_bil/billing/cancel", cookies=cookies)
         assert resp.status_code == 200
+
+
+# ================================================================
+# CUPONS DE DESCONTO
+# ================================================================
+
+def _fake_supa(monkeypatch, coupon_row=None, redemptions_count=0):
+    """Fake do Supabase pra coupons/coupon_redemptions."""
+    class Resp:
+        def __init__(self, data, count=None):
+            self.data = data
+            self.count = count
+
+    class Q:
+        def __init__(self, table):
+            self._table = table
+
+        def select(self, *a, **kw):
+            return self
+
+        def eq(self, *a):
+            return self
+
+        def limit(self, n):
+            return self
+
+        def insert(self, row):
+            _fake_supa.inserted.append((self._table, row))
+            return self
+
+        def execute(self):
+            if self._table == "coupons":
+                return Resp([coupon_row] if coupon_row else [])
+            if self._table == "coupon_redemptions":
+                return Resp([], count=redemptions_count)
+            return Resp([])
+
+    class Supa:
+        def table(self, name):
+            return Q(name)
+
+    _fake_supa.inserted = []
+    monkeypatch.setattr(subs, "get_supabase", lambda: Supa())
+
+
+def _coupon_row(**over):
+    base = {
+        "code": "TESTE20", "percent_off": 20, "max_redemptions": None,
+        "expires_at": None, "active": True,
+    }
+    base.update(over)
+    return base
+
+
+class TestValidateCoupon:
+
+    def test_valido_calcula_preco_final(self, monkeypatch):
+        _fake_supa(monkeypatch, _coupon_row())
+        out = asyncio.run(subs.validate_coupon("teste20", "pro"))
+        assert out["valid"] is True
+        assert out["percent_off"] == 20
+        price = PLAN_CONFIG[Plan.PRO]["price_brl"]
+        assert out["price_final"] == round(price * 0.8, 2)
+
+    def test_inexistente_generico(self, monkeypatch):
+        _fake_supa(monkeypatch, None)
+        out = asyncio.run(subs.validate_coupon("NAOEXISTE", "pro"))
+        assert out["valid"] is False
+        assert "inválido" in out["detail"].lower()
+
+    def test_inativo_generico(self, monkeypatch):
+        _fake_supa(monkeypatch, _coupon_row(active=False))
+        out = asyncio.run(subs.validate_coupon("TESTE20", "pro"))
+        assert out["valid"] is False
+
+    def test_expirado_generico(self, monkeypatch):
+        _fake_supa(monkeypatch, _coupon_row(expires_at="2020-01-01T00:00:00+00:00"))
+        out = asyncio.run(subs.validate_coupon("TESTE20", "pro"))
+        assert out["valid"] is False
+
+    def test_esgotado_generico(self, monkeypatch):
+        _fake_supa(monkeypatch, _coupon_row(max_redemptions=5), redemptions_count=5)
+        out = asyncio.run(subs.validate_coupon("TESTE20", "pro"))
+        assert out["valid"] is False
+
+    def test_com_usos_restantes_valido(self, monkeypatch):
+        _fake_supa(monkeypatch, _coupon_row(max_redemptions=5), redemptions_count=4)
+        out = asyncio.run(subs.validate_coupon("TESTE20", "pro"))
+        assert out["valid"] is True
+
+
+class TestCheckoutComCupom:
+
+    def test_desconto_percentual_no_preapproval(self, monkeypatch):
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+        _fake_http(monkeypatch, FakeResp(201, {"id": "pre_1", "init_point": "https://mp/x"}))
+
+        async def valid(code, plan):
+            return {"valid": True, "percent_off": 20, "price_original": 100.0, "price_final": 80.0}
+
+        monkeypatch.setattr(subs, "validate_coupon", valid)
+        out = asyncio.run(subs.create_checkout("cli_x", "pro", "a@b.com", coupon="teste20"))
+        assert out["status"] == "ok"
+
+        body = _fake_http.last_post["json"]
+        assert body["auto_recurring"]["transaction_amount"] == 80.0
+        assert body["external_reference"] == "humasub|cli_x|pro|TESTE20"
+        assert "TESTE20" in body["reason"]
+
+    def test_cortesia_100_ativa_sem_mp(self, monkeypatch):
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+        effects = {"credits": [], "upserts": [], "redemptions": []}
+
+        async def valid(code, plan):
+            return {"valid": True, "percent_off": 100, "price_original": 100.0, "price_final": 0.0}
+
+        async def record(code, cid, plan, pre=""):
+            effects["redemptions"].append((code, cid, plan, pre))
+            return True
+
+        async def upsert(cid, plan, pre_id, status):
+            effects["upserts"].append((cid, plan, pre_id, status))
+
+        async def add_conversations(cid, amount, source="", description=""):
+            effects["credits"].append((cid, amount, source))
+            return amount
+
+        monkeypatch.setattr(subs, "validate_coupon", valid)
+        monkeypatch.setattr(subs, "_record_redemption", record)
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
+
+        out = asyncio.run(subs.create_checkout("cli_x", "pro", "a@b.com", coupon="free100"))
+        assert out["status"] == "ok"
+        assert out["comp"] is True
+        assert "checkout_url" not in out
+        assert effects["upserts"] == [("cli_x", "pro", "coupon:FREE100", "active")]
+        assert len(effects["credits"]) == 1
+        assert effects["credits"][0][1] == PLAN_CONFIG[Plan.PRO]["included_conversations"]
+        assert effects["redemptions"] == [("FREE100", "cli_x", "pro")] or effects["redemptions"] == [("FREE100", "cli_x", "pro", "")]
+
+    def test_cupom_invalido_erro(self, monkeypatch):
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+
+        async def invalid(code, plan):
+            return {"valid": False, "detail": "Cupom inválido ou expirado."}
+
+        monkeypatch.setattr(subs, "validate_coupon", invalid)
+        out = asyncio.run(subs.create_checkout("cli_x", "pro", "a@b.com", coupon="FAKE"))
+        assert out["status"] == "error"
+        assert "cupom" in out["detail"].lower()
+
+
+class TestExtRefComCupom:
+
+    def test_roundtrip_com_cupom(self):
+        ref = subs._build_ext_ref("cli_x", "pro", "TESTE20")
+        assert subs._parse_ext_ref(ref) == {"client_id": "cli_x", "plan": "pro", "coupon": "TESTE20"}
+
+    def test_sem_cupom_coupon_vazio(self):
+        ref = subs._build_ext_ref("cli_x", "pro")
+        assert subs._parse_ext_ref(ref) == {"client_id": "cli_x", "plan": "pro", "coupon": ""}
+
+
+class TestRedemptionNaAtivacao:
+
+    def test_ativacao_com_cupom_registra_resgate(self, monkeypatch):
+        effects = {"upserts": [], "redemptions": []}
+
+        async def mp_get(path):
+            return {"id": "pre_1", "status": "authorized",
+                    "external_reference": "humasub|cli_x|pro|TESTE20"}
+
+        async def upsert(cid, plan, pre_id, status):
+            effects["upserts"].append((cid, plan, pre_id, status))
+
+        async def record(code, cid, plan, pre=""):
+            effects["redemptions"].append((code, cid, plan, pre))
+            return True
+
+        monkeypatch.setattr(subs, "_mp_get", mp_get)
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs, "_record_redemption", record)
+        asyncio.run(subs._handle_preapproval_change("pre_1"))
+
+        assert effects["upserts"] == [("cli_x", "pro", "pre_1", "active")]
+        assert effects["redemptions"] == [("TESTE20", "cli_x", "pro", "pre_1")]
+
+    def test_cancelamento_nao_registra_resgate(self, monkeypatch):
+        effects = {"redemptions": []}
+
+        async def mp_get(path):
+            return {"id": "pre_1", "status": "cancelled",
+                    "external_reference": "humasub|cli_x|pro|TESTE20"}
+
+        async def upsert(*a):
+            pass
+
+        async def record(*a, **kw):
+            effects["redemptions"].append(a)
+            return True
+
+        monkeypatch.setattr(subs, "_mp_get", mp_get)
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs, "_record_redemption", record)
+        asyncio.run(subs._handle_preapproval_change("pre_1"))
+        assert effects["redemptions"] == []

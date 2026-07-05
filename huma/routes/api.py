@@ -269,6 +269,12 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
 
 class SubscribeBody(BaseModel):
     plan: str = Field(..., min_length=1, max_length=30)
+    coupon: str = Field(default="", max_length=40)
+
+
+class CouponBody(BaseModel):
+    plan: str = Field(..., min_length=1, max_length=30)
+    coupon: str = Field(..., min_length=1, max_length=40)
 
 
 @router.get("/api/clients/{client_id}/billing", tags=["Billing"])
@@ -286,10 +292,26 @@ async def billing_subscribe(client_id: str, payload: SubscribeBody, client=Depen
     crédito de conversas acontecem via webhook, nunca aqui.
     """
     from huma.services import subscription_service as subs
-    result = await subs.create_checkout(client_id, payload.plan, getattr(client, "owner_email", "") or "")
+    result = await subs.create_checkout(
+        client_id, payload.plan, getattr(client, "owner_email", "") or "", payload.coupon,
+    )
     if result.get("status") != "ok":
         raise HTTPException(400, result.get("detail", "Não foi possível iniciar a assinatura."))
     return result
+
+
+@router.post("/api/clients/{client_id}/billing/validate-coupon", tags=["Billing"])
+async def billing_validate_coupon(client_id: str, payload: CouponBody, _=Depends(verify_api_key)) -> dict:
+    """
+    Pré-valida um cupom pro plano (feedback na tela antes de assinar).
+    Rate limit anti chute de código: 10 tentativas / 10 min por cliente.
+    """
+    attempts = await cache.incr_with_ttl(f"coupon:tries:{client_id}", 600)
+    if attempts > 10:
+        raise HTTPException(429, "Muitas tentativas. Aguarde alguns minutos.")
+
+    from huma.services import subscription_service as subs
+    return await subs.validate_coupon(payload.coupon, payload.plan)
 
 
 @router.post("/api/clients/{client_id}/billing/cancel", tags=["Billing"])
