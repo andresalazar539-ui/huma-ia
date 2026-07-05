@@ -137,21 +137,51 @@ async def update_funnel(client_id: str, config: FunnelConfig, _=Depends(verify_a
 # ── Outbound ──
 
 @router.post("/api/clients/{client_id}/outbound/campaign", tags=["Outbound"])
-async def create_campaign(client_id: str, campaign: OutboundCampaign, _=Depends(verify_api_key)):
-    """Cria campanha de prospecção outbound."""
+async def create_campaign(
+    client_id: str,
+    campaign: OutboundCampaign,
+    bg: BackgroundTasks,
+    client=Depends(verify_api_key),
+):
+    """
+    Cria E dispara campanha de prospecção outbound (em background).
+
+    TRAVAS (decisão de produto 2026-07-05):
+      1. SÓ WhatsApp oficial (Meta Cloud API). Disparo em massa por canal
+         não-oficial (Evolution/Baileys) = banimento do número do cliente.
+         O Cockpit mostra cadeado; aqui é a trava de verdade.
+      2. Feature do plano ON (outbound_templates).
+    """
     if not campaign.leads:
         raise HTTPException(400, "Mínimo 1 lead")
     if campaign.daily_send_limit > 200:
         raise HTTPException(400, "Máximo 200 envios/dia")
 
+    provider = (getattr(client, "whatsapp_provider", "") or "").strip().lower()
+    if provider != "meta":
+        raise HTTPException(
+            403,
+            "Disparo em massa disponível apenas com WhatsApp oficial (API da Meta). "
+            "Envio em massa por canal não-oficial arrisca o banimento do seu número.",
+        )
+
+    from huma.services import billing_service as billing
+    plan_config = await billing.get_client_plan_config(client_id)
+    if not plan_config.get("outbound_templates"):
+        raise HTTPException(403, "Disparo em massa faz parte do plano ON. Faça upgrade pra liberar.")
+
     campaign.client_id = client_id
     campaign.campaign_id = f"camp_{client_id}_{int(datetime.utcnow().timestamp())}"
     await db.save_outbound_campaign(campaign)
+
+    # Dispara o batch em background (respeita daily_send_limit e créditos)
+    bg.add_task(process_outbound_campaign, client, campaign)
 
     return {
         "status": "created",
         "campaign_id": campaign.campaign_id,
         "leads": len(campaign.leads),
+        "dispatching": True,
     }
 
 
@@ -726,6 +756,9 @@ async def integrations_status(
         # WhatsApp Meta Cloud API — phone_number_id não é secret
         "phone_number_id": getattr(identity, "phone_number_id", "") or "",
         "waba_id": getattr(identity, "waba_id", "") or "",
+        # Canal WhatsApp ativo (meta|evolution|twilio|"") — o Cockpit usa
+        # pra travar features exclusivas do canal oficial (ex.: Disparos)
+        "whatsapp_provider": (getattr(identity, "whatsapp_provider", "") or "").strip().lower(),
         # Notificações pro dono
         "owner_phone": getattr(identity, "owner_phone", "") or "",
     }

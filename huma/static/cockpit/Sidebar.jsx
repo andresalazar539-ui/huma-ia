@@ -6,6 +6,7 @@ const SidebarNav = ({ active, onNav, onInvite }) => {
     { id: 'clientes',     label: 'Clientes',     icon: 'users',    count: null },
     { id: 'voz',          label: 'Voz',          icon: 'mic',      count: null },
     { id: 'relatorios',   label: 'Relatórios',   icon: 'chart',    count: null },
+    { id: 'disparos',     label: 'Disparos',     icon: 'send',     count: null },
     { id: 'integracoes',  label: 'Integrações',  icon: 'plug',     count: null },
     { id: 'ajustes',      label: 'Ajustes',      icon: 'settings', count: null,
       children: [

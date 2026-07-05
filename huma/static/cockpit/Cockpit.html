@@ -49,6 +49,7 @@
 <script type="text/babel" src="/static/cockpit/ConversationView.jsx"></script>
 <script type="text/babel" src="/static/cockpit/AgendaPanel.jsx"></script>
 <script type="text/babel" src="/static/cockpit/ReportsScreen.jsx"></script>
+<script type="text/babel" src="/static/cockpit/CampaignsScreen.jsx"></script>
 <script type="text/babel" src="/static/cockpit/IntegrationsScreen.jsx"></script>
 <script type="text/babel" src="/static/cockpit/PlaceholderScreens.jsx"></script>
 <script type="text/babel" src="/static/cockpit/AgendaScreen.jsx"></script>
@@ -224,6 +225,7 @@ function App() {
     case 'clientes':    screen = <ClientesScreen />; break;
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
+    case 'disparos':    screen = <CampaignsScreen client={client} onNav={setRoute} />; break;
     case 'integracoes': screen = <IntegrationsScreen client={client} onReloadStatus={reloadIntegrationsStatus} />; break;
     case 'ajustes':     screen = <AjustesScreen />; break;
     case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;

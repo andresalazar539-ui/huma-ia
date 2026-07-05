@@ -316,3 +316,19 @@ async function cancelPlan() {
 }
 
 Object.assign(window, { fetchBillingStatus, subscribePlan, cancelPlan, validateCoupon });
+
+/* ---------------- Disparos em massa (outbound — só WhatsApp oficial) ---------------- */
+// Backend recusa com 403 se o canal não for a API oficial da Meta
+// (canal não-oficial toma ban por envio em massa) ou se o plano não for ON.
+async function createCampaign({ name, message_template, leads, daily_send_limit }) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/outbound/campaign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ name, message_template, leads, daily_send_limit }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Erro ao criar campanha');
+  return data;
+}
+
+Object.assign(window, { createCampaign });

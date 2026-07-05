@@ -710,6 +710,18 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
 
 async def process_outbound_campaign(client_data, campaign):
     """Processa batch de mensagens outbound."""
+    # Defesa em profundidade: disparo em massa SÓ no WhatsApp oficial.
+    # Canal não-oficial (Evolution/Baileys) toma ban por envio em massa.
+    # A rota já bloqueia com 403; aqui garante que nenhum caller futuro
+    # (scheduler, script) dispare por engano.
+    provider = (getattr(client_data, "whatsapp_provider", "") or "").strip().lower()
+    if provider != "meta":
+        log.warning(
+            f"Outbound BLOQUEADO | canal não-oficial | "
+            f"client={client_data.client_id} | provider={provider or 'nenhum'}"
+        )
+        return {"status": "blocked", "reason": "official_whatsapp_required", "sent": 0, "errors": 0}
+
     plan_config = await billing.get_client_plan_config(client_data.client_id)
 
     sent = errors = 0
