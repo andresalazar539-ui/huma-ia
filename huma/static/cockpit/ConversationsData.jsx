@@ -332,3 +332,12 @@ async function createCampaign({ name, message_template, leads, daily_send_limit 
 }
 
 Object.assign(window, { createCampaign });
+
+/* ---------------- Relatórios de outcome (por meta do cliente) ---------------- */
+async function fetchReport(days = 30) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/reports?days=${days}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+Object.assign(window, { fetchReport });

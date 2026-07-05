@@ -572,6 +572,21 @@ class ClientIdentity(BaseModel):
             "Só e-mails vinculados a um cliente conseguem entrar."
         ),
     )
+    report_frequency: str = Field(
+        default="weekly",
+        description=(
+            "Frequência do relatório de resultados no WhatsApp do dono: "
+            "daily | weekly | biweekly | monthly | off."
+        ),
+    )
+
+    @field_validator("report_frequency")
+    @classmethod
+    def _valid_report_frequency(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in ("daily", "weekly", "biweekly", "monthly", "off"):
+            raise ValueError("report_frequency deve ser daily, weekly, biweekly, monthly ou off")
+        return v
     # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe
     # tudo até desligar conscientemente. notify_on_payment já era enviado.
     notify_owner_on_appointment: bool = Field(

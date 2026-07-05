@@ -288,6 +288,16 @@ const NegocioInfo = ({ settings, patch }) => {
           <Field label="WhatsApp do dono (avisos da HUMA)" half hint="Agendamentos, pagamentos e alertas chegam aqui.">
             <Input value={settings.owner_phone || ''} onChange={e => patch('owner_phone', e.target.value)} placeholder="5511987654321"/>
           </Field>
+          <Field label="Relatório de resultados no WhatsApp" half hint="A HUMA presta contas no seu WhatsApp, na frequência que você quiser.">
+            <Select value={settings.report_frequency || 'weekly'} onChange={e => patch('report_frequency', e.target.value)}
+                    options={[
+                      { value: 'daily',    label: 'Diário (toda manhã, 8h)' },
+                      { value: 'weekly',   label: 'Semanal' },
+                      { value: 'biweekly', label: 'Quinzenal' },
+                      { value: 'monthly',  label: 'Mensal' },
+                      { value: 'off',      label: 'Não enviar' },
+                    ]}/>
+          </Field>
         </div>
       </Card>
 

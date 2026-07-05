@@ -231,6 +231,20 @@ async def get_metrics(client_id: str, _=Depends(verify_api_key)):
     return await db.get_conversation_metrics(client_id)
 
 
+@router.get("/api/clients/{client_id}/reports", tags=["Cockpit"])
+async def get_reports(client_id: str, days: int = 30, client=Depends(verify_api_key)) -> dict:
+    """
+    Relatório de outcome do período pro Cockpit (ReportsScreen).
+
+    Seções condicionais às metas (capabilities) do cliente: vendas só
+    pra quem vende, agenda só pra quem agenda, qualificação só pra
+    quem qualifica. Atendimento/funil/follow-up/inteligência sempre.
+    """
+    days = max(1, min(days, 90))
+    from huma.services import report_service
+    return await report_service.build_report(client, days=days)
+
+
 # ── Settings do Cockpit (Sprint 2 — o botão Salvar salva de verdade) ──
 
 # Whitelist de campos do ClientIdentity editáveis pela tela de Ajustes.
@@ -241,7 +255,7 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     "custom_rules", "products_or_services", "faq", "forbidden_words",
     "personality_traits", "use_emojis", "fallback_message",
     "silent_hours_start", "silent_hours_end", "silent_hours_message",
-    "owner_phone",
+    "owner_phone", "report_frequency",
     "notify_owner_on_appointment", "notify_owner_on_payment",
     "notify_owner_on_cancellation", "notify_owner_on_stuck_lead",
     "max_discount_percent", "max_installments", "accepted_payment_methods",

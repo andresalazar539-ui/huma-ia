@@ -1,0 +1,309 @@
+# ================================================================
+# huma/tests/test_reports.py — Relatórios de outcome por meta
+#
+# Cobre:
+#   - Seções condicionais às capabilities (vendas/agenda/qualificação)
+#   - Números: receita real, funil, follow-up resgatado, fora de horário
+#   - Texto do WhatsApp por meta
+#   - Job: janela 8h BRT, frequência do dono, dedup, silêncio sem atividade
+#   - Endpoint /reports (auth + shape)
+# ================================================================
+
+import asyncio
+from datetime import datetime, timedelta
+
+import pytest
+
+from huma.models.schemas import ClientIdentity
+from huma.services import report_service as rs
+
+
+def _identity(caps) -> ClientIdentity:
+    return ClientIdentity(
+        client_id="cli_rep",
+        business_name="Clínica Relatório",
+        capabilities=caps,
+        owner_phone="5511999998888",
+    )
+
+
+def _now_iso(days_ago=0, hour=None):
+    dt = datetime.utcnow() - timedelta(days=days_ago)
+    if hour is not None:
+        dt = dt.replace(hour=hour, minute=0)
+    return dt.isoformat()
+
+
+def _fake_supa(monkeypatch, *, conversations=None, payments=None, classifications=None, clients=None):
+    class Resp:
+        def __init__(self, data):
+            self.data = data
+
+    class Q:
+        def __init__(self, table):
+            self._table = table
+
+        def select(self, *a, **kw): return self
+        def eq(self, *a): return self
+        def neq(self, *a): return self
+        def gte(self, *a): return self
+        def limit(self, n): return self
+
+        def execute(self):
+            data = {
+                "conversations": conversations or [],
+                "payments": payments or [],
+                "message_classifications": classifications or [],
+                "clients": clients or [],
+            }.get(self._table, [])
+            return Resp(data)
+
+    class Supa:
+        def table(self, name): return Q(name)
+
+    monkeypatch.setattr(rs, "get_supabase", lambda: Supa())
+
+
+_CONVS = [
+    # ganho com pagamento, sem humano, com follow-up que resgatou
+    {"phone": "1", "stage": "won", "created_at": _now_iso(2), "last_message_at": _now_iso(1, hour=14),
+     "follow_up_count": 1, "handoff_status": "active", "lead_name_canonical": "Maria",
+     "lead_email": "m@x.com", "lead_facts": ["nome: Maria"], "crm_deal_id": "d1",
+     "crm_synced_at": _now_iso(1), "active_appointment_datetime": _now_iso(-1),
+     "active_appointment_service": "Consulta"},
+    # negociando, atendida de madrugada (fora do horário)
+    {"phone": "2", "stage": "offer", "created_at": _now_iso(3), "last_message_at": _now_iso(0, hour=3),
+     "follow_up_count": 0, "handoff_status": "active", "lead_name_canonical": "",
+     "lead_email": "", "lead_facts": [], "crm_deal_id": "", "crm_synced_at": None,
+     "active_appointment_datetime": "", "active_appointment_service": ""},
+    # perdido com handoff
+    {"phone": "3", "stage": "lost", "created_at": _now_iso(5), "last_message_at": _now_iso(2, hour=15),
+     "follow_up_count": 2, "handoff_status": "handed_off", "lead_name_canonical": "João",
+     "lead_email": "", "lead_facts": [], "crm_deal_id": "", "crm_synced_at": None,
+     "active_appointment_datetime": "", "active_appointment_service": ""},
+]
+
+_PAYMENTS = [
+    {"amount_cents": 35000, "paid_at": _now_iso(1), "status": "approved"},
+    {"amount_cents": 15000, "paid_at": _now_iso(2), "status": "approved"},
+]
+
+_CLASSIFICATIONS = (
+    [{"msg_type": "price_query"}] * 5
+    + [{"msg_type": "schedule_intent"}] * 3
+    + [{"msg_type": "objection"}] * 2
+)
+
+
+class TestBuildReportPorMeta:
+
+    def test_cliente_que_vende_ve_vendas(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, payments=_PAYMENTS, classifications=_CLASSIFICATIONS)
+        report = asyncio.run(rs.build_report(_identity(["sell_digital"]), days=7))
+        assert "vendas" in report["sections"]
+        assert report["sections"]["vendas"]["receita_cents"] == 50000
+        assert report["sections"]["vendas"]["pagamentos"] == 2
+        assert report["sections"]["vendas"]["fechadas_sem_humano"] == 1
+        # Não pediu agendamento nem qualificação
+        assert "agenda" not in report["sections"]
+        assert "qualificacao" not in report["sections"]
+
+    def test_cliente_que_agenda_ve_agenda(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, classifications=[])
+        report = asyncio.run(rs.build_report(_identity(["schedule"]), days=7))
+        assert "agenda" in report["sections"]
+        assert report["sections"]["agenda"]["agendamentos"] == 1
+        assert "vendas" not in report["sections"]
+
+    def test_cliente_que_qualifica_ve_qualificacao(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, classifications=[])
+        report = asyncio.run(rs.build_report(_identity(["qualify"]), days=7))
+        q = report["sections"]["qualificacao"]
+        assert q["leads_com_dados"] == 2   # Maria (dados) + João (nome)
+        assert q["enviados_crm"] == 1
+        assert q["passados_pro_humano"] == 1
+        assert "vendas" not in report["sections"]
+
+    def test_secoes_universais_sempre_presentes(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, classifications=_CLASSIFICATIONS)
+        report = asyncio.run(rs.build_report(_identity(["qualify"]), days=7))
+        s = report["sections"]
+        assert s["atendimento"]["conversas_ativas"] == 3
+        assert s["atendimento"]["fora_do_horario"] >= 1  # a das 3h da manhã
+        assert s["funil"]["ganhos"] == 1
+        assert s["funil"]["perdidos"] == 1
+        assert s["follow_up"]["leads_reengajados"] == 2
+        assert s["follow_up"]["voltaram_a_negociar"] == 1  # a won com follow-up
+        assert s["inteligencia"]["top_assuntos"][0]["tipo"] == "preço"
+
+    def test_formatacao_brl(self):
+        assert rs._brl(50000) == "R$ 500,00"
+        assert rs._brl(123456) == "R$ 1.234,56"
+
+
+class TestWhatsAppText:
+
+    def test_texto_por_meta_vendas(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, payments=_PAYMENTS, classifications=_CLASSIFICATIONS)
+        identity = _identity(["sell_digital"])
+        report = asyncio.run(rs.build_report(identity, days=7))
+        msg = rs.format_report_whatsapp(identity, report, "weekly")
+        assert "R$ 500,00" in msg
+        assert "da semana" in msg
+        assert "Clínica Relatório" in msg
+        assert "fechadas 100% pela HUMA" in msg
+        assert "preço" in msg  # insight
+
+    def test_texto_qualificacao_sem_vendas(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, classifications=[])
+        identity = _identity(["qualify"])
+        report = asyncio.run(rs.build_report(identity, days=1))
+        msg = rs.format_report_whatsapp(identity, report, "daily")
+        assert "qualificados" in msg
+        assert "R$" not in msg  # não vende → não fala de receita
+        assert "de ontem" in msg
+
+
+class TestOwnerReportJob:
+
+    def _patch_hour(self, monkeypatch, hour):
+        class FakeDT(datetime):
+            @classmethod
+            def utcnow(cls):
+                return datetime(2026, 7, 6, hour, 5, 0)
+
+        monkeypatch.setattr(rs, "datetime", FakeDT)
+
+    def test_fora_da_janela_8h_nao_faz_nada(self, monkeypatch):
+        self._patch_hour(monkeypatch, 15)
+        called = {"ping": 0}
+
+        async def ping():
+            called["ping"] += 1
+            return True
+
+        monkeypatch.setattr(rs.cache, "ping", ping)
+        asyncio.run(rs.run_owner_reports())
+        assert called["ping"] == 0  # nem chegou no Redis
+
+    def test_envia_na_janela_e_marca_dedup(self, monkeypatch):
+        self._patch_hour(monkeypatch, 11)
+        _fake_supa(monkeypatch, clients=[
+            {"client_id": "cli_rep", "report_frequency": "weekly", "owner_phone": "5511999998888"},
+        ])
+        sent = []
+        markers = {}
+
+        async def ping(): return True
+        async def get_value(key): return None
+        async def set_with_ttl(key, value, ttl=0): markers[key] = value
+
+        import huma.services.db_service as db_mod
+        import huma.services.whatsapp_service as wa_mod
+
+        async def get_client(cid):
+            return _identity(["schedule"])
+
+        async def notify_owner(phone, msg, client_id=""):
+            sent.append((phone, msg))
+            return "m1"
+
+        async def fake_build(identity, days=7):
+            return {"sections": {"atendimento": {"conversas_ativas": 5, "conversas_novas": 2, "fora_do_horario": 0},
+                                 "funil": {}, "follow_up": {}, "inteligencia": {"top_assuntos": []}}}
+
+        monkeypatch.setattr(rs.cache, "ping", ping)
+        monkeypatch.setattr(rs.cache, "get_value", get_value)
+        monkeypatch.setattr(rs.cache, "set_with_ttl", set_with_ttl)
+        monkeypatch.setattr(db_mod, "get_client", get_client)
+        monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
+        monkeypatch.setattr(rs, "build_report", fake_build)
+
+        asyncio.run(rs.run_owner_reports())
+        assert len(sent) == 1
+        assert sent[0][0] == "5511999998888"
+        assert "owner_report:last:cli_rep" in markers
+
+    def test_frequencia_respeitada_nao_reenvia(self, monkeypatch):
+        self._patch_hour(monkeypatch, 11)
+        _fake_supa(monkeypatch, clients=[
+            {"client_id": "cli_rep", "report_frequency": "weekly", "owner_phone": "5511999998888"},
+        ])
+        sent = []
+
+        async def ping(): return True
+        async def get_value(key):
+            return (datetime(2026, 7, 6) - timedelta(days=2)).isoformat()  # enviado há 2 dias
+
+        async def notify_owner(phone, msg, client_id=""):
+            sent.append(phone)
+
+        import huma.services.whatsapp_service as wa_mod
+        monkeypatch.setattr(rs.cache, "ping", ping)
+        monkeypatch.setattr(rs.cache, "get_value", get_value)
+        monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
+
+        asyncio.run(rs.run_owner_reports())
+        assert sent == []  # weekly = 7 dias; só passaram 2
+
+    def test_frequency_off_nao_envia(self, monkeypatch):
+        self._patch_hour(monkeypatch, 11)
+        _fake_supa(monkeypatch, clients=[
+            {"client_id": "cli_rep", "report_frequency": "off", "owner_phone": "5511999998888"},
+        ])
+        sent = []
+
+        async def ping(): return True
+        async def notify_owner(phone, msg, client_id=""):
+            sent.append(phone)
+
+        import huma.services.whatsapp_service as wa_mod
+        monkeypatch.setattr(rs.cache, "ping", ping)
+        monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
+
+        asyncio.run(rs.run_owner_reports())
+        assert sent == []
+
+
+class TestReportsEndpoint:
+
+    def test_sem_auth_401(self):
+        from fastapi.testclient import TestClient
+        from huma.app import app
+        resp = TestClient(app).get("/api/clients/cli_rep/reports")
+        assert resp.status_code == 401
+
+    def test_com_sessao_devolve_relatorio(self, monkeypatch):
+        import huma.core.auth as auth_mod
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        identity = _identity(["sell_digital"])
+
+        async def get_client(cid):
+            return identity if cid == "cli_rep" else None
+
+        async def fake_build(client, days=30):
+            assert days == 30
+            return {"client_id": "cli_rep", "sections": {"atendimento": {"conversas_ativas": 1}}}
+
+        monkeypatch.setattr(auth_mod, "get_client", get_client)
+        monkeypatch.setattr(auth_mod, "SESSION_SECRET", "segredo-teste")
+        monkeypatch.setattr(rs, "build_report", fake_build)
+
+        cookies = {"huma_session": auth_mod.create_session_token("cli_rep")}
+        resp = TestClient(app).get("/api/clients/cli_rep/reports?days=30", cookies=cookies)
+        assert resp.status_code == 200
+        assert resp.json()["client_id"] == "cli_rep"
+
+
+class TestReportFrequencyValidation:
+
+    def test_valores_validos(self):
+        for v in ("daily", "weekly", "biweekly", "monthly", "off"):
+            ident = ClientIdentity(client_id="x", business_name="B", report_frequency=v)
+            assert ident.report_frequency == v
+
+    def test_valor_invalido_recusado(self):
+        with pytest.raises(Exception):
+            ClientIdentity(client_id="x", business_name="B", report_frequency="sempre")

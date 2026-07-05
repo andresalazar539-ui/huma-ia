@@ -574,10 +574,27 @@ async def _run_stuck_conversation_alert_job() -> None:
     )
 
 
+# ================================================================
+# JOB: relatório de resultados no WhatsApp do dono (2026-07-05)
+# ================================================================
+
+
+async def _run_owner_report_job() -> None:
+    """
+    Roda a cada 1h; o report_service só age na janela das 8h BRT e
+    respeita a frequência escolhida pelo dono (daily|weekly|biweekly|
+    monthly|off) com dedup por Redis.
+    """
+    from huma.services import report_service
+    await report_service.run_owner_reports()
+
+
 # Jobs registrados. Tupla: (nome, fn_async, intervalo_segundos, ttl_lock_segundos)
 # - intervalo_segundos: de quanto em quanto tempo a task acorda
 # - ttl_lock_segundos: lock cluster TTL (deve ser maior que duração esperada do job)
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
+    # Relatório de resultado pro dono: a cada 1h (age só às 8h BRT), lock 30min
+    ("owner_report", _run_owner_report_job, 3600, 1800),
     # Item 19 — follow-up: roda a cada 1h, lock vale 30min
     ("followup", _run_followup_job, 3600, 1800),
     # Item 24 — lembrete pré-consulta: a cada 30min, lock 15min
