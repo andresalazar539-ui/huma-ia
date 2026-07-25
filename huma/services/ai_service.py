@@ -882,11 +882,13 @@ def build_dynamic_prompt(
     identity: ClientIdentity,
     conv: Conversation,
     image_url: str | None = None,
+    learned_insights: str = "",
 ) -> str:
     """
     Bloco dinâmico do system prompt — muda a cada mensagem.
 
-    Inclui: gênero, funil, vendas, memória do lead, imagem (se houver).
+    Inclui: gênero, funil, vendas, memória do lead, imagem (se houver),
+    insights aprendidos (se fornecidos via learned_insights).
     """
     prompt = ""
 
@@ -910,6 +912,16 @@ def build_dynamic_prompt(
     # ── Memória do lead ──
     capped_facts = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
     prompt += "\n\n" + _format_lead_memory(capped_facts, conv.history_summary)
+
+    # ── Insights aprendidos (Tier 2 também aprende) ──
+    # Fica no bloco DINÂMICO de propósito: o texto muda quando novas conversas
+    # won/lost são analisadas, e no estático invalidaria o cache Haiku.
+    if learned_insights:
+        prompt += "\n" + learned_insights.rstrip("\n") + (
+            "\n  (Contexto estatístico do seu histórico: use QUANDO encaixar "
+            "naturalmente na conversa. NUNCA force um argumento nem abandone "
+            "o rapport pra citar esses dados.)\n"
+        )
 
     # ── Image intelligence (SÓ quando tem imagem — economia ~2800 tokens) ──
     if image_url:
@@ -1574,9 +1586,17 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         static = build_tier1_prompt(identity, conv)
         dynamic = ""
     elif tier == 2:
-        # Tier 2: prompt ORIGINAL completo, sem insights e sem profiling
+        # Tier 2: prompt ORIGINAL completo + insights aprendidos (sem profiling).
+        # Insights entram no bloco DINÂMICO: anexar ao estático invalidaria o
+        # cache Haiku (min ~9000 chars) toda vez que o texto agregado mudasse.
+        # Custo: ~80-150 tokens/msg quando há insights; zero pra cliente novo.
         static = build_static_prompt(identity)
-        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
+        learned = ""
+        try:
+            learned = await _get_insights_cached(identity.client_id)
+        except Exception as e:
+            log.warning(f"Insights indisponíveis | tier=2 | client={identity.client_id} | {type(e).__name__}: {e}")
+        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url, learned_insights=learned)
     else:
         # Tier 3: prompt ORIGINAL + insights + profiling (comportamento pré-tiers)
         static = build_static_prompt(identity)
@@ -1809,6 +1829,107 @@ async def validate_response(identity, reply, confidence):
 # ================================================================
 # UTILITÁRIOS
 # ================================================================
+
+def _vertical_followup_hint(category) -> str:
+    """Extrai a linha FOLLOW-UP: da tabela comprimida da vertical (tom/estilo ideais)."""
+    block = _build_vertical_compressed(category)
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("FOLLOW-UP:"):
+            return stripped
+    return ""
+
+
+async def generate_followup_message(
+    identity: ClientIdentity,
+    lead_name: str = "",
+    stage: str = "discovery",
+    lead_facts: list[str] | None = None,
+    history_summary: str = "",
+    recent_messages: list[dict] | None = None,
+    attempt: int = 0,
+    is_last_attempt: bool = False,
+) -> str:
+    """
+    Gera follow-up personalizado via Haiku pra lead que parou de responder.
+
+    Usa lead_facts + summary + últimas mensagens pra retomar o assunto REAL
+    da conversa (em vez de template genérico). Retorna "" em qualquer falha —
+    o caller (scheduler) usa o template fixo como fallback.
+
+    Custo: 1 chamada Haiku curta por follow-up enviado (~centavos).
+    """
+    client = _get_ai_client()
+    if client is None:
+        return ""
+
+    nome = (lead_name or "").split()[0] if lead_name else ""
+
+    facts_text = ""
+    for f in (lead_facts or [])[-10:]:
+        facts_text += f"  - {f}\n"
+
+    msgs_text = ""
+    for m in (recent_messages or [])[-6:]:
+        if not isinstance(m, dict) or not isinstance(m.get("content"), str):
+            continue
+        role = "LEAD" if m.get("role") == "user" else "VOCÊ"
+        msgs_text += f"  {role}: {m['content'][:200]}\n"
+
+    hint = _vertical_followup_hint(identity.category)
+    category = identity.category.value if identity.category else "outros"
+    emoji_rule = "Máximo 1 emoji, e só se combinar com o tom." if identity.use_emojis else "NUNCA use emojis."
+    forbidden = ", ".join(identity.forbidden_words) if identity.forbidden_words else ""
+
+    if is_last_attempt:
+        objetivo = (
+            "Esta é a ÚLTIMA tentativa. Despedida ELEGANTE: mostre que percebeu o "
+            "silêncio, deixe a porta aberta ('qualquer coisa é só me chamar') e "
+            "NÃO cobre resposta nem faça pergunta que exija decisão."
+        )
+    else:
+        objetivo = (
+            "Reengajar sem parecer insistente. SE houver pendência ou assunto concreto "
+            "na memória/conversa, retome ELE naturalmente. SE não houver, mande uma "
+            "mensagem leve perguntando se ficou alguma dúvida. Termine com UMA pergunta leve."
+        )
+
+    prompt = (
+        f'Você é o atendente do "{identity.business_name}" ({category}) no WhatsApp. '
+        f"Tom: {identity.tone_of_voice or 'profissional e amigável'}.\n"
+        f"O lead {nome or '(nome desconhecido)'} parou de responder "
+        f"(tentativa {attempt + 1} de follow-up, stage {stage}).\n\n"
+        + (f"MEMÓRIA DO LEAD:\n{facts_text}\n" if facts_text else "")
+        + (f"RESUMO DA CONVERSA: {history_summary}\n\n" if history_summary else "")
+        + (f"ÚLTIMAS MENSAGENS:\n{msgs_text}\n" if msgs_text else "")
+        + (f"{hint}\n\n" if hint else "")
+        + f"OBJETIVO: {objetivo}\n\n"
+        "REGRAS:\n"
+        "  - Português do Brasil, som de humano (tá, pra, né). 1 a 3 frases CURTAS.\n"
+        "  - Sem markdown, sem travessão, sem lista. Texto corrido de WhatsApp.\n"
+        f"  - {emoji_rule}\n"
+        "  - NUNCA invente preço, promoção, urgência ou fato que não está acima.\n"
+        "  - NUNCA culpe o lead pelo sumiço nem soe passivo-agressivo.\n"
+        + (f"  - Palavras proibidas: {forbidden}.\n" if forbidden else "")
+        + "\nResponda APENAS com o texto da mensagem, sem aspas nem explicação."
+    )
+
+    try:
+        response = await client.messages.create(
+            model=AI_MODEL_FAST,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip().strip('"').strip()
+        text = _sanitize_text(text)
+        if not text or len(text) > 500:
+            log.warning(f"Followup IA descartado | client={identity.client_id} | len={len(text)} | usando template fixo")
+            return ""
+        return text
+    except Exception as e:
+        log.warning(f"Followup IA falhou | client={identity.client_id} | {type(e).__name__}: {e} | usando template fixo")
+        return ""
+
 
 async def generate_outbound_message(identity, lead, template=""):
     """Gera mensagem de prospecção outbound."""

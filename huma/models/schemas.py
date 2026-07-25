@@ -93,6 +93,15 @@ class MessagePayload(BaseModel):
     phone: str = Field(..., min_length=8)
     text: str = Field(default="", max_length=800)
     image_url: Optional[str] = None
+    referral: Optional[dict] = Field(
+        default=None,
+        description=(
+            "Objeto referral de anúncio click-to-WhatsApp (CTWA) quando o "
+            "lead chegou por anúncio. Shape da Meta Cloud API: source_type, "
+            "source_id, source_url, headline, body, ctwa_clid. None = sem "
+            "referral (mensagem orgânica)."
+        ),
+    )
 
     @field_validator("phone")
     @classmethod
@@ -785,6 +794,33 @@ class Conversation(BaseModel):
         description=(
             "Resultado do negócio no CRM, setado pelo webhook de "
             'atribuição: "" (em aberto) | "won" | "lost".'
+        ),
+    )
+
+    # v13 — Atribuição de ORIGEM do lead (first-touch: gravada UMA vez
+    # quando a conversa nasce, nunca sobrescrita). Capturada do referral
+    # CTWA (webhook Meta), externalAdReply (Evolution), utm_* colado no
+    # texto ou código #h de link rastreável — ver attribution_service.
+    lead_source: str = Field(
+        default="",
+        description=(
+            "Slug canônico da origem: meta_ads | google_ads | linkedin | "
+            "tiktok_ads | youtube | instagram | facebook | site | email | "
+            'indicacao. "" = orgânico/direto (sem sinal de origem).'
+        ),
+    )
+    lead_source_detail: str = Field(
+        default="",
+        description=(
+            "Detalhe humano da origem: headline do anúncio (CTWA) ou "
+            "campanha (utm_campaign / sufixo do código rastreável)."
+        ),
+    )
+    lead_source_ref: str = Field(
+        default="",
+        description=(
+            "Referência técnica pra auditoria/matching: ctwa_clid ou "
+            "source_id do anúncio, ou o utm/código cru capturado."
         ),
     )
 

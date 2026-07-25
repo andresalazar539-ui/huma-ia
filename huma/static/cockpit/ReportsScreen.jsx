@@ -56,6 +56,89 @@ const ExportButton = ({ label, format, days }) => {
   );
 };
 
+// Badge de categoria da origem (PAGO / ORGÂNICO / INDICAÇÃO / IA / DISPARO)
+const ORIGEM_BADGES = {
+  pago:      { label: 'PAGO',      bg: 'rgba(200,85,61,0.12)',  color: 'var(--terracotta, #C8553D)' },
+  organico:  { label: 'ORGÂNICO',  bg: 'rgba(62,85,64,0.10)',   color: 'var(--sage-ink, #3E5540)' },
+  indicacao: { label: 'INDICAÇÃO', bg: 'var(--paper-sunk)',     color: 'var(--ink-2)' },
+  ia:        { label: 'IA',        bg: 'rgba(28,23,20,0.06)',   color: 'var(--ink-2)' },
+  disparo:   { label: 'DISPARO',   bg: 'rgba(28,23,20,0.06)',   color: 'var(--ink-2)' },
+};
+
+const OrigemBadge = ({ categoria }) => {
+  const b = ORIGEM_BADGES[categoria] || ORIGEM_BADGES.organico;
+  return (
+    <span style={{
+      fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 600,
+      letterSpacing: '0.08em', padding: '3px 7px', borderRadius: 6,
+      background: b.bg, color: b.color, whiteSpace: 'nowrap',
+    }}>{b.label}</span>
+  );
+};
+
+// Tabela "De onde veio cada conversa — e o que virou" (seção origem)
+const OrigemTable = ({ fontes }) => {
+  if (!fontes || fontes.length === 0) return null;
+  const maxConv = Math.max(...fontes.map(f => f.conversas || 0), 1);
+  const th = {
+    fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+    letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)',
+  };
+  const num = { fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', textAlign: 'right' };
+  const cols = 'minmax(180px, 1.5fr) minmax(120px, 1fr) 80px 120px 70px 100px';
+
+  return (
+    <div style={{
+      border: '1px solid var(--paper-edge)', borderRadius: 16,
+      background: 'var(--paper-raised)', padding: '18px 20px',
+      display: 'flex', flexDirection: 'column', gap: 0,
+    }}>
+      <div style={{ ...th, marginBottom: 12 }}>De onde veio cada conversa — e o que virou</div>
+      <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
+        <div style={th}>Origem</div>
+        <div/>
+        <div style={{ ...th, textAlign: 'right' }}>Conversas</div>
+        <div style={{ ...th, textAlign: 'right' }}>Agendamentos</div>
+        <div style={{ ...th, textAlign: 'right' }}>Vendas</div>
+        <div style={{ ...th, textAlign: 'right' }}>Receita</div>
+      </div>
+      {fontes.map((f, i) => (
+        <div key={f.slug || i} style={{
+          display: 'grid', gridTemplateColumns: cols, gap: 12, alignItems: 'center',
+          padding: '12px 0', borderTop: '1px solid var(--paper-edge)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{
+              fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
+              color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{f.origem}</span>
+            <OrigemBadge categoria={f.categoria}/>
+          </div>
+          <div style={{ height: 6, borderRadius: 3, background: 'var(--paper-sunk)', overflow: 'hidden' }}>
+            <div style={{
+              height: '100%', borderRadius: 3,
+              width: `${Math.max(4, Math.round(100 * (f.conversas || 0) / maxConv))}%`,
+              background: f.categoria === 'pago' ? 'var(--terracotta, #C8553D)' : '#CFC6B8',
+            }}/>
+          </div>
+          <div style={num}>{f.conversas || 0}</div>
+          <div style={num}>{f.agendamentos ? f.agendamentos : '—'}</div>
+          <div style={num}>{f.ganhos ? f.ganhos : '—'}</div>
+          <div style={{ ...num, fontWeight: f.receita_cents ? 600 : 400 }}>
+            {f.receita_cents ? f.receita_display : '—'}
+          </div>
+        </div>
+      ))}
+      <div style={{
+        fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)',
+        letterSpacing: '0.03em', paddingTop: 12, borderTop: '1px solid var(--paper-edge)', marginTop: 2,
+      }}>
+        Meta Ads é rastreado automaticamente · Google, LinkedIn e outros canais via links rastreáveis
+      </div>
+    </div>
+  );
+};
+
 const ReportsScreen = () => {
   const [days, setDays] = useStateR(30);
   const [report, setReport] = useStateR(null);
@@ -176,6 +259,14 @@ const ReportsScreen = () => {
               <StatTile label="Ganhos" value={funil.ganhos ?? 0} accent/>
               <StatTile label="Perdidos" value={funil.perdidos ?? 0}/>
             </Grid>
+
+            {/* Origem — sempre: de onde vêm as conversas e as conversões */}
+            {s.origem && (s.origem.fontes || []).length > 0 && (
+              <>
+                <SectionTitle>Origem dos leads</SectionTitle>
+                <OrigemTable fontes={s.origem.fontes}/>
+              </>
+            )}
 
             {/* Follow-up — sempre */}
             <SectionTitle>Follow-up (o trabalho chato que a HUMA faz por você)</SectionTitle>

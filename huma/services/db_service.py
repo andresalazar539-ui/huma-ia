@@ -249,6 +249,9 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             crm_deal_id=d.get("crm_deal_id", "") or "",
             crm_synced_at=d.get("crm_synced_at"),
             crm_outcome=d.get("crm_outcome", "") or "",
+            lead_source=d.get("lead_source", "") or "",
+            lead_source_detail=d.get("lead_source_detail", "") or "",
+            lead_source_ref=d.get("lead_source_ref", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -316,9 +319,87 @@ async def save_conversation(conv: Conversation):
         "crm_outcome": conv.crm_outcome,
         "updated_at": datetime.utcnow().isoformat(),
     }
+    # Origem (atribuição first-touch): só entra no upsert quando preenchida.
+    # O capture() do attribution_service grava direto no banco em paralelo
+    # ao processamento — incluir "" aqui apagaria uma origem já capturada
+    # se este save carregou a conversa ANTES do capture escrever.
+    if conv.lead_source:
+        data["lead_source"] = conv.lead_source
+        data["lead_source_detail"] = conv.lead_source_detail
+        data["lead_source_ref"] = conv.lead_source_ref
     await run_in_threadpool(
         lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
     )
+
+
+async def set_lead_source(
+    client_id: str,
+    phone: str,
+    source: str,
+    detail: str = "",
+    ref: str = "",
+) -> bool:
+    """
+    Grava a ORIGEM da conversa (atribuição first-touch).
+
+    Regra: a primeira origem capturada vence — se a conversa já tem
+    lead_source preenchido, não sobrescreve (retorna False). Se a
+    conversa ainda nem existe (webhook chegou antes do orchestrator
+    criar a linha), cria um esqueleto seguro que o save_conversation
+    posterior completa via upsert.
+
+    Args:
+        client_id: cliente HUMA dono da conversa.
+        phone: telefone do lead (só dígitos).
+        source: slug canônico da origem (ver attribution_service).
+        detail: detalhe humano (headline do anúncio, campanha).
+        ref: referência técnica (ctwa_clid, source_id, utm cru).
+
+    Returns:
+        True se gravou; False se a conversa já tinha origem.
+    """
+    supa = get_supabase()
+    resp = await run_in_threadpool(
+        lambda: supa.table("conversations").select("lead_source")
+            .eq("client_id", client_id).eq("phone", phone).limit(1).execute()
+    )
+
+    campos = {
+        "lead_source": source,
+        "lead_source_detail": detail,
+        "lead_source_ref": ref,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    if resp.data:
+        if (resp.data[0].get("lead_source") or "").strip():
+            return False  # first-touch: origem existente vence
+        await run_in_threadpool(
+            lambda: supa.table("conversations").update(campos)
+                .eq("client_id", client_id).eq("phone", phone).execute()
+        )
+        return True
+
+    # Conversa ainda não existe: cria esqueleto com defaults seguros
+    # (listas vazias evitam null em history/lead_facts, que quebraria
+    # o Conversation() do get_conversation). ignore_duplicates=True =
+    # INSERT ... ON CONFLICT DO NOTHING: se o orchestrator criar a linha
+    # na janela entre o select acima e este insert, NADA é sobrescrito
+    # (jamais arriscar apagar history por causa de atribuição).
+    skeleton = {
+        "client_id": client_id,
+        "phone": phone,
+        "history": [],
+        "lead_facts": [],
+        "stage": "discovery",
+        **campos,
+    }
+    await run_in_threadpool(
+        lambda: supa.table("conversations").upsert(
+            skeleton, on_conflict="client_id,phone", ignore_duplicates=True
+        ).execute()
+    )
+    return True
 
 
 async def save_outbound_campaign(campaign: OutboundCampaign):
@@ -378,7 +459,8 @@ async def list_stuck_conversations(
 
     Returns:
         Lista de dicts com client_id, phone, last_message_at, stage,
-        follow_up_count, lead_name_canonical, products_or_services_hint.
+        follow_up_count, lead_name_canonical, active_appointment_event_id,
+        lead_facts, history_summary e history (contexto pro follow-up via IA).
     """
     from datetime import timedelta
     now = datetime.utcnow()
@@ -391,7 +473,8 @@ async def list_stuck_conversations(
             .table("conversations")
             .select(
                 "client_id,phone,last_message_at,stage,follow_up_count,"
-                "lead_name_canonical,active_appointment_event_id"
+                "lead_name_canonical,active_appointment_event_id,"
+                "lead_facts,history_summary,history"
             )
             .lte("last_message_at", cutoff_min)
             .gte("last_message_at", cutoff_max)

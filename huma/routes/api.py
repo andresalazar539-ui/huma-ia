@@ -29,6 +29,7 @@ from huma.models.schemas import (
     WhatsAppImportPayload,
 )
 from huma.onboarding.categories import get_onboarding_questions, FINAL_QUESTION
+from huma.services import attribution_service as attribution
 from huma.services import redis_service as cache
 from huma.services import db_service as db
 from huma.services import whatsapp_service as wa
@@ -48,6 +49,12 @@ async def receive_message(payload: MessagePayload, bg: BackgroundTasks, _=Depend
     """Recebe mensagem do WhatsApp via webhook."""
     if not payload.has_content():
         raise HTTPException(400, "Mensagem vazia")
+
+    # Atribuição de origem (first-touch): só dispara se a mensagem traz
+    # sinal (referral CTWA, código #h ou utm) — string-check barato.
+    if attribution.has_signal(payload.referral, payload.text):
+        bg.add_task(attribution.capture, payload.client_id, payload.phone,
+                    payload.referral or {}, payload.text)
 
     result = await handle_message(payload, bg)
 
@@ -277,6 +284,45 @@ async def export_report(
         media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/api/clients/{client_id}/tracking-link", tags=["Cockpit"])
+async def get_tracking_link(
+    client_id: str,
+    source: str,
+    campaign: str = "",
+    phone: str = "",
+    text: str = "",
+    _=Depends(verify_api_key),
+) -> dict:
+    """
+    Gera link wa.me rastreável pro dono colar em cada canal (Google Ads,
+    LinkedIn, bio do Instagram, assinatura de e-mail...).
+
+    O texto pré-preenchido termina num código curto (#h<code>-campanha);
+    quando o lead manda a primeira mensagem, a HUMA identifica a origem
+    e o relatório passa a mostrar de onde vêm conversas e conversões.
+
+    Meta Ads NÃO precisa disso: anúncio click-to-WhatsApp já chega com
+    referral automático no webhook.
+
+    Query:
+        source: origem (google_ads | linkedin | tiktok_ads | youtube |
+            instagram | facebook | site | email | indicacao | meta_ads)
+        campaign: nome da campanha (opcional, vira sufixo do código)
+        phone: número de WhatsApp do negócio com DDI, só dígitos
+            (ex.: 5511999999999). Vazio = retorna só texto+código.
+        text: mensagem inicial customizada (opcional)
+    """
+    try:
+        result = attribution.build_tracking_link(
+            source=source, campaign=campaign, phone=phone, base_text=text,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    log.info(f"Tracking link gerado | client={client_id} | source={result['source']} | campaign={campaign}")
+    return result
 
 
 # ── Settings do Cockpit (Sprint 2 — o botão Salvar salva de verdade) ──
@@ -1435,6 +1481,13 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
     if remote_jid:
         await cache.set_with_ttl(f"wajid:{client.client_id}:{phone}", remote_jid, ttl=2592000)
 
+    # Atribuição de origem (first-touch): referral CTWA do externalAdReply
+    # ou código #h/utm no texto. ANTES do desvio de mídia — anúncio pode
+    # chegar como imagem com caption.
+    referral = parsed.get("referral") or {}
+    if attribution.has_signal(referral, text):
+        bg.add_task(attribution.capture, client.client_id, phone, referral, text)
+
     # Áudio/imagem do lead: baixa + processa em background (responde já).
     if media_type in ("audio", "image"):
         bg.add_task(
@@ -1525,6 +1578,13 @@ async def meta_webhook(request: Request, bg: BackgroundTasks):
         if not client:
             log.warning(f"Webhook Meta | phone_number_id sem cliente | pnid={pnid}")
             continue
+
+        # Atribuição de origem (first-touch): referral CTWA (lead veio de
+        # anúncio click-to-WhatsApp) ou código #h/utm no texto. ANTES do
+        # desvio de mídia — anúncio pode chegar como imagem com caption.
+        referral = m.get("referral") or {}
+        if attribution.has_signal(referral, text):
+            bg.add_task(attribution.capture, client.client_id, phone, referral, text)
 
         media_id = m.get("media_id", "")
 

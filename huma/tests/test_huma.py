@@ -4467,6 +4467,34 @@ class TestFactualJudge:
         assert "INAPROPRIADO" in prompt or "inapropriado" in prompt.lower()
         assert "pivote" in prompt.lower() or "pivotar" in prompt.lower()
 
+    def test_dynamic_prompt_injeta_insights_com_moldura_condicional(self, clinica_identity):
+        """Insights aprendidos entram no bloco dinâmico com moldura QUANDO (nunca force)."""
+        from huma.services.ai_service import build_dynamic_prompt
+        conv = Conversation(client_id="c", phone="p")
+        insights = "\nAPRENDIZADOS (47 conversas analisadas, 73% taxa de conversão):\n  Objeções mais comuns: preco (12x)\n"
+        prompt = build_dynamic_prompt(clinica_identity, conv, learned_insights=insights)
+        assert "APRENDIZADOS (47 conversas" in prompt
+        assert "QUANDO encaixar" in prompt
+        assert "NUNCA force" in prompt
+
+    def test_dynamic_prompt_sem_insights_nao_muda(self, clinica_identity):
+        """Sem learned_insights (default), o bloco não aparece — retrocompatível."""
+        from huma.services.ai_service import build_dynamic_prompt
+        conv = Conversation(client_id="c", phone="p")
+        prompt = build_dynamic_prompt(clinica_identity, conv)
+        assert "APRENDIZADOS" not in prompt
+        assert "QUANDO encaixar" not in prompt
+
+    def test_tier2_busca_insights_aprendidos(self):
+        """Estrutural: o branch tier==2 de generate_response consulta _get_insights_cached
+        e repassa via learned_insights (insights no bloco dinâmico, não no estático)."""
+        import inspect
+        from huma.services import ai_service
+        src = inspect.getsource(ai_service.generate_response)
+        tier2_block = src.split("elif tier == 2:")[1].split("else:")[0]
+        assert "_get_insights_cached" in tier2_block
+        assert "learned_insights=" in tier2_block
+
 
 # ================================================================
 # TESTES DO HOURS_QUERY RELIGADO (com guarda anti-agendamento)
@@ -4526,3 +4554,103 @@ class TestHoursQueryReligado:
         from huma.services.conversation_intelligence import classify_message, MessageType
         result = classify_message("que horas vocês abrem?", ecommerce_identity, empty_conversation)
         assert result.msg_type != MessageType.HOURS_QUERY
+
+
+# ================================================================
+# TESTES DO FOLLOW-UP INTELIGENTE
+#
+# Follow-up v2: timing de silêncio por vertical, priorização de leads
+# quentes, opt-out permanente ("não quero mais"), geração via Haiku com
+# contexto real (fallback = templates fixos) e despedida elegante na
+# última tentativa.
+# ================================================================
+
+class TestFollowupInteligente:
+    """Follow-up v2: timing por vertical, opt-out, priorização e geração via IA."""
+
+    def test_timing_por_vertical(self):
+        """E-commerce reengaja em 1h; imobiliária espera 24h."""
+        from unittest.mock import MagicMock
+        from huma.services.scheduler import _followup_min_hours
+        client = MagicMock()
+        client.category = MagicMock(value="ecommerce")
+        assert _followup_min_hours(client) == 1
+        client.category = MagicMock(value="imobiliaria")
+        assert _followup_min_hours(client) == 24
+
+    def test_timing_vertical_desconhecida_usa_default(self):
+        """Categoria ausente ou desconhecida cai no default (comportamento antigo)."""
+        from unittest.mock import MagicMock
+        from huma.services.scheduler import _followup_min_hours, _DEFAULT_FOLLOWUP_MIN_HOURS
+        client = MagicMock()
+        client.category = None
+        assert _followup_min_hours(client) == _DEFAULT_FOLLOWUP_MIN_HOURS
+
+    def test_optout_na_ultima_msg_do_lead(self):
+        """'não quero mais' na última msg do lead = para pra sempre."""
+        from huma.services.scheduler import _lead_asked_to_stop
+        h = [
+            {"role": "assistant", "content": "oi, tudo bem?"},
+            {"role": "user", "content": "não quero mais, para de mandar mensagem"},
+        ]
+        assert _lead_asked_to_stop(h) is True
+
+    def test_optout_ignora_msgs_antigas(self):
+        """Opt-out antigo seguido de reengajamento do lead NÃO bloqueia."""
+        from huma.services.scheduler import _lead_asked_to_stop
+        h = [
+            {"role": "user", "content": "não quero mais"},
+            {"role": "assistant", "content": "tudo bem, fico por aqui"},
+            {"role": "user", "content": "oi, mudei de ideia, ainda tem a promoção?"},
+        ]
+        assert _lead_asked_to_stop(h) is False
+
+    def test_optout_history_vazio(self):
+        """History vazio ou sem msg do lead = sem opt-out."""
+        from huma.services.scheduler import _lead_asked_to_stop
+        assert _lead_asked_to_stop([]) is False
+        assert _lead_asked_to_stop([{"role": "assistant", "content": "oi"}]) is False
+
+    def test_hours_since_aceita_tz_aware_e_naive(self):
+        """Timestamps do Supabase vêm tz-aware OU naive — ambos parseiam."""
+        from datetime import datetime, timedelta
+        from huma.services.scheduler import _hours_since
+        naive = (datetime.utcnow() - timedelta(hours=5)).isoformat()
+        assert 4.9 < _hours_since(naive) < 5.1
+        aware = (datetime.utcnow() - timedelta(hours=5)).isoformat() + "+00:00"
+        assert 4.9 < _hours_since(aware) < 5.1
+        assert _hours_since("") is None
+        assert _hours_since("data-invalida") is None
+
+    def test_leads_quentes_priorizados(self):
+        """closing vem antes de offer, que vem antes de discovery."""
+        from huma.services.scheduler import _STAGE_PRIORITY
+        rows = [{"stage": "discovery"}, {"stage": "closing"}, {"stage": "offer"}]
+        rows.sort(key=lambda r: _STAGE_PRIORITY.get(r.get("stage", ""), 9))
+        assert [r["stage"] for r in rows] == ["closing", "offer", "discovery"]
+
+    def test_job_usa_ia_com_fallback_template(self):
+        """Estrutural: job chama ai.generate_followup_message e mantém fallback fixo."""
+        import inspect
+        from huma.services import scheduler
+        src = inspect.getsource(scheduler._run_followup_job)
+        assert "generate_followup_message" in src
+        assert "_format_followup_message" in src  # fallback preservado
+        assert "_lead_asked_to_stop" in src
+        assert "followup_sent:" in src  # spacing flag Redis
+
+    def test_ultima_tentativa_pede_despedida_elegante(self):
+        """Estrutural: geração diferencia última tentativa (porta aberta, sem cobrança)."""
+        import inspect
+        from huma.services import ai_service
+        src = inspect.getsource(ai_service.generate_followup_message)
+        assert "is_last_attempt" in src
+        assert "porta aberta" in src
+
+    def test_vertical_followup_hint_extrai_linha(self):
+        """Helper extrai a linha FOLLOW-UP: da tabela comprimida da vertical."""
+        from huma.services.ai_service import _vertical_followup_hint
+        hint = _vertical_followup_hint("clinica")
+        assert hint.startswith("FOLLOW-UP:")
+        assert _vertical_followup_hint(None) == ""
+        assert _vertical_followup_hint("categoria_inexistente") == ""

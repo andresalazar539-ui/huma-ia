@@ -696,7 +696,8 @@ def parse_evolution_webhook(body: dict) -> dict | None:
 
     Returns:
         dict {instance, phone, text, message_id, from_me, is_group,
-        push_name, media_type, event} ou None se não for mensagem parseável.
+        push_name, media_type, event, referral} ou None se não for
+        mensagem parseável.
     """
     if not isinstance(body, dict):
         return None
@@ -737,6 +738,28 @@ def parse_evolution_webhook(body: dict) -> dict | None:
         elif "documentMessage" in msg:
             media_type = "document"
 
+    # Lead que clicou em anúncio click-to-WhatsApp chega com contextInfo.
+    # externalAdReply dentro do tipo da mensagem (Baileys). Normaliza pro
+    # MESMO shape do referral da Meta Cloud API, pra o attribution_service
+    # tratar os dois canais com um código só.
+    referral: dict = {}
+    if isinstance(msg, dict):
+        ctx = None
+        for part in msg.values():
+            if isinstance(part, dict) and isinstance(part.get("contextInfo"), dict):
+                ctx = part["contextInfo"]
+                break
+        ad = ctx.get("externalAdReply") if isinstance(ctx, dict) else None
+        if isinstance(ad, dict) and (ad.get("sourceUrl") or ad.get("sourceId") or ad.get("ctwaClid")):
+            referral = {
+                "source_type": ad.get("sourceType") or "ad",
+                "source_id": ad.get("sourceId") or "",
+                "source_url": ad.get("sourceUrl") or "",
+                "headline": ad.get("title") or "",
+                "body": ad.get("body") or "",
+                "ctwa_clid": ad.get("ctwaClid") or "",
+            }
+
     return {
         "instance": instance,
         "phone": phone,
@@ -752,6 +775,8 @@ def parse_evolution_webhook(body: dict) -> dict | None:
         "push_name": push_name,
         "media_type": media_type,
         "event": event,
+        # Referral CTWA normalizado (shape da Meta). {} = sem anúncio.
+        "referral": referral,
         # objeto cru da mensagem — necessário pro getBase64FromMediaMessage
         # baixar a mídia (Evolution não manda URL pública).
         "raw": data,
@@ -772,8 +797,8 @@ def parse_meta_webhook(body: dict) -> list[dict]:
 
     Returns:
         Lista de dicts {phone_number_id, phone, text, message_id,
-        media_type, push_name, type}. Vazia se não houver mensagem de
-        entrada parseável.
+        media_type, push_name, type, referral}. Vazia se não houver
+        mensagem de entrada parseável.
     """
     out: list[dict] = []
     if not isinstance(body, dict) or body.get("object") != "whatsapp_business_account":
@@ -831,6 +856,12 @@ def parse_meta_webhook(body: dict) -> list[dict]:
                     elif inter.get("type") == "list_reply":
                         text = (inter.get("list_reply") or {}).get("title", "") or ""
 
+                # Referral de anúncio click-to-WhatsApp (CTWA): a Meta anexa
+                # à PRIMEIRA mensagem do lead que clicou no anúncio. É a
+                # fonte definitiva de atribuição Meta Ads (source_id,
+                # headline, ctwa_clid) — consumido pelo attribution_service.
+                referral = msg.get("referral") if isinstance(msg.get("referral"), dict) else {}
+
                 out.append({
                     "phone_number_id": pnid,
                     "phone": msg.get("from", "") or "",
@@ -840,6 +871,7 @@ def parse_meta_webhook(body: dict) -> list[dict]:
                     "media_id": media_id,
                     "push_name": push_name,
                     "type": mtype,
+                    "referral": referral,
                 })
 
     return out

@@ -56,6 +56,10 @@ _SECTION_LAYOUT: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("ganhos", "Ganhos"),
         ("perdidos", "Perdidos"),
     ]),
+    ("origem", "Origem dos leads", [
+        ("top_conversas", "Maior origem de conversas"),
+        ("top_conversoes", "Maior origem de conversões"),
+    ]),
     ("follow_up", "Follow-up", [
         ("leads_reengajados", "Leads sumidos reengajados"),
         ("voltaram_a_negociar", "Voltaram a negociar"),
@@ -115,6 +119,24 @@ def report_to_xlsx(identity: ClientIdentity, report: dict) -> bytes:
                 continue
             ws.cell(row=row, column=1, value=label).font = label_font
             vcell = ws.cell(row=row, column=2, value=data[field_key])
+            vcell.font = value_font
+            vcell.alignment = Alignment(horizontal="right")
+            row += 1
+        row += 1
+
+    # Origem: ranking completo de fontes (conversas × conversões)
+    fontes = sections.get("origem", {}).get("fontes") or []
+    if fontes:
+        ws.cell(row=row, column=1, value="De onde vieram seus leads").font = section_font
+        ws.cell(row=row, column=1).fill = section_fill
+        ws.cell(row=row, column=2).fill = section_fill
+        row += 1
+        for f in fontes:
+            ws.cell(row=row, column=1, value=f.get("origem", "")).font = label_font
+            resumo = f"{f.get('conversas', 0)} conversas · {f.get('ganhos', 0)} conversões"
+            if f.get("receita_cents", 0):
+                resumo += f" · {f.get('receita_display', '')}"
+            vcell = ws.cell(row=row, column=2, value=resumo)
             vcell.font = value_font
             vcell.alignment = Alignment(horizontal="right")
             row += 1
@@ -217,6 +239,18 @@ def report_to_pptx(identity: ClientIdentity, report: dict) -> bytes:
             _text(slide, x, 2.4, col_w - 0.3, 1.2, str(value), 40,
                   sage if destaque else ink, bold=True)
             _text(slide, x, 3.6, col_w - 0.3, 1.0, label, 13, ink3)
+
+    # ── Origem: ranking de fontes (conversas × conversões) ──
+    fontes = (sections.get("origem", {}).get("fontes") or [])[:5]
+    if fontes:
+        slide = prs.slides.add_slide(blank)
+        _bg(slide)
+        _text(slide, 0.9, 0.6, 11.5, 0.8, "De onde vieram seus leads", 28, ink, bold=True)
+        for i, f in enumerate(fontes):
+            _text(slide, 0.9, 2.0 + i * 1.0, 0.8, 0.8, f"{i + 1}º", 22, terracotta, bold=True)
+            _text(slide, 1.9, 2.0 + i * 1.0, 6.5, 0.8, str(f.get("origem", "")), 20, ink)
+            _text(slide, 8.6, 2.0 + i * 1.0, 2.2, 0.8, f"{f.get('conversas', 0)} conversas", 18, ink3)
+            _text(slide, 10.9, 2.0 + i * 1.0, 2.0, 0.8, f"{f.get('ganhos', 0)} vendas", 18, sage)
 
     # ── Inteligência ──
     intel = sections.get("inteligencia", {})

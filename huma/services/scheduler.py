@@ -20,7 +20,7 @@
 # ================================================================
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 from huma.services import redis_service as cache
@@ -37,7 +37,8 @@ _running: bool = False
 # JOB: follow-up automático (Sprint 6 / item 19)
 # ================================================================
 
-# Mensagens fixas (sem LLM, custo zero). Variações leves pra não parecer robotizado.
+# Mensagens fixas (fallback sem LLM). Usadas quando a conversa não tem contexto
+# (sem facts/summary/history) ou quando a geração via IA falha.
 _FOLLOWUP_MESSAGES = [
     "Oi {nome}! Tô passando pra ver se você ainda tá querendo conversar. Tô por aqui.",
     "Oi {nome}! Lembrei de você aqui. Ainda quer falar sobre {servico}? Me chama.",
@@ -53,27 +54,98 @@ def _format_followup_message(lead_name: str, service_hint: str, attempt: int) ->
     return template.format(nome=nome, servico=servico)
 
 
+# ── Follow-up inteligente ──
+# Silêncio mínimo (horas) antes do follow-up, por vertical. Espelha os
+# timings descritos nas linhas FOLLOW-UP de _VERTICAL_COMPRESSED (ai_service):
+# e-commerce esfria em 1-2h, imobiliária decide em dias.
+_VERTICAL_FOLLOWUP_MIN_HOURS: dict[str, float] = {
+    "ecommerce": 1, "restaurante": 1, "salao_barbearia": 2, "pet": 3,
+    "clinica": 4, "automotivo": 4, "academia_personal": 6, "servicos": 6,
+    "outros": 6, "advocacia_financeiro": 12, "educacao": 12, "imobiliaria": 24,
+}
+_DEFAULT_FOLLOWUP_MIN_HOURS = 4.0
+_FOLLOWUP_MAX_ATTEMPTS = 2
+_FOLLOWUP_SPACING_TTL = 72000  # 20h entre tentativas pro MESMO lead
+
+# Lead pediu pra parar → follow-up desativado permanentemente pra ele.
+_OPTOUT_PHRASES = [
+    "não quero mais", "nao quero mais",
+    "não tenho interesse", "nao tenho interesse", "sem interesse",
+    "para de mandar", "pare de mandar", "para de me mandar",
+    "não me manda", "nao me manda", "não me chama", "nao me chama",
+    "me esquece", "deixa quieto", "me tira da lista",
+]
+
+# Leads quentes primeiro: quem tá em closing não espera atrás de discovery.
+_STAGE_PRIORITY = {"closing": 0, "offer": 1, "discovery": 2}
+
+
+def _followup_min_hours(client_data) -> float:
+    """Silêncio mínimo (horas) antes de follow-up, pela vertical do cliente."""
+    category = getattr(client_data, "category", None)
+    key = category.value if hasattr(category, "value") else str(category or "")
+    hours = _VERTICAL_FOLLOWUP_MIN_HOURS.get(key)
+    return float(hours) if isinstance(hours, (int, float)) else _DEFAULT_FOLLOWUP_MIN_HOURS
+
+
+def _hours_since(iso_value) -> float | None:
+    """Horas desde um timestamp ISO do Supabase (tz-aware ou naive). None se inválido."""
+    if not iso_value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(iso_value).replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return (datetime.utcnow() - dt).total_seconds() / 3600.0
+    except ValueError:
+        return None
+
+
+def _lead_asked_to_stop(history: list) -> bool:
+    """True se a ÚLTIMA mensagem do lead pede pra parar de mandar mensagem."""
+    for m in reversed(history or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            text = str(m.get("content", "")).lower()
+            return any(p in text for p in _OPTOUT_PHRASES)
+    return False
+
+
 async def _run_followup_job() -> None:
     """
-    Roda 1x/hora. Busca conversas paradas há 4-72h e manda follow-up fixo.
+    Roda 1x/hora. Follow-up inteligente de leads que sumiram:
+      - silêncio mínimo POR VERTICAL antes de insistir (_VERTICAL_FOLLOWUP_MIN_HOURS);
+      - prioriza leads quentes (closing > offer > discovery);
+      - mensagem gerada via Haiku com o contexto real da conversa
+        (ai.generate_followup_message); template fixo como fallback;
+      - lead pediu pra parar ("não quero mais") → nunca mais recebe follow-up;
+      - espaçamento entre tentativas via Redis flag (TTL 20h);
+      - última tentativa = despedida elegante com porta aberta;
+      - quem comprou/agendou nunca entra (filtro de stage + appointment na query).
     Respeita silent_hours do cliente. Throttle 200ms entre sends.
     """
+    from huma.services import ai_service as ai
     from huma.services import db_service as db
     from huma.services import whatsapp_service as wa
     from huma.core.orchestrator import _is_silent_hours
 
     stuck = await db.list_stuck_conversations(
-        hours_silent_min=4,
+        hours_silent_min=1,  # gate fino por vertical é aplicado abaixo
         hours_silent_max=72,
-        max_follow_ups=2,
+        max_follow_ups=_FOLLOWUP_MAX_ATTEMPTS,
         limit=200,
     )
     if not stuck:
         log.info("followup | nenhuma conversa stuck")
         return
 
+    stuck.sort(key=lambda r: _STAGE_PRIORITY.get(r.get("stage", ""), 9))
+
     sent = 0
+    sent_ai = 0
     skipped_silent = 0
+    skipped_timing = 0
+    skipped_spacing = 0
+    optouts = 0
     errors = 0
 
     for conv_row in stuck:
@@ -87,24 +159,75 @@ async def _run_followup_job() -> None:
             if not client_data or not client_data.business_name:
                 continue
 
+            # Timing por vertical: e-commerce reengaja em 1h, imobiliária espera 24h
+            hours_silent = _hours_since(conv_row.get("last_message_at"))
+            if hours_silent is not None and hours_silent < _followup_min_hours(client_data):
+                skipped_timing += 1
+                continue
+
+            # Espaçamento entre tentativas (protege também contra re-execução do job)
+            spacing_key = f"followup_sent:{client_id}:{phone}"
+            if await cache.exists(spacing_key):
+                skipped_spacing += 1
+                continue
+
             # Respeita silent hours — não disparar 3h da manhã
             if _is_silent_hours(client_data):
                 skipped_silent += 1
                 continue
 
-            # Pega 1º produto como hint de serviço
-            service_hint = ""
-            if client_data.products_or_services:
-                service_hint = client_data.products_or_services[0].get("name", "")
+            from fastapi.concurrency import run_in_threadpool
 
+            history = conv_row.get("history") or []
             attempt = conv_row.get("follow_up_count", 0)
             lead_name = conv_row.get("lead_name_canonical", "")
-            msg = _format_followup_message(lead_name, service_hint, attempt)
+
+            # Lead pediu pra parar → zera elegibilidade pra sempre (count no máximo)
+            if _lead_asked_to_stop(history):
+                def stop_update():
+                    return (
+                        db.get_supabase()
+                        .table("conversations")
+                        .update({"follow_up_count": _FOLLOWUP_MAX_ATTEMPTS})
+                        .eq("client_id", client_id)
+                        .eq("phone", phone)
+                        .execute()
+                    )
+                await run_in_threadpool(stop_update)
+                optouts += 1
+                log.info(f"followup | optout | {client_id} | {phone}")
+                continue
+
+            is_last = attempt >= _FOLLOWUP_MAX_ATTEMPTS - 1
+
+            # Mensagem via IA quando há contexto real; sem contexto o LLM não
+            # faz melhor que template — não paga a chamada.
+            msg = ""
+            lead_facts = conv_row.get("lead_facts") or []
+            history_summary = conv_row.get("history_summary") or ""
+            if lead_facts or history_summary or history:
+                msg = await ai.generate_followup_message(
+                    client_data,
+                    lead_name=lead_name,
+                    stage=conv_row.get("stage", "discovery"),
+                    lead_facts=lead_facts,
+                    history_summary=history_summary,
+                    recent_messages=history,
+                    attempt=attempt,
+                    is_last_attempt=is_last,
+                )
+            if msg:
+                sent_ai += 1
+            else:
+                service_hint = ""
+                if client_data.products_or_services:
+                    service_hint = client_data.products_or_services[0].get("name", "")
+                msg = _format_followup_message(lead_name, service_hint, attempt)
 
             await wa.send_text(phone, msg, client_id=client_id)
+            await cache.set_with_ttl(spacing_key, "1", ttl=_FOLLOWUP_SPACING_TTL)
 
             # Atualiza follow_up_count via direto na tabela (evita race com conversa ativa)
-            from fastapi.concurrency import run_in_threadpool
             new_count = attempt + 1
 
             def update():
@@ -129,7 +252,8 @@ async def _run_followup_job() -> None:
             )
 
     log.info(
-        f"followup | sent={sent} | skipped_silent={skipped_silent} | "
+        f"followup | sent={sent} (ia={sent_ai}) | timing={skipped_timing} | "
+        f"spacing={skipped_spacing} | silent={skipped_silent} | optout={optouts} | "
         f"errors={errors} | total_stuck={len(stuck)}"
     )
 

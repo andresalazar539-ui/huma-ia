@@ -27,6 +27,7 @@ from fastapi.concurrency import run_in_threadpool
 from huma.core.capabilities import Capability
 from huma.models.schemas import ClientIdentity
 from huma.services import redis_service as cache
+from huma.services.attribution_service import SOURCE_CATEGORIES, SOURCE_LABELS
 from huma.services.db_service import get_supabase
 from huma.utils.logger import get_logger
 
@@ -113,7 +114,8 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
             "phone,stage,created_at,last_message_at,follow_up_count,"
             "handoff_status,crm_deal_id,crm_synced_at,"
             "active_appointment_datetime,active_appointment_service,"
-            "lead_name_canonical,lead_email,lead_facts"
+            "lead_name_canonical,lead_email,lead_facts,"
+            "lead_source,is_outbound"
         ).eq("client_id", client_id).gte("last_message_at", since_iso)
          .limit(1000).execute()
     )
@@ -140,9 +142,12 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
     }
 
     # ── Vendas (meta SELL) — receita REAL confirmada ──
+    # pays fica disponível fora do if: a seção Origem cruza receita por
+    # fonte (phone do pagamento → lead_source da conversa).
+    pays: list[dict] = []
     if sells:
         pay_resp = await run_in_threadpool(
-            lambda: supa.table("payments").select("amount_cents,paid_at,status")
+            lambda: supa.table("payments").select("amount_cents,paid_at,status,phone")
                 .eq("client_id", client_id).eq("status", "approved")
                 .gte("paid_at", since_iso).limit(1000).execute()
         )
@@ -194,6 +199,55 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
             "enviados_crm": enviados_crm,
             "passados_pro_humano": handoffs,
         }
+
+    # ── Origem (sempre) — de onde vêm as conversas e as CONVERSÕES ──
+    # lead_source é gravado first-touch pelo attribution_service (referral
+    # CTWA, código #h de link rastreável, utm). Vazio = orgânico/direto;
+    # conversa de disparo em massa conta como origem "outbound".
+    por_origem: dict[str, dict] = {}
+    fonte_por_phone: dict[str, str] = {}
+    for c in convs:
+        slug = (c.get("lead_source") or "").strip()
+        if not slug:
+            slug = "outbound" if c.get("is_outbound") else "organico"
+        fonte_por_phone[str(c.get("phone") or "")] = slug
+        bucket = por_origem.setdefault(
+            slug, {"conversas": 0, "ganhos": 0, "agendamentos": 0, "receita_cents": 0}
+        )
+        bucket["conversas"] += 1
+        if c.get("stage") == "won":
+            bucket["ganhos"] += 1
+        if c.get("active_appointment_datetime"):
+            bucket["agendamentos"] += 1
+
+    # Receita por fonte: pagamento aprovado → conversa (phone) → origem
+    for p in pays:
+        slug = fonte_por_phone.get(str(p.get("phone") or ""))
+        if slug:
+            por_origem[slug]["receita_cents"] += int(p.get("amount_cents") or 0)
+
+    total_origem = sum(v["conversas"] for v in por_origem.values()) or 1
+    fontes = [
+        {
+            "slug": slug,
+            "origem": SOURCE_LABELS.get(slug, slug),
+            "categoria": SOURCE_CATEGORIES.get(slug, "organico"),
+            "conversas": v["conversas"],
+            "agendamentos": v["agendamentos"],
+            "ganhos": v["ganhos"],
+            "receita_cents": v["receita_cents"],
+            "receita_display": _brl(v["receita_cents"]),
+            "conversao": f"{round(100 * v['ganhos'] / v['conversas'])}%" if v["conversas"] else "0%",
+            "share_pct": round(100 * v["conversas"] / total_origem),
+        }
+        for slug, v in sorted(por_origem.items(), key=lambda kv: (-kv[1]["conversas"], kv[0]))
+    ]
+    com_ganho = sorted((f for f in fontes if f["ganhos"]), key=lambda f: -f["ganhos"])
+    sections["origem"] = {
+        "top_conversas": f"{fontes[0]['origem']} ({fontes[0]['conversas']})" if fontes else "—",
+        "top_conversoes": f"{com_ganho[0]['origem']} ({com_ganho[0]['ganhos']})" if com_ganho else "—",
+        "fontes": fontes,
+    }
 
     # ── Follow-up (sempre — é o trabalho chato que gera dinheiro) ──
     com_followup = [c for c in convs if int(c.get("follow_up_count") or 0) > 0]
@@ -277,6 +331,18 @@ def format_report_whatsapp(identity: ClientIdentity, report: dict, frequency: st
             f"🔁 {f['leads_reengajados']} leads que tinham sumido foram reengajados — "
             f"{f.get('voltaram_a_negociar', 0)} voltaram a negociar"
         )
+
+    # Origem: só aparece quando existe lead ATRIBUÍDO (anúncio/link
+    # rastreável) — se tudo é orgânico/direto, a linha seria ruído.
+    o = s.get("origem", {})
+    atribuidas = [
+        x for x in (o.get("fontes") or [])
+        if x.get("slug") not in ("organico", "outbound")
+    ]
+    if atribuidas:
+        lines.append(f"📈 Maior origem de conversas: {o.get('top_conversas', '—')}")
+        if o.get("top_conversoes", "—") != "—":
+            lines.append(f"🏆 Maior origem de conversões: {o['top_conversoes']}")
 
     intel = s.get("inteligencia", {})
     top = intel.get("top_assuntos") or []
