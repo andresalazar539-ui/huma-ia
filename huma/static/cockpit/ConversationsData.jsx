@@ -7,7 +7,9 @@
 // httpOnly huma_session; fetches same-origin enviam o cookie sozinhos e
 // AUTH_HEADERS fica vazio. Com ?api_key= na URL, o Bearer tem precedência.
 const API_KEY = new URLSearchParams(location.search).get('api_key') || '';
-const CLIENT_ID = new URLSearchParams(location.search).get('client_id') || 'dev';
+// Prioridade: ?client_id= (bypass dev) > sessão logada (injetado pelo servidor
+// em window.HUMA_CLIENT_ID no /cockpit) > 'dev' (fallback local).
+const CLIENT_ID = new URLSearchParams(location.search).get('client_id') || window.HUMA_CLIENT_ID || 'dev';
 const AUTH_HEADERS = API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {};
 
 async function fetchConversations(filter = 'todas') {

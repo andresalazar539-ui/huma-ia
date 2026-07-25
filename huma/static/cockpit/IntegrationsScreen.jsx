@@ -91,10 +91,12 @@ const INTEGRATIONS = [
 ];
 
 const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
-  // Em produção o client_id vem da sessão (cookie). No dev usamos o bypass ?client_id=X.
+  // Em produção o client_id vem da sessão (cookie), injetado pelo servidor em
+  // window.HUMA_CLIENT_ID. No dev usamos o bypass ?client_id=X.
   const resolvedClientId =
     clientId ||
     new URLSearchParams(window.location.search).get('client_id') ||
+    window.HUMA_CLIENT_ID ||
     'dev';
 
   // Handler genérico de disconnect: chama backend e recarrega status no parent.
