@@ -204,7 +204,10 @@ const WorkspaceSwitcher = ({ onNav, onInvite }) => {
 
           {/* BLOCO 3 */}
           <Item icon="card"   label="Plano e uso" onClick={() => onNav('uso')}/>
-          <Item icon="logout" label="Sair"/>
+          <Item icon="logout" label="Sair" onClick={async () => {
+            try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) { /* cookie expira sozinho */ }
+            window.location.href = '/login';
+          }}/>
         </div>
       )}
     </div>
