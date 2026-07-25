@@ -459,63 +459,98 @@ async def logout() -> JSONResponse:
 # ================================================================
 
 
+# Identidade visual do Cockpit (papel quente + terracota). Os tokens (--paper,
+# --ink, --terracotta...) vêm do CSS oficial do Cockpit, linkado no <head> de
+# cada página via _TOKENS_LINK — fonte única de verdade, não duplicar valores.
+_TOKENS_LINK = '<link rel="stylesheet" href="/static/cockpit/colors_and_type.css">'
+
+_BRAND_HTML = """<div class="brand">HUMA</div>
+    <div class="brand-sub">Cockpit</div>"""
+
 _BASE_STYLE = """
     * { box-sizing: border-box; }
     body {
-      font-family: -apple-system, system-ui, sans-serif;
-      background: #0f172a; color: #e2e8f0;
       margin: 0; min-height: 100vh;
       display: flex; align-items: center; justify-content: center;
-      padding: 16px;
+      padding: 24px 16px;
+      background:
+        radial-gradient(1100px 560px at 85% -10%, var(--terracotta-tint) 0%, transparent 60%),
+        radial-gradient(900px 500px at -10% 110%, var(--sage-tint) 0%, transparent 55%),
+        var(--paper);
     }
     .card {
-      background: #1e293b; border-radius: 16px; padding: 40px 32px;
-      max-width: 400px; width: 100%;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+      background: var(--paper-raised);
+      border: 1px solid var(--paper-edge);
+      border-radius: var(--r-xl); padding: 36px 32px 30px;
+      max-width: 420px; width: 100%;
+      box-shadow: var(--sh-4);
     }
-    h1 { font-size: 22px; margin: 0 0 8px; }
-    .sub { color: #94a3b8; margin: 0 0 24px; font-size: 14px; line-height: 1.5; }
-    label { font-size: 13px; color: #cbd5e1; display: block; margin: 14px 0 6px; }
-    input[type=email], input[type=password] {
-      width: 100%; padding: 12px 14px; border-radius: 8px;
-      border: 1px solid #334155; background: #0f172a; color: #e2e8f0;
-      font-size: 16px; outline: none;
+    .brand {
+      font-family: var(--font-sans); font-weight: 600; font-size: 24px;
+      letter-spacing: -0.02em; color: var(--ink); line-height: 1;
     }
-    input:focus { border-color: #3b82f6; }
+    .brand-sub {
+      font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+      letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3);
+      margin: 6px 0 26px;
+    }
+    h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 6px; color: var(--ink); }
+    .sub { color: var(--ink-3); margin: 0 0 22px; font-size: 14px; line-height: 1.5; }
+    label { font-size: 13px; font-weight: 500; color: var(--ink-2); display: block; margin: 14px 0 6px; }
+    input[type=email], input[type=password], input[type=text] {
+      width: 100%; padding: 12px 14px; border-radius: var(--r-sm);
+      border: 1px solid var(--paper-edge); background: var(--paper-sunk);
+      color: var(--ink); font-family: var(--font-sans); font-size: 16px; outline: none;
+      box-shadow: var(--sh-inner);
+      transition: border-color 120ms var(--ease-out), box-shadow 120ms var(--ease-out);
+    }
+    input::placeholder { color: var(--ink-4); }
+    input:focus { border-color: var(--terracotta); box-shadow: 0 0 0 3px var(--terracotta-tint); background: var(--paper-raised); }
     .row { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; }
-    .remember { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #cbd5e1; }
-    .link { color: #60a5fa; font-size: 13px; text-decoration: none; cursor: pointer; background: none; border: 0; padding: 0; }
+    .remember { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+    .remember input { accent-color: var(--terracotta); }
+    .link {
+      color: var(--terracotta-ink); font-size: 13px; font-weight: 500;
+      text-decoration: none; cursor: pointer; background: none; border: 0; padding: 0;
+      font-family: var(--font-sans);
+    }
     .link:hover { text-decoration: underline; }
     button.primary {
-      width: 100%; margin-top: 18px; padding: 12px;
-      background: #22c55e; color: #022c1a; border: 0; border-radius: 8px;
-      font-weight: 600; font-size: 15px; cursor: pointer;
+      width: 100%; margin-top: 20px; padding: 13px;
+      background: var(--ember); color: #fff; border: 0; border-radius: var(--r-md);
+      font-family: var(--font-sans); font-weight: 600; font-size: 15px;
+      cursor: pointer; box-shadow: var(--sh-2);
+      transition: background 120ms var(--ease-out), transform 120ms var(--ease-out);
     }
-    button.primary:disabled { background: #334155; color: #94a3b8; cursor: not-allowed; }
-    .divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: #64748b; font-size: 12px; }
-    .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: #334155; }
+    button.primary:hover { background: var(--ember-ink); }
+    button.primary:active { transform: translateY(1px); }
+    button.primary:disabled { background: var(--paper-sunk); color: var(--ink-4); cursor: not-allowed; box-shadow: none; }
+    .divider { display: flex; align-items: center; gap: 12px; margin: 22px 0; color: var(--ink-4); font-size: 12px; }
+    .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--paper-edge); }
     button.google {
-      width: 100%; padding: 12px; border-radius: 8px;
-      background: #fff; color: #1f2937; border: 0;
-      font-weight: 600; font-size: 15px; cursor: pointer;
+      width: 100%; padding: 12px; border-radius: var(--r-md);
+      background: var(--paper-raised); color: var(--ink); border: 1px solid var(--ink-line);
+      font-family: var(--font-sans); font-weight: 600; font-size: 15px; cursor: pointer;
       display: flex; align-items: center; justify-content: center; gap: 10px;
+      transition: background 120ms var(--ease-out);
     }
-    .msg { margin-top: 16px; padding: 12px; border-radius: 8px; font-size: 14px; display: none; }
-    .msg.ok { background: #14532d; color: #bbf7d0; display: block; }
-    .msg.err { background: #7f1d1d; color: #fecaca; display: block; }
+    button.google:hover { background: var(--paper-sunk); }
+    .msg { margin-top: 16px; padding: 12px 14px; border-radius: var(--r-sm); font-size: 14px; line-height: 1.45; display: none; }
+    .msg.ok { background: var(--sage-tint); color: var(--sage-ink); border: 1px solid var(--sage-soft); display: block; }
+    .msg.err { background: var(--terracotta-tint); color: var(--danger); border: 1px solid var(--terracotta-soft); display: block; }
     .hidden { display: none; }
-    .tabs { display: flex; gap: 4px; background: #0f172a; border-radius: 10px; padding: 4px; margin-bottom: 24px; }
+    .tabs {
+      display: flex; gap: 4px; background: var(--paper-sunk);
+      border: 1px solid var(--paper-edge); border-radius: var(--r-md);
+      padding: 4px; margin-bottom: 24px;
+    }
     .tab {
-      flex: 1; padding: 10px; border: 0; border-radius: 8px;
-      background: transparent; color: #94a3b8; font-size: 14px;
-      font-weight: 600; cursor: pointer;
+      flex: 1; padding: 9px; border: 0; border-radius: var(--r-sm);
+      background: transparent; color: var(--ink-3);
+      font-family: var(--font-sans); font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: background 120ms var(--ease-out), color 120ms var(--ease-out);
     }
-    .tab.active { background: #334155; color: #fff; }
-    input[type=text] {
-      width: 100%; padding: 12px 14px; border-radius: 8px;
-      border: 1px solid #334155; background: #0f172a; color: #e2e8f0;
-      font-size: 16px; outline: none;
-    }
+    .tab.active { background: var(--paper-raised); color: var(--ink); box-shadow: var(--sh-2); }
 """
 
 _GOOGLE_ICON = (
@@ -543,10 +578,12 @@ async def login_page() -> HTMLResponse:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HUMA IA — Entrar</title>
+  {_TOKENS_LINK}
   <style>{_BASE_STYLE}</style>
 </head>
 <body>
   <div class="card">
+    {_BRAND_HTML}
     <div class="tabs">
       <button class="tab active" id="tab-login">Entrar</button>
       <button class="tab" id="tab-signup">Criar conta</button>
@@ -700,10 +737,12 @@ async def oauth_callback_page() -> HTMLResponse:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HUMA IA — Entrando...</title>
+  {_TOKENS_LINK}
   <style>{_BASE_STYLE}</style>
 </head>
 <body>
   <div class="card">
+    {_BRAND_HTML}
     <h1>Entrando...</h1>
     <p class="sub" id="status">Validando sua conta Google.</p>
     <div id="msg" class="msg"></div>
@@ -753,10 +792,12 @@ async def reset_password_page() -> HTMLResponse:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HUMA IA — Definir senha</title>
+  {_TOKENS_LINK}
   <style>{_BASE_STYLE}</style>
 </head>
 <body>
   <div class="card">
+    {_BRAND_HTML}
     <h1>Definir sua senha</h1>
     <p class="sub">Escolha a senha que você vai usar pra entrar no Cockpit.</p>
 
