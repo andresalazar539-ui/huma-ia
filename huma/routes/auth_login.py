@@ -273,7 +273,9 @@ def _post_login_redirect(client) -> str:
     """Conta nova/incompleta cai no wizard; conta ativa cai no Cockpit."""
     status = getattr(client.onboarding_status, "value", client.onboarding_status)
     if str(status) == "active":
-        return f"/cockpit?client_id={client.client_id}"
+        # client_id NÃO vai na URL: o /cockpit descobre o cliente pela sessão
+        # (cookie) e injeta window.HUMA_CLIENT_ID no HTML.
+        return "/cockpit"
     return f"/wizard/page?client_id={client.client_id}"
 
 

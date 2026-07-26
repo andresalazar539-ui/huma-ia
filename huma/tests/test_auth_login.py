@@ -215,7 +215,8 @@ class TestLogin:
             json={"email": "Dono@Negocio.com.br", "password": "certa", "remember": True},
         )
         assert resp.status_code == 200
-        assert resp.json()["redirect"] == "/cockpit?client_id=cli_abc"
+        # client_id fica fora da URL — o /cockpit resolve o cliente pela sessão
+        assert resp.json()["redirect"] == "/cockpit"
         cookie = resp.headers.get("set-cookie", "")
         assert "huma_session=" in cookie
         assert "HttpOnly" in cookie
