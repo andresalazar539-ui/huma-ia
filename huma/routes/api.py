@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -1085,8 +1085,12 @@ async def health_deep():
 
 
 @router.get("/", tags=["Sistema"])
-async def root():
-    return {"service": "HUMA IA", "version": APP_VERSION}
+async def root(request: Request) -> RedirectResponse:
+    """Raiz do domínio: logado vai pro Cockpit, deslogado vai pro login."""
+    from huma.core.auth import SESSION_COOKIE_NAME, verify_session_token
+
+    session_client = verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, ""))
+    return RedirectResponse("/cockpit" if session_client else "/login", status_code=307)
 
 
 # ================================================================
