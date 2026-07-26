@@ -618,7 +618,7 @@ class TestOnboarding:
             questions = get_onboarding_questions(cat)
             ids = [q["id"] for q in questions]
             assert "lead_fields" in ids
-            assert "payment" in ids
+            assert "payment_methods" in ids
             assert "personality" in ids
             assert "emojis" in ids
 

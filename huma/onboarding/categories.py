@@ -166,7 +166,10 @@ AUTONOMY_QUESTIONS = [
         "field": "collect_before_offer",
     },
     {
-        "id": "payment",
+        # id "payment_methods" (não "payment"): o e-commerce já usa o id
+        # "payment" nas perguntas específicas, e onboarding_answers é um
+        # dict por id — colisão sobrescreveria a resposta do dono.
+        "id": "payment_methods",
         "question": "Quais formas de pagamento aceita? (pix, boleto, cartão, ou combinação)",
         "field": "accepted_payment_methods",
     },
