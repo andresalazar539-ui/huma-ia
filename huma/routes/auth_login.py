@@ -270,13 +270,15 @@ async def _resolve_or_provision_client(email: str, business_name: str = ""):
 
 
 def _post_login_redirect(client) -> str:
-    """Conta nova/incompleta cai no wizard; conta ativa cai no Cockpit."""
+    """Conta nova/incompleta cai no onboarding; conta ativa cai no Cockpit."""
     status = getattr(client.onboarding_status, "value", client.onboarding_status)
     if str(status) == "active":
         # client_id NÃO vai na URL: o /cockpit descobre o cliente pela sessão
         # (cookie) e injeta window.HUMA_CLIENT_ID no HTML.
         return "/cockpit"
-    return f"/wizard/page?client_id={client.client_id}"
+    # Mesmo padrão do /cockpit: o /onboarding/page resolve o cliente pela
+    # sessão. O /wizard/page segue existindo como fallback legado/dev.
+    return "/onboarding/page"
 
 
 def _session_response(client, remember: bool) -> JSONResponse:

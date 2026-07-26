@@ -241,6 +241,35 @@ class TestBuildTranscript:
 
 
 # ================================================================
+# PÁGINA /onboarding/page
+# ================================================================
+
+
+class TestOnboardingPage:
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from huma.app import create_app
+        return TestClient(create_app())
+
+    def test_sem_sessao_redireciona_pro_login(self):
+        resp = self._client().get("/onboarding/page", follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "/login"
+
+    def test_com_sessao_injeta_client_id(self, monkeypatch):
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "SESSION_SECRET", "segredo-teste")
+        token = auth.create_session_token("cli_ob")
+        client = self._client()
+        client.cookies.set(auth.SESSION_COOKIE_NAME, token)
+        resp = client.get("/onboarding/page")
+        assert resp.status_code == 200
+        assert 'window.HUMA_CLIENT_ID = "cli_ob"' in resp.text
+        assert "/static/onboarding/api.js" in resp.text
+
+
+# ================================================================
 # HISTÓRICO DO PLAYGROUND (rotas)
 # ================================================================
 

@@ -238,7 +238,7 @@ class TestLogin:
             json={"email": "dono@negocio.com.br", "password": "certa"},
         )
         assert resp.status_code == 200
-        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_abc"
+        assert resp.json()["redirect"] == "/onboarding/page"
 
     def test_login_sem_cliente_provisiona_um_novo(self, monkeypatch):
         """Auto-provisionamento: conta autenticada sem negócio ganha um."""
@@ -262,7 +262,7 @@ class TestLogin:
         )
         assert resp.status_code == 200
         assert created["email"] == "novo@negocio.com.br"
-        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_novo"
+        assert resp.json()["redirect"] == "/onboarding/page"
 
     def test_email_ambiguo_403(self, monkeypatch):
         import huma.routes.auth_login as al
@@ -364,7 +364,7 @@ class TestSignup:
             json={"email": "novo@negocio.com.br", "password": "senha-forte-8", "business_name": "Barbearia do Zé"},
         )
         assert resp.status_code == 200
-        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_novo"
+        assert resp.json()["redirect"] == "/onboarding/page"
         assert created["business_name"] == "Barbearia do Zé"
         assert "huma_session=" in resp.headers.get("set-cookie", "")
 
@@ -451,7 +451,7 @@ class TestSessionFromSupabase:
             json={"access_token": "g" * 30},
         )
         assert resp.status_code == 200
-        assert resp.json()["redirect"] == "/wizard/page?client_id=cli_google"
+        assert resp.json()["redirect"] == "/onboarding/page"
 
 
 # ================================================================

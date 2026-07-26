@@ -20,12 +20,15 @@
 # Capabilities e ativação final continuam no /wizard (não duplicado).
 # ================================================================
 
+import json
 import time
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from huma.core.auth import verify_api_key
+from huma.core.auth import SESSION_COOKIE_NAME, verify_api_key, verify_session_token
 from huma.models.schemas import (
     BusinessCategory,
     ClientIdentity,
@@ -41,6 +44,8 @@ from huma.utils.logger import get_logger
 
 log = get_logger("onboarding_routes")
 router = APIRouter(prefix="/onboarding", tags=["Onboarding Entrevista"])
+
+ONBOARDING_HTML = Path(__file__).resolve().parent.parent / "static" / "onboarding" / "Onboarding.html"
 
 # Rate limit in-memory do playground — 30 msg/min por cliente.
 # Mesmo padrão do /api/playground legado (sem Redis de propósito:
@@ -144,6 +149,32 @@ def _validate_history(history: list[dict]) -> list[dict]:
             continue
         clean.append({"role": role, "content": content.strip()[:_HISTORY_MAX_CHARS]})
     return clean
+
+
+# ================================================================
+# GET /onboarding/page — a página do fluxo "Conheça sua sócia"
+# ================================================================
+
+
+@router.get("/page", response_class=HTMLResponse)
+async def onboarding_page(request: Request):
+    """
+    Serve o onboarding standalone (React via CDN, arquivos em
+    /static/onboarding/). Mesmo padrão do /cockpit: injeta
+    window.HUMA_CLIENT_ID da sessão logada.
+
+    Diferença do Cockpit: sem sessão válida redireciona pro /login —
+    sem client_id o api.js entraria em modo demo, e demo em produção
+    confunde (o dono acharia que configurou e nada foi salvo).
+    """
+    session_client = verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, ""))
+    if not session_client:
+        return RedirectResponse("/login", status_code=307)
+
+    html = ONBOARDING_HTML.read_text(encoding="utf-8")
+    inject = f"<script>window.HUMA_CLIENT_ID = {json.dumps(session_client)};</script>"
+    html = html.replace("<head>", "<head>" + inject, 1)
+    return HTMLResponse(content=html)
 
 
 # ================================================================
