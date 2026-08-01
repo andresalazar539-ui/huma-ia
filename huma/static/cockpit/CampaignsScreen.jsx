@@ -62,13 +62,23 @@ const CampaignsLocked = ({ provider, onNav }) => (
   </div>
 );
 
+// Cores do semáforo do Escudo HUMA (análise antiban da mensagem)
+const SHIELD_COLORS = {
+  verde:    { dot: '#16a34a', bg: '#e8f3ea', ink: '#14532d', label: 'Mensagem segura' },
+  amarelo:  { dot: '#d97706', bg: '#fdf3e0', ink: '#7c4a03', label: 'Atenção — risco moderado' },
+  vermelho: { dot: '#dc2626', bg: '#fdecea', ink: '#7f1d1d', label: 'Alto risco de bloqueio' },
+};
+
 const CampaignsForm = () => {
   const [name, setName] = useStateC('');
   const [message, setMessage] = useStateC('');
+  const [templateName, setTemplateName] = useStateC('');
   const [phones, setPhones] = useStateC('');
   const [limit, setLimit] = useStateC(50);
   const [busy, setBusy] = useStateC(false);
   const [feedback, setFeedback] = useStateC(null); // {kind: 'ok'|'err', text}
+  const [verdict, setVerdict] = useStateC(null);   // veredito do Escudo
+  const [verdictFor, setVerdictFor] = useStateC(''); // texto que foi analisado
 
   const parsedLeads = phones
     .split('\n')
@@ -81,24 +91,56 @@ const CampaignsForm = () => {
     })
     .filter(l => l.phone.length >= 10);
 
-  const doSend = async () => {
+  const doCreate = async (riskAccepted) => {
+    const data = await createCampaign({
+      name: name.trim() || 'Campanha',
+      message_template: message.trim(),
+      leads: parsedLeads,
+      daily_send_limit: Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200),
+      template_name: templateName.trim(),
+      risk_accepted: riskAccepted,
+    });
+    const shieldNote = verdict && verdict.risco === 'verde'
+      ? ' Mensagem verificada pelo Escudo HUMA.' : '';
+    setFeedback({ kind: 'ok', text: `Campanha criada: ${data.leads} contatos na fila. Os envios saem em ritmo humano, respeitando o limite diário.${shieldNote}` });
+    setPhones(''); setName(''); setMessage(''); setTemplateName('');
+    setVerdict(null); setVerdictFor('');
+  };
+
+  // Fluxo do Escudo: 1º clique analisa; verde segue direto; amarelo/
+  // vermelho mostra o veredito e espera a decisão do dono. A trava real
+  // é do backend (403/409) — aqui é a experiência.
+  const doSend = async (riskAccepted = false) => {
     setFeedback(null);
     if (!message.trim()) { setFeedback({ kind: 'err', text: 'Escreva a mensagem da campanha.' }); return; }
     if (!parsedLeads.length) { setFeedback({ kind: 'err', text: 'Cole ao menos 1 telefone válido (com DDD).' }); return; }
     setBusy(true);
     try {
-      const data = await createCampaign({
-        name: name.trim() || 'Campanha',
-        message_template: message.trim(),
-        leads: parsedLeads,
-        daily_send_limit: Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200),
-      });
-      setFeedback({ kind: 'ok', text: `Campanha criada: ${data.leads} contatos na fila. Os envios saem em ritmo humano, respeitando o limite diário.` });
-      setPhones(''); setName(''); setMessage('');
+      let v = verdict;
+      if (message.trim() !== verdictFor) {
+        v = await reviewCampaign(message.trim());
+        setVerdict(v); setVerdictFor(message.trim());
+      }
+      const arriscada = v && (v.risco === 'amarelo' || v.risco === 'vermelho');
+      if (arriscada && !riskAccepted) { setBusy(false); return; } // card decide
+      await doCreate(riskAccepted && arriscada);
     } catch (e) {
-      setFeedback({ kind: 'err', text: String(e.message || 'Erro ao criar campanha.') });
+      if (e.status === 409 && e.detail && e.detail.verdict) {
+        // Backend re-validou e pediu confirmação (ex.: veredito mudou)
+        setVerdict(e.detail.verdict); setVerdictFor(message.trim());
+      } else {
+        setFeedback({ kind: 'err', text: String(e.message || 'Erro ao criar campanha.') });
+      }
     }
     setBusy(false);
+  };
+
+  const usarReescrita = () => {
+    if (verdict && verdict.reescrita) {
+      setMessage(verdict.reescrita);
+      setVerdict(null); setVerdictFor('');
+      setFeedback(null);
+    }
   };
 
   const field = { display: 'flex', flexDirection: 'column', gap: 6 };
@@ -137,6 +179,19 @@ const CampaignsForm = () => {
           <textarea style={{ ...input, resize: 'vertical' }} rows={4}
                     value={message} onChange={e => setMessage(e.target.value)}
                     placeholder="A HUMA personaliza a mensagem pra cada contato a partir deste texto-base."/>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+            Antes do disparo, o Escudo HUMA analisa a mensagem e avisa se algo pode derrubar a nota do seu número.
+          </div>
+        </div>
+
+        <div style={field}>
+          <label style={label}>Template aprovado da Meta (opcional)</label>
+          <input style={{ ...input, fontFamily: 'var(--font-mono)', fontSize: 13 }}
+                 value={templateName} onChange={e => setTemplateName(e.target.value)}
+                 placeholder="ex.: promo_julho"/>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+            Nome do template aprovado no WhatsApp Manager. Sem template, a mensagem só chega pra quem falou com você nas últimas 24h.
+          </div>
         </div>
 
         <div style={field}>
@@ -155,6 +210,66 @@ const CampaignsForm = () => {
                  onChange={e => setLimit(e.target.value)}/>
         </div>
 
+        {verdict && (verdict.risco === 'amarelo' || verdict.risco === 'vermelho') && message.trim() === verdictFor && (() => {
+          const c = SHIELD_COLORS[verdict.risco];
+          return (
+            <div style={{
+              padding: '16px 18px', borderRadius: 12, background: c.bg,
+              border: `1px solid ${c.dot}33`, display: 'flex', flexDirection: 'column', gap: 10,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: c.dot, flexShrink: 0 }}/>
+                <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 14, color: c.ink }}>
+                  Escudo HUMA: {c.label}
+                </span>
+              </div>
+              {verdict.dica && (
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: c.ink, lineHeight: 1.55 }}>
+                  {verdict.dica}
+                </div>
+              )}
+              {(verdict.motivos || []).length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {verdict.motivos.map((m, i) => (
+                    <div key={i} style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: c.ink, lineHeight: 1.5 }}>
+                      {m.trecho && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#ffffff88', padding: '1px 6px', borderRadius: 6 }}>“{m.trecho}”</span>}
+                      {m.trecho ? ' — ' : ''}{m.explicacao}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {verdict.reescrita && !verdict.bloqueio_definitivo && (
+                <div style={{
+                  fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.55, color: 'var(--ink)',
+                  background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)',
+                  borderRadius: 10, padding: '12px 14px', whiteSpace: 'pre-wrap',
+                }}>{verdict.reescrita}</div>
+              )}
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 2 }}>
+                {verdict.reescrita && !verdict.bloqueio_definitivo && (
+                  <button onClick={usarReescrita} style={{
+                    padding: '10px 16px', borderRadius: 9, border: 'none', cursor: 'pointer',
+                    background: 'var(--ink)', color: 'var(--paper)',
+                    fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+                  }}>Usar versão segura da HUMA</button>
+                )}
+                {!verdict.bloqueio_definitivo && (
+                  <button onClick={() => doSend(true)} disabled={busy} style={{
+                    padding: '10px 16px', borderRadius: 9, cursor: busy ? 'default' : 'pointer',
+                    background: 'transparent', color: c.ink, border: `1px solid ${c.dot}66`,
+                    fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, opacity: busy ? 0.6 : 1,
+                  }}>Enviar assim mesmo — o risco é meu</button>
+                )}
+              </div>
+              {verdict.bloqueio_definitivo && (
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: c.ink }}>
+                  Esse conteúdo é proibido pelas políticas do WhatsApp — a HUMA não envia, pra proteger seu número e sua conta.
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
         {feedback && (
           <div style={{
             padding: '12px 14px', borderRadius: 10,
@@ -164,14 +279,14 @@ const CampaignsForm = () => {
           }}>{feedback.text}</div>
         )}
 
-        <button onClick={doSend} disabled={busy} style={{
+        <button onClick={() => doSend(false)} disabled={busy} style={{
           padding: '13px 22px', borderRadius: 10, alignSelf: 'flex-start',
           background: 'var(--ink)', color: 'var(--paper)', border: 'none',
           cursor: busy ? 'default' : 'pointer',
           fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
           opacity: busy ? 0.6 : 1,
         }}>
-          {busy ? 'Criando campanha…' : 'Disparar campanha'}
+          {busy ? 'Analisando e criando…' : 'Disparar campanha'}
         </button>
       </div>
     </div>

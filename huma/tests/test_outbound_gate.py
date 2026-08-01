@@ -45,11 +45,18 @@ def _setup(monkeypatch, provider="evolution", outbound_allowed=True):
         _setup.dispatched = True
         return {"status": "completed", "sent": 0, "errors": 0}
 
+    # Escudo antiban (Fase 1): mocka o revisor pra teste não chamar a
+    # Anthropic de verdade. Veredito verde = não interfere no gate.
+    async def fake_review(client_id, message, timeout_sec=8.0):
+        return {"risco": "verde", "bloqueio_definitivo": False,
+                "motivos": [], "reescrita": "", "dica": ""}
+
     monkeypatch.setattr(auth_mod, "get_client", get_client)
     monkeypatch.setattr(api_mod.db, "get_client", get_client)
     monkeypatch.setattr(api_mod.db, "save_outbound_campaign", save_campaign)
     monkeypatch.setattr(billing_mod, "get_client_plan_config", plan_config)
     monkeypatch.setattr(api_mod, "process_outbound_campaign", fake_process)
+    monkeypatch.setattr(api_mod.shield, "review_campaign", fake_review)
 
     monkeypatch.setattr(auth_mod, "SESSION_SECRET", "segredo-teste")
     cookies = {"huma_session": auth_mod.create_session_token("cli_out")}

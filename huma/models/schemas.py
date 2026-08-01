@@ -221,6 +221,23 @@ class OutboundCampaign(BaseModel):
             "O marcador {nome} é substituído pelo nome do lead no envio."
         ),
     )
+    # ── Escudo antiban (Fase 1): veredito do revisor + aceite de risco ──
+    risk_accepted: bool = Field(
+        default=False,
+        description=(
+            "True = o dono viu o alerta do Escudo (amarelo/vermelho) e "
+            "escolheu enviar assim mesmo. Gera risk_accepted_at na "
+            "persistência (auditoria: a HUMA avisou, com data e hora)."
+        ),
+    )
+    risk_level: str = Field(
+        default="",
+        description=(
+            "Veredito do revisor no momento da criação: verde | amarelo | "
+            "vermelho | nao_analisado. Preenchido pelo backend, não pelo "
+            "Cockpit."
+        ),
+    )
     follow_up_template: str = ""
     follow_up_hours: int = 48
     max_follow_ups: int = 2

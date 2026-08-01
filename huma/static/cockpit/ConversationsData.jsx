@@ -322,18 +322,44 @@ Object.assign(window, { fetchBillingStatus, subscribePlan, cancelPlan, validateC
 /* ---------------- Disparos em massa (outbound — só WhatsApp oficial) ---------------- */
 // Backend recusa com 403 se o canal não for a API oficial da Meta
 // (canal não-oficial toma ban por envio em massa) ou se o plano não for ON.
-async function createCampaign({ name, message_template, leads, daily_send_limit }) {
+// Escudo antiban: 403 com detail string = conteúdo proibido (sem override);
+// 409 com detail.verdict = precisa de aceite de risco (risk_accepted).
+async function createCampaign({ name, message_template, leads, daily_send_limit, template_name, risk_accepted }) {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/outbound/campaign`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
-    body: JSON.stringify({ name, message_template, leads, daily_send_limit }),
+    body: JSON.stringify({
+      name, message_template, leads, daily_send_limit,
+      template_name: template_name || '',
+      risk_accepted: !!risk_accepted,
+    }),
   });
   const data = await r.json();
-  if (!r.ok) throw new Error(data.detail || 'Erro ao criar campanha');
+  if (!r.ok) {
+    const detail = data.detail;
+    const err = new Error(typeof detail === 'string' ? detail : 'Confirmação de risco necessária');
+    err.status = r.status;
+    err.detail = detail; // 409: {reason, verdict} do Escudo
+    throw err;
+  }
   return data;
 }
 
-Object.assign(window, { createCampaign });
+// Escudo antiban: analisa a mensagem ANTES do disparo (cache no backend —
+// reanalisar o mesmo texto é grátis). Nunca lança por falha do juiz: o
+// backend degrada pra {risco: 'nao_analisado'}.
+async function reviewCampaign(message) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/outbound/campaign/review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ message }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Erro ao analisar mensagem');
+  return data;
+}
+
+Object.assign(window, { createCampaign, reviewCampaign });
 
 /* ---------------- Relatórios de outcome (por meta do cliente) ---------------- */
 async function fetchReport(days = 30) {

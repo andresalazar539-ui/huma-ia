@@ -403,15 +403,19 @@ async def set_lead_source(
 
 
 async def save_outbound_campaign(campaign: OutboundCampaign):
-    """Salva campanha outbound."""
+    """Salva campanha outbound (leads embutidos como JSON)."""
     data = {
         "campaign_id": campaign.campaign_id,
         "client_id": campaign.client_id,
         "name": campaign.name,
         "message_template": campaign.message_template,
+        "template_name": campaign.template_name,
         "daily_send_limit": campaign.daily_send_limit,
         "leads": [l.model_dump() for l in campaign.leads],
         "is_active": campaign.is_active,
+        # Auditoria do Escudo antiban: veredito do revisor e aceite de risco
+        "risk_level": campaign.risk_level,
+        "risk_accepted_at": datetime.utcnow().isoformat() if campaign.risk_accepted else None,
     }
     await run_in_threadpool(
         lambda: get_supabase().table("outbound_campaigns").upsert(data).execute()
@@ -434,10 +438,52 @@ async def get_outbound_campaign(campaign_id: str) -> OutboundCampaign | None:
         client_id=d.get("client_id", ""),
         name=d.get("name", ""),
         message_template=d.get("message_template", ""),
+        template_name=d.get("template_name", "") or "",
         daily_send_limit=d.get("daily_send_limit", 50),
         leads=leads,
         is_active=d.get("is_active", False),
+        risk_level=d.get("risk_level", "") or "",
     )
+
+
+# ================================================================
+# SUPRESSÃO DE DISPARO (Escudo antiban — opt-out durável)
+# ================================================================
+
+async def add_suppressed_lead(client_id: str, phone: str, reason: str = "") -> bool:
+    """
+    Grava supressão durável: o lead NUNCA mais recebe campanha deste
+    cliente. Idempotente (PK client_id+phone, primeiro reason vence).
+    Silent-fail: opt-out não pode derrubar webhook nem conversa.
+    """
+    try:
+        await run_in_threadpool(
+            lambda: get_supabase().table("suppressed_leads").upsert(
+                {"client_id": client_id, "phone": phone, "reason": reason},
+                on_conflict="client_id,phone", ignore_duplicates=True,
+            ).execute()
+        )
+        return True
+    except Exception as e:
+        log.error(f"Supressao gravar falhou | client={client_id} | phone={phone} | {type(e).__name__}: {e}")
+        return False
+
+
+async def get_suppressed_phones(client_id: str) -> set[str]:
+    """
+    Telefones suprimidos (opt-out) do cliente, pra filtrar antes do
+    disparo. Em erro retorna set() — o Redis (optout:*) segue como
+    segunda camada de checagem no loop de envio.
+    """
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("suppressed_leads").select("phone")
+                .eq("client_id", client_id).execute()
+        )
+        return {r.get("phone", "") for r in (resp.data or []) if r.get("phone")}
+    except Exception as e:
+        log.error(f"Supressao lookup falhou | client={client_id} | {type(e).__name__}: {e}")
+        return set()
 
 
 async def list_stuck_conversations(

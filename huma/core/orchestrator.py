@@ -37,6 +37,7 @@ from huma.services import media_service as media
 from huma.services import payment_service as pay
 from huma.services import scheduling_service as sched
 from huma.services import billing_service as billing
+from huma.services import campaign_shield as shield
 from huma.services import message_buffer as buffer
 from huma.services import loop_detector
 from huma.providers.inventory.bling import BlingAdapter
@@ -103,6 +104,14 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
     e processa como uma mensagem única.
     """
     phone = payload.phone
+
+    # Escudo antiban: lead pedindo pra não receber mais ("pare", "não
+    # quero receber"...) → supressão de CAMPANHA em background. Não muda
+    # a conversa em nada — o clone segue respondendo normalmente (regex
+    # conservador, custo zero; a Meta ainda manda 131050 como rede de
+    # segurança).
+    if payload.text and shield.detect_optout(payload.text):
+        background_tasks.add_task(shield.register_optout, payload.client_id, phone, "texto_lead")
 
     if await cache.is_duplicate(phone, payload.text + (payload.image_url or "")):
         return {"status": "duplicate"}
@@ -726,19 +735,26 @@ async def process_outbound_campaign(client_data, campaign):
     pending = [l for l in campaign.leads if l.status == OutboundStatus.PENDING]
     batch = pending[:campaign.daily_send_limit]
 
+    # Escudo antiban: supressão durável (Supabase) carregada UMA vez por
+    # batch. Em erro retorna set() — o Redis abaixo segue como 2ª camada.
+    suppressed = await db.get_suppressed_phones(client_data.client_id)
+
     for lead in batch:
         try:
-            # Escudo antiban: lead que recusou marketing (erro 131050 da
-            # Meta) nunca mais recebe disparo. Redis indisponível = segue
-            # (silent-fail — a supressão durável em Supabase é a Fase 1).
-            try:
-                if await cache.exists(f"optout:{client_data.client_id}:{lead.phone}"):
-                    lead.status = OutboundStatus.STOPPED
-                    skipped += 1
-                    log.info(f"Outbound suprimido | opt-out | client={client_data.client_id} | phone={lead.phone}")
-                    continue
-            except Exception as e:
-                log.warning(f"Opt-out check falhou | client={client_data.client_id} | {type(e).__name__}: {e}")
+            # Lead que recusou marketing (131050 da Meta ou "pare" na
+            # conversa) nunca mais recebe disparo. Duas camadas:
+            # Supabase (durável) + Redis (rápido). Falha das duas = segue.
+            optout = lead.phone in suppressed
+            if not optout:
+                try:
+                    optout = await cache.exists(f"optout:{client_data.client_id}:{lead.phone}")
+                except Exception as e:
+                    log.warning(f"Opt-out check falhou | client={client_data.client_id} | {type(e).__name__}: {e}")
+            if optout:
+                lead.status = OutboundStatus.STOPPED
+                skipped += 1
+                log.info(f"Outbound suprimido | opt-out | client={client_data.client_id} | phone={lead.phone}")
+                continue
 
             # FIX Fase 0: check_credits/debit_credits nunca existiram no
             # billing_service — todo lead caía no except e a campanha não

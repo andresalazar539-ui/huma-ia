@@ -30,6 +30,7 @@ from huma.models.schemas import (
 )
 from huma.onboarding.categories import get_onboarding_questions, FINAL_QUESTION
 from huma.services import attribution_service as attribution
+from huma.services import campaign_shield as shield
 from huma.services import redis_service as cache
 from huma.services import db_service as db
 from huma.services import whatsapp_service as wa
@@ -143,6 +144,28 @@ async def update_funnel(client_id: str, config: FunnelConfig, _=Depends(verify_a
 
 # ── Outbound ──
 
+class CampaignReviewPayload(BaseModel):
+    """Mensagem de campanha pra análise do Escudo antiban."""
+    message: str = Field(..., min_length=1, max_length=2000)
+
+
+@router.post("/api/clients/{client_id}/outbound/campaign/review", tags=["Outbound"])
+async def review_campaign_message(
+    client_id: str,
+    payload: CampaignReviewPayload,
+    client=Depends(verify_api_key),
+):
+    """
+    Escudo antiban: analisa a mensagem da campanha ANTES do disparo.
+
+    Retorna o veredito em semáforo {risco, bloqueio_definitivo, motivos,
+    reescrita, dica} pro Cockpit mostrar ao vivo. Cache Redis por hash do
+    texto — reanalisar a mesma mensagem não paga nova chamada de IA.
+    Nunca falha por instabilidade do juiz (degrada pra "nao_analisado").
+    """
+    return await shield.review_campaign(client_id, payload.message)
+
+
 @router.post("/api/clients/{client_id}/outbound/campaign", tags=["Outbound"])
 async def create_campaign(
     client_id: str,
@@ -176,6 +199,28 @@ async def create_campaign(
     plan_config = await billing.get_client_plan_config(client_id)
     if not plan_config.get("outbound_templates"):
         raise HTTPException(403, "Disparo em massa faz parte do plano ON. Faça upgrade pra liberar.")
+
+    # ── Escudo antiban (Fase 1): revisão obrigatória ANTES de criar ──
+    # Re-valida no backend (nunca confia no veredito que o Cockpit viu —
+    # cache Redis faz esta chamada ser hit quando o front já analisou).
+    #   - Conteúdo proibido pela Meta → bloqueio sem override (proteção
+    #     também da reputação da HUMA como provedora de tecnologia).
+    #   - Amarelo/vermelho → exige aceite explícito (risk_accepted), que
+    #     fica auditado com data/hora na campanha.
+    #   - Juiz indisponível → "nao_analisado", não trava o usuário.
+    verdict = await shield.review_campaign(client_id, campaign.message_template)
+    if verdict.get("bloqueio_definitivo"):
+        raise HTTPException(
+            403,
+            verdict.get("dica")
+            or "Essa mensagem viola as políticas do WhatsApp e colocaria seu número em risco real de bloqueio. A HUMA não envia esse conteúdo.",
+        )
+    if verdict.get("risco") in ("amarelo", "vermelho") and not campaign.risk_accepted:
+        raise HTTPException(
+            409,
+            detail={"reason": "risk_confirmation_required", "verdict": verdict},
+        )
+    campaign.risk_level = verdict.get("risco", "")
 
     campaign.client_id = client_id
     campaign.campaign_id = f"camp_{client_id}_{int(datetime.utcnow().timestamp())}"
@@ -1571,11 +1616,8 @@ async def _ingest_meta_statuses(statuses: list[dict]) -> None:
 
         if code == 131050:
             # Opt-out de marketing: reenviar derruba a nota do número.
-            # Marca no Redis (90d) — a supressão durável em Supabase é a Fase 1.
-            try:
-                await cache.set_with_ttl(f"optout:{cid}:{phone}", "1", ttl=90 * 86400)
-            except Exception as e:
-                log.warning(f"Opt-out marker falhou | client={cid} | phone={phone} | {type(e).__name__}: {e}")
+            # Caminho único de gravação (Redis + Supabase durável).
+            await shield.register_optout(cid, phone, "meta_131050")
             log.warning(
                 f"Meta OPT-OUT marketing | client={cid} | phone={phone} | "
                 f"lead recusou mensagens de marketing — suprimido de campanhas"
