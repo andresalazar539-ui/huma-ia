@@ -722,43 +722,76 @@ async def process_outbound_campaign(client_data, campaign):
         )
         return {"status": "blocked", "reason": "official_whatsapp_required", "sent": 0, "errors": 0}
 
-    plan_config = await billing.get_client_plan_config(client_data.client_id)
-
-    sent = errors = 0
+    sent = errors = skipped = 0
     pending = [l for l in campaign.leads if l.status == OutboundStatus.PENDING]
     batch = pending[:campaign.daily_send_limit]
 
     for lead in batch:
         try:
-            credit_check = await billing.check_credits(client_data.client_id)
-            if not credit_check["has_credits"]:
+            # Escudo antiban: lead que recusou marketing (erro 131050 da
+            # Meta) nunca mais recebe disparo. Redis indisponível = segue
+            # (silent-fail — a supressão durável em Supabase é a Fase 1).
+            try:
+                if await cache.exists(f"optout:{client_data.client_id}:{lead.phone}"):
+                    lead.status = OutboundStatus.STOPPED
+                    skipped += 1
+                    log.info(f"Outbound suprimido | opt-out | client={client_data.client_id} | phone={lead.phone}")
+                    continue
+            except Exception as e:
+                log.warning(f"Opt-out check falhou | client={client_data.client_id} | {type(e).__name__}: {e}")
+
+            # FIX Fase 0: check_credits/debit_credits nunca existiram no
+            # billing_service — todo lead caía no except e a campanha não
+            # enviava nada. API real: check_conversations/debit_conversation.
+            credit_check = await billing.check_conversations(client_data.client_id)
+            if not credit_check["has_conversations"]:
                 log.warning(f"Outbound parado | sem créditos | {client_data.client_id}")
                 break
 
-            msg = await ai.generate_outbound_message(client_data, lead, campaign.message_template)
-            await asyncio.sleep(min(5.0 + len(msg) * 0.05, 15.0))
-
-            if plan_config.get("outbound_templates"):
-                await wa.send_template(
+            if campaign.template_name:
+                # Template APROVADO da Meta (único formato que entrega fora
+                # da janela de 24h). {nome} nos params vira o nome do lead.
+                params = [
+                    p.replace("{nome}", lead.name or "")
+                    for p in (campaign.template_params or [])
+                ]
+                await asyncio.sleep(5.0)
+                message_id = await wa.send_template(
                     lead.phone,
-                    campaign.message_template or "outbound_default",
-                    [lead.name, msg[:100]],
+                    campaign.template_name,
+                    params,
                     client_id=client_data.client_id,
+                    language=campaign.template_language,
                 )
             else:
-                await wa.send_text(lead.phone, msg, client_id=client_data.client_id)
+                # Texto livre gerado pela IA — só entrega dentro da janela
+                # de 24h (leads quentes). Comportamento pré-Fase 0 preservado.
+                msg = await ai.generate_outbound_message(client_data, lead, campaign.message_template)
+                await asyncio.sleep(min(5.0 + len(msg) * 0.05, 15.0))
+                message_id = await wa.send_text(lead.phone, msg, client_id=client_data.client_id)
 
-            await billing.debit_credits(client_data.client_id, 1, "outbound")
+            if not message_id:
+                # Envio falhou (silent-fail do whatsapp_service) — lead
+                # continua PENDING pra retry futuro; não debita crédito.
+                errors += 1
+                log.error(f"Outbound falhou envio | client={client_data.client_id} | phone={lead.phone}")
+                continue
+
+            debited = await billing.debit_conversation(client_data.client_id)
             lead.status = OutboundStatus.SENT
             lead.attempts = 1
             lead.last_attempt_at = datetime.utcnow()
             sent += 1
+            if not debited:
+                # Saldo acabou entre o check e o débito — para o batch.
+                log.warning(f"Outbound parado | saldo esgotou no débito | {client_data.client_id}")
+                break
 
         except Exception as e:
             log.error(f"Outbound erro | {lead.phone} | {e}")
             errors += 1
 
-    return {"status": "completed", "sent": sent, "errors": errors}
+    return {"status": "completed", "sent": sent, "errors": errors, "skipped": skipped}
 
 
 # ================================================================

@@ -1526,8 +1526,70 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
 #                      delega pro handle_message (mesmo motor do resto).
 #
 # Uma notificação pode trazer várias mensagens (batch) — processa todas.
-# Atualizações de status (sent/delivered/read) são ignoradas no parser.
+# Atualizações de status (sent/delivered/read/failed) viram telemetria do
+# Escudo antiban via _ingest_meta_statuses (contadores Redis + opt-out).
 # ================================================================
+
+async def _ingest_meta_statuses(statuses: list[dict]) -> None:
+    """
+    Ingere statuses de entrega da Meta como telemetria do Escudo antiban.
+
+    Grava contadores diários no Redis (saúde do número / circuit breaker
+    das próximas fases) e trata os erros que importam:
+      - 131050 (usuário recusou marketing): marca opt-out do lead —
+        campanhas param de enviar pra ele (checado no outbound).
+      - 131049 (Meta segurou pra proteger o ecossistema): alerta de
+        qualidade — logado como warning pra aparecer cedo.
+
+    Silent-fail por item: Redis é opcional e telemetria nunca pode
+    derrubar o webhook.
+    """
+    day = datetime.utcnow().strftime("%Y%m%d")
+    for st in statuses:
+        pnid = st.get("phone_number_id", "")
+        status = st.get("status", "")
+        if not pnid or not status:
+            continue
+
+        client = await db.get_client_by_phone_number_id(pnid)
+        if not client:
+            continue
+        cid = client.client_id
+        phone = st.get("phone", "")
+        code = st.get("error_code", 0)
+
+        try:
+            # 7 dias de janela: suficiente pra tendência de saúde do número
+            await cache.incr_with_ttl(f"wastatus:{cid}:{status}:{day}", ttl=7 * 86400)
+            if status == "failed" and code:
+                await cache.incr_with_ttl(f"wastatus:{cid}:err{code}:{day}", ttl=7 * 86400)
+        except Exception as e:
+            log.warning(f"Telemetria status falhou | client={cid} | {type(e).__name__}: {e}")
+
+        if status != "failed":
+            continue
+
+        if code == 131050:
+            # Opt-out de marketing: reenviar derruba a nota do número.
+            # Marca no Redis (90d) — a supressão durável em Supabase é a Fase 1.
+            try:
+                await cache.set_with_ttl(f"optout:{cid}:{phone}", "1", ttl=90 * 86400)
+            except Exception as e:
+                log.warning(f"Opt-out marker falhou | client={cid} | phone={phone} | {type(e).__name__}: {e}")
+            log.warning(
+                f"Meta OPT-OUT marketing | client={cid} | phone={phone} | "
+                f"lead recusou mensagens de marketing — suprimido de campanhas"
+            )
+        elif code == 131049:
+            log.warning(
+                f"Meta SEGUROU envio | client={cid} | phone={phone} | code=131049 | "
+                f"limite de marketing por usuário — sinal de qualidade, reduzir frequência"
+            )
+        else:
+            log.warning(
+                f"Meta status FAILED | client={cid} | phone={phone} | "
+                f"code={code} | {st.get('error_title', '')}"
+            )
 
 @router.get("/webhook/meta", tags=["Webhook"])
 async def meta_webhook_verify(request: Request):
@@ -1564,8 +1626,16 @@ async def meta_webhook(request: Request, bg: BackgroundTasks):
     except Exception:
         return {"status": "ignored", "reason": "bad_json"}
 
+    # Statuses de entrega (sent/delivered/read/failed) → telemetria do
+    # Escudo antiban em background. Não bloqueia o processamento de mensagens.
+    statuses = wa.parse_meta_statuses(body)
+    if statuses:
+        bg.add_task(_ingest_meta_statuses, statuses)
+
     messages = wa.parse_meta_webhook(body)
     if not messages:
+        if statuses:
+            return {"status": "received", "statuses": len(statuses), "processed": 0}
         return {"status": "ignored", "reason": "no_message"}
 
     processed = 0

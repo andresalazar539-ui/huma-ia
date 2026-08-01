@@ -198,6 +198,29 @@ class OutboundCampaign(BaseModel):
     client_id: str = ""
     name: str = ""
     message_template: str = ""
+    # ── Template APROVADO da Meta (Fase 0 do Escudo antiban) ──
+    # template_name preenchido → envia template real via Graph API
+    # (type=template), único formato aceito fora da janela de 24h.
+    # Vazio → comportamento anterior (texto livre gerado pela IA).
+    template_name: str = Field(
+        default="",
+        description=(
+            "Nome do template APROVADO no WhatsApp Manager. Preenchido = "
+            "campanha envia template real da Meta. Vazio = texto livre "
+            "(só entrega dentro da janela de 24h)."
+        ),
+    )
+    template_language: str = Field(
+        default="pt_BR",
+        description="Código de idioma do template registrado na Meta.",
+    )
+    template_params: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Valores dos placeholders {{1}}, {{2}}... do body, na ordem. "
+            "O marcador {nome} é substituído pelo nome do lead no envio."
+        ),
+    )
     follow_up_template: str = ""
     follow_up_hours: int = 48
     max_follow_ups: int = 2

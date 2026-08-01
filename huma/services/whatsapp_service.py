@@ -220,6 +220,39 @@ async def _meta_send_media(
     return await _meta_send(identity, body)
 
 
+async def _meta_send_template(
+    identity,
+    phone: str,
+    template_name: str,
+    language: str,
+    params: list,
+) -> str | None:
+    """
+    Envia template APROVADO via Graph API (type=template).
+
+    Obrigatório pra mensagem ativa fora da janela de 24h (outbound/campanha):
+    a Meta rejeita texto livre nesse cenário (erro 131047). `params` preenche
+    os placeholders {{1}}, {{2}}... do BODY na ordem; lista vazia = template
+    sem variáveis (sem components no payload).
+    """
+    template_obj: dict = {
+        "name": template_name,
+        "language": {"code": language},
+    }
+    if params:
+        template_obj["components"] = [{
+            "type": "body",
+            "parameters": [{"type": "text", "text": str(p)} for p in params],
+        }]
+    body = {
+        "messaging_product": "whatsapp",
+        "to": _digits(phone),
+        "type": "template",
+        "template": template_obj,
+    }
+    return await _meta_send(identity, body)
+
+
 # ================================================================
 # BACKEND: EVOLUTION API v2 (self-hosted — servidor global, 1 instância/cliente)
 # ================================================================
@@ -436,17 +469,25 @@ async def send_template(
     template_name: str,
     params: list = None,
     client_id: str = "",
+    language: str = "pt_BR",
     **kwargs,
 ) -> str | None:
     """
     Envia template do WhatsApp (necessário fora da janela 24h).
 
-    MVP multi-canal: degrada pra texto simples em todos os canais (Twilio
-    sandbox não suporta template; Meta/Evolution exigem template aprovado,
-    fica pra sprint de reengajamento). Mantém o lead atendido.
+    Meta: envia template REAL aprovado via Graph API (type=template) —
+    `template_name` é o nome registrado no WhatsApp Manager, `params`
+    preenche os placeholders {{1}}, {{2}}... do body na ordem.
+
+    Twilio/Evolution: degrada pra texto simples (Twilio sandbox não suporta
+    template; Evolution não tem template aprovado). Mantém o lead atendido —
+    mas disparo em massa já é bloqueado fora do canal Meta.
     """
     if not params:
         params = []
+    provider, identity = await _resolve_channel(client_id)
+    if provider == "meta":
+        return await _meta_send_template(identity, phone, template_name, language, params)
     text = f"[Template: {template_name}] {' | '.join(str(p) for p in params)}"
     return await send_text(phone, text, client_id)
 
@@ -788,8 +829,9 @@ def parse_meta_webhook(body: dict) -> list[dict]:
     Parseia webhook da Meta Cloud API (object=whatsapp_business_account).
 
     Uma notificação pode conter várias mensagens (entry[].changes[].value.
-    messages[]), então retorna uma LISTA. Ignora atualizações de status
-    (value.statuses: sent/delivered/read) — só interessa entrada do lead.
+    messages[]), então retorna uma LISTA. Atualizações de status
+    (value.statuses) NÃO entram aqui — são parseadas por parse_meta_statuses
+    (telemetria de entrega/erro do Escudo antiban).
 
     Extrai texto de text/caption e detecta mídia (image/audio/video/
     document) sem baixá-la (texto-first no MVP). Também resolve respostas
@@ -872,6 +914,63 @@ def parse_meta_webhook(body: dict) -> list[dict]:
                     "push_name": push_name,
                     "type": mtype,
                     "referral": referral,
+                })
+
+    return out
+
+
+def parse_meta_statuses(body: dict) -> list[dict]:
+    """
+    Parseia atualizações de status de entrega da Meta (value.statuses).
+
+    É a telemetria do Escudo antiban: sent/delivered/read/failed por
+    mensagem enviada. Em `failed`, a Meta anexa errors[] com o código —
+    os que importam pra saúde do número:
+      - 131049: Meta segurou a mensagem pra proteger o ecossistema
+                (limite de marketing por usuário) — alerta de qualidade.
+      - 131050: usuário optou por NÃO receber marketing — reenviar
+                derruba a nota do número (opt-out permanente).
+      - 131047: fora da janela de 24h sem template — indica envio errado.
+
+    Returns:
+        Lista de dicts {phone_number_id, phone, message_id, status,
+        timestamp, error_code, error_title}. Vazia se não houver statuses.
+    """
+    out: list[dict] = []
+    if not isinstance(body, dict) or body.get("object") != "whatsapp_business_account":
+        return out
+
+    for entry in body.get("entry") or []:
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("changes") or []:
+            value = change.get("value") if isinstance(change, dict) else None
+            if not isinstance(value, dict):
+                continue
+
+            pnid = (value.get("metadata") or {}).get("phone_number_id", "") or ""
+
+            for st in value.get("statuses") or []:
+                if not isinstance(st, dict):
+                    continue
+                error_code = 0
+                error_title = ""
+                errors = st.get("errors") or []
+                if errors and isinstance(errors[0], dict):
+                    try:
+                        error_code = int(errors[0].get("code") or 0)
+                    except (TypeError, ValueError):
+                        error_code = 0
+                    error_title = errors[0].get("title", "") or ""
+
+                out.append({
+                    "phone_number_id": pnid,
+                    "phone": st.get("recipient_id", "") or "",
+                    "message_id": st.get("id", "") or "",
+                    "status": st.get("status", "") or "",
+                    "timestamp": st.get("timestamp", "") or "",
+                    "error_code": error_code,
+                    "error_title": error_title,
                 })
 
     return out
