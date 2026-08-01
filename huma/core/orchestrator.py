@@ -745,7 +745,46 @@ async def process_outbound_campaign(client_data, campaign):
 
     sent = errors = skipped = 0
     pending = [l for l in campaign.leads if l.status == OutboundStatus.PENDING]
-    batch = pending[:campaign.daily_send_limit]
+
+    # ── Escudo antiban (Fase 3): ritmo pelo tier REAL do número ──
+    # O teto diário efetivo é o menor entre o limite da campanha e o que
+    # sobra do tier da Meta hoje (contando todas as campanhas do cliente).
+    # Nota amarela = modo cauteloso: metade do volume. Cortes são logados
+    # — nada é dropado em silêncio.
+    health = gate.get("health") or {}
+    effective_limit = campaign.daily_send_limit
+    tier = health.get("messaging_limit_tier", "")
+    tier_cap = shield.tier_daily_cap(tier)
+    if tier_cap:
+        ja_enviados = await shield.sent_today(client_data.client_id)
+        restante_tier = max(0, tier_cap - ja_enviados)
+        if restante_tier <= 0:
+            log.warning(
+                f"Outbound PAUSADO | tier diário esgotado | client={client_data.client_id} | "
+                f"tier={tier} | enviados_hoje={ja_enviados} | leads adiados={len(pending)}"
+            )
+            return {"status": "paused", "reason": "tier_limit_reached", "sent": 0, "errors": 0, "skipped": 0}
+        if restante_tier < effective_limit:
+            log.warning(
+                f"Outbound limitado pelo tier | client={client_data.client_id} | tier={tier} | "
+                f"limite_campanha={effective_limit} | restante_tier={restante_tier}"
+            )
+            effective_limit = restante_tier
+    if health.get("saude") == "atencao":
+        effective_limit = max(1, effective_limit // 2)
+        log.warning(
+            f"Outbound modo CAUTELOSO | nota amarela na Meta | client={client_data.client_id} | "
+            f"batch reduzido pra {effective_limit} (metade) até a nota recuperar"
+        )
+
+    batch = pending[:effective_limit]
+
+    # ── Circuit breaker: baseline dos failed reportados pela Meta hoje.
+    # Se crescer durante o batch, a Meta está rejeitando — melhor N
+    # mensagens não enviadas do que um número bloqueado.
+    meta_failed_inicio = await shield.meta_failed_today(client_data.client_id)
+    falhas_seguidas = 0
+    paused_reason = ""
 
     # Escudo antiban: supressão durável (Supabase) carregada UMA vez por
     # batch. Em erro retorna set() — o Redis abaixo segue como 2ª camada.
@@ -802,9 +841,17 @@ async def process_outbound_campaign(client_data, campaign):
                 # Envio falhou (silent-fail do whatsapp_service) — lead
                 # continua PENDING pra retry futuro; não debita crédito.
                 errors += 1
+                falhas_seguidas += 1
                 log.error(f"Outbound falhou envio | client={client_data.client_id} | phone={lead.phone}")
+                if falhas_seguidas >= shield.BREAKER_CONSECUTIVE_FAILURES:
+                    # Tudo falhando em sequência = problema sistêmico
+                    # (token expirado, template rejeitado). Insistir só piora.
+                    paused_reason = "circuit_breaker_send_failures"
+                    break
                 continue
 
+            falhas_seguidas = 0
+            await shield.register_sent(client_data.client_id)
             debited = await billing.debit_conversation(client_data.client_id)
             lead.status = OutboundStatus.SENT
             lead.attempts = 1
@@ -815,9 +862,27 @@ async def process_outbound_campaign(client_data, campaign):
                 log.warning(f"Outbound parado | saldo esgotou no débito | {client_data.client_id}")
                 break
 
+            # Circuit breaker: a cada N envios, confere se a Meta está
+            # reportando failed em cima dos nossos envios (webhook de
+            # status alimenta o contador em background).
+            if sent % shield.BREAKER_CHECK_EVERY == 0:
+                delta = await shield.meta_failed_today(client_data.client_id) - meta_failed_inicio
+                if delta >= shield.BREAKER_META_FAILED_DELTA:
+                    paused_reason = "circuit_breaker_meta_failed"
+                    break
+
         except Exception as e:
             log.error(f"Outbound erro | {lead.phone} | {e}")
             errors += 1
+
+    if paused_reason:
+        restantes = sum(1 for l in campaign.leads if l.status == OutboundStatus.PENDING)
+        log.warning(
+            f"Outbound CIRCUIT BREAKER | client={client_data.client_id} | reason={paused_reason} | "
+            f"sent={sent} | errors={errors} | leads adiados={restantes} | "
+            f"melhor parar agora do que arriscar a nota do número"
+        )
+        return {"status": "paused", "reason": paused_reason, "sent": sent, "errors": errors, "skipped": skipped}
 
     return {"status": "completed", "sent": sent, "errors": errors, "skipped": skipped}
 

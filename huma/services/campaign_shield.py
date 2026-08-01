@@ -387,6 +387,71 @@ async def campaign_health_gate(client_id: str, identity=None) -> dict:
     return {"allowed": True, "reason": "", "health": health}
 
 
+# ================================================================
+# PACING POR TIER + CIRCUIT BREAKER (Fase 3)
+# ================================================================
+
+# messaging_limit_tier da Meta → teto de conversas iniciadas em 24h.
+# TIER_UNLIMITED e desconhecido → None (sem teto imposto pelo Escudo).
+_TIER_CAPS = {
+    "TIER_50": 50,           # números em análise/onboarding
+    "TIER_250": 250,
+    "TIER_1K": 1000,
+    "TIER_10K": 10000,
+    "TIER_100K": 100000,
+}
+
+# Circuit breaker do disparo: melhor 200 mensagens não enviadas do que
+# um número bloqueado.
+BREAKER_CONSECUTIVE_FAILURES = 3   # falhas de envio seguidas → pausa
+BREAKER_META_FAILED_DELTA = 5      # statuses failed da Meta durante o batch → pausa
+BREAKER_CHECK_EVERY = 10           # checa o delta a cada N envios
+
+
+def tier_daily_cap(tier: str) -> int | None:
+    """Teto diário do tier da Meta. None = ilimitado/desconhecido."""
+    return _TIER_CAPS.get((tier or "").strip().upper())
+
+
+def _day_key() -> str:
+    return datetime.utcnow().strftime("%Y%m%d")
+
+
+async def register_sent(client_id: str) -> None:
+    """Conta 1 envio de campanha no dia (pacing por tier). Silent-fail."""
+    try:
+        await cache.incr_with_ttl(f"wasent:{client_id}:{_day_key()}", ttl=2 * 86400)
+    except Exception as e:
+        log.warning(f"register_sent falhou | client={client_id} | {type(e).__name__}: {e}")
+
+
+async def sent_today(client_id: str) -> int:
+    """
+    Envios de campanha já feitos hoje (todas as campanhas do cliente).
+    get_int retorna -1 com Redis off — normalizado pra 0 (sem telemetria,
+    o Escudo não inventa consumo).
+    """
+    try:
+        return max(0, await cache.get_int(f"wasent:{client_id}:{_day_key()}"))
+    except Exception as e:
+        log.warning(f"sent_today falhou | client={client_id} | {type(e).__name__}: {e}")
+        return 0
+
+
+async def meta_failed_today(client_id: str) -> int:
+    """
+    Statuses `failed` que a Meta reportou hoje (contador alimentado pelo
+    webhook em _ingest_meta_statuses). Base do circuit breaker: se esse
+    número cresce DURANTE o batch, a Meta está rejeitando os envios.
+    get_int retorna -1 com Redis off — normalizado pra 0.
+    """
+    try:
+        return max(0, await cache.get_int(f"wastatus:{client_id}:failed:{_day_key()}"))
+    except Exception as e:
+        log.warning(f"meta_failed_today falhou | client={client_id} | {type(e).__name__}: {e}")
+        return 0
+
+
 async def record_quality_event(client_id: str, field: str, event: str, detail: str = "") -> None:
     """
     Grava o último evento de qualidade vindo do webhook da Meta
