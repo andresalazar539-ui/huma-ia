@@ -149,6 +149,18 @@ class CampaignReviewPayload(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
 
 
+@router.get("/api/clients/{client_id}/whatsapp/health", tags=["Outbound"])
+async def whatsapp_number_health(client_id: str, client=Depends(verify_api_key)):
+    """
+    Saúde do número WhatsApp na Meta (Escudo antiban, Fase 2).
+
+    Badge do Cockpit: quality_rating GREEN/YELLOW/RED traduzido pra
+    otima/atencao/critica + tier de envio + último evento de qualidade
+    recebido por webhook. Cache 10min. Canal não-Meta → not_applicable.
+    """
+    return await shield.get_number_health(client_id, identity=client)
+
+
 @router.post("/api/clients/{client_id}/outbound/campaign/review", tags=["Outbound"])
 async def review_campaign_message(
     client_id: str,
@@ -221,6 +233,19 @@ async def create_campaign(
             detail={"reason": "risk_confirmation_required", "verdict": verdict},
         )
     campaign.risk_level = verdict.get("risco", "")
+
+    # ── Escudo antiban (Fase 2): auto-pausa por saúde do número ──
+    # Nota RED na Meta = disparar acelera o banimento. Sem override:
+    # aqui não é opinião da HUMA, é a nota oficial do número.
+    health_gate = await shield.campaign_health_gate(client_id, identity=client)
+    if not health_gate["allowed"]:
+        raise HTTPException(
+            403,
+            "A Meta rebaixou a nota do seu número pra VERMELHA — disparar agora "
+            "aceleraria o bloqueio. A HUMA pausou as campanhas pra proteger seu número; "
+            "elas voltam sozinhas quando a nota se recuperar (normalmente alguns dias "
+            "com atendimento normal e sem disparos).",
+        )
 
     campaign.client_id = client_id
     campaign.campaign_id = f"camp_{client_id}_{int(datetime.utcnow().timestamp())}"
@@ -1633,6 +1658,47 @@ async def _ingest_meta_statuses(statuses: list[dict]) -> None:
                 f"code={code} | {st.get('error_title', '')}"
             )
 
+
+# Eventos que indicam MELHORA (log informativo, sem alarme)
+_QUALITY_EVENTS_POSITIVOS = ("UPGRADE", "UNFLAGGED", "APPROVED")
+
+
+async def _ingest_meta_quality_events(events: list[dict]) -> None:
+    """
+    Ingere eventos de qualidade da WABA (FLAGGED, DOWNGRADE, template
+    PAUSED, restrição de conta...). Grava o último evento por cliente e
+    invalida o cache de saúde — o badge do Cockpit reflete na hora.
+    Silent-fail por item: telemetria nunca derruba o webhook.
+    """
+    for ev in events:
+        waba_id = ev.get("waba_id", "")
+        if not waba_id:
+            continue
+        try:
+            client = await db.get_client_by_waba_id(waba_id)
+        except Exception as e:
+            log.warning(f"Quality event lookup falhou | waba={waba_id} | {type(e).__name__}: {e}")
+            continue
+        if not client:
+            log.warning(f"Quality event | waba_id sem cliente | waba={waba_id} | field={ev.get('field')}")
+            continue
+
+        cid = client.client_id
+        event = ev.get("event", "")
+        field = ev.get("field", "")
+        detail = " | ".join(
+            p for p in (ev.get("template_name", ""), ev.get("detail", "")) if p
+        )
+        await shield.record_quality_event(cid, field, event, detail)
+
+        if event.upper() in _QUALITY_EVENTS_POSITIVOS:
+            log.info(f"Meta qualidade MELHOROU | client={cid} | {field}={event} | {detail}")
+        else:
+            log.warning(
+                f"Meta qualidade ALERTA | client={cid} | {field}={event} | {detail} | "
+                f"Escudo: cache de saúde invalidado, badge atualiza no Cockpit"
+            )
+
 @router.get("/webhook/meta", tags=["Webhook"])
 async def meta_webhook_verify(request: Request):
     """Verificação do webhook Meta (handshake do setup no painel)."""
@@ -1674,10 +1740,21 @@ async def meta_webhook(request: Request, bg: BackgroundTasks):
     if statuses:
         bg.add_task(_ingest_meta_statuses, statuses)
 
+    # Eventos de qualidade/saúde (FLAGGED, DOWNGRADE, template PAUSED...)
+    # → a Meta avisa ANTES do bloqueio; o Escudo escuta e reage.
+    quality_events = wa.parse_meta_quality_events(body)
+    if quality_events:
+        bg.add_task(_ingest_meta_quality_events, quality_events)
+
     messages = wa.parse_meta_webhook(body)
     if not messages:
-        if statuses:
-            return {"status": "received", "statuses": len(statuses), "processed": 0}
+        if statuses or quality_events:
+            return {
+                "status": "received",
+                "statuses": len(statuses),
+                "quality_events": len(quality_events),
+                "processed": 0,
+            }
         return {"status": "ignored", "reason": "no_message"}
 
     processed = 0

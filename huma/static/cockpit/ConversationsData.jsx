@@ -359,7 +359,16 @@ async function reviewCampaign(message) {
   return data;
 }
 
-Object.assign(window, { createCampaign, reviewCampaign });
+// Saúde do número na Meta (badge do Escudo): quality_rating traduzido
+// pra otima/atencao/critica + tier + último evento de qualidade.
+async function fetchWhatsappHealth() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/whatsapp/health`, { headers: { ...AUTH_HEADERS } });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Erro ao consultar saúde do número');
+  return data;
+}
+
+Object.assign(window, { createCampaign, reviewCampaign, fetchWhatsappHealth });
 
 /* ---------------- Relatórios de outcome (por meta do cliente) ---------------- */
 async function fetchReport(days = 30) {

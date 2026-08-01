@@ -4,7 +4,7 @@
 // canal não-oficial (Evolution/Baileys) resulta em BANIMENTO do número.
 // Sem canal oficial conectado → tela travada com cadeado (o backend
 // também bloqueia com 403 — o cadeado aqui é UX, a trava é lá).
-const { useState: useStateC } = React;
+const { useState: useStateC, useEffect: useEffectC } = React;
 
 const LockIcon = ({ size = 44 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -69,6 +69,35 @@ const SHIELD_COLORS = {
   vermelho: { dot: '#dc2626', bg: '#fdecea', ink: '#7f1d1d', label: 'Alto risco de bloqueio' },
 };
 
+// Saúde do número na Meta (quality_rating oficial) → badge do Cockpit
+const HEALTH_BADGE = {
+  otima:        { dot: '#16a34a', text: 'Saúde do número: ótima' },
+  atencao:      { dot: '#d97706', text: 'Saúde do número: atenção' },
+  critica:      { dot: '#dc2626', text: 'Saúde do número: crítica' },
+  desconhecida: { dot: '#9ca3af', text: 'Saúde do número: verificando…' },
+};
+
+const HealthBadge = ({ health }) => {
+  if (!health || health.status === 'not_applicable') return null;
+  const b = HEALTH_BADGE[health.saude] || HEALTH_BADGE.desconhecida;
+  return (
+    <div style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 10,
+      padding: '6px 12px', borderRadius: 999,
+      border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)',
+      fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)',
+    }}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: b.dot, flexShrink: 0 }}/>
+      <span>{b.text}</span>
+      {health.messaging_limit_tier && (
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--ink-3)' }}>
+          · limite {String(health.messaging_limit_tier).replace('TIER_', '').toLowerCase()}/dia
+        </span>
+      )}
+    </div>
+  );
+};
+
 const CampaignsForm = () => {
   const [name, setName] = useStateC('');
   const [message, setMessage] = useStateC('');
@@ -79,6 +108,17 @@ const CampaignsForm = () => {
   const [feedback, setFeedback] = useStateC(null); // {kind: 'ok'|'err', text}
   const [verdict, setVerdict] = useStateC(null);   // veredito do Escudo
   const [verdictFor, setVerdictFor] = useStateC(''); // texto que foi analisado
+  const [health, setHealth] = useStateC(null);     // saúde do número (Meta)
+
+  useEffectC(() => {
+    let vivo = true;
+    fetchWhatsappHealth()
+      .then(h => { if (vivo) setHealth(h); })
+      .catch(() => {}); // badge é informativo — sem saúde, sem badge
+    return () => { vivo = false; };
+  }, []);
+
+  const numeroCritico = health && health.saude === 'critica';
 
   const parsedLeads = phones
     .split('\n')
@@ -165,9 +205,24 @@ const CampaignsForm = () => {
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
           Canal oficial da Meta ativo — seus disparos usam a infraestrutura aprovada do WhatsApp.
         </div>
+        <HealthBadge health={health}/>
       </div>
 
       <div style={{ padding: '24px 32px 48px', maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {numeroCritico && (
+          <div style={{
+            padding: '16px 18px', borderRadius: 12, background: '#fdecea',
+            border: '1px solid #dc262633', fontFamily: 'var(--font-sans)',
+            fontSize: 13, color: '#7f1d1d', lineHeight: 1.6,
+          }}>
+            <strong>A Meta rebaixou a nota do seu número pra vermelha.</strong> A HUMA
+            pausou os disparos pra proteger seu número — disparar agora aceleraria o
+            bloqueio. O atendimento normal segue funcionando, e as campanhas voltam
+            sozinhas quando a nota se recuperar (normalmente alguns dias respondendo
+            bem e sem envios em massa).
+          </div>
+        )}
+
         <div style={field}>
           <label style={label}>Nome da campanha</label>
           <input style={input} value={name} onChange={e => setName(e.target.value)}
@@ -279,14 +334,14 @@ const CampaignsForm = () => {
           }}>{feedback.text}</div>
         )}
 
-        <button onClick={() => doSend(false)} disabled={busy} style={{
+        <button onClick={() => doSend(false)} disabled={busy || numeroCritico} style={{
           padding: '13px 22px', borderRadius: 10, alignSelf: 'flex-start',
           background: 'var(--ink)', color: 'var(--paper)', border: 'none',
-          cursor: busy ? 'default' : 'pointer',
+          cursor: (busy || numeroCritico) ? 'default' : 'pointer',
           fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
-          opacity: busy ? 0.6 : 1,
+          opacity: (busy || numeroCritico) ? 0.6 : 1,
         }}>
-          {busy ? 'Analisando e criando…' : 'Disparar campanha'}
+          {numeroCritico ? 'Disparos pausados pelo Escudo' : (busy ? 'Analisando e criando…' : 'Disparar campanha')}
         </button>
       </div>
     </div>

@@ -357,6 +357,10 @@ class TestOutboundDurableSuppression:
         async def fake_sleep(_):
             return None
 
+        async def fake_gate(client_id, identity=None):
+            return {"allowed": True, "reason": "", "health": {"saude": "otima"}}
+
+        monkeypatch.setattr(orch.shield, "campaign_health_gate", fake_gate)
         monkeypatch.setattr(orch.db, "get_suppressed_phones", fake_suppressed)
         monkeypatch.setattr(orch.cache, "exists", fake_exists)
         monkeypatch.setattr(orch.billing, "check_conversations", fake_credits)

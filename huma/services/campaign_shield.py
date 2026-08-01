@@ -29,10 +29,15 @@ import asyncio
 import hashlib
 import json
 import re
+from datetime import datetime
 
 import anthropic
+import httpx
 
-from huma.config import ANTHROPIC_API_KEY, AI_MODEL_FAST
+from huma.config import (
+    ANTHROPIC_API_KEY, AI_MODEL_FAST,
+    META_GRAPH_BASE_URL, META_GRAPH_VERSION,
+)
 from huma.services import db_service as db
 from huma.services import redis_service as cache
 from huma.utils.logger import get_logger
@@ -44,6 +49,8 @@ _shield_client = None
 _RISCOS_VALIDOS = ("verde", "amarelo", "vermelho")
 _CACHE_TTL_SEC = 3600
 _OPTOUT_TTL_SEC = 90 * 86400
+_HEALTH_CACHE_TTL_SEC = 600
+_HEALTH_EVENT_TTL_SEC = 30 * 86400
 
 
 def _get_shield_client():
@@ -233,3 +240,171 @@ async def register_optout(client_id: str, phone: str, reason: str) -> None:
         log.warning(f"Optout Redis falhou | client={client_id} | phone={phone} | {type(e).__name__}: {e}")
     await db.add_suppressed_lead(client_id, phone, reason)
     log.info(f"Optout registrado | client={client_id} | phone={phone} | reason={reason}")
+
+
+# ================================================================
+# SAÚDE DO NÚMERO (Fase 2 — Graph API oficial da Meta)
+# ================================================================
+
+# quality_rating da Meta → saúde na linguagem do Cockpit
+_QUALITY_TO_SAUDE = {
+    "GREEN": "otima",
+    "YELLOW": "atencao",
+    "RED": "critica",
+}
+
+
+def _health_result(status: str, **extra) -> dict:
+    """Shape fixo do resultado de saúde consumido por rota, gate e Cockpit."""
+    base = {
+        "status": status,  # ok | unavailable | not_applicable
+        "quality_rating": "UNKNOWN",
+        "saude": "desconhecida",  # otima | atencao | critica | desconhecida
+        "messaging_limit_tier": "",
+        "verified_name": "",
+        "display_phone_number": "",
+        "last_event": None,
+        "checked_at": "",
+    }
+    base.update(extra)
+    return base
+
+
+async def _fetch_phone_fields(identity, fields: str) -> dict | None:
+    """
+    GET no Business Phone Number da Graph API. Retorna o dict cru ou None.
+    Isolado pra teste e pro retry com menos campos (nomes de campo variam
+    entre versões da Graph API).
+    """
+    pnid = getattr(identity, "phone_number_id", "") or ""
+    token = getattr(identity, "meta_access_token", "") or ""
+    url = f"{META_GRAPH_BASE_URL}/{META_GRAPH_VERSION}/{pnid}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.get(
+                url,
+                params={"fields": fields},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if resp.status_code == 400:
+                return {"__bad_fields__": True}
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as e:
+        log.error(f"Saúde HTTP {e.response.status_code} | client={getattr(identity, 'client_id', '?')} | {e.response.text[:200]}")
+        return None
+    except Exception as e:
+        log.error(f"Saúde erro | client={getattr(identity, 'client_id', '?')} | {type(e).__name__}: {e}")
+        return None
+
+
+async def get_number_health(client_id: str, identity=None, force_refresh: bool = False) -> dict:
+    """
+    Saúde do número WhatsApp na Meta: quality_rating (GREEN/YELLOW/RED)
+    + tier de envio, com cache Redis de 10min e o último evento de
+    qualidade recebido por webhook (FLAGGED/DOWNGRADE...).
+
+    identity opcional evita segundo lookup quando o caller já tem o
+    ClientIdentity (ex.: orchestrator). Nunca levanta: canal não-Meta →
+    not_applicable; qualquer falha → unavailable (saude desconhecida).
+    """
+    if not force_refresh:
+        try:
+            cached = await cache.get_value(f"wahealth:{client_id}")
+            if cached:
+                return json.loads(cached)
+        except Exception as e:
+            log.warning(f"Saúde cache read falhou | client={client_id} | {type(e).__name__}: {e}")
+
+    try:
+        if identity is None:
+            identity = await db.get_client(client_id)
+    except Exception as e:
+        log.warning(f"Saúde lookup cliente falhou | client={client_id} | {type(e).__name__}: {e}")
+        return _health_result("unavailable")
+    if identity is None:
+        return _health_result("unavailable")
+
+    provider = (getattr(identity, "whatsapp_provider", "") or "").strip().lower()
+    if provider != "meta" or not getattr(identity, "phone_number_id", "") or not getattr(identity, "meta_access_token", ""):
+        return _health_result("not_applicable")
+
+    # messaging_limit_tier existe na v21; se a versão em uso não conhecer
+    # o campo (400), tenta de novo só com o essencial.
+    raw = await _fetch_phone_fields(
+        identity, "quality_rating,messaging_limit_tier,verified_name,display_phone_number"
+    )
+    if raw and raw.get("__bad_fields__"):
+        raw = await _fetch_phone_fields(identity, "quality_rating")
+    if not raw or raw.get("__bad_fields__"):
+        return _health_result("unavailable")
+
+    quality = str(raw.get("quality_rating", "") or "UNKNOWN").upper()
+    last_event = None
+    try:
+        ev_raw = await cache.get_value(f"wahealth_event:{client_id}")
+        if ev_raw:
+            last_event = json.loads(ev_raw)
+    except Exception as e:
+        log.warning(f"Saúde last_event read falhou | client={client_id} | {type(e).__name__}: {e}")
+
+    health = _health_result(
+        "ok",
+        quality_rating=quality,
+        saude=_QUALITY_TO_SAUDE.get(quality, "desconhecida"),
+        messaging_limit_tier=str(raw.get("messaging_limit_tier", "") or ""),
+        verified_name=str(raw.get("verified_name", "") or ""),
+        display_phone_number=str(raw.get("display_phone_number", "") or ""),
+        last_event=last_event,
+        checked_at=datetime.utcnow().isoformat(),
+    )
+    log.info(
+        f"Saúde do número | client={client_id} | quality={quality} | "
+        f"tier={health['messaging_limit_tier'] or '?'}"
+    )
+    try:
+        await cache.set_with_ttl(
+            f"wahealth:{client_id}", json.dumps(health, ensure_ascii=False), ttl=_HEALTH_CACHE_TTL_SEC
+        )
+    except Exception as e:
+        log.warning(f"Saúde cache write falhou | client={client_id} | {type(e).__name__}: {e}")
+    return health
+
+
+async def campaign_health_gate(client_id: str, identity=None) -> dict:
+    """
+    Auto-pausa do Escudo: decide se campanha pode disparar pela saúde
+    REAL do número (quem manda é a Meta, não a gente).
+
+    RED → bloqueia (disparar com nota vermelha acelera o banimento).
+    YELLOW → permite com aviso (reduzir volume é decisão da Fase 3).
+    Desconhecida/indisponível → permite — o Escudo nunca trava o cliente
+    por instabilidade própria.
+    """
+    health = await get_number_health(client_id, identity=identity)
+    if health.get("quality_rating") == "RED":
+        return {"allowed": False, "reason": "number_quality_red", "health": health}
+    return {"allowed": True, "reason": "", "health": health}
+
+
+async def record_quality_event(client_id: str, field: str, event: str, detail: str = "") -> None:
+    """
+    Grava o último evento de qualidade vindo do webhook da Meta
+    (FLAGGED, DOWNGRADE, template PAUSED...) e invalida o cache de
+    saúde — o próximo get_number_health busca fresco. Silent-fail.
+    """
+    if not client_id:
+        return
+    payload = {
+        "field": field,
+        "event": event,
+        "detail": detail[:300],
+        "at": datetime.utcnow().isoformat(),
+    }
+    try:
+        await cache.set_with_ttl(
+            f"wahealth_event:{client_id}", json.dumps(payload, ensure_ascii=False), ttl=_HEALTH_EVENT_TTL_SEC
+        )
+        await cache.delete_key(f"wahealth:{client_id}")
+    except Exception as e:
+        log.warning(f"Quality event gravar falhou | client={client_id} | {type(e).__name__}: {e}")

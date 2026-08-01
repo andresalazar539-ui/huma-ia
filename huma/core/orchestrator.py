@@ -731,6 +731,18 @@ async def process_outbound_campaign(client_data, campaign):
         )
         return {"status": "blocked", "reason": "official_whatsapp_required", "sent": 0, "errors": 0}
 
+    # Escudo antiban (Fase 2): auto-pausa por saúde do número. Nota RED
+    # na Meta = disparar acelera o ban. Defesa em profundidade: a rota já
+    # bloqueia; aqui protege callers futuros (scheduler/retry). Leads
+    # ficam PENDING — a campanha retoma quando a nota se recuperar.
+    gate = await shield.campaign_health_gate(client_data.client_id, identity=client_data)
+    if not gate["allowed"]:
+        log.warning(
+            f"Outbound AUTO-PAUSADO | saúde do número | "
+            f"client={client_data.client_id} | reason={gate['reason']}"
+        )
+        return {"status": "paused", "reason": gate["reason"], "sent": 0, "errors": 0, "skipped": 0}
+
     sent = errors = skipped = 0
     pending = [l for l in campaign.leads if l.status == OutboundStatus.PENDING]
     batch = pending[:campaign.daily_send_limit]

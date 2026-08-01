@@ -104,6 +104,25 @@ async def get_client_by_phone_number_id(phone_number_id: str) -> ClientIdentity 
     return _identity_from_row(resp.data[0])
 
 
+async def get_client_by_waba_id(waba_id: str) -> ClientIdentity | None:
+    """
+    Roteamento dos webhooks de QUALIDADE da Meta (Escudo antiban): eventos
+    como phone_number_quality_update chegam com o entry.id = waba_id, sem
+    phone_number_id. Tabela clients é pequena — sem índice dedicado por ora.
+    Retorna None se waba_id vazio ou nenhum cliente casa.
+    """
+    waba_id = (waba_id or "").strip()
+    if not waba_id:
+        return None
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("*")
+            .eq("waba_id", waba_id).limit(1).execute()
+    )
+    if not resp.data:
+        return None
+    return _identity_from_row(resp.data[0])
+
+
 async def get_client_by_evolution_instance(instance: str) -> ClientIdentity | None:
     """
     Roteamento de ENTRADA do canal Evolution: descobre o cliente HUMA a

@@ -974,3 +974,60 @@ def parse_meta_statuses(body: dict) -> list[dict]:
                 })
 
     return out
+
+
+# Campos de webhook da Meta que sinalizam mudança na SAÚDE da conta/número.
+# A Meta avisa ANTES do bloqueio — o Escudo escuta e reage.
+_META_QUALITY_FIELDS = (
+    "phone_number_quality_update",   # FLAGGED / UNFLAGGED / DOWNGRADE / UPGRADE
+    "message_template_status_update",  # APPROVED / REJECTED / PAUSED / DISABLED
+    "message_template_quality_update",
+    "account_update",                # restrição/ban da WABA
+)
+
+
+def parse_meta_quality_events(body: dict) -> list[dict]:
+    """
+    Parseia eventos de qualidade/saúde da WABA (webhook da Meta).
+
+    Diferente de mensagens/statuses, esses eventos vêm em changes com
+    field próprio (não "messages") e o roteamento pro cliente é pelo
+    entry.id (waba_id), não por phone_number_id.
+
+    Returns:
+        Lista de dicts {waba_id, field, event, display_phone_number,
+        template_name, detail}. Vazia se não houver evento de qualidade.
+    """
+    out: list[dict] = []
+    if not isinstance(body, dict) or body.get("object") != "whatsapp_business_account":
+        return out
+
+    for entry in body.get("entry") or []:
+        if not isinstance(entry, dict):
+            continue
+        waba_id = str(entry.get("id", "") or "")
+        for change in entry.get("changes") or []:
+            if not isinstance(change, dict):
+                continue
+            field = change.get("field", "") or ""
+            if field not in _META_QUALITY_FIELDS:
+                continue
+            value = change.get("value")
+            if not isinstance(value, dict):
+                continue
+
+            detail_parts = []
+            for k in ("current_limit", "old_limit", "ban_info", "restriction_info", "reason", "decision"):
+                if value.get(k):
+                    detail_parts.append(f"{k}={value[k]}")
+
+            out.append({
+                "waba_id": waba_id,
+                "field": field,
+                "event": str(value.get("event", "") or ""),
+                "display_phone_number": str(value.get("display_phone_number", "") or ""),
+                "template_name": str(value.get("message_template_name", "") or ""),
+                "detail": " | ".join(str(p) for p in detail_parts)[:300],
+            })
+
+    return out
