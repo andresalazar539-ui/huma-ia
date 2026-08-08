@@ -45,6 +45,12 @@ META_WEBHOOK_VERIFY_TOKEN = os.getenv("META_WEBHOOK_VERIFY_TOKEN", "huma_verify_
 META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v21.0")
 META_GRAPH_BASE_URL = os.getenv("META_GRAPH_BASE_URL", "https://graph.facebook.com")
 
+# ID da Configuration do Embedded Signup (Facebook Login for Business).
+# Criada no painel do app Meta: Facebook Login for Business → Configurations.
+# É pública (vai no FB.login do Cockpit). Vazio = botão "Conectar WhatsApp
+# oficial" fica indisponível (fluxo degrada gracioso, rota retorna 503).
+META_ES_CONFIG_ID = os.getenv("META_ES_CONFIG_ID", "")
+
 # ── Evolution API (WhatsApp não-oficial, self-hosted) ──
 # Modelo PLG: UM servidor Evolution da HUMA, muitos clientes. Cada cliente
 # é uma "instance" (ClientIdentity.evolution_instance). URL + apikey global

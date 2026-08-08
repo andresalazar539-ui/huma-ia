@@ -208,22 +208,29 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   );
 };
 
-// WhatsAppCard — card dinâmico com fluxo de conexão por QR (Evolution).
-// Diferente dos cards OAuth (redirect), aqui abrimos um modal com o QR e
-// fazemos polling do status até o cliente escanear. Zero passo manual.
+// WhatsAppCard — card dinâmico com DOIS caminhos de conexão:
+//   1. OFICIAL (Meta) via Embedded Signup — popup do Facebook. Recomendado:
+//      libera campanhas/templates (gating por canal oficial) e o Escudo.
+//   2. QR code (Evolution) — alternativa não-oficial, atendimento apenas.
+// Se whatsapp_provider='meta' o card mostra o estado oficial com prioridade.
 const WhatsAppCard = () => {
-  const [state, setState] = React.useState('loading'); // loading|connected|disconnected|error
+  const [state, setState] = React.useState('loading'); // loading|meta|evolution|disconnected|error
+  const [metaInfo, setMetaInfo] = React.useState(null);
   const [qr, setQr] = React.useState('');
-  const [modal, setModal] = React.useState(false);
+  const [modal, setModal] = React.useState(null); // null|'qr'|'meta'
   const [busy, setBusy] = React.useState(false);
+  const [metaMsg, setMetaMsg] = React.useState(null); // {kind:'progress'|'error'|'success', text, retryable}
   const pollRef = React.useRef(null);
 
   const refresh = React.useCallback(async () => {
     try {
+      const m = await window.whatsappMetaStatus();
+      if (m.connected) { setState('meta'); setMetaInfo(m); setQr(''); return { connected: true, channel: 'meta' }; }
       const s = await window.whatsappStatus();
-      if (s.connected) { setState('connected'); setQr(''); }
-      else { setState('disconnected'); if (s.qr_base64) setQr(s.qr_base64); }
-      return s;
+      if (s.connected) { setState('evolution'); setQr(''); return { connected: true, channel: 'evolution' }; }
+      setState('disconnected');
+      if (s.qr_base64) setQr(s.qr_base64);
+      return { connected: false, qr_base64: s.qr_base64 };
     } catch (e) {
       setState('error');
       return null;
@@ -232,26 +239,133 @@ const WhatsAppCard = () => {
 
   React.useEffect(() => { refresh(); }, [refresh]);
 
-  // Enquanto o modal estiver aberto, faz polling: atualiza o QR (ele rotaciona)
-  // e fecha sozinho quando conectar.
+  // Polling só do modal de QR (o QR rotaciona; fecha sozinho ao conectar).
   React.useEffect(() => {
-    if (!modal) { clearInterval(pollRef.current); return; }
+    if (modal !== 'qr') { clearInterval(pollRef.current); return; }
     pollRef.current = setInterval(async () => {
       const s = await refresh();
-      if (s && s.connected) { setModal(false); clearInterval(pollRef.current); }
+      if (s && s.connected) { setModal(null); clearInterval(pollRef.current); }
     }, 3000);
     return () => clearInterval(pollRef.current);
   }, [modal, refresh]);
 
+  /* ---------- Caminho 1: oficial (Meta / Embedded Signup) ---------- */
+
+  // Carrega o SDK do Facebook sob demanda (só quando o dono clica).
+  const loadFbSdk = () => new Promise((resolve, reject) => {
+    if (window.FB) return resolve(window.FB);
+    const s = document.createElement('script');
+    s.src = 'https://connect.facebook.net/pt_BR/sdk.js';
+    s.async = true; s.defer = true; s.crossOrigin = 'anonymous';
+    s.onload = () => resolve(window.FB);
+    s.onerror = () => reject(new Error('não consegui carregar o SDK do Facebook (verifique bloqueador de anúncios)'));
+    document.head.appendChild(s);
+  });
+
+  const finishOfficial = async (code) => {
+    setMetaMsg({ kind: 'progress', text: 'Quase lá — ativando seu número na HUMA...' });
+    // O popup envia waba_id/phone_number_id via message event; costuma chegar
+    // antes do callback do login, mas espera até 4s pra garantir.
+    let es = window.__humaEsData;
+    for (let i = 0; i < 8 && !es; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      es = window.__humaEsData;
+    }
+    try {
+      const r = await window.whatsappMetaConnect({
+        code,
+        waba_id: (es && es.waba_id) || '',
+        phone_number_id: (es && es.phone_number_id) || '',
+      });
+      if (r.connected) {
+        setMetaMsg({ kind: 'success', text: 'WhatsApp oficial conectado! A HUMA já está atendendo nesse número.' });
+        await refresh();
+      } else {
+        setMetaMsg({ kind: 'error', text: r.user_message || 'A Meta recusou a conexão.', retryable: !!r.retryable });
+      }
+    } catch (e) {
+      setMetaMsg({ kind: 'error', text: `Erro ao finalizar: ${(e && e.message) || e}`, retryable: true });
+    }
+  };
+
+  const openOfficial = async () => {
+    setModal('meta');
+    setMetaMsg({ kind: 'progress', text: 'Abrindo a conexão com a Meta...' });
+    try {
+      const cfg = await window.whatsappMetaEsConfig();
+      if (!cfg.enabled) {
+        setMetaMsg({ kind: 'error', text: 'A conexão oficial ainda não está habilitada no servidor. Fale com o suporte da HUMA.' });
+        return;
+      }
+      const FB = await loadFbSdk();
+      FB.init({ appId: cfg.app_id, autoLogAppEvents: true, xfbml: false, version: cfg.graph_version || 'v21.0' });
+
+      // Listener único do message event do Embedded Signup (waba_id + pnid).
+      if (!window.__humaEsListener) {
+        window.__humaEsListener = true;
+        window.addEventListener('message', (event) => {
+          if (typeof event.origin !== 'string' || !event.origin.endsWith('facebook.com')) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'WA_EMBEDDED_SIGNUP' && data.data) window.__humaEsData = data.data;
+          } catch (e) { /* mensagens não-JSON de outros widgets: ignora */ }
+        });
+      }
+      window.__humaEsData = null;
+
+      setMetaMsg({ kind: 'progress', text: 'Complete os passos no popup da Meta. Não feche esta aba.' });
+      FB.login((response) => {
+        const code = response && response.authResponse && response.authResponse.code;
+        if (!code) {
+          setMetaMsg({ kind: 'error', text: 'Conexão cancelada antes do final. Sem problema — clique em Tentar de novo quando quiser.' });
+          return;
+        }
+        finishOfficial(code);
+      }, {
+        config_id: cfg.config_id,
+        response_type: 'code',
+        override_default_response_type: true,
+        extras: { setup: {}, sessionInfoVersion: '3' },
+      });
+    } catch (e) {
+      setMetaMsg({ kind: 'error', text: `Não consegui iniciar: ${(e && e.message) || e}` });
+    }
+  };
+
+  // Retry sem novo popup: o servidor reaproveita o token já salvo e refaz
+  // só os passos que falharam (registro do número / webhooks).
+  const retryOfficial = async () => {
+    setMetaMsg({ kind: 'progress', text: 'Tentando de novo...' });
+    try {
+      const r = await window.whatsappMetaConnect({ code: '' });
+      if (r.connected) {
+        setMetaMsg({ kind: 'success', text: 'Pronto! WhatsApp oficial conectado.' });
+        await refresh();
+      } else {
+        setMetaMsg({ kind: 'error', text: r.user_message || 'Ainda não foi. Tente reabrir a conexão.', retryable: !!r.retryable });
+      }
+    } catch (e) {
+      setMetaMsg({ kind: 'error', text: `${(e && e.message) || e}` });
+    }
+  };
+
+  const doMetaDisconnect = async () => {
+    if (!window.confirm('Desconectar o WhatsApp oficial? A HUMA vai parar de atender e as campanhas ficam bloqueadas.')) return;
+    try { await window.whatsappMetaDisconnect(); await refresh(); }
+    catch (e) { window.alert(`Não consegui desconectar: ${(e && e.message) || e}`); }
+  };
+
+  /* ---------- Caminho 2: QR code (Evolution) ---------- */
+
   const openConnect = async () => {
-    setModal(true); setBusy(true); setQr('');
+    setModal('qr'); setBusy(true); setQr('');
     try {
       const r = await window.whatsappConnect();
-      if (r.connected) { setState('connected'); setModal(false); }
+      if (r.connected) { setState('evolution'); setModal(null); }
       else if (r.qr_base64) setQr(r.qr_base64);
     } catch (e) {
       window.alert(`Não consegui iniciar a conexão: ${(e && e.message) || e}`);
-      setModal(false);
+      setModal(null);
     } finally {
       setBusy(false);
     }
@@ -263,14 +377,22 @@ const WhatsAppCard = () => {
     catch (e) { window.alert(`Não consegui desconectar: ${(e && e.message) || e}`); }
   };
 
-  const connected = state === 'connected';
+  const connected = state === 'meta' || state === 'evolution';
   const status = connected ? 'connected' : (state === 'error' ? 'error' : 'disconnected');
-  const meta = connected
-    ? [['STATUS', 'Conectado'], ['CANAL', 'WhatsApp (Evolution)']]
-    : [['CANAL', 'WhatsApp via QR code'], ['LEVA', '~30 segundos']];
-  const note = connected
-    ? 'HUMA atende seu WhatsApp em tempo real'
-    : 'Escaneie um QR code com o WhatsApp do seu negócio e a HUMA começa a atender sozinha';
+  const meta = state === 'meta'
+    ? [
+        ['STATUS', 'Conectado'],
+        ['CANAL', 'WhatsApp Oficial (Meta)'],
+        ['NÚMERO', (metaInfo && (metaInfo.display_phone_number || metaInfo.verified_name)) || '—'],
+      ]
+    : state === 'evolution'
+      ? [['STATUS', 'Conectado'], ['CANAL', 'WhatsApp (Evolution)']]
+      : [['OFICIAL (META)', 'Popup · ~3 minutos'], ['QR CODE', 'Alternativa · ~30 segundos']];
+  const note = state === 'meta'
+    ? 'Número oficial da Meta: atendimento, campanhas e templates liberados'
+    : state === 'evolution'
+      ? 'HUMA atende seu WhatsApp em tempo real. Para campanhas em massa, conecte o canal oficial da Meta.'
+      : 'Conecte pelo canal oficial da Meta (recomendado) ou escaneie um QR code — nos dois casos a HUMA começa a atender sozinha';
 
   return (
     <div style={{
@@ -282,7 +404,9 @@ const WhatsAppCard = () => {
         <IntegrationGlyph type="whatsapp"/>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.01em' }}>WhatsApp</div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 1 }}>Canal</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 1 }}>
+            {state === 'meta' ? 'Canal · Oficial' : 'Canal'}
+          </div>
         </div>
         <StatusDot status={state === 'loading' ? 'disconnected' : status}/>
       </div>
@@ -304,17 +428,91 @@ const WhatsAppCard = () => {
         {note}
       </div>
 
-      <div style={{ display: 'flex', gap: 8 }}>
-        {connected ? (
-          <Button variant="plain" size="sm" onClick={doDisconnect}>Desconectar</Button>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {state === 'meta' ? (
+          <Button variant="plain" size="sm" onClick={doMetaDisconnect}>Desconectar</Button>
+        ) : state === 'evolution' ? (
+          <>
+            <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={openOfficial}>
+              Migrar pro oficial
+            </Button>
+            <Button variant="plain" size="sm" onClick={doDisconnect}>Desconectar</Button>
+          </>
         ) : (
-          <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={openConnect} disabled={state === 'loading'}>
-            Conectar WhatsApp
-          </Button>
+          <>
+            <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={openOfficial} disabled={state === 'loading'}>
+              Conectar oficial
+            </Button>
+            <Button variant="ghost" size="sm" onClick={openConnect} disabled={state === 'loading'}>
+              Via QR code
+            </Button>
+          </>
         )}
       </div>
 
-      {modal && <WhatsAppQRModal qr={qr} busy={busy} onClose={() => setModal(false)} />}
+      {modal === 'qr' && <WhatsAppQRModal qr={qr} busy={busy} onClose={() => setModal(null)} />}
+      {modal === 'meta' && (
+        <WhatsAppMetaModal
+          msg={metaMsg}
+          onRetry={retryOfficial}
+          onReopen={openOfficial}
+          onClose={() => setModal(null)}
+        />
+      )}
+    </div>
+  );
+};
+
+// Modal do fluxo oficial: mostra progresso/erro/sucesso do Embedded Signup.
+// O trabalho real acontece no popup da Meta; aqui é feedback + retry.
+const WhatsAppMetaModal = ({ msg, onRetry, onReopen, onClose }) => {
+  const kind = (msg && msg.kind) || 'progress';
+  const color = kind === 'error' ? 'var(--ember-ink)' : kind === 'success' ? 'var(--sage-ink)' : 'var(--ink-2)';
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)',
+          borderRadius: 18, padding: 28, width: 'min(440px, 92vw)',
+          display: 'flex', flexDirection: 'column', gap: 16,
+        }}
+      >
+        <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, color: 'var(--ink)', letterSpacing: '-0.01em' }}>
+          Conectar WhatsApp oficial
+        </div>
+
+        <ol style={{ margin: 0, paddingLeft: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+          <li>Tenha em mãos o login do seu <b>Facebook pessoal</b></li>
+          <li>Use um número que <b>receba SMS ou ligação</b></li>
+          <li>Siga os passos no popup até o final</li>
+        </ol>
+
+        <div style={{
+          padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10,
+          background: 'var(--paper-sunk)', fontFamily: 'var(--font-sans)',
+          fontSize: 13, lineHeight: 1.5, color,
+        }}>
+          {(msg && msg.text) || 'Preparando...'}
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          {kind === 'error' && msg && msg.retryable && (
+            <Button variant="primary" size="sm" onClick={onRetry}>Tentar de novo</Button>
+          )}
+          {kind === 'error' && msg && !msg.retryable && (
+            <Button variant="primary" size="sm" onClick={onReopen}>Reabrir conexão</Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onClose}>{kind === 'success' ? 'Concluir' : 'Fechar'}</Button>
+        </div>
+      </div>
     </div>
   );
 };
@@ -539,4 +737,4 @@ const IntegrationGlyph = ({ type }) => {
   }
 };
 
-Object.assign(window, { IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal });
+Object.assign(window, { IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal });

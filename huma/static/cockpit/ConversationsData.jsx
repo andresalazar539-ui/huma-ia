@@ -252,6 +252,45 @@ async function whatsappDisconnect() {
 
 Object.assign(window, { whatsappConnect, whatsappStatus, whatsappDisconnect });
 
+/* ---------------- WhatsApp OFICIAL (Meta) — Embedded Signup ---------------- */
+// Fase A: es-config alimenta o FB.login; connect completa o onboarding
+// server-side (token + registro + webhooks); status/disconnect gerenciam o canal.
+async function whatsappMetaEsConfig() {
+  const url = `/whatsapp/meta/es-config?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function whatsappMetaConnect(payload) {
+  const url = `/whatsapp/meta/connect?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(payload || {}),
+  });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function whatsappMetaStatus() {
+  const url = `/whatsapp/meta/status?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function whatsappMetaDisconnect() {
+  const url = `/whatsapp/meta/disconnect?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, { method: 'POST', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+Object.assign(window, {
+  whatsappMetaEsConfig, whatsappMetaConnect, whatsappMetaStatus, whatsappMetaDisconnect,
+});
+
 /* ---------------- Settings (Sprint 2: o Salvar salva de verdade) ---------------- */
 // GET devolve { settings: {business_name, tone_of_voice, ...} } — só campos editáveis.
 // PATCH aceita subconjunto desses campos; backend valida e ignora o resto.

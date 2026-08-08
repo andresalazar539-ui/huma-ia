@@ -22,6 +22,7 @@ from huma.routes.oauth_bling import router as oauth_bling_router
 from huma.routes.oauth_crm import router as oauth_crm_router
 from huma.routes.onboarding import router as onboarding_router
 from huma.routes.whatsapp_connect import router as whatsapp_connect_router
+from huma.routes.whatsapp_meta import router as whatsapp_meta_router
 from huma.routes.wizard import router as wizard_router
 from huma.services import redis_service as cache
 from huma.utils.logger import get_logger
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_crm_router)
     app.include_router(crm_webhook_router)
     app.include_router(whatsapp_connect_router)
+    app.include_router(whatsapp_meta_router)
     app.include_router(wizard_router)
     app.include_router(onboarding_router)
 
