@@ -271,6 +271,7 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             lead_source=d.get("lead_source", "") or "",
             lead_source_detail=d.get("lead_source_detail", "") or "",
             lead_source_ref=d.get("lead_source_ref", "") or "",
+            bsuid=d.get("bsuid", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -346,6 +347,11 @@ async def save_conversation(conv: Conversation):
         data["lead_source"] = conv.lead_source
         data["lead_source_detail"] = conv.lead_source_detail
         data["lead_source_ref"] = conv.lead_source_ref
+    # BSUID (Fase C): mesmo contrato da origem — só entra no upsert quando
+    # preenchido. O set_conversation_bsuid grava em paralelo (background
+    # task do webhook); incluir "" aqui apagaria um mapeamento já capturado.
+    if conv.bsuid:
+        data["bsuid"] = conv.bsuid
     await run_in_threadpool(
         lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
     )
@@ -418,6 +424,65 @@ async def set_lead_source(
             skeleton, on_conflict="client_id,phone", ignore_duplicates=True
         ).execute()
     )
+    return True
+
+
+async def set_conversation_bsuid(client_id: str, phone: str, bsuid: str) -> bool:
+    """
+    Grava o BSUID (Business-Scoped User ID) da conversa — Fase C (username).
+
+    Mesmo contrato first-touch do set_lead_source: o primeiro BSUID
+    capturado vence (BSUID é estável por portfólio — se mudou, é outra
+    conta, não sobrescrever). Se a conversa ainda não existe (webhook
+    chegou antes do orchestrator criar a linha), cria esqueleto seguro
+    que o save_conversation posterior completa via upsert.
+
+    Args:
+        client_id: cliente HUMA dono da conversa.
+        phone: telefone do lead (chave da conversa hoje).
+        bsuid: user_id vindo em contacts[] do webhook Meta.
+
+    Returns:
+        True se gravou; False se a conversa já tinha BSUID (ou input vazio).
+    """
+    if not (client_id and phone and bsuid):
+        return False
+
+    supa = get_supabase()
+    resp = await run_in_threadpool(
+        lambda: supa.table("conversations").select("bsuid")
+            .eq("client_id", client_id).eq("phone", phone).limit(1).execute()
+    )
+
+    campos = {"bsuid": bsuid, "updated_at": datetime.utcnow().isoformat()}
+
+    if resp.data:
+        if (resp.data[0].get("bsuid") or "").strip():
+            return False  # first-touch: BSUID existente vence
+        await run_in_threadpool(
+            lambda: supa.table("conversations").update(campos)
+                .eq("client_id", client_id).eq("phone", phone).execute()
+        )
+        log.info(f"BSUID gravado | client={client_id} | phone={phone}")
+        return True
+
+    # Conversa ainda não existe: esqueleto seguro (mesmo racional do
+    # set_lead_source — ignore_duplicates garante que NADA é sobrescrito
+    # se o orchestrator criar a linha na janela entre o select e o insert).
+    skeleton = {
+        "client_id": client_id,
+        "phone": phone,
+        "history": [],
+        "lead_facts": [],
+        "stage": "discovery",
+        **campos,
+    }
+    await run_in_threadpool(
+        lambda: supa.table("conversations").upsert(
+            skeleton, on_conflict="client_id,phone", ignore_duplicates=True
+        ).execute()
+    )
+    log.info(f"BSUID gravado (esqueleto) | client={client_id} | phone={phone}")
     return True
 
 

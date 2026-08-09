@@ -871,8 +871,14 @@ def parse_meta_webhook(body: dict) -> list[dict]:
 
             contacts = value.get("contacts") or []
             push_name = ""
+            bsuid = ""
             if contacts and isinstance(contacts[0], dict):
                 push_name = (contacts[0].get("profile") or {}).get("name", "") or ""
+                # Fase C (username): Business-Scoped User ID. A Meta envia
+                # user_id nos contacts desde 03/2026; leads que adotarem
+                # username podem chegar SEM telefone — o BSUID é o
+                # identificador estável por portfólio (ex.: "BR.12872...").
+                bsuid = contacts[0].get("user_id", "") or ""
 
             for msg in value.get("messages") or []:
                 if not isinstance(msg, dict):
@@ -927,6 +933,7 @@ def parse_meta_webhook(body: dict) -> list[dict]:
                     "push_name": push_name,
                     "type": mtype,
                     "referral": referral,
+                    "bsuid": bsuid,
                 })
 
     return out

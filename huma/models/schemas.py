@@ -766,6 +766,12 @@ class Conversation(BaseModel):
     """Estado de uma conversa entre HUMA e um lead."""
     client_id: str
     phone: str
+    # Fase C (username/BSUID): Business-Scoped User ID da Meta. Mapeamento
+    # telefone↔BSUID (contact book) gravado first-touch — nunca sobrescrito.
+    # Vazio = lead identificado só por telefone. A Graph API aceita BSUID
+    # no campo "to", então este é o fallback de envio quando o lead adotar
+    # username e o telefone deixar de vir no webhook.
+    bsuid: str = ""
     history: list[dict] = Field(default_factory=list)
     history_summary: str = ""
     stage: str = "discovery"

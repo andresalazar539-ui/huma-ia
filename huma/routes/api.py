@@ -1777,6 +1777,12 @@ async def meta_webhook(request: Request, bg: BackgroundTasks):
         if m.get("message_id"):
             bg.add_task(wa.mark_as_read, m["message_id"], client.client_id)
 
+        # Fase C (username): grava o mapeamento telefone↔BSUID first-touch.
+        # É o "contact book" da HUMA — quando o lead adotar username e o
+        # telefone sumir do webhook, este mapeamento mantém o histórico.
+        if m.get("bsuid"):
+            bg.add_task(db.set_conversation_bsuid, client.client_id, phone, m["bsuid"])
+
         # Atribuição de origem (first-touch): referral CTWA (lead veio de
         # anúncio click-to-WhatsApp) ou código #h/utm no texto. ANTES do
         # desvio de mídia — anúncio pode chegar como imagem com caption.
