@@ -272,7 +272,17 @@ class TestVerifyMetaSignature:
     def test_dev_mode_sem_secret_passa(self, monkeypatch):
         import huma.core.auth as auth
         monkeypatch.setattr(auth, "META_APP_SECRET", "")
+        monkeypatch.setattr(auth, "PUBLIC_BASE_URL", "")
         assert auth.verify_meta_signature(b'{"a":1}', "sha256=qualquer") is True
+
+    def test_deploy_sem_secret_rejeita(self, monkeypatch):
+        # Fase D: em deploy (PUBLIC_BASE_URL setado), secret vazio REJEITA —
+        # antes aceitava tudo e permitia forjar mensagem de lead em produção.
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "META_APP_SECRET", "")
+        monkeypatch.setattr(auth, "PUBLIC_BASE_URL", "https://app.humaia.com.br")
+        assert auth.verify_meta_signature(b'{"a":1}', "sha256=qualquer") is False
+        assert auth.verify_meta_signature(b'{"a":1}', "") is False
 
     def test_assinatura_valida(self, monkeypatch):
         import hashlib
@@ -292,6 +302,49 @@ class TestVerifyMetaSignature:
         import huma.core.auth as auth
         monkeypatch.setattr(auth, "META_APP_SECRET", "segredo")
         assert auth.verify_meta_signature(b"corpo", "") is False
+
+
+# ── mark_as_read (Fase D — ✓✓ azul no canal Meta) ──
+
+class TestMarkAsRead:
+    def _identity(self):
+        class FakeIdentity:
+            client_id = "cli_read"
+            phone_number_id = "pnid1"
+            meta_access_token = "tok"
+        return FakeIdentity()
+
+    def test_meta_envia_status_read(self, monkeypatch):
+        sent = {}
+
+        async def fake_resolve(client_id):
+            return "meta", self._identity()
+
+        async def fake_meta_send(identity, body):
+            sent["body"] = body
+            return ""
+
+        monkeypatch.setattr(wa, "_resolve_channel", fake_resolve)
+        monkeypatch.setattr(wa, "_meta_send", fake_meta_send)
+        asyncio.run(wa.mark_as_read("wamid.123", "cli_read"))
+        assert sent["body"] == {
+            "messaging_product": "whatsapp", "status": "read", "message_id": "wamid.123",
+        }
+
+    def test_twilio_continua_noop(self, monkeypatch):
+        async def fake_resolve(client_id):
+            return "twilio", None
+
+        async def fake_meta_send(identity, body):
+            raise AssertionError("não deveria enviar no canal twilio")
+
+        monkeypatch.setattr(wa, "_resolve_channel", fake_resolve)
+        monkeypatch.setattr(wa, "_meta_send", fake_meta_send)
+        asyncio.run(wa.mark_as_read("wamid.123", "cli_read"))  # não levanta
+
+    def test_sem_message_id_ou_client_noop(self):
+        asyncio.run(wa.mark_as_read("", "cli_read"))
+        asyncio.run(wa.mark_as_read("wamid.123", ""))
 
 
 # ── verify_evolution_token (token compartilhado do webhook) ──

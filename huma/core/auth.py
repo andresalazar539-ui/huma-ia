@@ -15,6 +15,7 @@ from huma.config import (
     EVOLUTION_WEBHOOK_TOKEN,
     MERCADOPAGO_WEBHOOK_SECRET,
     META_APP_SECRET,
+    PUBLIC_BASE_URL,
     SESSION_SECRET,
     WEBHOOK_SECRET,
 )
@@ -238,14 +239,23 @@ def verify_meta_signature(raw_body: bytes, signature_header: str) -> bool:
     precisa ler request.body() ANTES de fazer json.loads — qualquer
     re-serialização muda os bytes e quebra a assinatura.
 
-    Modo dev: se META_APP_SECRET vazio, retorna True com warning. Em
-    produção, configure META_APP_SECRET (painel Meta → App → Configurações).
+    Modo dev: se META_APP_SECRET vazio E o app não está publicado
+    (PUBLIC_BASE_URL vazio), retorna True com warning. Em DEPLOY
+    (PUBLIC_BASE_URL configurado), segredo vazio REJEITA o webhook —
+    antes aceitava tudo, o que permitia forjar mensagens de lead em
+    produção caso a env var fosse esquecida (Fase D do plano Meta).
 
     Returns:
-        True se assinatura válida (ou modo dev), False se inválida.
+        True se assinatura válida (ou modo dev local), False se inválida.
     """
     if not META_APP_SECRET:
-        log.warning("META_APP_SECRET vazio — validação Meta pulada (DEV/SANDBOX)")
+        if PUBLIC_BASE_URL:
+            log.critical(
+                "META_APP_SECRET vazio em DEPLOY — webhook Meta rejeitado. "
+                "Configure META_APP_SECRET no Railway (painel Meta → App → Básico)."
+            )
+            return False
+        log.warning("META_APP_SECRET vazio — validação Meta pulada (DEV local)")
         return True
 
     if not signature_header or not signature_header.startswith("sha256="):

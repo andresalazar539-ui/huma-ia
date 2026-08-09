@@ -502,9 +502,22 @@ async def notify_owner(
     return await send_text(owner_phone, message, client_id)
 
 
-async def mark_as_read(message_id: str, client_id: str = "", **kwargs):
-    """No-op por canal (Twilio não suporta; Meta/Evolution: sprint futuro)."""
-    pass
+async def mark_as_read(message_id: str, client_id: str = "", **kwargs) -> None:
+    """
+    Marca a mensagem do lead como lida (confere o ✓✓ azul no WhatsApp dele).
+
+    Fase D do plano Meta: implementado só no canal Meta (POST no mesmo
+    /{pnid}/messages com status=read). Twilio não suporta; Evolution fica
+    pra depois. Silent-fail como todo envio — falha aqui nunca pode
+    atrapalhar o processamento da mensagem.
+    """
+    if not message_id or not client_id:
+        return
+    provider, identity = await _resolve_channel(client_id)
+    if provider != "meta" or identity is None:
+        return
+    body = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
+    await _meta_send(identity, body)
 
 
 # ================================================================

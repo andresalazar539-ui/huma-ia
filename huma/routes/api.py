@@ -1772,6 +1772,11 @@ async def meta_webhook(request: Request, bg: BackgroundTasks):
             log.warning(f"Webhook Meta | phone_number_id sem cliente | pnid={pnid}")
             continue
 
+        # Fase D: marca como lida em background (✓✓ azul pro lead).
+        # Best-effort — nunca bloqueia nem atrasa o processamento.
+        if m.get("message_id"):
+            bg.add_task(wa.mark_as_read, m["message_id"], client.client_id)
+
         # Atribuição de origem (first-touch): referral CTWA (lead veio de
         # anúncio click-to-WhatsApp) ou código #h/utm no texto. ANTES do
         # desvio de mídia — anúncio pode chegar como imagem com caption.
