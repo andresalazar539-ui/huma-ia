@@ -18,6 +18,7 @@ from huma.routes.api import router
 from huma.routes.auth_login import router as auth_login_router
 from huma.routes.cockpit import router as cockpit_router
 from huma.routes.crm_webhook import router as crm_webhook_router
+from huma.routes.legal import router as legal_router
 from huma.routes.oauth_bling import router as oauth_bling_router
 from huma.routes.oauth_crm import router as oauth_crm_router
 from huma.routes.onboarding import router as onboarding_router
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_bling_router)
     app.include_router(oauth_crm_router)
     app.include_router(crm_webhook_router)
+    app.include_router(legal_router)
     app.include_router(whatsapp_connect_router)
     app.include_router(whatsapp_meta_router)
     app.include_router(wizard_router)
