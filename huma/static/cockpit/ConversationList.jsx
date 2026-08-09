@@ -8,11 +8,12 @@ const LIST_FILTERS = [
   { label: 'Cancelado',    key: 'cancelado' },
 ];
 
-const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect }) => {
+const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect, fullWidth = false }) => {
   return (
     <div style={{
-      width: 300, flexShrink: 0,
-      borderRight: '1px solid var(--paper-edge)',
+      ...(fullWidth
+        ? { flex: 1, minWidth: 0 }
+        : { width: 300, flexShrink: 0, borderRight: '1px solid var(--paper-edge)' }),
       display: 'flex', flexDirection: 'column',
       background: 'var(--paper)',
       height: '100%',

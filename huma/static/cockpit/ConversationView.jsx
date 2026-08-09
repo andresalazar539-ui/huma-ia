@@ -1,5 +1,6 @@
 // ConversationView.jsx — center stream of messages
-const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, onSend, handoff, onHandoff, onOpenAgenda }) => {
+// mobile: tela cheia no celular (botão voltar, header enxuto, sem rodapé de atalhos)
+const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, onSend, handoff, onHandoff, onOpenAgenda, mobile = false, onBack }) => {
   const [draft, setDraft] = React.useState('');
   const [busy, setBusy] = React.useState(false);     // handoff ou envio em andamento
   const [toast, setToast] = React.useState(null);    // { type:'ok'|'error', text }
@@ -48,23 +49,32 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--paper)', height: '100%', position: 'relative' }}>
       {/* Header */}
-      <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--paper-edge)', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ padding: mobile ? '10px 12px' : '12px 20px', borderBottom: '1px solid var(--paper-edge)', display: 'flex', alignItems: 'center', gap: mobile ? 8 : 12 }}>
+        {onBack && (
+          <button onClick={onBack} aria-label="Voltar" style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 40, height: 40, marginLeft: -8, flexShrink: 0,
+            border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--ink-2)',
+          }}>
+            <Icon name="chevronL" size={22} />
+          </button>
+        )}
         <Avatar initials={conversation.initials} tone={conversation.tone} size={36} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.015em' }}>{conversation.name}</div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{conversation.phone}{conversation.since ? ` · cliente desde ${conversation.since}` : ''}</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.015em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.name}</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.phone}{conversation.since ? ` · cliente desde ${conversation.since}` : ''}</div>
         </div>
-        <StatusPill status={conversation.status || 'andamento'} />
-        {onOpenAgenda && (
+        {!mobile && <StatusPill status={conversation.status || 'andamento'} />}
+        {!mobile && onOpenAgenda && (
           <Button variant="ghost" size="sm" icon={<Icon name="calendar" size={14} />} onClick={onOpenAgenda}>Agenda</Button>
         )}
         <Button variant={handoff ? 'primary' : 'ghost'} size="sm" onClick={doHandoff} disabled={busy}>
-          {handoff ? 'Devolver para HUMA' : 'Assumir conversa'}
+          {handoff ? (mobile ? 'Devolver' : 'Devolver para HUMA') : (mobile ? 'Assumir' : 'Assumir conversa')}
         </Button>
       </div>
 
       {/* Messages */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: mobile ? '16px 12px' : '24px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {detailState === 'loading' ? (
           <MessagesSkeleton />
         ) : detailState === 'error' ? (
@@ -84,7 +94,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
       </div>
 
       {/* Composer */}
-      <div style={{ padding: '12px 20px 18px', borderTop: '1px solid var(--paper-edge)' }}>
+      <div style={{ padding: mobile ? '10px 12px calc(12px + env(safe-area-inset-bottom))' : '12px 20px 18px', borderTop: '1px solid var(--paper-edge)' }}>
         <div style={{
           display: 'flex', alignItems: 'flex-end', gap: 8,
           border: '1px solid var(--paper-edge)', borderRadius: 12,
@@ -107,12 +117,14 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           />
           <Button variant="primary" size="sm" icon={<Icon name="send" size={14} />} onClick={sendIt} disabled={busy || !draft.trim()}>{busy ? 'Enviando…' : 'Enviar'}</Button>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 10, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="sparkle" size={13} /> Sugestão de HUMA</span>
-          <span>·</span>
-          <span>Áudio em voz clonada</span>
-          <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>Enter para enviar · Shift+Enter nova linha</span>
-        </div>
+        {!mobile && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 10, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="sparkle" size={13} /> Sugestão de HUMA</span>
+            <span>·</span>
+            <span>Áudio em voz clonada</span>
+            <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)' }}>Enter para enviar · Shift+Enter nova linha</span>
+          </div>
+        )}
       </div>
       {/* Toast (sucesso 2s / erro 3s) */}
       {toast && (

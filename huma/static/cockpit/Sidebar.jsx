@@ -214,4 +214,110 @@ const WorkspaceSwitcher = ({ onNav, onInvite }) => {
   );
 };
 
-Object.assign(window, { SidebarNav, WorkspaceSwitcher });
+// ============================================================
+// Mobile (< 768px) — tab bar inferior + folha "Mais".
+// O desktop continua usando SidebarNav; nada acima muda.
+// ============================================================
+const MOBILE_TABS = [
+  { id: 'conversas',  label: 'Conversas',  icon: 'message' },
+  { id: 'agenda',     label: 'Agenda',     icon: 'calendar' },
+  { id: 'relatorios', label: 'Relatórios', icon: 'chart' },
+];
+
+const MOBILE_MORE_ITEMS = [
+  { id: 'clientes',    label: 'Clientes',                 icon: 'users' },
+  { id: 'voz',         label: 'Voz',                      icon: 'mic' },
+  { id: 'disparos',    label: 'Disparos',                 icon: 'send' },
+  { id: 'integracoes', label: 'Integrações',              icon: 'plug' },
+  { id: 'uso',         label: 'Plano e uso',              icon: 'card' },
+  { id: 'ajustes',     label: 'Conta & plano',            icon: 'settings' },
+  { id: 'negocio',     label: 'Configurações do negócio', icon: 'building' },
+  { id: 'perfil',      label: 'Seu perfil',               icon: 'user' },
+];
+
+const MobileTabBar = ({ active, onNav }) => {
+  const [moreOpen, setMoreOpen] = React.useState(false);
+  const mainIds = MOBILE_TABS.map(t => t.id);
+  const moreActive = !mainIds.includes(active);
+
+  const Tab = ({ id, label, icon, on, onClick }) => (
+    <button onClick={onClick} style={{
+      flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
+      padding: '8px 4px 6px', border: 'none', background: 'transparent', cursor: 'pointer',
+      color: on ? 'var(--terracotta)' : 'var(--ink-3)',
+      fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: on ? 600 : 400,
+      minHeight: 48,
+    }}>
+      <Icon name={icon} size={21} stroke={on ? 1.9 : 1.5} />
+      <span>{label}</span>
+    </button>
+  );
+
+  return (
+    <>
+      {moreOpen && (
+        <MobileMoreSheet
+          active={active}
+          onNav={id => { setMoreOpen(false); onNav(id); }}
+          onClose={() => setMoreOpen(false)}
+        />
+      )}
+      <nav style={{
+        display: 'flex', flexShrink: 0,
+        borderTop: '1px solid var(--paper-edge)',
+        background: 'var(--paper-raised)',
+        paddingBottom: 'env(safe-area-inset-bottom)',
+      }}>
+        {MOBILE_TABS.map(t => (
+          <Tab key={t.id} {...t} on={active === t.id && !moreOpen}
+            onClick={() => { setMoreOpen(false); onNav(t.id); }} />
+        ))}
+        <Tab id="mais" label="Mais" icon="menu" on={moreOpen || moreActive}
+          onClick={() => setMoreOpen(o => !o)} />
+      </nav>
+    </>
+  );
+};
+
+const MobileMoreSheet = ({ active, onNav, onClose }) => {
+  const Row = ({ icon, label, on, onClick, danger }) => (
+    <button onClick={onClick} style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '13px 16px', borderRadius: 10, width: '100%',
+      border: 'none', cursor: 'pointer', textAlign: 'left',
+      background: on ? 'var(--paper-sunk)' : 'transparent',
+      color: danger ? 'var(--danger)' : (on ? 'var(--ink)' : 'var(--ink-2)'),
+      fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: on ? 500 : 400,
+      minHeight: 48,
+    }}>
+      <Icon name={icon} size={19} />
+      <span style={{ flex: 1 }}>{label}</span>
+      {on && <span style={{ color: 'var(--sage)' }}><Icon name="check" size={16} stroke={2} /></span>}
+    </button>
+  );
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(28,23,20,0.32)' }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        position: 'absolute', left: 0, right: 0, bottom: 0,
+        background: 'var(--paper-raised)',
+        borderRadius: '16px 16px 0 0',
+        padding: '8px 10px calc(10px + env(safe-area-inset-bottom))',
+        maxHeight: '75vh', overflowY: 'auto',
+        boxShadow: '0 -12px 40px rgba(28,23,20,0.18)',
+      }}>
+        <div style={{ width: 36, height: 4, borderRadius: 999, background: 'var(--paper-edge)', margin: '4px auto 10px' }} />
+        {MOBILE_MORE_ITEMS.map(it => (
+          <Row key={it.id} icon={it.icon} label={it.label} on={active === it.id} onClick={() => onNav(it.id)} />
+        ))}
+        <div style={{ height: 1, background: 'var(--paper-edge)', margin: '6px 4px' }} />
+        <Row icon="logout" label="Sair" danger onClick={async () => {
+          try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) { /* cookie expira sozinho */ }
+          window.location.href = '/login';
+        }} />
+      </div>
+    </div>
+  );
+};
+
+Object.assign(window, { SidebarNav, WorkspaceSwitcher, MobileTabBar, MobileMoreSheet });

@@ -2,12 +2,20 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=1280"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <title>HUMA · Cockpit</title>
 <link rel="stylesheet" href="/static/cockpit/colors_and_type.css"/>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; }
-  #root { height: 100vh; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
+  /* 100dvh: no celular desconta a barra do navegador (100vh vaza atrás dela) */
+  #root { height: 100vh; height: 100dvh; }
+
+  /* Mobile (< 768px) */
+  @media (max-width: 767px) {
+    /* iOS dá zoom automático em campo com fonte < 16px — trava em 16px */
+    input, textarea, select { font-size: 16px !important; }
+    * { -webkit-tap-highlight-color: transparent; }
+  }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: var(--ink-line); border-radius: 999px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -69,11 +77,59 @@ function useNarrow(bp = 1400) {
   return narrow;
 }
 
+// Celular (< 768px): layout próprio — tab bar embaixo, telas empilhadas.
+function useIsMobile() {
+  const query = '(max-width: 767px)';
+  const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = (e) => setMobile(e.matches);
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else mq.removeListener(onChange);
+    };
+  }, []);
+  return mobile;
+}
+
 function ConversasScreen({
   conversations, listState, filter, onFilter, onRetryList,
   activeId, onSelect, active, detailState, onRetryDetail,
   onSend, handoff, onHandoff, narrow, onOpenAgenda,
+  mobile, onBack,
 }) {
+  // Mobile: padrão WhatsApp — ou a lista em tela cheia, ou a conversa em tela cheia.
+  if (mobile) {
+    if (active) {
+      return (
+        <ConversationView
+          conversation={active}
+          detailState={detailState}
+          onRetryDetail={onRetryDetail}
+          onSend={onSend}
+          handoff={handoff}
+          onHandoff={onHandoff}
+          mobile
+          onBack={onBack}
+        />
+      );
+    }
+    return (
+      <ConversationList
+        items={conversations}
+        state={listState}
+        filter={filter}
+        onFilter={onFilter}
+        onRetry={onRetryList}
+        activeId={null}
+        onSelect={onSelect}
+        fullWidth
+      />
+    );
+  }
+
   return (
     <>
       <ConversationList
@@ -104,6 +160,10 @@ function App() {
   const [route, setRoute] = useState(() => localStorage.getItem('huma_route') || 'conversas');
   const [handoff, setHandoff] = useState(false);
   const narrow = useNarrow(1400);
+  const isMobile = useIsMobile();
+  // Ref pro loadList (callback sem deps) saber se está no celular
+  const isMobileRef = useRef(isMobile);
+  useEffect(() => { isMobileRef.current = isMobile; }, [isMobile]);
   const [agendaOpen, setAgendaOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
@@ -141,7 +201,8 @@ function App() {
       const items = (data.items || []).map(mapListItem);
       setConversations(items);
       setListState('ready');
-      setActiveId(prev => prev ?? (items[0] ? items[0].id : null));
+      // Desktop abre a primeira conversa; no celular a lista fica limpa até o toque
+      setActiveId(prev => prev ?? (isMobileRef.current ? null : (items[0] ? items[0].id : null)));
     } catch (e) {
       console.error('Conversas | falha ao listar | filter=' + f, e);
       if (!silent) setListState('error');
@@ -219,6 +280,7 @@ function App() {
         onSend={send} handoff={handoff}
         onHandoff={() => setHandoff(h => !h)}
         narrow={narrow} onOpenAgenda={() => setAgendaOpen(true)}
+        mobile={isMobile} onBack={() => { setActiveId(null); setHandoff(false); }}
       />;
       break;
     case 'agenda':      screen = <AgendaFullScreen />; break;
@@ -235,6 +297,20 @@ function App() {
     case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
     case 'perfil':      screen = <PerfilScreen />; break;
     default:            screen = <ClientesScreen />;
+  }
+
+  // --- Shell mobile: sem sidebar, tab bar embaixo; chat aberto ocupa tudo ---
+  if (isMobile) {
+    const inChat = route === 'conversas' && !!active;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)', position: 'relative' }}>
+        <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+          {screen}
+        </div>
+        {!inChat && <MobileTabBar active={route} onNav={setRoute} />}
+        {inviteOpen && <InviteModal onClose={() => setInviteOpen(false)} />}
+      </div>
+    );
   }
 
   return (
