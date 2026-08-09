@@ -224,3 +224,54 @@ code, kbd, samp { font-family: var(--font-mono); font-size: var(--fs-mono); lett
 
 /* ---------- Selection ---------- */
 ::selection { background: var(--terracotta-soft); color: var(--ink); }
+
+/* =============================================================
+   Modo escuro — espresso quente (mesma alma, luz apagada)
+   Ativado com data-theme="dark" no <html>
+   ============================================================= */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper:        #171310;
+  --paper-raised: #201B16;
+  --paper-sunk:   #100D0A;
+  --paper-edge:   #2E2721;
+
+  --ink:          #F1EAE0;
+  --ink-2:        #D6CCBE;
+  --ink-3:        #9C9184;
+  --ink-4:        #6E645A;
+  --ink-line:     #453C32;
+
+  --terracotta:      #D96A50;
+  --terracotta-ink:  #E8967E;
+  --terracotta-soft: #4A2B21;
+  --terracotta-tint: #2E1F19;
+
+  --ember:      #E8623A;
+  --ember-ink:  #F0855F;
+  --ember-soft: #3E2417;
+
+  --sage:       #6F8B6E;
+  --sage-ink:   #A9C0A6;
+  --sage-soft:  #37452F;
+  --sage-tint:  #222920;
+
+  --success: #79A272;
+  --warning: #D4A344;
+  --danger:  #D4714F;
+  --info:    #7FA3BD;
+
+  --status-live:    #79A272;
+  --status-waiting: #D4A344;
+  --status-snoozed: #6E645A;
+  --status-booked:  #D96A50;
+
+  --sh-1: 0 1px 0 rgba(0, 0, 0, 0.25);
+  --sh-2: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.25);
+  --sh-3: 0 4px 12px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+  --sh-4: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.30);
+  --sh-5: 0 24px 60px rgba(0, 0, 0, 0.55), 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="dark"] ::selection { background: var(--terracotta-soft); color: var(--ink); }

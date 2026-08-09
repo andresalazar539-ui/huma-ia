@@ -432,3 +432,20 @@ async function downloadReportExport(format, days = 30) {
 }
 
 Object.assign(window, { fetchReport, downloadReportExport });
+
+/* ---------------- Início: métricas vitalícias (rodapé "Desde o início") ---------------- */
+// GET /api/clients/{id}/metrics → { total, by_stage: { discovery: N, won: N, ... } }
+// Todas as conversas do cliente, sem recorte de período. err.status preservado
+// pro caller distinguir 404 (cliente sem conversas → cold start) de falha real.
+async function fetchMetrics() {
+  const url = `/api/clients/${encodeURIComponent(CLIENT_ID)}/metrics`;
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) {
+    const err = new Error(`${r.status}: ${await r.text()}`);
+    err.status = r.status;
+    throw err;
+  }
+  return r.json();
+}
+
+Object.assign(window, { fetchMetrics });

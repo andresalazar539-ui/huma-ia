@@ -1,6 +1,7 @@
 // Sidebar.jsx — left nav for the cockpit
 const SidebarNav = ({ active, onNav, onInvite }) => {
   const items = [
+    { id: 'inicio',       label: 'Início',       icon: 'home',     count: null },
     { id: 'conversas',    label: 'Conversas',    icon: 'message',  count: 3 },
     { id: 'agenda',       label: 'Agenda',       icon: 'calendar', count: null },
     { id: 'clientes',     label: 'Clientes',     icon: 'users',    count: null },
@@ -111,18 +112,57 @@ const SidebarNav = ({ active, onNav, onInvite }) => {
         })}
       </nav>
 
-      {/* Live status block */}
-      <div style={{ marginTop: 'auto', padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 12, background: 'var(--paper-raised)' }}>
-        <Eyebrow style={{ marginBottom: 8 }}>agora</Eyebrow>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <span style={{ width: 7, height: 7, borderRadius: 999, background: '#4F7A4A', boxShadow: '0 0 0 3px #EAF0E7' }} />
-          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', fontWeight: 500 }}>HUMA atendendo</span>
-        </div>
-        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.4 }}>
-          3 conversas ativas · 14 agendamentos hoje
+      {/* Tema + live status block */}
+      <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <ThemeToggle />
+        <div style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 12, background: 'var(--paper-raised)' }}>
+          <Eyebrow style={{ marginBottom: 8 }}>agora</Eyebrow>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--success, #4F7A4A)', boxShadow: '0 0 0 3px var(--sage-tint, #EAF0E7)' }} />
+            <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', fontWeight: 500 }}>HUMA atendendo</span>
+          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.4 }}>
+            3 conversas ativas · 14 agendamentos hoje
+          </div>
         </div>
       </div>
     </aside>
+  );
+};
+
+// Alternador claro / escuro — persiste e aplica no <html>
+const ThemeToggle = () => {
+  const [theme, setTheme] = React.useState(() => document.documentElement.getAttribute('data-theme') || 'light');
+  const apply = (t) => {
+    setTheme(t);
+    if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    else document.documentElement.removeAttribute('data-theme');
+    try { localStorage.setItem('huma_theme', t); } catch (e) { /* modo anônimo: segue sem persistir */ }
+  };
+  return (
+    <div style={{
+      display: 'flex', gap: 2, padding: 3,
+      background: 'var(--paper-sunk)', borderRadius: 999,
+      border: '1px solid var(--paper-edge)',
+    }}>
+      {[['light', 'sun', 'Claro'], ['dark', 'moon', 'Escuro']].map(([id, icon, label]) => {
+        const on = theme === id;
+        return (
+          <button key={id} onClick={() => apply(id)} style={{
+            flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: on ? 500 : 400,
+            padding: '5px 0', borderRadius: 999, border: 'none', cursor: 'pointer',
+            background: on ? 'var(--paper-raised)' : 'transparent',
+            color: on ? 'var(--ink)' : 'var(--ink-3)',
+            boxShadow: on ? '0 1px 2px rgba(28,23,20,0.08)' : 'none',
+            transition: 'all 180ms cubic-bezier(0.22,1,0.36,1)',
+          }}>
+            <Icon name={icon} size={13} stroke={1.7} />
+            {label}
+          </button>
+        );
+      })}
+    </div>
   );
 };
 
@@ -219,12 +259,13 @@ const WorkspaceSwitcher = ({ onNav, onInvite }) => {
 // O desktop continua usando SidebarNav; nada acima muda.
 // ============================================================
 const MOBILE_TABS = [
+  { id: 'inicio',     label: 'Início',     icon: 'home' },
   { id: 'conversas',  label: 'Conversas',  icon: 'message' },
   { id: 'agenda',     label: 'Agenda',     icon: 'calendar' },
-  { id: 'relatorios', label: 'Relatórios', icon: 'chart' },
 ];
 
 const MOBILE_MORE_ITEMS = [
+  { id: 'relatorios',  label: 'Relatórios',               icon: 'chart' },
   { id: 'clientes',    label: 'Clientes',                 icon: 'users' },
   { id: 'voz',         label: 'Voz',                      icon: 'mic' },
   { id: 'disparos',    label: 'Disparos',                 icon: 'send' },
@@ -311,6 +352,10 @@ const MobileMoreSheet = ({ active, onNav, onClose }) => {
           <Row key={it.id} icon={it.icon} label={it.label} on={active === it.id} onClick={() => onNav(it.id)} />
         ))}
         <div style={{ height: 1, background: 'var(--paper-edge)', margin: '6px 4px' }} />
+        <div style={{ padding: '6px 8px' }}>
+          <ThemeToggle />
+        </div>
+        <div style={{ height: 1, background: 'var(--paper-edge)', margin: '6px 4px' }} />
         <Row icon="logout" label="Sair" danger onClick={async () => {
           try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) { /* cookie expira sozinho */ }
           window.location.href = '/login';
@@ -320,4 +365,4 @@ const MobileMoreSheet = ({ active, onNav, onClose }) => {
   );
 };
 
-Object.assign(window, { SidebarNav, WorkspaceSwitcher, MobileTabBar, MobileMoreSheet });
+Object.assign(window, { SidebarNav, WorkspaceSwitcher, ThemeToggle, MobileTabBar, MobileMoreSheet });

@@ -4,6 +4,10 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <title>HUMA · Cockpit</title>
+<script>
+  // Aplica o tema salvo antes do primeiro paint (evita flash claro→escuro)
+  try { if (localStorage.getItem('huma_theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark'); } catch (e) {}
+</script>
 <link rel="stylesheet" href="/static/cockpit/colors_and_type.css?v=__ASSET_V__"/>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; }
@@ -56,6 +60,7 @@
 <script type="text/babel" src="/static/cockpit/ConversationList.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/ConversationView.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/AgendaPanel.jsx?v=__ASSET_V__"></script>
+<script type="text/babel" src="/static/cockpit/InicioScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/ReportsScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/CampaignsScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/IntegrationsScreen.jsx?v=__ASSET_V__"></script>
@@ -157,7 +162,9 @@ function ConversasScreen({
 }
 
 function App() {
-  const [route, setRoute] = useState(() => localStorage.getItem('huma_route') || 'conversas');
+  // Abre sempre no Início — a tela de valor. A rota deixa de ser persistida:
+  // o retorno ao app é um "novo plantão", não a retomada da última aba.
+  const [route, setRoute] = useState('inicio');
   const [handoff, setHandoff] = useState(false);
   const narrow = useNarrow(1400);
   const isMobile = useIsMobile();
@@ -190,8 +197,6 @@ function App() {
   useEffect(() => {
     if (route === 'integracoes') reloadIntegrationsStatus();
   }, [route, reloadIntegrationsStatus]);
-
-  useEffect(() => { localStorage.setItem('huma_route', route); }, [route]);
 
   // Carrega a lista (silent = atualização de poll, sem piscar skeleton)
   const loadList = useCallback(async (f, { silent = false } = {}) => {
@@ -268,6 +273,12 @@ function App() {
 
   let screen;
   switch (route) {
+    case 'inicio':
+      screen = <InicioScreen
+        onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}
+        onGoto={setRoute}
+      />;
+      break;
     case 'conversas':
       screen = <ConversasScreen
         conversations={conversations} listState={listState}
@@ -296,7 +307,10 @@ function App() {
     case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} />; break;
     case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
     case 'perfil':      screen = <PerfilScreen />; break;
-    default:            screen = <ClientesScreen />;
+    default:            screen = <InicioScreen
+      onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}
+      onGoto={setRoute}
+    />;
   }
 
   // --- Shell mobile: sem sidebar, tab bar embaixo; chat aberto ocupa tudo ---
