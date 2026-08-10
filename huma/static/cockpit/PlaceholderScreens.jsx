@@ -62,36 +62,8 @@ const ClientesScreen = () => (
 // AgendaFullScreen agora vive em AgendaScreen.jsx (4 views: dia/semana/mes/lista).
 // Removido daqui pra evitar redeclaracao de const no escopo global do Babel.
 
-const VozScreen = () => (
-  <PlaceholderScreen eyebrow="voz" title="Voz clonada" subtitle="Dra. Marina · v_mR4nA_2024_a7f3">
-    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: 24 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        <div style={{
-          width: 56, height: 56, borderRadius: 999,
-          background: 'var(--terracotta-tint)', color: 'var(--terracotta)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <Icon name="mic" size={26}/>
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', letterSpacing: '-0.015em' }}>
-            Sua voz, treinada
-          </div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 2 }}>
-            32 áudios enviados esta semana · última amostra há 3 dias
-          </div>
-        </div>
-        <Button variant="primary" size="sm" icon={<Icon name="play" size={13}/>}>Ouvir amostra</Button>
-      </div>
-      <div style={{ marginTop: 20, padding: 16, background: 'var(--paper-sunk)', borderRadius: 12 }}>
-        <VoiceClipInline duration="18"/>
-        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 12, fontStyle: 'italic' }}>
-          "Oi, Beatriz. Seu horário de limpeza de pele está confirmado para quarta, 14h. Te lembro na véspera."
-        </div>
-      </div>
-    </div>
-  </PlaceholderScreen>
-);
+// VozScreen agora vive em VozScreen.jsx (design v0.4 plugado no backend real).
+// Removido daqui pra evitar redeclaracao de const no escopo global do Babel.
 
 const AjustesScreen = () => (
   <PlaceholderScreen eyebrow="ajustes" title="Ajustes do estúdio" subtitle="Conta · plano · preferências">
@@ -117,4 +89,4 @@ const AjustesScreen = () => (
   </PlaceholderScreen>
 );
 
-Object.assign(window, { ClientesScreen, VozScreen, AjustesScreen });
+Object.assign(window, { ClientesScreen, AjustesScreen });
