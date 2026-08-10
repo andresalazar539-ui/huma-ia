@@ -29,47 +29,52 @@ AUDIO_EXTENSION_PRIMARY = "mp3"
 MAX_AUDIO_BYTES = 1_500_000
 
 # ── Voice Settings por emoção (só usado no v2, v3 ignora) ──
+# v13 — FIDELIDADE PRIMEIRO: a voz clonada existe pro lead achar que é o
+# dono respondendo. `style` alto troca semelhança por dramatização (o
+# sotaque "vagueia" — reclamação real de produção), então fica <= 0.15;
+# `similarity_boost` alto e `stability` >= 0.40 ancoram timbre e sotaque.
+# A emoção continua variando, mas em faixa estreita.
 VOICE_PROFILES: dict[str, dict] = {
     "excited": {
-        "stability": 0.30,
-        "similarity_boost": 0.80,
-        "style": 0.50,
+        "stability": 0.42,
+        "similarity_boost": 0.90,
+        "style": 0.15,
         "use_speaker_boost": True,
     },
     "neutral": {
-        "stability": 0.38,
-        "similarity_boost": 0.78,
-        "style": 0.30,
+        "stability": 0.50,
+        "similarity_boost": 0.90,
+        "style": 0.05,
         "use_speaker_boost": True,
     },
     "cold": {
-        "stability": 0.45,
-        "similarity_boost": 0.80,
-        "style": 0.35,
+        "stability": 0.55,
+        "similarity_boost": 0.90,
+        "style": 0.05,
         "use_speaker_boost": True,
     },
     "anxious": {
-        "stability": 0.55,
-        "similarity_boost": 0.85,
-        "style": 0.15,
+        "stability": 0.60,
+        "similarity_boost": 0.92,
+        "style": 0.0,
         "use_speaker_boost": True,
     },
     "frustrated": {
         "stability": 0.60,
-        "similarity_boost": 0.85,
-        "style": 0.10,
+        "similarity_boost": 0.92,
+        "style": 0.0,
         "use_speaker_boost": True,
     },
     "closing": {
-        "stability": 0.45,
-        "similarity_boost": 0.85,
-        "style": 0.40,
+        "stability": 0.50,
+        "similarity_boost": 0.92,
+        "style": 0.10,
         "use_speaker_boost": True,
     },
     "won": {
-        "stability": 0.35,
-        "similarity_boost": 0.80,
-        "style": 0.55,
+        "stability": 0.45,
+        "similarity_boost": 0.90,
+        "style": 0.15,
         "use_speaker_boost": True,
     },
 }
