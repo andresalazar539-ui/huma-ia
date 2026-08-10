@@ -567,6 +567,46 @@ AGENDAMENTO:
 # Mensagens seguintes pagam ~10% do input deste bloco.
 # ================================================================
 
+def _tone_directive(identity: ClientIdentity) -> str:
+    """
+    Linha de tom do prompt, com disciplina (v13 — caso Vidinha):
+    o tom que o dono definiu MANDA — advogado formal fala formal,
+    e-commerce solto pode ser solto. SEM tom definido, o clone fica
+    neutro-profissional: nunca inventa informalidade ('relaxa',
+    'segura aí') que o dono não escolheu.
+    """
+    tone = (identity.tone_of_voice or "").strip()
+    if tone:
+        return (
+            f"{tone} — SIGA ESTE TOM À RISCA em toda mensagem; "
+            "gíria e informalidade SÓ se este tom permitir"
+        )
+    return (
+        "ainda não definido pelo dono — use tom profissional, cordial e neutro; "
+        "PROIBIDO gíria e informalidade ('relaxa', 'segura aí', 'kkk') até o dono definir o tom"
+    )
+
+
+def _identity_gap_rules(identity: ClientIdentity) -> str:
+    """
+    Regras extras QUANDO o cadastro do negócio está incompleto (sem
+    descrição E sem produtos). Sem isso a IA lê a config vazia em voz
+    alta pro lead ('trabalhamos com categoria outros', 'sem produto
+    cadastrado no sistema') — caso real de produção.
+    Retorna "" quando o cadastro tem o mínimo (não gasta token à toa).
+    """
+    has_desc = bool((identity.business_description or "").strip())
+    has_products = bool(identity.products_or_services) or bool(identity.products)
+    if has_desc or has_products:
+        return ""
+    return (
+        "\nCADASTRO INCOMPLETO (o dono ainda não preencheu o que o negócio vende/faz):\n"
+        "  - NUNCA diga 'categoria', 'catálogo', 'cadastrado', 'sistema' ou que falta configuração — são termos internos, o lead NUNCA pode ver isso.\n"
+        "  - SE o lead perguntar o que vocês vendem/fazem: responda natural que vai confirmar os detalhes e já retorna (ex.: 'deixa eu confirmar aqui certinho e já te falo').\n"
+        "  - NÃO invente produtos, serviços nem promessas.\n"
+    )
+
+
 def build_static_prompt(identity: ClientIdentity) -> str:
     """
     Bloco estático do system prompt — cacheado entre mensagens.
@@ -598,11 +638,11 @@ Cada mensagem tem um objetivo. Cada palavra avança a conversa.
 IDENTIDADE:
   Negócio: {identity.business_description}
   Categoria: {identity.category.value if identity.category else 'Geral'}
-  Tom: {identity.tone_of_voice or 'Profissional e amigável'}
+  Tom: {_tone_directive(identity)}
   Palavras proibidas: {forbidden}
   Horário: {identity.working_hours or 'Não definido'}
   Concorrentes (NÃO mencione): {competitors}
-
+{_identity_gap_rules(identity)}
 PRODUTOS/SERVIÇOS:
 {products_text}
 FAQ:
@@ -1069,11 +1109,11 @@ def build_tier2_prompt(identity: ClientIdentity, conv: Conversation) -> str:
 IDENTIDADE:
   Negócio: {identity.business_description}
   Categoria: {identity.category.value if identity.category else 'Geral'}
-  Tom: {identity.tone_of_voice or 'Profissional e amigável'}
+  Tom: {_tone_directive(identity)}
   Palavras proibidas: {forbidden}
   Horário: {identity.working_hours or 'Não definido'}
   Concorrentes (NÃO mencione): {competitors}
-
+{_identity_gap_rules(identity)}
 PRODUTOS/SERVIÇOS:
 {products_text}
 FAQ:
@@ -1205,11 +1245,11 @@ Cada mensagem tem um objetivo. Cada palavra avança a conversa.
 IDENTIDADE:
   Negócio: {identity.business_description}
   Categoria: {identity.category.value if identity.category else 'Geral'}
-  Tom: {identity.tone_of_voice or 'Profissional e amigável'}
+  Tom: {_tone_directive(identity)}
   Palavras proibidas: {forbidden}
   Horário: {identity.working_hours or 'Não definido'}
   Concorrentes (NÃO mencione): {competitors}
-
+{_identity_gap_rules(identity)}
 PRODUTOS/SERVIÇOS:
 {products_text}
 FAQ:
@@ -1896,7 +1936,7 @@ async def generate_followup_message(
 
     prompt = (
         f'Você é o atendente do "{identity.business_name}" ({category}) no WhatsApp. '
-        f"Tom: {identity.tone_of_voice or 'profissional e amigável'}.\n"
+        f"Tom: {_tone_directive(identity)}.\n"
         f"O lead {nome or '(nome desconhecido)'} parou de responder "
         f"(tentativa {attempt + 1} de follow-up, stage {stage}).\n\n"
         + (f"MEMÓRIA DO LEAD:\n{facts_text}\n" if facts_text else "")

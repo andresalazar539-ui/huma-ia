@@ -1402,6 +1402,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             audio_decision = _should_send_audio(
                 client_data, conv, sentiment_value,
                 audio_is_substantial=audio_is_substantial,
+                lead_requested_audio=lead_requested_audio,
             )
             will_send_audio = audio_decision["send"]
 
@@ -1712,6 +1713,7 @@ def _should_send_audio(
     conv,
     sentiment: str = "neutral",
     audio_is_substantial: bool = False,
+    lead_requested_audio: bool = False,
 ) -> dict:
     """Filtros de infraestrutura pra envio de áudio."""
     if SAFE_MODE:
@@ -1720,6 +1722,12 @@ def _should_send_audio(
         return {"send": False, "reason": "audio_disabled"}
     if not client_data.voice_id:
         return {"send": False, "reason": "no_voice_id"}
+
+    # Lead PEDIU áudio explicitamente ("manda um áudio", "tô dirigindo"):
+    # atende independente do estágio do funil. Bug real de produção: o
+    # gate de estágio rodava antes e o clone prometia áudio sem mandar.
+    if lead_requested_audio:
+        return {"send": True, "reason": f"lead_requested_audio_stage_{conv.stage}"}
 
     trigger_stages = set(client_data.audio_trigger_stages)
     if conv.stage not in trigger_stages:
