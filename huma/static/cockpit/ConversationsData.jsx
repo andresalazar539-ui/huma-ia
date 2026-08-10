@@ -449,3 +449,71 @@ async function fetchMetrics() {
 }
 
 Object.assign(window, { fetchMetrics });
+
+/* ---------------- Voz (Perfil → Voz clonada, tudo real) ---------------- */
+// Erros da API de voz vêm como {"detail": "mensagem amigável em PT"} —
+// extraímos pra mostrar direto na UI em vez de "502: {...}".
+async function voiceApiError(r) {
+  let msg = `Erro ${r.status}`;
+  try {
+    const j = await r.json();
+    if (j && j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+  } catch (e) { /* corpo não-JSON — mantém msg genérica */ }
+  const err = new Error(msg);
+  err.status = r.status;
+  return err;
+}
+
+async function fetchVoiceStatus() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/voice`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await voiceApiError(r);
+  return r.json();
+}
+
+async function fetchVoiceCatalog() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/voice/catalog`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await voiceApiError(r);
+  return r.json();
+}
+
+// files: array de { name, blob } — vira multipart; o browser seta o
+// Content-Type (com boundary) sozinho, NÃO setar manualmente.
+async function cloneVoice(files) {
+  const fd = new FormData();
+  files.forEach(f => fd.append('files', f.blob, f.name));
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/voice/clone`, {
+    method: 'POST', headers: { ...AUTH_HEADERS }, body: fd,
+  });
+  if (!r.ok) throw await voiceApiError(r);
+  return r.json();
+}
+
+async function previewVoice(voiceId = '', text = '') {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/voice/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ voice_id: voiceId, text }),
+  });
+  if (!r.ok) throw await voiceApiError(r);
+  return r.json();
+}
+
+async function patchVoice(updates) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/voice`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(updates),
+  });
+  if (!r.ok) throw await voiceApiError(r);
+  return r.json();
+}
+
+async function deleteVoice() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/voice`, {
+    method: 'DELETE', headers: { ...AUTH_HEADERS },
+  });
+  if (!r.ok) throw await voiceApiError(r);
+  return r.json();
+}
+
+Object.assign(window, { fetchVoiceStatus, fetchVoiceCatalog, cloneVoice, previewVoice, patchVoice, deleteVoice });

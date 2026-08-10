@@ -14,12 +14,15 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request
+from fastapi import (
+    APIRouter, BackgroundTasks, Cookie, Depends, File,
+    HTTPException, Request, UploadFile,
+)
 from fastapi.responses import RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from huma.config import APP_VERSION
+from huma.config import APP_VERSION, ELEVENLABS_API_KEY, ELEVENLABS_MODEL
 from huma.core.auth import verify_webhook, verify_api_key, verify_api_key_manual, bearer_scheme
 from huma.core.orchestrator import handle_message, process_outbound_campaign
 from huma.models.schemas import (
@@ -37,6 +40,8 @@ from huma.services import whatsapp_service as wa
 from huma.services import media_service as ms
 from huma.services import payment_service as pay
 from huma.services import ai_service as ai
+from huma.services import audio_service as audio
+from huma.services import voice_service as vs
 from huma.utils.logger import get_logger
 
 log = get_logger("routes")
@@ -457,6 +462,194 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
     await db.update_client(client_id, persisted)
     log.info(f"Settings salvos | client={client_id} | fields={sorted(accepted.keys())}")
     return {"status": "ok", "updated": sorted(accepted.keys()), "ignored": ignored}
+
+
+# ── Voz (Cockpit → sessão "Voz clonada" DE VERDADE) ──
+#
+# Multi-tenant: a conta ElevenLabs é uma só (da HUMA). A voz clonada de
+# cada cliente chama "huma_{client_id}" e só aparece pro próprio dono.
+# Toda seleção de voz passa por is_voice_allowed_for_client (premade OU
+# o próprio clone) — nunca dá pra apontar pro clone de outro cliente.
+
+
+class VoicePreviewBody(BaseModel):
+    voice_id: str = Field(default="", max_length=64)
+    text: str = Field(default="", max_length=vs.MAX_PREVIEW_CHARS)
+
+
+class VoiceUpdateBody(BaseModel):
+    enable_audio: Optional[bool] = None
+    voice_id: Optional[str] = Field(default=None, max_length=64)
+
+
+@router.get("/api/clients/{client_id}/voice", tags=["Voz"])
+async def voice_status(client_id: str, client=Depends(verify_api_key)) -> dict:
+    """
+    Estado atual da voz do cliente pro Cockpit: voz ativa (com metadata
+    da ElevenLabs), flag enable_audio, modelo TTS em uso e se a feature
+    está configurada no servidor (API key presente).
+    """
+    voice = await vs.get_voice(client.voice_id) if client.voice_id else None
+    is_cloned = bool(voice and voice.get("name") == vs.clone_voice_name(client_id))
+    return {
+        "configured": bool(ELEVENLABS_API_KEY),
+        "enabled": client.enable_audio,
+        "voice_id": client.voice_id,
+        "voice": voice,
+        "is_cloned": is_cloned,
+        "model": ELEVENLABS_MODEL,
+    }
+
+
+@router.get("/api/clients/{client_id}/voice/catalog", tags=["Voz"])
+async def voice_catalog(client_id: str, _=Depends(verify_api_key)) -> dict:
+    """Vozes disponíveis pro cliente: estúdio (premade) + o próprio clone."""
+    result = await vs.list_voices_for_client(client_id)
+    if result["status"] != "ok":
+        raise HTTPException(502, result["detail"])
+    return {"cloned": result["cloned"], "premade": result["premade"]}
+
+
+@router.post("/api/clients/{client_id}/voice/clone", tags=["Voz"])
+async def voice_clone(
+    client_id: str,
+    files: list[UploadFile] = File(...),
+    client=Depends(verify_api_key),
+) -> dict:
+    """
+    Clona a voz do dono (IVC) a partir de amostras de áudio (gravadas no
+    navegador ou arquivos). Ordem à prova de falha: cria a voz NOVA →
+    persiste no cliente → só então apaga o clone antigo (best-effort).
+    Se o treino falhar, nada muda.
+    """
+    if not files:
+        raise HTTPException(400, "Envie pelo menos uma amostra de áudio.")
+    if len(files) > vs.MAX_CLONE_FILES:
+        raise HTTPException(400, f"No máximo {vs.MAX_CLONE_FILES} amostras por treino.")
+
+    payload: list[tuple[str, bytes, str]] = []
+    total = 0
+    for f in files:
+        blob = await f.read()
+        ctype = (f.content_type or "").lower()
+        if not (ctype.startswith("audio/") or ctype in ("video/webm", "application/octet-stream")):
+            raise HTTPException(400, f"Formato não suportado: {ctype or 'desconhecido'}. Envie áudio (mp3, wav, m4a, ogg, webm).")
+        if len(blob) > vs.MAX_CLONE_FILE_BYTES:
+            raise HTTPException(400, "Cada amostra pode ter até 10MB.")
+        total += len(blob)
+        payload.append((f.filename or "amostra.webm", blob, ctype or "audio/webm"))
+
+    if total > vs.MAX_CLONE_TOTAL_BYTES:
+        raise HTTPException(400, "As amostras somadas passam de 30MB. Envie menos áudio.")
+    if total < 50_000:
+        raise HTTPException(400, "Áudio curto demais pra clonar. Grave pelo menos 1 minuto falando natural.")
+
+    old_voice_id = client.voice_id
+    old_voice = await vs.get_voice(old_voice_id) if old_voice_id else None
+
+    result = await vs.create_instant_clone(client_id, payload)
+    if result["status"] != "ok":
+        raise HTTPException(502, result["detail"])
+
+    new_voice_id = result["voice_id"]
+    await db.update_client(client_id, {"voice_id": new_voice_id, "enable_audio": True})
+
+    # Retreino: apaga o clone ANTIGO deste cliente (nunca premade, nunca
+    # voz de outro). Best-effort — falha aqui não desfaz o treino novo.
+    if (
+        old_voice
+        and old_voice.get("name") == vs.clone_voice_name(client_id)
+        and old_voice_id != new_voice_id
+    ):
+        await vs.delete_voice(old_voice_id)
+
+    voice = await vs.get_voice(new_voice_id)
+    log.info(f"Voz clonada via Cockpit | client={client_id} | voice={new_voice_id[:8]}... | files={len(payload)} | bytes={total}")
+    return {"status": "ok", "voice_id": new_voice_id, "voice": voice}
+
+
+@router.post("/api/clients/{client_id}/voice/preview", tags=["Voz"])
+async def voice_preview(
+    client_id: str,
+    payload: VoicePreviewBody,
+    client=Depends(verify_api_key),
+) -> dict:
+    """
+    Gera uma prévia REAL em PT-BR (TTS de verdade com o modelo em uso,
+    não o sample em inglês da ElevenLabs) e devolve a URL do áudio.
+    Sem voice_id no body, usa a voz ativa do cliente.
+    """
+    voice_id = (payload.voice_id or "").strip() or client.voice_id
+    if not voice_id:
+        raise HTTPException(400, "Nenhuma voz selecionada pra prévia.")
+
+    voice = await vs.get_voice(voice_id)
+    if not voice:
+        raise HTTPException(404, "Voz não encontrada na ElevenLabs.")
+    if not vs.is_voice_allowed_for_client(voice, client_id):
+        raise HTTPException(403, "Essa voz não pertence a este cliente.")
+
+    text = (payload.text or "").strip() or vs.build_preview_text(client.business_name)
+    url = await audio.generate_and_upload(text, voice_id, sentiment="neutral")
+    if not url:
+        raise HTTPException(502, "Falha ao gerar a prévia. Tenta de novo em instantes.")
+
+    log.info(f"Prévia de voz gerada | client={client_id} | voice={voice_id[:8]}...")
+    return {"status": "ok", "url": url, "text": text}
+
+
+@router.patch("/api/clients/{client_id}/voice", tags=["Voz"])
+async def voice_update(
+    client_id: str,
+    payload: VoiceUpdateBody,
+    client=Depends(verify_api_key),
+) -> dict:
+    """
+    Seleciona a voz ativa e/ou liga-desliga o envio de áudios.
+    voice_id="" limpa a seleção (a IA volta a responder só em texto).
+    """
+    updates: dict = {}
+
+    if payload.voice_id is not None:
+        vid = payload.voice_id.strip()
+        if vid:
+            voice = await vs.get_voice(vid)
+            if not voice:
+                raise HTTPException(404, "Voz não encontrada na ElevenLabs.")
+            if not vs.is_voice_allowed_for_client(voice, client_id):
+                raise HTTPException(403, "Essa voz não pertence a este cliente.")
+        updates["voice_id"] = vid
+
+    if payload.enable_audio is not None:
+        updates["enable_audio"] = payload.enable_audio
+
+    if not updates:
+        raise HTTPException(400, "Nada pra atualizar.")
+
+    await db.update_client(client_id, updates)
+    log.info(f"Voz atualizada | client={client_id} | fields={sorted(updates.keys())}")
+    return {"status": "ok", "updated": sorted(updates.keys())}
+
+
+@router.delete("/api/clients/{client_id}/voice", tags=["Voz"])
+async def voice_delete(client_id: str, client=Depends(verify_api_key)) -> dict:
+    """
+    Remove a voz do cliente. Se for o clone dele, apaga da ElevenLabs
+    também; voz de estúdio só desvincula. 404 na ElevenLabs é idempotente.
+    """
+    voice_id = client.voice_id
+    if not voice_id:
+        return {"status": "ok", "detail": "Nenhuma voz configurada."}
+
+    voice = await vs.get_voice(voice_id)
+    if voice and voice.get("name") == vs.clone_voice_name(client_id):
+        result = await vs.delete_voice(voice_id)
+        if result["status"] != "ok":
+            raise HTTPException(502, result["detail"])
+
+    await db.update_client(client_id, {"voice_id": ""})
+    log.info(f"Voz removida do cliente | client={client_id} | voice={voice_id[:8]}...")
+    return {"status": "ok"}
 
 
 # ── Billing / Assinatura HUMA (recorrência via MP Assinaturas) ──

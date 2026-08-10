@@ -736,52 +736,402 @@ const PerfilYou = () => {
   );
 };
 
-const PerfilVoice = () => (
-  <Card>
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-      <div style={{
-        width: 56, height: 56, borderRadius: 999,
-        background: 'var(--terracotta-tint)', color: 'var(--terracotta)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-      }}>
-        <Icon name="mic" size={26}/>
-      </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', letterSpacing: '-0.015em' }}>
-          Sua voz, treinada
-        </div>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
-          v_mR4nA_2024_a7f3 · atualizada há 3 dias
-        </div>
-      </div>
-      <span style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500,
-        padding: '4px 10px', borderRadius: 999,
-        background: 'var(--sage-tint)', color: 'var(--sage-ink)',
-      }}>
-        <span style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--sage)' }}/>
-        Alta fidelidade
-      </span>
-    </div>
+// ============================================================
+// PERFIL → VOZ CLONADA — real (ElevenLabs via backend HUMA)
+// Fluxos: clonar a própria voz (mic ou arquivo), escolher voz de
+// estúdio, ouvir prévia REAL em PT-BR, ligar/desligar áudios.
+// ============================================================
 
-    <div style={{ padding: 16, background: 'var(--paper-sunk)', borderRadius: 12 }}>
-      <VoiceClipInline duration="18"/>
-      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 12, fontStyle: 'italic', lineHeight: 1.5 }}>
-        "Oi, Beatriz. Seu horário de limpeza de pele está confirmado para quarta, 14h. Te lembro na véspera."
-      </div>
-    </div>
+const fmtBytes = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)}MB` : `${Math.max(1, Math.round(n / 1024))}KB`;
+const fmtSecs = (s) => `${String(Math.floor(s / 60)).padStart(1, '0')}:${String(s % 60).padStart(2, '0')}`;
 
-    <div style={{ display: 'flex', gap: 8 }}>
-      <Button variant="dark" size="md" icon={<Icon name="mic" size={14}/>}>Treinar novamente</Button>
-      <Button variant="ghost" size="md">Baixar amostra</Button>
-    </div>
+// Player singleton — um áudio por vez; tocar outro para o anterior.
+const useVoicePlayer = () => {
+  const audioRef = React.useRef(null);
+  const [playingKey, setPlayingKey] = useStateS(null);
+  const stop = () => {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    setPlayingKey(null);
+  };
+  const play = (key, url) => {
+    stop();
+    const a = new Audio(url);
+    audioRef.current = a;
+    setPlayingKey(key);
+    a.onended = () => { audioRef.current = null; setPlayingKey(null); };
+    a.play().catch(() => { audioRef.current = null; setPlayingKey(null); });
+  };
+  useEffectS(() => stop, []);
+  return { playingKey, play, stop };
+};
 
-    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-      Recomendamos treinar novamente se sua voz mudar (resfriado prolongado, pós-operatório) pra HUMA continuar soando natural.
-    </div>
-  </Card>
+const VoiceMsg = ({ kind, children }) => (
+  <div style={{
+    display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 14px', borderRadius: 10,
+    background: kind === 'err' ? '#F2D4CB' : 'var(--sage-tint)',
+    color: kind === 'err' ? '#7C2E18' : 'var(--sage-ink)',
+    fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.5,
+  }}>
+    <Icon name={kind === 'err' ? 'alert' : 'check'} size={15}/>
+    <span style={{ flex: 1 }}>{children}</span>
+  </div>
 );
+
+const PerfilVoice = () => {
+  const [status, setStatus]       = useStateS(null);   // GET /voice
+  const [statusErr, setStatusErr] = useStateS('');
+  const [catalog, setCatalog]     = useStateS(null);   // GET /voice/catalog
+  const [catalogErr, setCatalogErr] = useStateS('');
+
+  const [samples, setSamples]     = useStateS([]);     // { name, blob, source, seconds? }
+  const [recState, setRecState]   = useStateS('idle'); // idle | recording
+  const [recSeconds, setRecSeconds] = useStateS(0);
+  const [cloning, setCloning]     = useStateS(false);
+  const [cloneErr, setCloneErr]   = useStateS('');
+  const [busy, setBusy]           = useStateS('');     // chave da ação em andamento
+  const [actionErr, setActionErr] = useStateS('');
+  const [notice, setNotice]       = useStateS('');
+
+  const recRef  = React.useRef(null);   // { recorder, timer, seconds }
+  const fileRef = React.useRef(null);
+  const player  = useVoicePlayer();
+
+  const loadStatus = async () => {
+    try { setStatus(await fetchVoiceStatus()); setStatusErr(''); }
+    catch (e) { setStatusErr(e.message); }
+  };
+  const loadCatalog = async () => {
+    try { setCatalog(await fetchVoiceCatalog()); setCatalogErr(''); }
+    catch (e) { setCatalogErr(e.message); }
+  };
+
+  const stopRecording = (discard) => {
+    const cur = recRef.current;
+    if (!cur) return;
+    clearInterval(cur.timer);
+    if (discard) {
+      try { cur.recorder.stream.getTracks().forEach(t => t.stop()); } catch (e) { /* já parado */ }
+      recRef.current = null;
+      return;
+    }
+    try { cur.recorder.stop(); }
+    catch (e) { recRef.current = null; setRecState('idle'); setRecSeconds(0); }
+  };
+
+  useEffectS(() => { loadStatus(); loadCatalog(); return () => stopRecording(true); }, []);
+
+  const startRecording = async () => {
+    setCloneErr('');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = (window.MediaRecorder && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) ? 'audio/webm;codecs=opus' : '';
+      const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const chunks = [];
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const secs = recRef.current ? recRef.current.seconds : 0;
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        if (blob.size > 2000) {
+          setSamples(s => [...s, { name: `gravacao-${Date.now()}.webm`, blob, source: 'mic', seconds: secs }]);
+        }
+        recRef.current = null;
+        setRecState('idle');
+        setRecSeconds(0);
+      };
+      const timer = setInterval(() => {
+        if (recRef.current) { recRef.current.seconds += 1; setRecSeconds(recRef.current.seconds); }
+      }, 1000);
+      recRef.current = { recorder, timer, seconds: 0 };
+      recorder.start();
+      setRecState('recording');
+    } catch (e) {
+      setCloneErr('Não consegui acessar o microfone. Libere a permissão no navegador ou envie um arquivo de áudio.');
+    }
+  };
+
+  const addFiles = (ev) => {
+    const list = Array.from(ev.target.files || []);
+    setSamples(s => [...s, ...list.map(f => ({ name: f.name, blob: f, source: 'file' }))].slice(0, 6));
+    ev.target.value = '';
+  };
+
+  const totalBytes = samples.reduce((a, s) => a + s.blob.size, 0);
+  const micSeconds = samples.reduce((a, s) => a + (s.seconds || 0), 0);
+
+  const doClone = async () => {
+    if (!samples.length || cloning) return;
+    setCloning(true); setCloneErr(''); setNotice('');
+    try {
+      await cloneVoice(samples);
+      setSamples([]);
+      await loadStatus();
+      await loadCatalog();
+      setNotice('Voz clonada e ativada! Ouça a prévia no cartão da voz ativa.');
+    } catch (e) {
+      setCloneErr(e.message);
+    }
+    setCloning(false);
+  };
+
+  const doPreview = async (key, voiceId) => {
+    if (player.playingKey === key) { player.stop(); return; }
+    if (busy) return;
+    setBusy(key); setActionErr('');
+    try {
+      const r = await previewVoice(voiceId || '');
+      player.play(key, r.url);
+    } catch (e) { setActionErr(e.message); }
+    setBusy('');
+  };
+
+  const selectVoice = async (voiceId) => {
+    if (busy) return;
+    setBusy('select:' + voiceId); setActionErr(''); setNotice('');
+    try {
+      await patchVoice({ voice_id: voiceId });
+      await loadStatus();
+      setNotice('Voz atualizada. Ouça a prévia pra conferir.');
+    } catch (e) { setActionErr(e.message); }
+    setBusy('');
+  };
+
+  const toggleEnabled = async () => {
+    if (!status) return;
+    const next = !status.enabled;
+    setStatus({ ...status, enabled: next });  // otimista
+    try { await patchVoice({ enable_audio: next }); }
+    catch (e) { setStatus(s => ({ ...s, enabled: !next })); setActionErr(e.message); }
+  };
+
+  const removeVoice = async () => {
+    if (!window.confirm('Remover a voz atual? A IA volta a responder só em texto até você escolher outra.')) return;
+    setBusy('remove'); setActionErr(''); setNotice('');
+    try {
+      player.stop();
+      await deleteVoice();
+      await loadStatus();
+      await loadCatalog();
+    } catch (e) { setActionErr(e.message); }
+    setBusy('');
+  };
+
+  if (!status && !statusErr) {
+    return (
+      <Card>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Carregando sua voz…</div>
+      </Card>
+    );
+  }
+
+  const voice = status && status.voice;
+  const hasVoice = !!(status && status.voice_id);
+
+  return (
+    <>
+      {statusErr && <VoiceMsg kind="err">Não consegui carregar o estado da voz: {statusErr}</VoiceMsg>}
+      {actionErr && <VoiceMsg kind="err">{actionErr}</VoiceMsg>}
+      {notice && <VoiceMsg kind="ok">{notice}</VoiceMsg>}
+      {status && !status.configured && (
+        <VoiceMsg kind="err">A integração de voz ainda não está configurada no servidor (ELEVENLABS_API_KEY). Fale com o suporte HUMA.</VoiceMsg>
+      )}
+
+      {/* ── Voz ativa ── */}
+      {hasVoice && (
+        <Card>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <div style={{
+              width: 56, height: 56, borderRadius: 999,
+              background: 'var(--terracotta-tint)', color: 'var(--terracotta)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              <Icon name="mic" size={26}/>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', letterSpacing: '-0.015em' }}>
+                {status.is_cloned ? 'Sua voz, treinada' : (voice ? voice.name : 'Voz configurada')}
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                {status.voice_id} · modelo {status.model}
+              </div>
+            </div>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500,
+              padding: '4px 10px', borderRadius: 999,
+              background: 'var(--sage-tint)', color: 'var(--sage-ink)',
+            }}>
+              <span style={{ width: 5, height: 5, borderRadius: 999, background: 'var(--sage)' }}/>
+              {status.is_cloned ? 'Voz clonada' : 'Voz de estúdio'}
+            </span>
+          </div>
+
+          {!voice && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
+              Não consegui confirmar essa voz na ElevenLabs agora — a prévia pode falhar. Se persistir, treine de novo ou escolha outra voz.
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Button
+              variant="dark" size="md"
+              icon={<Icon name={player.playingKey === 'active' ? 'pause' : 'play'} size={14}/>}
+              onClick={() => doPreview('active', status.voice_id)}
+              disabled={busy === 'active'}
+            >
+              {busy === 'active' ? 'Gerando prévia…' : (player.playingKey === 'active' ? 'Parar' : 'Ouvir prévia em português')}
+            </Button>
+            <Button
+              variant="ghost" size="md" icon={<Icon name="trash" size={14}/>}
+              onClick={removeVoice} disabled={busy === 'remove'}
+            >
+              {busy === 'remove' ? 'Removendo…' : 'Remover voz'}
+            </Button>
+          </div>
+
+          <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
+          <Toggle
+            checked={!!status.enabled}
+            onChange={toggleEnabled}
+            label="HUMA envia mensagens de áudio com essa voz"
+          />
+        </Card>
+      )}
+
+      {/* ── Clonar / treinar novamente ── */}
+      <Card title={status && status.is_cloned ? 'Treinar novamente' : 'Clonar sua voz'}>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+          Grave <b>1 a 3 minutos</b> falando natural, como se estivesse mandando áudio pra um cliente —
+          ambiente silencioso, sem ler robotizado. Pode gravar aqui mesmo ou enviar áudios que você já tem
+          (mp3, wav, m4a, ogg). Quanto mais natural a amostra, mais a HUMA soa como você.
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {recState === 'recording' ? (
+            <Button variant="primary" size="md" icon={<Icon name="pause" size={14}/>} onClick={() => stopRecording(false)}>
+              Parar gravação · {fmtSecs(recSeconds)}
+            </Button>
+          ) : (
+            <Button variant="dark" size="md" icon={<Icon name="mic" size={14}/>} onClick={startRecording} disabled={cloning || samples.length >= 6}>
+              Gravar pelo microfone
+            </Button>
+          )}
+          <Button variant="ghost" size="md" icon={<Icon name="upload" size={14}/>} onClick={() => fileRef.current && fileRef.current.click()} disabled={cloning || samples.length >= 6}>
+            Enviar arquivo de áudio
+          </Button>
+          <input ref={fileRef} type="file" accept="audio/*" multiple style={{ display: 'none' }} onChange={addFiles}/>
+        </div>
+
+        {recState === 'recording' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--terracotta-ink)' }}>
+            <span style={{ width: 8, height: 8, borderRadius: 999, background: '#E2542A' }}/>
+            Gravando… fale natural, sem pressa.
+          </div>
+        )}
+
+        {samples.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {samples.map((s, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                background: 'var(--paper-sunk)', borderRadius: 10,
+              }}>
+                <Icon name={s.source === 'mic' ? 'mic' : 'file'} size={14}/>
+                <span style={{ flex: 1, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+                  {s.seconds ? `${fmtSecs(s.seconds)} · ` : ''}{fmtBytes(s.blob.size)}
+                </span>
+                <button onClick={() => setSamples(arr => arr.filter((_, j) => j !== i))} disabled={cloning} style={{
+                  border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--ink-3)', padding: 2,
+                }}><Icon name="x" size={14}/></button>
+              </div>
+            ))}
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+              {samples.length}/6 amostras · {fmtBytes(totalBytes)}{micSeconds ? ` · ${fmtSecs(micSeconds)} gravados` : ''}
+            </div>
+          </div>
+        )}
+
+        {cloneErr && <VoiceMsg kind="err">{cloneErr}</VoiceMsg>}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Button variant="primary" size="md" icon={<Icon name="sparkle" size={14}/>} onClick={doClone} disabled={!samples.length || cloning || recState === 'recording'}>
+            {cloning ? 'Treinando sua voz… (até 1 min)' : (status && status.is_cloned ? 'Treinar com essas amostras' : 'Criar minha voz clonada')}
+          </Button>
+          {status && status.is_cloned && (
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+              O treino novo substitui o anterior.
+            </span>
+          )}
+        </div>
+
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+          Recomendamos treinar novamente se sua voz mudar (resfriado prolongado, pós-operatório) pra HUMA continuar soando natural.
+        </div>
+      </Card>
+
+      {/* ── Vozes de estúdio ── */}
+      <Card title="Ou escolha uma voz de estúdio">
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+          Vozes profissionais prontas pra usar. Toque em <b>Ouvir</b> pra ver como fica falando português com o seu negócio.
+        </div>
+
+        {catalogErr && <VoiceMsg kind="err">Não consegui carregar o catálogo: {catalogErr}</VoiceMsg>}
+        {!catalog && !catalogErr && (
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Carregando vozes…</div>
+        )}
+
+        {catalog && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {(catalog.premade || []).map(v => {
+              const key = 'cat:' + v.voice_id;
+              const inUse = status && status.voice_id === v.voice_id;
+              const labels = Object.values(v.labels || {}).filter(Boolean).slice(0, 3).join(' · ');
+              return (
+                <div key={v.voice_id} style={{
+                  display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px',
+                  border: '1px solid ' + (inUse ? 'var(--ink)' : 'var(--paper-edge)'),
+                  borderRadius: 12, background: 'var(--paper-raised)',
+                }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{v.name}</div>
+                    {labels && <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{labels}</div>}
+                  </div>
+                  <Button
+                    variant="ghost" size="sm"
+                    icon={<Icon name={player.playingKey === key ? 'pause' : 'play'} size={13}/>}
+                    onClick={() => doPreview(key, v.voice_id)}
+                    disabled={busy === key}
+                  >
+                    {busy === key ? 'Gerando…' : (player.playingKey === key ? 'Parar' : 'Ouvir')}
+                  </Button>
+                  {inUse ? (
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                      fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+                      color: 'var(--sage-ink)', padding: '6px 10px',
+                    }}>
+                      <Icon name="check" size={13}/> Em uso
+                    </span>
+                  ) : (
+                    <Button variant="dark" size="sm" onClick={() => selectVoice(v.voice_id)} disabled={busy === 'select:' + v.voice_id}>
+                      {busy === 'select:' + v.voice_id ? 'Ativando…' : 'Usar esta voz'}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
+            {catalog.premade && !catalog.premade.length && (
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
+                Nenhuma voz de estúdio disponível na conta ainda.
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+    </>
+  );
+};
 
 const PerfilSecurity = () => (
   <>
