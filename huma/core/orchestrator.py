@@ -167,16 +167,29 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         if is_new_conversation:
             conv_check = await billing.check_conversations(client_id)
             if not conv_check["has_conversations"]:
-                await wa.send_text(
-                    phone,
-                    "Ops! Estamos com o atendimento pausado no momento. Tente novamente em breve!",
-                    client_id=client_id,
-                )
-                await wa.notify_owner(
-                    client_data.owner_phone or client_data.client_id,
-                    f"⚠️ Conversas esgotadas! {client_data.business_name} precisa de mais conversas. Compre em app.humaia.com.br",
-                    client_id=client_id,
-                )
+                # FIX contradição em produção: _is_new_conversation já marcou a
+                # janela 24h no Redis ANTES do billing bloquear. Sem desmarcar,
+                # a PRÓXIMA mensagem do lead pula este gate (janela "existe") e
+                # a IA responde normal logo depois de dizer que estava pausada.
+                # Desmarca pra toda mensagem re-passar pelo gate até ter saldo.
+                await cache.delete_key(f"conv_window:{client_id}:{phone}")
+
+                # Anti-spam: avisa o lead (e o dono) UMA vez a cada 6h por
+                # telefone — as próximas mensagens ficam em silêncio até o
+                # saldo voltar, em vez de repetir "pausado" a cada msg.
+                notified_key = f"billing_paused_msg:{client_id}:{phone}"
+                if not await cache.exists(notified_key):
+                    await cache.set_with_ttl(notified_key, "1", ttl=21600)
+                    await wa.send_text(
+                        phone,
+                        "Ops! Estamos com o atendimento pausado no momento. Tente novamente em breve!",
+                        client_id=client_id,
+                    )
+                    await wa.notify_owner(
+                        client_data.owner_phone or client_data.client_id,
+                        f"⚠️ Conversas esgotadas! {client_data.business_name} precisa de mais conversas. Compre em app.humaia.com.br",
+                        client_id=client_id,
+                    )
                 log.warning(f"Sem conversas | {client_id} | saldo=0")
                 return
 
