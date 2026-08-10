@@ -379,6 +379,12 @@ class TestVoiceServiceHelpers:
         assert vs.is_voice_allowed_for_client(_own_clone(), "cli_voz") is True
         assert vs.is_voice_allowed_for_client(_foreign_clone(), "cli_voz") is False
 
+    def test_ownership_voz_curada_ok(self):
+        # Voz adicionada da biblioteca (sem prefixo huma_) é de todos
+        from huma.services import voice_service as vs
+        curada = {"voice_id": "voz_br1", "name": "Camila BR", "category": "professional", "labels": {}}
+        assert vs.is_voice_allowed_for_client(curada, "qualquer") is True
+
     def test_preview_text_menciona_negocio(self):
         from huma.services import voice_service as vs
         text = vs.build_preview_text("Clínica Voz")

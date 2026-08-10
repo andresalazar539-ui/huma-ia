@@ -21,7 +21,7 @@ from typing import Optional
 
 import httpx
 
-from huma.config import ELEVENLABS_API_KEY, ELEVENLABS_MODEL
+from huma.config import ELEVENLABS_API_KEY, ELEVENLABS_MODEL, ELEVENLABS_VOICE_ID
 from huma.utils.logger import get_logger
 
 log = get_logger("voice")
@@ -67,13 +67,15 @@ def _slim_voice(raw: dict) -> dict:
 
 def is_voice_allowed_for_client(voice: dict, client_id: str) -> bool:
     """
-    Ownership: um cliente só pode usar voz de estúdio (premade) ou a
-    PRÓPRIA voz clonada (nome huma_{client_id}). Voz clonada de outro
-    cliente é invisível e proibida.
+    Ownership: voz clonada de OUTRO cliente (nome huma_*) é proibida.
+    Todo o resto — voz curada da conta HUMA, premade, a própria voz
+    clonada — é permitido. A conta ElevenLabs é da HUMA, então qualquer
+    voz sem o prefixo huma_ foi adicionada de propósito pro catálogo.
     """
-    if voice.get("category") == "premade":
-        return True
-    return voice.get("name", "") == clone_voice_name(client_id)
+    name = voice.get("name", "")
+    if name.startswith(VOICE_NAME_PREFIX):
+        return name == clone_voice_name(client_id)
+    return True
 
 
 def build_preview_text(business_name: str = "") -> str:
@@ -92,9 +94,18 @@ def build_preview_text(business_name: str = "") -> str:
 
 async def list_voices_for_client(client_id: str) -> dict:
     """
-    Catálogo de vozes visível pra UM cliente: vozes de estúdio (premade)
-    + a voz clonada dele (se existir). Clones de outros clientes ficam
-    de fora — sempre.
+    Catálogo de vozes visível pra UM cliente:
+      - a voz clonada DELE (nome huma_{client_id}), se existir;
+      - as vozes CURADAS da conta HUMA — tudo que o André adicionou em
+        "My Voices" na ElevenLabs (biblioteca PT-BR etc.), identificado
+        por NÃO ter prefixo huma_ e NÃO ser premade default.
+
+    As premade default da ElevenLabs (Rachel, Aria...) ficam FORA do
+    catálogo: falam português com sotaque americano. Exceção: se a
+    ELEVENLABS_VOICE_ID (voz padrão da HUMA) apontar pra uma delas,
+    ela entra mesmo assim, marcada como recomendada.
+
+    Clones de outros clientes ficam de fora — sempre.
     """
     if not ELEVENLABS_API_KEY:
         return {"status": "error", "detail": "ELEVENLABS_API_KEY não configurada"}
@@ -115,11 +126,34 @@ async def list_voices_for_client(client_id: str) -> dict:
         return {"status": "error", "detail": "Falha inesperada ao listar vozes"}
 
     own_name = clone_voice_name(client_id)
+    default_id = (ELEVENLABS_VOICE_ID or "").strip()
     cloned = [_slim_voice(v) for v in raw_voices if v.get("name") == own_name]
-    premade = [_slim_voice(v) for v in raw_voices if v.get("category") == "premade"]
 
-    log.info(f"Vozes listadas | client={client_id} | cloned={len(cloned)} | premade={len(premade)}")
-    return {"status": "ok", "cloned": cloned, "premade": premade}
+    curated: list[dict] = []
+    for v in raw_voices:
+        name = v.get("name", "")
+        if name.startswith(VOICE_NAME_PREFIX):
+            continue  # clone de algum cliente — nunca vai pro catálogo
+        is_default = bool(default_id) and v.get("voice_id") == default_id
+        if v.get("category") == "premade" and not is_default:
+            continue  # premade americana default — fora
+        slim = _slim_voice(v)
+        slim["recommended"] = is_default
+        curated.append(slim)
+
+    # Voz padrão da HUMA referenciada por ID mas fora de "My Voices":
+    # busca direto pra ela nunca sumir do catálogo.
+    if default_id and not any(v["voice_id"] == default_id for v in curated):
+        default_voice = await get_voice(default_id)
+        if default_voice and not default_voice.get("name", "").startswith(VOICE_NAME_PREFIX):
+            default_voice["recommended"] = True
+            curated.append(default_voice)
+
+    # Recomendada primeiro, resto por nome
+    curated.sort(key=lambda v: (not v.get("recommended"), v.get("name", "").lower()))
+
+    log.info(f"Vozes listadas | client={client_id} | cloned={len(cloned)} | curadas={len(curated)}")
+    return {"status": "ok", "cloned": cloned, "premade": curated}
 
 
 async def get_voice(voice_id: str) -> Optional[dict]:

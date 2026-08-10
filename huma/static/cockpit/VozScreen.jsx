@@ -527,6 +527,7 @@ const VozScreen = () => {
               {prontas.map(v => (
                 <VozCard key={v.voice_id}
                   nome={v.name} tag={vozQuem(v)} tagClonada={false}
+                  recomendada={!!v.recommended}
                   desc={vozDesc(v)}
                   ativa={v.voice_id === ativaId}
                   playerState={playing === v.voice_id ? 'playing' : (loadingPrev === v.voice_id ? 'loading' : 'idle')}
@@ -553,7 +554,7 @@ const VozScreen = () => {
   );
 };
 
-const VozCard = ({ nome, tag, tagClonada, desc, ativa, playerState, onPlay, onUsar, usando }) => (
+const VozCard = ({ nome, tag, tagClonada, recomendada, desc, ativa, playerState, onPlay, onUsar, usando }) => (
   <div style={{
     border: `1px solid ${ativa ? 'var(--sage-soft)' : 'var(--paper-edge)'}`,
     borderRadius: 16, background: ativa ? 'var(--sage-tint)' : 'var(--paper-raised)',
@@ -570,6 +571,13 @@ const VozCard = ({ nome, tag, tagClonada, desc, ativa, playerState, onPlay, onUs
             background: tagClonada ? 'var(--terracotta-tint)' : 'var(--paper-sunk)',
             color: tagClonada ? 'var(--terracotta-ink)' : 'var(--ink-3)',
           }}>{tag}</span>
+          {recomendada && (
+            <span style={{
+              fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.06em', textTransform: 'uppercase',
+              padding: '1px 7px', borderRadius: 999,
+              background: 'var(--sage-tint)', color: 'var(--sage-ink)', border: '1px solid var(--sage-soft)',
+            }}>recomendada</span>
+          )}
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: ativa ? 'var(--sage-ink)' : 'var(--ink-3)', marginTop: 3, lineHeight: 1.45 }}>{desc}</div>
       </div>
