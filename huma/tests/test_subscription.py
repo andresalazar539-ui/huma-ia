@@ -693,3 +693,72 @@ class TestSubscribeCard:
         ))
         assert out["comp"] is True
         assert called["args"] == ("cli_x", "start", "cliente@negocio.com", "TESTE100")
+
+
+# ================================================================
+# CHECKOUT ABANDONADO NÃO REBAIXA ESTADO VIVO (E2E 2026-08-15)
+# ================================================================
+
+class TestPendingNaoRebaixa:
+
+    def _setup(self, monkeypatch, existing_status):
+        effects = {"upserts": []}
+
+        async def mp_get(path):
+            return {"id": "pre_p", "status": "pending", "external_reference": "humasub|cli_x|on"}
+
+        async def upsert(cid, plan, pre_id, status):
+            effects["upserts"].append((cid, plan, pre_id, status))
+
+        class FakeExec:
+            def __init__(self, rows):
+                self.data = rows
+
+        class FakeTable:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def select(self, *a, **kw):
+                return self
+
+            def eq(self, *a):
+                return self
+
+            def limit(self, n):
+                return self
+
+            def execute(self):
+                return FakeExec(self._rows)
+
+        class FakeSupa:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def table(self, name):
+                return FakeTable(self._rows)
+
+        rows = [{"status": existing_status}] if existing_status else []
+        monkeypatch.setattr(subs, "_mp_get", mp_get)
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs, "get_supabase", lambda: FakeSupa(rows))
+        return effects
+
+    def test_pending_nao_sobrescreve_trial(self, monkeypatch):
+        effects = self._setup(monkeypatch, "trial")
+        asyncio.run(subs._handle_preapproval_change("pre_p"))
+        assert effects["upserts"] == []
+
+    def test_pending_nao_sobrescreve_active(self, monkeypatch):
+        effects = self._setup(monkeypatch, "active")
+        asyncio.run(subs._handle_preapproval_change("pre_p"))
+        assert effects["upserts"] == []
+
+    def test_pending_gravado_quando_nao_ha_estado_vivo(self, monkeypatch):
+        effects = self._setup(monkeypatch, "")
+        asyncio.run(subs._handle_preapproval_change("pre_p"))
+        assert effects["upserts"] == [("cli_x", "on", "pre_p", "pending")]
+
+    def test_pending_gravado_sobre_cancelled(self, monkeypatch):
+        effects = self._setup(monkeypatch, "cancelled")
+        asyncio.run(subs._handle_preapproval_change("pre_p"))
+        assert effects["upserts"] == [("cli_x", "on", "pre_p", "pending")]

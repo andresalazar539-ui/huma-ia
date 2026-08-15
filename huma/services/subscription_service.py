@@ -667,6 +667,24 @@ async def _handle_preapproval_change(preapproval_id: str) -> None:
         log.warning(f"Preapproval status desconhecido | id={preapproval_id} | status={mp_status}")
         return
 
+    # Checkout ABANDONADO não rebaixa estado vivo: um preapproval "pending"
+    # (criado e nunca pago) não pode sobrescrever trial nem assinatura
+    # ativa — descoberto no E2E 2026-08-15, quando um checkout de teste
+    # abandonado apagou o trial da conta.
+    if local_status == "pending":
+        supa = get_supabase()
+        existing = await run_in_threadpool(
+            lambda: supa.table("subscriptions").select("status")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        current = (existing.data[0].get("status") if existing.data else "") or ""
+        if current in ("trial", "active"):
+            log.info(
+                f"Preapproval pending ignorado (não rebaixa {current}) | "
+                f"client={client_id} | preapproval={preapproval_id}"
+            )
+            return
+
     await _upsert_subscription(client_id, plan, preapproval_id, local_status)
 
     # Cupom com desconto %: o resgate conta na ATIVAÇÃO (checkout
