@@ -1059,13 +1059,13 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
               {plan.limit} · renova todo mês · cancele quando quiser
             </div>
           </div>
-          <div style={{ textAlign: 'right' }}>
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
             {pct > 0 && (
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', textDecoration: 'line-through' }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', textDecoration: 'line-through', whiteSpace: 'nowrap' }}>
                 {plan.price}
               </div>
             )}
-            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 20, color: pct > 0 ? 'var(--sage-ink)' : 'var(--ink)' }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 20, whiteSpace: 'nowrap', color: pct > 0 ? 'var(--sage-ink)' : 'var(--ink)' }}>
               {_fmtBRL(price)}<span style={{ fontSize: 12, fontWeight: 400, color: 'var(--ink-3)' }}>/mês</span>
             </div>
           </div>
