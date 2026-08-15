@@ -256,6 +256,12 @@ async def activate(client_id: str, _=Depends(verify_api_key)):
         "onboarding_status": OnboardingStatus.ACTIVE.value,
     })
     log.info(f"Wizard activate | client={client_id} | clone ativo")
+
+    # Sprint Billing: trial de conta nova nasce aqui (se TRIAL_TRIGGER
+    # for "activation", o default). Idempotente — reativar não duplica.
+    from huma.services import subscription_service as subs
+    await subs.start_trial_if_eligible(client_id, trigger="activation")
+
     return {
         "status": "ok",
         "onboarding_status": OnboardingStatus.ACTIVE.value,

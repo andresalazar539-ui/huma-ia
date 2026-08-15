@@ -28,9 +28,16 @@ from typing import Optional
 import httpx
 from fastapi.concurrency import run_in_threadpool
 
-from huma.config import MERCADOPAGO_ACCESS_TOKEN, PUBLIC_BASE_URL
+from huma.config import (
+    MERCADOPAGO_ACCESS_TOKEN,
+    PUBLIC_BASE_URL,
+    TRIAL_CONVERSATIONS,
+    TRIAL_DAYS,
+    TRIAL_TRIGGER,
+)
 from huma.services import billing_service as billing
-from huma.services.billing_service import PLAN_CONFIG, Plan
+from huma.services import redis_service as cache
+from huma.services.billing_service import PLAN_CONFIG, Plan, _compute_trial_deadline
 from huma.services.db_service import get_supabase
 from huma.utils.logger import get_logger
 
@@ -226,6 +233,9 @@ async def create_checkout(client_id: str, plan_value: str, payer_email: str, cou
                 source="cupom_cortesia",
                 description=f"cupom={coupon_code} plano {plan.value}",
             )
+            # Saldo mudou fora do fluxo de mensagem: derruba o cache de 60s
+            # pra quem estava bloqueado destravar imediatamente.
+            await cache.delete_key(f"wallet_bal:{client_id}")
             log.info(f"CORTESIA ATIVADA | client={client_id} | plan={plan.value} | cupom={coupon_code}")
             return {
                 "status": "ok",
@@ -279,12 +289,106 @@ async def create_checkout(client_id: str, plan_value: str, payer_email: str, cou
 
 
 # ================================================================
+# TRIAL (Sprint Billing 2026-08-14)
+# ================================================================
+
+
+async def start_trial_if_eligible(client_id: str, trigger: str = "activation") -> dict:
+    """
+    Cria o trial de conta nova, se elegível. Nunca levanta exceção.
+
+    Chamada nos 3 pontos do funil (signup, ativação via wizard, ativação
+    via API), mas só age quando trigger == TRIAL_TRIGGER (env) — trocar o
+    cenário de nascimento do trial é trocar env var, não código.
+
+    Idempotência tripla (a tabela subscriptions NÃO tem unique em
+    client_id — linha dupla é risco real):
+      1. Lock Redis trial_lock:{client_id} (INCR, TTL 60s) contra corrida
+         de chamadas simultâneas. Redis off (-1) → segue pro guard 2.
+      2. QUALQUER linha existente em subscriptions pro client (qualquer
+         status) → no-op. Cobre re-ativação, re-login, cortesia,
+         assinatura direta.
+      3. Dedup de crédito por credit_transactions.source == "trial" —
+         cobre o caso "linha inserida mas crédito falhou" em retry.
+
+    Returns:
+        {"status": "ok"} ou {"status": "skipped", "reason": "..."}
+    """
+    try:
+        if TRIAL_TRIGGER == "off" or trigger != TRIAL_TRIGGER:
+            return {"status": "skipped", "reason": "trigger_mismatch"}
+
+        # Guard 1 — lock anti-corrida (dois /activate simultâneos)
+        lock_count = await cache.incr_with_ttl(f"trial_lock:{client_id}", ttl=60)
+        if lock_count > 1:
+            return {"status": "skipped", "reason": "lock"}
+
+        supa = get_supabase()
+
+        # Guard 2 — qualquer assinatura existente (qualquer status) = no-op
+        existing = await run_in_threadpool(
+            lambda: supa.table("subscriptions").select("id")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        if existing.data:
+            return {"status": "skipped", "reason": "subscription_exists"}
+
+        # Guard 3 — crédito de trial já concedido um dia = no-op
+        credited = await run_in_threadpool(
+            lambda: supa.table("credit_transactions").select("id")
+                .eq("client_id", client_id).eq("source", "trial")
+                .limit(1).execute()
+        )
+        if credited.data:
+            return {"status": "skipped", "reason": "trial_already_credited"}
+
+        # INSERT direto (não reusar _upsert_subscription: ela deriva preço/
+        # franquia do PLAN_CONFIG e zeraria os valores pro plano "trial").
+        now_iso = datetime.utcnow().isoformat()
+        await run_in_threadpool(
+            lambda: supa.table("subscriptions").insert({
+                "client_id": client_id,
+                "plan": "trial",
+                "status": "trial",
+                "price_brl": 0.0,
+                "included_conversations": TRIAL_CONVERSATIONS,
+                "payment_provider_id": "",
+                "created_at": now_iso,
+                "updated_at": now_iso,
+            }).execute()
+        )
+        await billing.add_conversations(
+            client_id, TRIAL_CONVERSATIONS,
+            source="trial",
+            description=f"trial {TRIAL_DAYS}d",
+        )
+        await cache.delete_key(f"sub_gate:{client_id}")
+        await cache.delete_key(f"wallet_bal:{client_id}")
+
+        log.info(
+            f"TRIAL INICIADO | client={client_id} | dias={TRIAL_DAYS} | "
+            f"conversas={TRIAL_CONVERSATIONS} | trigger={trigger}"
+        )
+        return {"status": "ok"}
+
+    except Exception as e:
+        log.error(f"start_trial falhou | client={client_id} | {type(e).__name__}: {str(e)[:150]}")
+        return {"status": "skipped", "reason": "error"}
+
+
+# ================================================================
 # STATUS / CANCELAMENTO
 # ================================================================
 
 
 async def get_billing_status(client_id: str) -> dict:
-    """Estado de cobrança pro Cockpit: plano, status da assinatura e saldo."""
+    """
+    Estado de cobrança pro Cockpit: plano, status, saldo e trial.
+
+    Campos de trial são ADITIVOS (consumidores antigos seguem intactos):
+    trial/trial_expired (bool), trial_days_left (int|None),
+    trial_ends_at (ISO|None).
+    """
     supa = get_supabase()
     resp = await run_in_threadpool(
         lambda: supa.table("subscriptions").select("*")
@@ -300,13 +404,40 @@ async def get_billing_status(client_id: str) -> dict:
     except ValueError:
         config = None
 
+    status = (sub or {}).get("status")
+    trial = status == "trial"
+    trial_expired = status == "trial_expired"
+    trial_days_left: int | None = None
+    trial_ends_at: str | None = None
+
+    if trial or trial_expired:
+        deadline = _compute_trial_deadline((sub or {}).get("created_at", ""))
+        if deadline:
+            trial_ends_at = deadline.isoformat()
+            remaining = (deadline - datetime.utcnow()).total_seconds()
+            if trial and remaining <= 0:
+                # Venceu mas o gate ainda não fez o flip lazy — reporta a verdade
+                trial, trial_expired = False, True
+            trial_days_left = max(0, int(remaining // 86400) + (1 if remaining > 0 else 0))
+
+    plan_name = (config or {}).get("name")
+    included = (config or {}).get("included_conversations")
+    if plan_value == "trial":
+        # "trial" não existe no PLAN_CONFIG — nome e franquia vêm do próprio row
+        plan_name = "Teste grátis"
+        included = (sub or {}).get("included_conversations")
+
     return {
         "plan": plan_value or None,
-        "plan_name": (config or {}).get("name"),
+        "plan_name": plan_name,
         "price_brl": (config or {}).get("price_brl"),
-        "included_conversations": (config or {}).get("included_conversations"),
-        "subscription_status": (sub or {}).get("status"),
+        "included_conversations": included,
+        "subscription_status": status,
         "balance": balance,
+        "trial": trial,
+        "trial_expired": trial_expired,
+        "trial_days_left": trial_days_left,
+        "trial_ends_at": trial_ends_at,
     }
 
 
@@ -448,6 +579,9 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         source="mp_renovacao",
         description=f"apid={authorized_payment_id} plano {plan_value}",
     )
+    # Saldo mudou por fora: derruba o cache de 60s pra quem estava
+    # bloqueado (ex.: trial expirado que acabou de assinar) destravar já.
+    await cache.delete_key(f"wallet_bal:{client_id}")
     log.info(
         f"RENOVAÇÃO PAGA | client={client_id} | plan={plan_value} | "
         f"+{config['included_conversations']} conversas | apid={authorized_payment_id}"
@@ -504,6 +638,11 @@ async def _upsert_subscription(client_id: str, plan: str, preapproval_id: str, s
             }).execute()
         )
 
+    # Status/plano mudaram: derruba os caches do gate (300s) e de features
+    # (5min) — sem isso, trial→active demoraria até 5min pra destravar.
+    await cache.delete_key(f"sub_gate:{client_id}")
+    await cache.delete_key(f"plan_cache:{client_id}")
+
 
 async def _set_subscription_status(client_id: str, status: str) -> None:
     supa = get_supabase()
@@ -513,3 +652,5 @@ async def _set_subscription_status(client_id: str, status: str) -> None:
             "updated_at": datetime.utcnow().isoformat(),
         }).eq("client_id", client_id).execute()
     )
+    await cache.delete_key(f"sub_gate:{client_id}")
+    await cache.delete_key(f"plan_cache:{client_id}")

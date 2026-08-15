@@ -126,6 +126,9 @@ async def get_questions(client_id: str, category: BusinessCategory, _=Depends(ve
 async def activate_client(client_id: str, _=Depends(verify_api_key)):
     """Ativa cliente pra produção."""
     await db.update_client(client_id, {"onboarding_status": OnboardingStatus.ACTIVE.value})
+    # Sprint Billing: 2º ponto de ativação — mesmo trial idempotente do wizard
+    from huma.services import subscription_service as subs
+    await subs.start_trial_if_eligible(client_id, trigger="activation")
     return {"status": "active"}
 
 

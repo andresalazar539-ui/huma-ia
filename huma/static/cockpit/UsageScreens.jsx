@@ -2,9 +2,50 @@
 const { useState: useStateU, useEffect: useEffectU } = React;
 
 // ============================================================
-// USO — tela principal
+// USO — tela principal (plugada no GET /billing real)
 // ============================================================
 const UsoScreen = ({ onGoto }) => {
+  const [billing, setBilling] = useStateU(null);
+  const [loadErr, setLoadErr] = useStateU(false);
+
+  useEffectU(() => {
+    fetchBillingStatus().then(setBilling).catch(() => setLoadErr(true));
+  }, []);
+
+  // Pill do plano no header: cor e texto por situação
+  const pill = (() => {
+    if (!billing) return null;
+    if (billing.trial) return {
+      text: `Teste grátis · ${billing.trial_days_left ?? '?'} ${billing.trial_days_left === 1 ? 'dia restante' : 'dias restantes'}`,
+      bg: 'var(--terracotta-tint)', fg: 'var(--terracotta-ink)', dot: 'var(--terracotta)',
+    };
+    if (billing.trial_expired) return {
+      text: 'Teste encerrado — IA pausada',
+      bg: 'var(--ember-soft)', fg: 'var(--ember-ink)', dot: 'var(--ember)',
+    };
+    if (billing.subscription_status === 'active') return {
+      text: billing.plan_name || 'Ativo',
+      bg: 'var(--sage-tint)', fg: 'var(--sage-ink)', dot: 'var(--sage)',
+    };
+    return {
+      text: 'Sem plano ativo',
+      bg: 'var(--paper-sunk)', fg: 'var(--ink-3)', dot: 'var(--ink-3)',
+    };
+  })();
+
+  const balance = billing ? (billing.balance ?? 0) : 0;
+  const included = billing && billing.included_conversations ? billing.included_conversations : 0;
+  const percent = included > 0 ? Math.min(100, Math.round((balance / included) * 100)) : 0;
+  const needsPlan = billing && billing.subscription_status !== 'active';
+
+  const subline = (() => {
+    if (!billing) return '';
+    if (billing.trial) return 'Aproveite: sua IA está no ar de cortesia. Assine antes do fim pra não pausar o atendimento.';
+    if (billing.trial_expired) return 'Assine um plano pra reativar sua IA — o saldo que sobrou do teste continua seu.';
+    if (billing.subscription_status === 'active') return 'Assinatura mensal no cartão, renovação automática.';
+    return 'Escolha um plano pra colocar sua IA no ar.';
+  })();
+
   return (
     <div style={{
       flex: 1, overflow: 'auto', background: 'var(--paper)',
@@ -20,63 +61,45 @@ const UsoScreen = ({ onGoto }) => {
           }}>
             Seu uso
           </div>
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
-            padding: '4px 10px', borderRadius: 999,
-            background: 'var(--terracotta-tint)', color: 'var(--terracotta-ink)',
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--terracotta)' }}/>
-            Profissional
-          </span>
+          {pill && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+              padding: '4px 10px', borderRadius: 999,
+              background: pill.bg, color: pill.fg,
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: 999, background: pill.dot }}/>
+              {pill.text}
+            </span>
+          )}
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)', marginTop: 6, letterSpacing: '0.02em' }}>
-          Renova em 13 de maio, 2026
+          {loadErr ? 'Não consegui carregar seu plano agora — recarregue a página.' : subline}
         </div>
       </div>
 
       <div style={{ padding: '24px 32px 48px', maxWidth: 1100, display: 'flex', flexDirection: 'column', gap: 28 }}>
 
-        {/* SEÇÃO 2 — Barras de uso */}
+        {/* Saldo de conversas */}
         <section>
           <div style={{
             border: '1px solid var(--paper-edge)', borderRadius: 16,
             background: 'var(--paper-raised)', overflow: 'hidden',
           }}>
             <UsageBar
-              icon="gift"
-              label="crédito por indicação"
-              percent={60}
-              barColor="var(--sage)"
-              barBg="var(--sage-tint)"
-              info="12 de 20 conversas extras · ritmo saudável"
-              ctaLabel="Indicar"
-              ctaTone="sage"
-              onCta={() => onGoto('indicacao')}
-            />
-            <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
-            <UsageBar
-              icon="zap"
-              label="crédito extra"
-              percent={27}
-              barColor="var(--ember)"
-              barBg="var(--ember-soft)"
-              info="800 de 3.000 conversas extras compradas"
-              ctaLabel="Comprar mais"
-              ctaTone="ember"
-              onCta={() => onGoto('creditos')}
-            />
-            <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
-            <UsageBar
-              icon="trendUp"
-              label="uso do plano"
-              percent={68}
-              barColor="var(--ink)"
+              icon="message"
+              label="conversas disponíveis"
+              percent={billing ? (included > 0 ? percent : (balance > 0 ? 100 : 0)) : 0}
+              barColor={billing && billing.trial_expired ? 'var(--ember)' : 'var(--ink)'}
               barBg="var(--paper-sunk)"
-              info="347 de 500 conversas no ciclo · no ritmo atual, você usa 73% até 13/mai"
-              badge={{ text: 'no ritmo ideal', tone: 'sage' }}
-              ctaLabel="Fazer upgrade"
-              ctaTone="ink"
+              info={
+                !billing ? 'Carregando…'
+                : included > 0 ? `${balance} de ${included} conversas disponíveis${billing.trial ? ' no teste grátis' : ' no ciclo'}`
+                : `${balance} conversas em saldo`
+              }
+              badge={billing && billing.trial ? { text: 'teste grátis', tone: 'sage' } : null}
+              ctaLabel={needsPlan ? 'Assinar plano' : 'Fazer upgrade'}
+              ctaTone={billing && billing.trial_expired ? 'ember' : 'ink'}
               onCta={() => onGoto('planos')}
             />
           </div>
@@ -84,42 +107,60 @@ const UsoScreen = ({ onGoto }) => {
             fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)',
             marginTop: 10, padding: '0 4px', lineHeight: 1.5,
           }}>
-            Créditos de indicação são consumidos primeiro, depois créditos extra, depois plano base.
-            <a href="#" style={{ color: 'var(--ink-2)', textDecoration: 'underline', marginLeft: 4 }}>Saiba mais</a>
+            Cada conversa é uma janela de 24h com um lead — mensagens dentro da janela não gastam saldo.
           </div>
         </section>
 
-        {/* SEÇÃO 3 — Insight cards */}
-        <section>
-          <Eyebrow style={{ marginBottom: 12 }}>para você</Eyebrow>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
-            <UpsellCard
-              icon="trophy" tone="terracotta"
-              title="Você é Embaixador"
-              subtitle="1 de 7 indicações pro próximo nível — Partner"
-              extra={(
-                <>
-                  <ProgressBar percent={14} color="var(--terracotta)" bg="var(--terracotta-tint)" height={4}/>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
-                    <MiniReferralRow name="Clínica Sorriso" status="ativa" gain="+US$ 2" />
-                    <MiniReferralRow name="Studio Bella"   status="pendente" />
-                  </div>
-                </>
-              )}
-              cta="Ver programa completo"
-              onClick={() => onGoto('indicacao')}
-            />
-            <UpsellCard
-              icon="sparkle" tone="sage"
-              title={<>HUMA gerou <span style={{ fontFamily: 'var(--font-sans)' }}>R$ 147.200</span> em receita</>}
-              subtitle="634 agendamentos · 68% de conversão"
-              extra={<div style={{ marginTop: 12 }}><MiniTrend /></div>}
-              cta="Ver relatório completo"
-              onClick={() => onGoto('relatorios')}
-            />
-          </div>
-        </section>
+        {/* Card de conversão (só quando ainda não assina) */}
+        {needsPlan && (
+          <section>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14, maxWidth: 540 }}>
+              <UpsellCard
+                icon="sparkle" tone={billing && billing.trial_expired ? 'ember' : 'terracotta'}
+                title={billing && billing.trial_expired ? 'Reative sua IA agora' : 'Garanta sua IA sem pausa'}
+                subtitle={billing && billing.trial
+                  ? `Seu teste termina em ${billing.trial_days_left ?? '?'} ${billing.trial_days_left === 1 ? 'dia' : 'dias'} — assinando, o saldo restante continua seu.`
+                  : 'Escolha o plano e sua IA volta a atender na hora, com o saldo que sobrou do teste.'}
+                cta="Ver planos"
+                onClick={() => onGoto('planos')}
+              />
+            </div>
+          </section>
+        )}
       </div>
+    </div>
+  );
+};
+
+// ============================================================
+// TRIAL BANNER — faixa fina no shell do Cockpit
+// ============================================================
+const TrialBanner = ({ billing, onGoto }) => {
+  if (!billing || (!billing.trial && !billing.trial_expired)) return null;
+  const expired = billing.trial_expired;
+  const days = billing.trial_days_left;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '8px 16px',
+      background: expired ? 'var(--ember-soft)' : 'var(--terracotta-tint)',
+      borderBottom: '1px solid var(--paper-edge)',
+      fontFamily: 'var(--font-sans)', fontSize: 13,
+      color: expired ? 'var(--ember-ink)' : 'var(--terracotta-ink)',
+    }}>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        {expired
+          ? 'Seu teste grátis terminou — a IA está pausada e seus leads estão esperando.'
+          : `Teste grátis: ${days ?? '?'} ${days === 1 ? 'dia restante' : 'dias restantes'}. Assine e sua IA não para.`}
+      </span>
+      <button onClick={() => onGoto && onGoto('planos')} style={{
+        padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+        background: expired ? 'var(--ember)' : 'var(--terracotta)',
+        color: '#fff', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600,
+        whiteSpace: 'nowrap', flexShrink: 0,
+      }}>
+        {expired ? 'Reativar agora' : 'Assinar agora'}
+      </button>
     </div>
   );
 };
@@ -595,6 +636,7 @@ const HUMA_PLANS = [
 
 const PlanosScreen = ({ onBack }) => {
   const [currentPlan, setCurrentPlan] = useStateU(null);
+  const [billing, setBilling] = useStateU(null);
   const [busy, setBusy] = useStateU('');
   const [err, setErr] = useStateU('');
   const [ok, setOk] = useStateU('');
@@ -603,8 +645,11 @@ const PlanosScreen = ({ onBack }) => {
 
   useEffectU(() => {
     fetchBillingStatus()
-      .then(d => setCurrentPlan(d.subscription_status === 'active' ? d.plan : null))
-      .catch(() => setCurrentPlan(null));
+      .then(d => {
+        setBilling(d);
+        setCurrentPlan(d.subscription_status === 'active' ? d.plan : null);
+      })
+      .catch(() => { setBilling(null); setCurrentPlan(null); });
   }, []);
 
   const doValidateCoupon = async () => {
@@ -668,6 +713,25 @@ const PlanosScreen = ({ onBack }) => {
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
           Assinatura mensal no cartão, renovação automática. Cancele quando quiser — conversas já pagas continuam valendo.
         </div>
+        {billing && billing.trial && (
+          <div style={{
+            marginTop: 10, padding: '10px 14px', borderRadius: 10,
+            background: 'var(--terracotta-tint)', color: 'var(--terracotta-ink)',
+            fontFamily: 'var(--font-sans)', fontSize: 13,
+          }}>
+            Você está no teste grátis ({billing.trial_days_left ?? '?'} {billing.trial_days_left === 1 ? 'dia restante' : 'dias restantes'}).
+            Assinando agora, o saldo que sobrou do teste continua seu.
+          </div>
+        )}
+        {billing && billing.trial_expired && (
+          <div style={{
+            marginTop: 10, padding: '10px 14px', borderRadius: 10,
+            background: 'var(--ember-soft)', color: 'var(--ember-ink)',
+            fontFamily: 'var(--font-sans)', fontSize: 13,
+          }}>
+            Seu teste grátis terminou e a IA está pausada — assinar reativa o atendimento na hora.
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8, marginTop: 14, maxWidth: 420 }}>
           <input
             value={coupon}
@@ -797,4 +861,4 @@ const PlanosScreen = ({ onBack }) => {
   );
 };
 
-Object.assign(window, { UsoScreen, IndicacaoScreen, CreditosScreen, PlanosScreen });
+Object.assign(window, { UsoScreen, IndicacaoScreen, CreditosScreen, PlanosScreen, TrialBanner });

@@ -177,7 +177,14 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 # Anti-spam: avisa o lead (e o dono) UMA vez a cada 6h por
                 # telefone — as próximas mensagens ficam em silêncio até o
                 # saldo voltar, em vez de repetir "pausado" a cada msg.
-                notified_key = f"billing_paused_msg:{client_id}:{phone}"
+                # Sprint Billing: reason distingue trial expirado de saldo
+                # zerado — chave e copy do dono mudam, o lead recebe a
+                # mesma mensagem genérica (ele não precisa saber de billing).
+                reason = conv_check.get("reason") or "no_balance"
+                if reason == "trial_expired":
+                    notified_key = f"trial_expired_msg:{client_id}:{phone}"
+                else:
+                    notified_key = f"billing_paused_msg:{client_id}:{phone}"
                 if not await cache.exists(notified_key):
                     await cache.set_with_ttl(notified_key, "1", ttl=21600)
                     await wa.send_text(
@@ -185,12 +192,23 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                         "Ops! Estamos com o atendimento pausado no momento. Tente novamente em breve!",
                         client_id=client_id,
                     )
+                    if reason == "trial_expired":
+                        from huma.config import TRIAL_DAYS
+                        owner_msg = (
+                            f"⏰ Seu teste grátis de {TRIAL_DAYS} dias terminou! "
+                            f"Assine um plano pra reativar a HUMA: app.humaia.com.br"
+                        )
+                    else:
+                        owner_msg = (
+                            f"⚠️ Conversas esgotadas! {client_data.business_name} "
+                            f"precisa de mais conversas. Compre em app.humaia.com.br"
+                        )
                     await wa.notify_owner(
                         client_data.owner_phone or client_data.client_id,
-                        f"⚠️ Conversas esgotadas! {client_data.business_name} precisa de mais conversas. Compre em app.humaia.com.br",
+                        owner_msg,
                         client_id=client_id,
                     )
-                log.warning(f"Sem conversas | {client_id} | saldo=0")
+                log.warning(f"Sem conversas | {client_id} | saldo=0 | reason={reason}")
                 return
 
             await billing.debit_conversation(client_id)

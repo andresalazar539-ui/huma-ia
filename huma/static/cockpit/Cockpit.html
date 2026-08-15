@@ -183,6 +183,19 @@ function App() {
   const [detail, setDetail] = useState(null);
   const [detailState, setDetailState] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'error'
 
+  // --- Billing (Sprint Billing) — alimenta o TrialBanner do shell ---
+  // Carrega no mount e re-checa ao voltar pro Início/Uso (ex.: depois de
+  // assinar no checkout do MP o back_url recarrega a página inteira).
+  const [billing, setBilling] = useState(null);
+  useEffect(() => {
+    fetchBillingStatus().then(setBilling).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (route === 'inicio' || route === 'uso') {
+      fetchBillingStatus().then(setBilling).catch(() => {});
+    }
+  }, [route]);
+
   // --- Status das integrações (Bloco C) — alimenta IntegrationsScreen ---
   // Carrega uma vez no mount + repoll quando o dono navega pra "integracoes".
   const [client, setClient] = useState(null);
@@ -319,6 +332,7 @@ function App() {
     const inChat = route === 'conversas' && !!active;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)', position: 'relative' }}>
+        {!inChat && route !== 'planos' && <TrialBanner billing={billing} onGoto={setRoute} />}
         <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
           {screen}
         </div>
@@ -331,8 +345,11 @@ function App() {
   return (
     <div style={{ display: 'flex', height: '100vh', background: 'var(--paper)', position: 'relative' }}>
       <SidebarNav active={route} onNav={setRoute} onInvite={() => setInviteOpen(true)} />
-      <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0 }}>
-        {screen}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        {route !== 'planos' && <TrialBanner billing={billing} onGoto={setRoute} />}
+        <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0 }}>
+          {screen}
+        </div>
       </div>
       {showAgendaPanel && !narrow && <AgendaPanel />}
       {showAgendaPanel && narrow && agendaOpen && <AgendaPanel asDrawer onClose={() => setAgendaOpen(false)} />}

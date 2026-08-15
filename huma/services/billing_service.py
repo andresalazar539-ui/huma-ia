@@ -21,11 +21,13 @@
 # Limite: 30 chamadas IA por conversa (janela 24h)
 # ================================================================
 
-from datetime import datetime
+import json
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 
 from fastapi.concurrency import run_in_threadpool
 
+from huma.config import TRIAL_DAYS
 from huma.services import redis_service as cache
 from huma.services.db_service import get_supabase
 from huma.utils.logger import get_logger
@@ -135,6 +137,108 @@ async def get_client_plan_config(client_id: str) -> dict:
     except ValueError:
         # Plano legado/desconhecido na tabela → features do Start
         return PLAN_CONFIG[Plan.START]
+
+
+# ================================================================
+# TRIAL (Sprint Billing 2026-08-14)
+#
+# O trial vive como linha em subscriptions (status="trial") e a
+# expiração é COMPUTADA de created_at + TRIAL_DAYS. Sem coluna nova,
+# sem cron: o flip pra "trial_expired" acontece lazy, na primeira
+# verificação do gate após o vencimento (write-behind — a verdade é
+# o cômputo, o update é espelho pro Cockpit).
+# ================================================================
+
+def _compute_trial_deadline(created_at_iso: str) -> datetime | None:
+    """
+    Deadline do trial (naive UTC) a partir do created_at da assinatura.
+
+    O Supabase devolve timestamptz (tz-aware, às vezes com sufixo Z);
+    este módulo inteiro trabalha com utcnow() naive — normaliza aqui
+    pra evitar o TypeError de comparação naive vs aware.
+    """
+    if not created_at_iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt + timedelta(days=TRIAL_DAYS)
+
+
+async def get_gate_status(client_id: str) -> dict:
+    """
+    Estado da assinatura pro gate de atendimento. Cache Redis 300s.
+
+    Retorna {"subscription_status", "trial", "trial_expired", "trial_ends_at"}.
+    FAIL-OPEN: qualquer erro consultando subscriptions retorna o estado
+    neutro (nada bloqueado) — falha de infra nunca pode calar a IA de
+    um cliente pagante.
+    """
+    neutral = {
+        "subscription_status": None,
+        "trial": False,
+        "trial_expired": False,
+        "trial_ends_at": None,
+    }
+    redis_key = f"sub_gate:{client_id}"
+
+    try:
+        cached_raw = await cache.get_value(redis_key)
+        if cached_raw:
+            try:
+                parsed = json.loads(cached_raw)
+                if isinstance(parsed, dict):
+                    return parsed
+            except (ValueError, TypeError):
+                pass  # cache corrompido/não-dict — segue pro Supabase
+
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions").select("status,created_at")
+                .eq("client_id", client_id)
+                .order("updated_at", desc=True).limit(1).execute()
+        )
+        sub = resp.data[0] if resp.data else None
+
+        result = dict(neutral)
+        if sub:
+            status = sub.get("status", "")
+            result["subscription_status"] = status
+            if status == "trial":
+                deadline = _compute_trial_deadline(sub.get("created_at", ""))
+                if deadline:
+                    result["trial_ends_at"] = deadline.isoformat()
+                if deadline and datetime.utcnow() >= deadline:
+                    result["trial"] = False
+                    result["trial_expired"] = True
+                    result["subscription_status"] = "trial_expired"
+                    # Write-behind: espelha o vencimento na tabela (máx. 1
+                    # write por TTL de cache). O eq("status","trial") evita
+                    # sobrescrever uma conversão pra active que chegou junto.
+                    await run_in_threadpool(
+                        lambda: supa.table("subscriptions").update({
+                            "status": "trial_expired",
+                            "updated_at": datetime.utcnow().isoformat(),
+                        }).eq("client_id", client_id).eq("status", "trial").execute()
+                    )
+                    log.info(f"Trial expirado (lazy flip) | client={client_id}")
+                else:
+                    result["trial"] = True
+            elif status == "trial_expired":
+                result["trial_expired"] = True
+
+        await cache.set_with_ttl(redis_key, json.dumps(result), ttl=300)
+        return result
+
+    except Exception as e:
+        log.warning(
+            f"get_gate_status fail-open | client={client_id} | "
+            f"{type(e).__name__}: {str(e)[:120]}"
+        )
+        return neutral
 
 
 # ================================================================
@@ -248,6 +352,15 @@ async def check_conversations(client_id: str) -> dict:
     """
     import time as _t
 
+    # ── 0. Gate de trial (Sprint Billing) — ANTES do saldo ──
+    # Trial expirado bloqueia mesmo com saldo restante na carteira (senão
+    # créditos de trial durariam pra sempre). get_gate_status é fail-open:
+    # falha de infra nunca bloqueia. Contrato ADITIVO: chave "reason" nova,
+    # nenhum caller antigo quebra (todos leem via .get()).
+    gate = await get_gate_status(client_id)
+    if gate.get("trial_expired"):
+        return {"has_conversations": False, "balance": 0, "reason": "trial_expired"}
+
     redis_key = f"wallet_bal:{client_id}"
 
     # ── 1. Tenta Redis primeiro ──
@@ -258,7 +371,11 @@ async def check_conversations(client_id: str) -> dict:
     if cached_raw is not None:
         try:
             cached = int(cached_raw)
-            return {"has_conversations": cached >= 1, "balance": cached}
+            return {
+                "has_conversations": cached >= 1,
+                "balance": cached,
+                "reason": None if cached >= 1 else "no_balance",
+            }
         except (ValueError, TypeError):
             # Valor corrompido no cache — segue pra Supabase
             pass
@@ -269,7 +386,11 @@ async def check_conversations(client_id: str) -> dict:
     if hasattr(check_conversations, '_cache') and cache_key in check_conversations._cache:
         balance, ts = check_conversations._cache[cache_key]
         if now - ts < 60:
-            return {"has_conversations": balance >= 1, "balance": balance}
+            return {
+                "has_conversations": balance >= 1,
+                "balance": balance,
+                "reason": None if balance >= 1 else "no_balance",
+            }
 
     # ── 3. Cache miss: busca no Supabase ──
     balance = await get_balance(client_id)
@@ -282,7 +403,11 @@ async def check_conversations(client_id: str) -> dict:
         check_conversations._cache = {}
     check_conversations._cache[cache_key] = (balance, now)
 
-    return {"has_conversations": balance >= 1, "balance": balance}
+    return {
+        "has_conversations": balance >= 1,
+        "balance": balance,
+        "reason": None if balance >= 1 else "no_balance",
+    }
 
 
 async def purchase_extra_pack(client_id: str, pack_id: str) -> dict:

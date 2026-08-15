@@ -172,6 +172,15 @@ MERCADOPAGO_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
 MERCADOPAGO_WEBHOOK_SECRET = os.getenv("MERCADOPAGO_WEBHOOK_SECRET", "")
 PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "mercadopago")
 
+# Trial de conta nova (Sprint Billing 2026-08-14). O trial vive como linha
+# em subscriptions com status="trial"; expiração é COMPUTADA de
+# created_at + TRIAL_DAYS (sem coluna nova, sem cron — flip lazy no gate).
+TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
+TRIAL_CONVERSATIONS = int(os.getenv("TRIAL_CONVERSATIONS", "50"))
+# Quando o trial nasce: "activation" (fim do onboarding), "signup" (cadastro)
+# ou "off" (nenhuma conta nova ganha trial).
+TRIAL_TRIGGER = os.getenv("TRIAL_TRIGGER", "activation")
+
 # ── Agendamento ──
 GOOGLE_CALENDAR_CREDENTIALS = os.getenv("GOOGLE_CALENDAR_CREDENTIALS", "")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")

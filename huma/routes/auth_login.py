@@ -266,6 +266,12 @@ async def _resolve_or_provision_client(email: str, business_name: str = ""):
     client = await db.create_client_signup(email, business_name)
     if not client:
         raise HTTPException(503, "Não foi possível criar sua conta agora. Tente de novo.")
+
+    # Sprint Billing: com TRIAL_TRIGGER="signup" o trial nasce aqui; no
+    # default ("activation") esta chamada é no-op. Nunca levanta exceção.
+    from huma.services import subscription_service as subs
+    await subs.start_trial_if_eligible(client.client_id, trigger="signup")
+
     return client
 
 
