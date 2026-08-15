@@ -442,6 +442,9 @@ class TestCacheInvalidation:
         async def already(cid, apid):
             return False
 
+        async def covered(cid, pre_id):
+            return False
+
         async def upsert(cid, plan, pre_id, status):
             pass
 
@@ -450,6 +453,7 @@ class TestCacheInvalidation:
 
         monkeypatch.setattr(subs, "_mp_get", mp_get)
         monkeypatch.setattr(subs, "_already_credited", already)
+        monkeypatch.setattr(subs, "_first_charge_covered", covered)
         monkeypatch.setattr(subs, "_upsert_subscription", upsert)
         monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
         monkeypatch.setattr(subs, "cache", fake_cache)

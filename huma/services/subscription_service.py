@@ -411,12 +411,25 @@ async def create_subscription_with_card(
         # e suspensório pra contagem de usos não depender só da reentrega.
         await _record_redemption(coupon_code, client_id, plan.value, preapproval_id)
 
+    if local_status == "active":
+        # Cartão APROVADO = franquia NA HORA (padrão Netflix — pagou, usou).
+        # O webhook da cobrança que chegar depois reconhece este crédito
+        # pelo marcador "primeira pre=" e não duplica. Exceção consciente
+        # à regra "só credita no webhook": aqui o MP já autorizou e cobrou
+        # o cartão nesta mesma chamada.
+        await billing.add_conversations(
+            client_id, config["included_conversations"],
+            source="mp_primeira_cobranca",
+            description=f"primeira pre={preapproval_id} plano {plan.value}",
+        )
+        await cache.delete_key(f"wallet_bal:{client_id}")
+
     log.info(
         f"ASSINATURA TRANSPARENTE | client={client_id} | plan={plan.value} | "
         f"status={local_status} | preapproval={preapproval_id} | valor={amount}"
     )
     if local_status == "active":
-        detail = f"Assinatura {config['name']} ativa! Suas conversas do plano entram em instantes."
+        detail = f"Assinatura {config['name']} ativa! Suas {config['included_conversations']} conversas já estão na conta."
     else:
         detail = "Assinatura criada — aguardando confirmação do cartão. Isso pode levar alguns minutos."
     return {"status": "ok", "subscription_status": local_status, "detail": detail}
@@ -729,10 +742,30 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         return
 
     await _upsert_subscription(client_id, plan_value, preapproval_id, "active")
+
+    # Checkout transparente credita a PRIMEIRA cobrança na ativação
+    # (padrão Netflix). Se este apid é a primeira cobrança de um
+    # preapproval já coberto, grava só o marcador (amount=0) pra
+    # reentrega futura cair no dedup — sem duplicar franquia.
+    if await _first_charge_covered(client_id, preapproval_id):
+        await billing.add_conversations(
+            client_id, 0,
+            source="mp_renovacao",
+            description=(
+                f"apid={authorized_payment_id} pre={preapproval_id} "
+                f"plano {plan_value} (coberto na ativação)"
+            ),
+        )
+        log.info(
+            f"Primeira cobrança já coberta na ativação | client={client_id} | "
+            f"apid={authorized_payment_id} | pre={preapproval_id}"
+        )
+        return
+
     await billing.add_conversations(
         client_id, config["included_conversations"],
         source="mp_renovacao",
-        description=f"apid={authorized_payment_id} plano {plan_value}",
+        description=f"apid={authorized_payment_id} pre={preapproval_id} plano {plan_value}",
     )
     # Saldo mudou por fora: derruba o cache de 60s pra quem estava
     # bloqueado (ex.: trial expirado que acabou de assinar) destravar já.
@@ -741,6 +774,33 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         f"RENOVAÇÃO PAGA | client={client_id} | plan={plan_value} | "
         f"+{config['included_conversations']} conversas | apid={authorized_payment_id}"
     )
+
+
+async def _first_charge_covered(client_id: str, preapproval_id: str) -> bool:
+    """
+    True se a PRIMEIRA cobrança deste preapproval já foi creditada na
+    ativação (checkout transparente) e nenhum apid deste preapproval
+    consumiu essa cobertura ainda. Renovações (2º mês em diante) sempre
+    retornam False e creditam normal.
+    """
+    if not preapproval_id:
+        return False
+    supa = get_supabase()
+    primeira = await run_in_threadpool(
+        lambda: supa.table("credit_transactions").select("id")
+            .eq("client_id", client_id)
+            .like("description", f"%primeira pre={preapproval_id}%")
+            .limit(1).execute()
+    )
+    if not primeira.data:
+        return False
+    consumida = await run_in_threadpool(
+        lambda: supa.table("credit_transactions").select("id")
+            .eq("client_id", client_id).eq("source", "mp_renovacao")
+            .like("description", f"%pre={preapproval_id}%")
+            .limit(1).execute()
+    )
+    return not consumida.data
 
 
 async def _already_credited(client_id: str, authorized_payment_id: str) -> bool:

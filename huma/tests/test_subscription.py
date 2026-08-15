@@ -118,7 +118,7 @@ class TestCreateCheckout:
 # AUTHORIZED PAYMENT (renovação mensal)
 # ================================================================
 
-def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, ext_ref="humasub|cli_x|on"):
+def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, covered=False, ext_ref="humasub|cli_x|on"):
     """Mocka a cadeia toda do _handle_authorized_payment e grava efeitos."""
     effects = {"credits": [], "upserts": []}
 
@@ -132,6 +132,9 @@ def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, ext
     async def already_credited(cid, apid):
         return already
 
+    async def first_charge_covered(cid, pre_id):
+        return covered
+
     async def upsert(cid, plan, pre_id, status):
         effects["upserts"].append((cid, plan, pre_id, status))
 
@@ -141,6 +144,7 @@ def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, ext
 
     monkeypatch.setattr(subs, "_mp_get", mp_get)
     monkeypatch.setattr(subs, "_already_credited", already_credited)
+    monkeypatch.setattr(subs, "_first_charge_covered", first_charge_covered)
     monkeypatch.setattr(subs, "_upsert_subscription", upsert)
     monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
     return effects
@@ -158,6 +162,18 @@ class TestAuthorizedPayment:
         assert amount == PLAN_CONFIG[Plan.ON]["included_conversations"]
         assert "apid=ap_1" in desc
         # Assinatura garantida como ativa
+        assert effects["upserts"] == [("cli_x", "on", "pre_1", "active")]
+
+    def test_primeira_cobranca_coberta_na_ativacao_nao_duplica(self, monkeypatch):
+        """Checkout transparente creditou na ativação → webhook só marca (0)."""
+        effects = _setup_renewal(monkeypatch, covered=True)
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+
+        assert len(effects["credits"]) == 1
+        cid, amount, source, desc = effects["credits"][0]
+        assert amount == 0  # marcador de dedup, sem franquia duplicada
+        assert "apid=ap_1" in desc and "coberto na ativação" in desc
+        # Status ainda é espelhado como active
         assert effects["upserts"] == [("cli_x", "on", "pre_1", "active")]
 
     def test_cobranca_nao_aprovada_nao_credita(self, monkeypatch):
@@ -612,8 +628,9 @@ class TestSubscribeCard:
             monkeypatch.setattr(subs, "validate_coupon", validate)
         return effects, FakeHTTP
 
-    def test_cartao_autorizado_ativa_sem_creditar(self, monkeypatch):
-        """Regra de ouro: ativação NUNCA credita — só o webhook de cobrança."""
+    def test_cartao_autorizado_ativa_e_credita_na_hora(self, monkeypatch):
+        """Padrão Netflix: cartão aprovado = franquia na conta NO MESMO instante.
+        (O webhook posterior reconhece o marcador 'primeira pre=' e não duplica.)"""
         effects, http = self._setup(
             monkeypatch, FakeResp(201, {"id": "pre_c1", "status": "authorized"})
         )
@@ -623,7 +640,7 @@ class TestSubscribeCard:
         assert out["status"] == "ok"
         assert out["subscription_status"] == "active"
         assert effects["upserts"] == [("cli_x", "start", "pre_c1", "active")]
-        assert effects["credits"] == []  # crédito é do webhook, nunca daqui
+        assert effects["credits"] == [("cli_x", 500, "mp_primeira_cobranca")]
         body = http.last_body
         assert body["card_token_id"] == "tok_cartao_123"
         assert body["status"] == "authorized"
