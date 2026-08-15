@@ -165,7 +165,17 @@ function ConversasScreen({
 function App() {
   // Abre sempre no Início — a tela de valor. A rota deixa de ser persistida:
   // o retorno ao app é um "novo plantão", não a retomada da última aba.
-  const [route, setRoute] = useState('inicio');
+  // Exceção (Sprint Billing): ?screen=<rota> abre direto numa tela — usado
+  // pelo link "ver planos" do onboarding (/cockpit?screen=planos), pra quem
+  // quer assinar sem esperar o trial.
+  const initialRoute = (() => {
+    const s = new URLSearchParams(location.search).get('screen');
+    const valid = ['inicio', 'conversas', 'agenda', 'voz', 'relatorios',
+                   'disparos', 'integracoes', 'ajustes', 'uso', 'indicacao',
+                   'creditos', 'planos', 'negocio', 'perfil'];
+    return valid.includes(s) ? s : 'inicio';
+  })();
+  const [route, setRoute] = useState(initialRoute);
   const [handoff, setHandoff] = useState(false);
   const narrow = useNarrow(1400);
   const isMobile = useIsMobile();

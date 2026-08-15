@@ -26,6 +26,19 @@ function OnboardingApp() {
     setMoment(3);
   };
   return <div className="ob-app">
+    {/* Sprint Billing: quem quer assinar direto não precisa esperar o
+        trial — link discreto e sempre visível durante o onboarding. */}
+    {moment <= 7 && (
+      <a href="/cockpit?screen=planos" style={{
+        position: 'fixed', top: 14, right: 18, zIndex: 50,
+        fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 600,
+        color: 'var(--terracotta)', textDecoration: 'none',
+        padding: '6px 12px', borderRadius: 999,
+        background: 'var(--terracotta-tint)',
+      }}>
+        Já quer assinar? Ver planos →
+      </a>
+    )}
     {moment >= 2 && moment <= 7 && <div className="ob-top"><DotBar step={moment} /></div>}
     {moment === 1 && <Moment1 onNext={next} key="m1" />}
     {moment === 2 && <Moment2 onDone={fromProposal} onSkip={() => setMoment(3)} key="m2" />}
