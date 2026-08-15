@@ -283,6 +283,10 @@ async def create_checkout(client_id: str, plan_value: str, payer_email: str, cou
             mp_msg = str(resp.json().get("message", ""))[:140]
         except ValueError:
             mp_msg = ""
+        if "same user" in mp_msg.lower():
+            # MP proíbe assinar de si mesmo (inclui aliases +x do Gmail da
+            # conta coletora) — só acontece em teste interno do dono.
+            return {"status": "error", "detail": "Este e-mail pertence à conta Mercado Pago que recebe os pagamentos — não dá pra assinar de si mesmo. Use outro e-mail/conta pra testar."}
         detail = f"Mercado Pago recusou: {mp_msg}" if mp_msg else "Não foi possível iniciar a assinatura. Tente de novo."
         return {"status": "error", "detail": detail}
 
