@@ -175,6 +175,11 @@ MERCADOPAGO_PUBLIC_KEY = os.getenv("MERCADOPAGO_PUBLIC_KEY", "")
 MERCADOPAGO_WEBHOOK_SECRET = os.getenv("MERCADOPAGO_WEBHOOK_SECRET", "")
 PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "mercadopago")
 
+# E-mail transacional próprio (Resend) — boas-vindas de assinatura etc.
+# Vazio = e-mails de produto desligados (auth continua via Supabase/Resend SMTP).
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "HUMA IA <no-reply@humaia.com.br>")
+
 # Trial de conta nova (Sprint Billing 2026-08-14). O trial vive como linha
 # em subscriptions com status="trial"; expiração é COMPUTADA de
 # created_at + TRIAL_DAYS (sem coluna nova, sem cron — flip lazy no gate).

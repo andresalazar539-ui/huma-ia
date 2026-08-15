@@ -22,6 +22,7 @@
 # são reentregues).
 # ================================================================
 
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -775,9 +776,10 @@ async def _upsert_subscription(client_id: str, plan: str, preapproval_id: str, s
     }
 
     existing = await run_in_threadpool(
-        lambda: supa.table("subscriptions").select("id")
+        lambda: supa.table("subscriptions").select("id,status")
             .eq("client_id", client_id).limit(1).execute()
     )
+    old_status = (existing.data[0].get("status") if existing.data else "") or ""
     if existing.data:
         await run_in_threadpool(
             lambda: supa.table("subscriptions").update(fields)
@@ -796,6 +798,45 @@ async def _upsert_subscription(client_id: str, plan: str, preapproval_id: str, s
     # (5min) — sem isso, trial→active demoraria até 5min pra destravar.
     await cache.delete_key(f"sub_gate:{client_id}")
     await cache.delete_key(f"plan_cache:{client_id}")
+
+    # Boas-vindas de assinatura: só na TRANSIÇÃO pra active (reentrega de
+    # webhook com active→active não reenvia). Fire-and-forget: e-mail
+    # nunca atrasa nem quebra o fluxo de cobrança.
+    if status == "active" and old_status != "active":
+        asyncio.create_task(_send_subscription_welcome_bg(client_id, plan))
+
+
+async def _send_subscription_welcome_bg(client_id: str, plan: str) -> None:
+    """
+    Busca os dados do cliente e manda o e-mail de boas-vindas da
+    assinatura. Roda como task de background — nunca levanta exceção.
+    """
+    try:
+        from huma.services import email_service
+
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("clients").select("owner_email,business_name")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        row = resp.data[0] if resp.data else {}
+        to = (row.get("owner_email") or "").strip()
+        if not to:
+            log.info(f"Boas-vindas sem e-mail | client={client_id}")
+            return
+
+        try:
+            config = PLAN_CONFIG[Plan(plan)]
+            plan_name = config["name"]
+            included = config["included_conversations"]
+        except ValueError:
+            plan_name, included = plan or "HUMA", 0
+
+        await email_service.send_subscription_welcome(
+            to, row.get("business_name") or "", plan_name, included,
+        )
+    except Exception as e:
+        log.error(f"Boas-vindas falhou | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
 
 
 async def _set_subscription_status(client_id: str, status: str) -> None:

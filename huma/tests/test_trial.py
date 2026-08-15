@@ -456,3 +456,73 @@ class TestCacheInvalidation:
 
         asyncio.run(subs._handle_authorized_payment("ap_1"))
         assert "wallet_bal:cli_x" in fake_cache.deleted
+
+
+# ================================================================
+# BOAS-VINDAS DE ASSINATURA (transição pra active)
+# ================================================================
+
+class TestWelcomeEmail:
+
+    def _capture_tasks(self, monkeypatch):
+        """Intercepta create_task e guarda o nome da coroutine agendada."""
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(getattr(coro, "__name__", str(coro)))
+            coro.close()  # evita warning de coroutine nunca aguardada
+            return None
+
+        monkeypatch.setattr(subs.asyncio, "create_task", fake_create_task)
+        return scheduled
+
+    def test_transicao_pra_active_agenda_boas_vindas(self, monkeypatch):
+        supa = FakeSupa(rows={"subscriptions": [{"id": 1, "client_id": "cli_x", "status": "trial"}]})
+        monkeypatch.setattr(subs, "get_supabase", lambda: supa)
+        monkeypatch.setattr(subs, "cache", FakeCache())
+        scheduled = self._capture_tasks(monkeypatch)
+
+        asyncio.run(subs._upsert_subscription("cli_x", "on", "pre_1", "active"))
+        assert scheduled == ["_send_subscription_welcome_bg"]
+
+    def test_reentrega_active_active_nao_reenvia(self, monkeypatch):
+        supa = FakeSupa(rows={"subscriptions": [{"id": 1, "client_id": "cli_x", "status": "active"}]})
+        monkeypatch.setattr(subs, "get_supabase", lambda: supa)
+        monkeypatch.setattr(subs, "cache", FakeCache())
+        scheduled = self._capture_tasks(monkeypatch)
+
+        asyncio.run(subs._upsert_subscription("cli_x", "on", "pre_1", "active"))
+        assert scheduled == []
+
+    def test_pausa_nao_dispara_email(self, monkeypatch):
+        supa = FakeSupa(rows={"subscriptions": [{"id": 1, "client_id": "cli_x", "status": "active"}]})
+        monkeypatch.setattr(subs, "get_supabase", lambda: supa)
+        monkeypatch.setattr(subs, "cache", FakeCache())
+        scheduled = self._capture_tasks(monkeypatch)
+
+        asyncio.run(subs._upsert_subscription("cli_x", "on", "pre_1", "paused"))
+        assert scheduled == []
+
+    def test_bg_envia_com_dados_do_cliente(self, monkeypatch):
+        sent = []
+
+        async def fake_send(to, business_name, plan_name, included):
+            sent.append((to, business_name, plan_name, included))
+            return True
+
+        supa = FakeSupa(rows={"clients": [{
+            "client_id": "cli_x", "owner_email": "dono@negocio.com", "business_name": "messi",
+        }]})
+        monkeypatch.setattr(subs, "get_supabase", lambda: supa)
+        from huma.services import email_service
+        monkeypatch.setattr(email_service, "send_subscription_welcome", fake_send)
+
+        asyncio.run(subs._send_subscription_welcome_bg("cli_x", "on"))
+        assert sent == [("dono@negocio.com", "messi", "ON", 1500)]
+
+    def test_bg_nunca_levanta(self, monkeypatch):
+        def boom():
+            raise RuntimeError("supabase caiu")
+
+        monkeypatch.setattr(subs, "get_supabase", boom)
+        asyncio.run(subs._send_subscription_welcome_bg("cli_x", "on"))  # não explode
