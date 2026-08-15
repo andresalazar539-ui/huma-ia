@@ -275,7 +275,16 @@ async def create_checkout(client_id: str, plan_value: str, payer_email: str, cou
 
     if resp.status_code not in (200, 201):
         log.error(f"MP preapproval recusado | client={client_id} | status={resp.status_code} | {resp.text[:300]}")
-        return {"status": "error", "detail": "Não foi possível iniciar a assinatura. Tente de novo."}
+        # Erro genérico esconde a causa e vira suporte cego (aprendido no
+        # teste E2E 2026-08-15) — devolve o motivo do MP, sanitizado.
+        if resp.status_code == 401:
+            return {"status": "error", "detail": "Configuração de pagamento inválida no servidor (credencial do Mercado Pago). Avise o suporte."}
+        try:
+            mp_msg = str(resp.json().get("message", ""))[:140]
+        except ValueError:
+            mp_msg = ""
+        detail = f"Mercado Pago recusou: {mp_msg}" if mp_msg else "Não foi possível iniciar a assinatura. Tente de novo."
+        return {"status": "error", "detail": detail}
 
     data = resp.json()
     preapproval_id = data.get("id", "")

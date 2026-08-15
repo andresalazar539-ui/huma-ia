@@ -610,7 +610,7 @@ const CreditosScreen = ({ onBack }) => {
 // PRECISAM bater com o PLAN_CONFIG (fonte da verdade da cobrança).
 const HUMA_PLANS = [
   {
-    id: 'start', name: 'Start', price: 'R$ 347,70',
+    id: 'start', name: 'Start', price: 'R$ 347,70', priceNum: 347.70,
     features: [
       'Clone de vendas no WhatsApp 24/7',
       'Agendamento automático (Google Agenda)',
@@ -621,7 +621,7 @@ const HUMA_PLANS = [
     limit: '500 conversas/mês',
   },
   {
-    id: 'on', name: 'ON', price: 'R$ 547,70',
+    id: 'on', name: 'ON', price: 'R$ 547,70', priceNum: 547.70,
     popular: true,
     features: [
       'Tudo do Start',
@@ -716,6 +716,13 @@ const PlanosScreen = ({ onBack, onGoto }) => {
         }}>Planos HUMA</div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
           Assinatura mensal no cartão, renovação automática. Cancele quando quiser — conversas já pagas continuam valendo.
+        </div>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
+          fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)',
+        }}>
+          <Icon name="lock" size={12}/>
+          O cartão é preenchido no ambiente seguro do <strong style={{ color: 'var(--ink-2)' }}>Mercado Pago</strong> — ao assinar, a gente te leva até lá e te traz de volta.
         </div>
         {billing && billing.trial && (
           <div style={{
@@ -814,13 +821,43 @@ const PlanosScreen = ({ onBack, onGoto }) => {
               <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', letterSpacing: '-0.015em' }}>
                 {p.name}
               </div>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 6 }}>
-                <div style={{
-                  fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 32,
-                  letterSpacing: '-0.025em', color: 'var(--ink)', lineHeight: 1,
-                }}>{p.price}</div>
-                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>/mês</div>
-              </div>
+              {/* Cupom aplicado: preço original riscado + preço real que
+                  será cobrado — o dono PRECISA ver o desconto acontecer. */}
+              {couponInfo && couponInfo.percent_off < 100 ? (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textDecoration: 'line-through' }}>
+                    {p.price}/mês
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <div style={{
+                      fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 32,
+                      letterSpacing: '-0.025em', color: 'var(--sage-ink)', lineHeight: 1.1,
+                    }}>{'R$ ' + (p.priceNum * (100 - couponInfo.percent_off) / 100).toFixed(2).replace('.', ',')}</div>
+                    <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>/mês com o cupom</div>
+                  </div>
+                </div>
+              ) : couponInfo && couponInfo.percent_off >= 100 ? (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textDecoration: 'line-through' }}>
+                    {p.price}/mês
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <div style={{
+                      fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 32,
+                      letterSpacing: '-0.025em', color: 'var(--sage-ink)', lineHeight: 1.1,
+                    }}>R$ 0</div>
+                    <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>1º mês de cortesia</div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 6 }}>
+                  <div style={{
+                    fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 32,
+                    letterSpacing: '-0.025em', color: 'var(--ink)', lineHeight: 1,
+                  }}>{p.price}</div>
+                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>/mês</div>
+                </div>
+              )}
             </div>
 
             <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
