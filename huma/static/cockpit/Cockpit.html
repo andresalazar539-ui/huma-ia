@@ -328,7 +328,7 @@ function App() {
     case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
     case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;
     case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} />; break;
-    case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} />; break;
+    case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute} />; break;
     case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
     case 'perfil':      screen = <PerfilScreen />; break;
     default:            screen = <InicioScreen

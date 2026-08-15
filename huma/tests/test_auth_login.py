@@ -332,7 +332,7 @@ class TestSignup:
         import huma.routes.auth_login as al
         _setup_ready(monkeypatch)
 
-        async def signup_pending(email, password):
+        async def signup_pending(email, password, business_name=""):
             return {"user": {"email": email, "identities": [{"id": "x"}]}}
 
         monkeypatch.setattr(al, "_gotrue_signup", signup_pending)
@@ -349,7 +349,7 @@ class TestSignup:
         _setup_ready(monkeypatch)
         created = {}
 
-        async def signup_ok(email, password):
+        async def signup_ok(email, password, business_name=""):
             return {"access_token": "tok", "user": {"email": email}}
 
         async def create(email, business_name=""):
@@ -372,7 +372,7 @@ class TestSignup:
         import huma.routes.auth_login as al
         _setup_ready(monkeypatch)
 
-        async def signup_exists(email, password):
+        async def signup_exists(email, password, business_name=""):
             return "exists"
 
         monkeypatch.setattr(al, "_gotrue_signup", signup_exists)

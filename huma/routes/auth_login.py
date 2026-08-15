@@ -203,9 +203,14 @@ async def _gotrue_recover(email: str) -> None:
         log.error(f"Login | erro http | service=supabase_auth | op=recover | {type(e).__name__}: {e}")
 
 
-async def _gotrue_signup(email: str, password: str) -> dict | str | None:
+async def _gotrue_signup(email: str, password: str, business_name: str = "") -> dict | str | None:
     """
     Cria conta no GoTrue (signup self-service).
+
+    business_name vai nos user_metadata ("data") do GoTrue: com
+    confirmação de e-mail ligada, quem provisiona o negócio é o
+    /auth/callback (session-from-supabase) — sem os metadados, o nome
+    digitado no cadastro se perdia e a conta nascia "Meu negócio".
 
     Retorna:
         dict  — resposta do GoTrue (com access_token se confirmação de
@@ -217,12 +222,15 @@ async def _gotrue_signup(email: str, password: str) -> dict | str | None:
     """
     redirect = f"{PUBLIC_BASE_URL.rstrip('/')}/auth/callback" if PUBLIC_BASE_URL else "/auth/callback"
     url = f"{SUPABASE_URL}/auth/v1/signup?redirect_to={redirect}"
+    body: dict = {"email": email, "password": password}
+    if business_name:
+        body["data"] = {"business_name": business_name[:80]}
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.post(
                 url,
                 headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
-                json={"email": email, "password": password},
+                json=body,
             )
     except httpx.TimeoutException:
         log.error("Signup | timeout | service=supabase_auth | op=signup")
@@ -363,7 +371,11 @@ async def session_from_supabase(payload: SupabaseSessionRequest) -> JSONResponse
         raise HTTPException(401, "Sessão inválida ou expirada. Entre de novo.")
 
     email = user["email"].strip().lower()
-    client = await _resolve_or_provision_client(email)
+    # Nome do negócio digitado no cadastro viaja nos user_metadata do
+    # GoTrue (ver _gotrue_signup) — é aqui que o provisionamento acontece
+    # no fluxo com confirmação de e-mail.
+    business_name = str((user.get("user_metadata") or {}).get("business_name", ""))
+    client = await _resolve_or_provision_client(email, business_name)
 
     log.info(f"Login | sessão via supabase token | client={client.client_id}")
     return _session_response(client, payload.remember)
@@ -431,7 +443,7 @@ async def signup(payload: SignupRequest) -> JSONResponse:
     if attempts > LOGIN_RATE_LIMIT_MAX:
         raise HTTPException(429, "Muitas tentativas. Aguarde alguns minutos e tente de novo.")
 
-    result = await _gotrue_signup(email, payload.password)
+    result = await _gotrue_signup(email, payload.password, payload.business_name)
     if result == "exists":
         raise HTTPException(409, "Este e-mail já tem conta. Use Entrar ou 'Esqueci a senha'.")
     if result is None:

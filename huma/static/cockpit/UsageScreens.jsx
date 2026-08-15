@@ -634,7 +634,7 @@ const HUMA_PLANS = [
   },
 ];
 
-const PlanosScreen = ({ onBack }) => {
+const PlanosScreen = ({ onBack, onGoto }) => {
   const [currentPlan, setCurrentPlan] = useStateU(null);
   const [billing, setBilling] = useStateU(null);
   const [busy, setBusy] = useStateU('');
@@ -679,10 +679,14 @@ const PlanosScreen = ({ onBack }) => {
     try {
       const data = await subscribePlan(planId, coupon.trim());
       if (data.comp) {
-        // Cortesia 100%: plano ativado na hora, sem checkout
-        setOk(data.detail || 'Plano ativado com cortesia!');
+        // Cortesia 100%: plano ativado na hora, sem checkout.
+        // Mostra o sucesso e leva pro Início — deixar o dono parado na
+        // tela de planos depois de ativar era beco sem saída (feedback
+        // do André no teste E2E de 2026-08-14).
+        setOk((data.detail || 'Plano ativado!') + ' Te levando pro Início…');
         setCurrentPlan(planId);
         setBusy('');
+        setTimeout(() => { if (onGoto) onGoto('inicio'); else onBack(); }, 2200);
         return;
       }
       // Checkout hospedado do Mercado Pago (cliente cadastra o cartão lá)
