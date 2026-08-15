@@ -526,3 +526,51 @@ class TestWelcomeEmail:
 
         monkeypatch.setattr(subs, "get_supabase", boom)
         asyncio.run(subs._send_subscription_welcome_bg("cli_x", "on"))  # não explode
+
+    def test_bg_manda_zap_quando_tem_owner_phone(self, monkeypatch):
+        sent_wa = []
+
+        async def fake_send(to, business_name, plan_name, included):
+            return True
+
+        async def fake_notify(phone, message, client_id=""):
+            sent_wa.append((phone, message, client_id))
+            return "msg_1"
+
+        supa = FakeSupa(rows={"clients": [{
+            "client_id": "cli_x", "owner_email": "dono@negocio.com",
+            "business_name": "messi", "owner_phone": "5511999999999",
+        }]})
+        monkeypatch.setattr(subs, "get_supabase", lambda: supa)
+        from huma.services import email_service, whatsapp_service
+        monkeypatch.setattr(email_service, "send_subscription_welcome", fake_send)
+        monkeypatch.setattr(whatsapp_service, "notify_owner", fake_notify)
+
+        asyncio.run(subs._send_subscription_welcome_bg("cli_x", "on"))
+        assert len(sent_wa) == 1
+        phone, message, cid = sent_wa[0]
+        assert phone == "5511999999999"
+        assert "ON" in message and "1.500" in message
+        assert cid == "cli_x"
+
+    def test_bg_sem_owner_phone_nao_manda_zap(self, monkeypatch):
+        sent_wa = []
+
+        async def fake_send(to, business_name, plan_name, included):
+            return True
+
+        async def fake_notify(phone, message, client_id=""):
+            sent_wa.append(phone)
+            return "msg_1"
+
+        supa = FakeSupa(rows={"clients": [{
+            "client_id": "cli_x", "owner_email": "dono@negocio.com",
+            "business_name": "messi", "owner_phone": "",
+        }]})
+        monkeypatch.setattr(subs, "get_supabase", lambda: supa)
+        from huma.services import email_service, whatsapp_service
+        monkeypatch.setattr(email_service, "send_subscription_welcome", fake_send)
+        monkeypatch.setattr(whatsapp_service, "notify_owner", fake_notify)
+
+        asyncio.run(subs._send_subscription_welcome_bg("cli_x", "on"))
+        assert sent_wa == []

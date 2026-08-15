@@ -808,22 +808,20 @@ async def _upsert_subscription(client_id: str, plan: str, preapproval_id: str, s
 
 async def _send_subscription_welcome_bg(client_id: str, plan: str) -> None:
     """
-    Busca os dados do cliente e manda o e-mail de boas-vindas da
-    assinatura. Roda como task de background — nunca levanta exceção.
+    Busca os dados do cliente e manda as boas-vindas da assinatura:
+    e-mail (Resend) + ping no WhatsApp do dono (se owner_phone existir).
+    Roda como task de background — nunca levanta exceção; falha de um
+    canal não impede o outro.
     """
     try:
         from huma.services import email_service
 
         supa = get_supabase()
         resp = await run_in_threadpool(
-            lambda: supa.table("clients").select("owner_email,business_name")
+            lambda: supa.table("clients").select("owner_email,business_name,owner_phone")
                 .eq("client_id", client_id).limit(1).execute()
         )
         row = resp.data[0] if resp.data else {}
-        to = (row.get("owner_email") or "").strip()
-        if not to:
-            log.info(f"Boas-vindas sem e-mail | client={client_id}")
-            return
 
         try:
             config = PLAN_CONFIG[Plan(plan)]
@@ -832,9 +830,26 @@ async def _send_subscription_welcome_bg(client_id: str, plan: str) -> None:
         except ValueError:
             plan_name, included = plan or "HUMA", 0
 
-        await email_service.send_subscription_welcome(
-            to, row.get("business_name") or "", plan_name, included,
-        )
+        to = (row.get("owner_email") or "").strip()
+        if to:
+            await email_service.send_subscription_welcome(
+                to, row.get("business_name") or "", plan_name, included,
+            )
+        else:
+            log.info(f"Boas-vindas sem e-mail | client={client_id}")
+
+        owner_phone = (row.get("owner_phone") or "").strip()
+        if owner_phone:
+            from huma.services import whatsapp_service as wa
+
+            conversas = f"{included:,}".replace(",", ".")
+            await wa.notify_owner(
+                owner_phone,
+                f"🎉 Assinatura {plan_name} ativa! {conversas} conversas/mês "
+                f"liberadas pra sua IA vender sem parar. "
+                f"Acompanha tudo em app.humaia.com.br",
+                client_id=client_id,
+            )
     except Exception as e:
         log.error(f"Boas-vindas falhou | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
 
