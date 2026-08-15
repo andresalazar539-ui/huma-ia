@@ -634,7 +634,7 @@ const HUMA_PLANS = [
   },
 ];
 
-const PlanosScreen = ({ onBack, onGoto }) => {
+const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
   const [currentPlan, setCurrentPlan] = useStateU(null);
   const [billing, setBilling] = useStateU(null);
   const [busy, setBusy] = useStateU('');
@@ -674,8 +674,17 @@ const PlanosScreen = ({ onBack, onGoto }) => {
   };
 
   const doSubscribe = async (planId) => {
-    setBusy(planId);
     setErr(''); setOk('');
+
+    // Caminho padrão: checkout TRANSPARENTE — cartão dentro do Cockpit,
+    // sem redirect. Cupom 100% e SDK indisponível seguem os outros ramos.
+    const isComp = couponInfo && couponInfo.percent_off >= 100;
+    if (!isComp && onCheckout && window.MercadoPago && billing && billing.mp_public_key) {
+      onCheckout({ planId, coupon: coupon.trim(), couponInfo });
+      return;
+    }
+
+    setBusy(planId);
     try {
       const data = await subscribePlan(planId, coupon.trim());
       if (data.comp) {
@@ -689,7 +698,7 @@ const PlanosScreen = ({ onBack, onGoto }) => {
         setTimeout(() => { if (onGoto) onGoto('inicio'); else onBack(); }, 2200);
         return;
       }
-      // Checkout hospedado do Mercado Pago (cliente cadastra o cartão lá)
+      // Fallback: checkout hospedado do MP (SDK bloqueado/public key ausente)
       location.href = data.checkout_url;
     } catch (e) {
       setErr(String(e.message || 'Erro ao iniciar assinatura. Tente de novo.'));
@@ -722,7 +731,7 @@ const PlanosScreen = ({ onBack, onGoto }) => {
           fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)',
         }}>
           <Icon name="lock" size={12}/>
-          O cartão é preenchido no ambiente seguro do <strong style={{ color: 'var(--ink-2)' }}>Mercado Pago</strong> — ao assinar, a gente te leva até lá e te traz de volta.
+          Pagamento processado pelo <strong style={{ color: 'var(--ink-2)' }}>Mercado Pago</strong> sem sair da HUMA — os dados do cartão vão direto pra eles, nunca pro nosso servidor.
         </div>
         {billing && billing.trial && (
           <div style={{
@@ -902,4 +911,224 @@ const PlanosScreen = ({ onBack, onGoto }) => {
   );
 };
 
-Object.assign(window, { UsoScreen, IndicacaoScreen, CreditosScreen, PlanosScreen, TrialBanner });
+// ============================================================
+// CHECKOUT TRANSPARENTE — cartão dentro do Cockpit
+// Os dados do cartão são tokenizados pelo SDK oficial do Mercado
+// Pago DIRETO do navegador — nunca tocam o servidor da HUMA.
+// ============================================================
+
+const _fmtBRL = (v) => 'R$ ' + v.toFixed(2).replace('.', ',');
+const _digits = (s) => (s || '').replace(/\D/g, '');
+
+const CheckoutField = ({ label, children }) => (
+  <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <span style={{
+      fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 500,
+      letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)',
+    }}>{label}</span>
+    {children}
+  </label>
+);
+
+const checkoutInputStyle = {
+  padding: '12px 14px', borderRadius: 10,
+  border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)',
+  color: 'var(--ink)', fontFamily: 'var(--font-sans)', fontSize: 15,
+  outline: 'none', width: '100%',
+};
+
+const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
+  const [num, setNum] = useStateU('');
+  const [name, setName] = useStateU('');
+  const [exp, setExp] = useStateU('');
+  const [cvv, setCvv] = useStateU('');
+  const [cpf, setCpf] = useStateU('');
+  const [busy, setBusy] = useStateU(false);
+  const [err, setErr] = useStateU('');
+  const [done, setDone] = useStateU(false);
+
+  if (!ctx) {
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--paper)' }}>
+        <button onClick={onBack} style={{ ...checkoutInputStyle, width: 'auto', cursor: 'pointer' }}>Voltar pros planos</button>
+      </div>
+    );
+  }
+
+  const plan = HUMA_PLANS.find(p => p.id === ctx.planId) || HUMA_PLANS[0];
+  const pct = ctx.couponInfo ? ctx.couponInfo.percent_off : 0;
+  const price = pct > 0 ? plan.priceNum * (100 - pct) / 100 : plan.priceNum;
+
+  const fmtNum = (v) => _digits(v).slice(0, 16).replace(/(\d{4})(?=\d)/g, '$1 ');
+  const fmtExp = (v) => {
+    const d = _digits(v).slice(0, 4);
+    return d.length > 2 ? d.slice(0, 2) + '/' + d.slice(2) : d;
+  };
+  const fmtCpf = (v) => {
+    const d = _digits(v).slice(0, 11);
+    return d.replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})\.(\d{3})(\d)/, '$1.$2.$3')
+            .replace(/\.(\d{3})(\d{1,2})$/, '.$1-$2');
+  };
+
+  const pagar = async () => {
+    setErr('');
+    const cardNumber = _digits(num);
+    const expD = _digits(exp);
+    const cpfD = _digits(cpf);
+    if (cardNumber.length < 13) { setErr('Confere o número do cartão.'); return; }
+    if (!name.trim()) { setErr('Preenche o nome como está no cartão.'); return; }
+    if (expD.length !== 4) { setErr('Validade no formato MM/AA.'); return; }
+    if (cvv.length < 3) { setErr('Confere o código de segurança (CVV).'); return; }
+    if (cpfD.length !== 11) { setErr('Confere o CPF do titular.'); return; }
+    if (!window.MercadoPago || !billing || !billing.mp_public_key) {
+      setErr('Pagamento indisponível agora — recarregue a página e tente de novo.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const mp = new window.MercadoPago(billing.mp_public_key);
+      const token = await mp.createCardToken({
+        cardNumber,
+        cardholderName: name.trim(),
+        cardExpirationMonth: expD.slice(0, 2),
+        cardExpirationYear: '20' + expD.slice(2),
+        securityCode: cvv,
+        identificationType: 'CPF',
+        identificationNumber: cpfD,
+      });
+      if (!token || !token.id) throw new Error('Cartão não validado — confere os dados.');
+      await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id);
+      setDone(true);
+      setTimeout(() => onDone && onDone(), 2600);
+    } catch (e) {
+      const msg = String((e && e.message) || 'Não deu certo — confere os dados do cartão.');
+      setErr(msg.includes('cardNumber') || msg.includes('security') ? 'Dados do cartão inválidos — confere número, validade e CVV.' : msg);
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div style={{
+        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', gap: 14, background: 'var(--paper)', padding: 32,
+      }}>
+        <div style={{
+          width: 64, height: 64, borderRadius: 999, background: 'var(--sage-tint)',
+          color: 'var(--sage-ink)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Icon name="check" size={30} stroke={2.5}/>
+        </div>
+        <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 26, color: 'var(--ink)' }}>
+          Assinatura ativa! 🎉
+        </div>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textAlign: 'center', maxWidth: 380 }}>
+          Plano {plan.name} por {_fmtBRL(price)}/mês. Suas conversas entram em instantes — te levando pro Início…
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)' }}>
+      <div style={{ maxWidth: 460, margin: '0 auto', padding: '28px 20px 56px' }}>
+        <button onClick={onBack} disabled={busy} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 8px 4px 0',
+          color: 'var(--ink-3)', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+          letterSpacing: '0.04em', textTransform: 'uppercase',
+        }}>
+          <Icon name="chevronL" size={12}/> Planos
+        </button>
+        <div style={{
+          fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 26,
+          letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 6,
+        }}>Finalizar assinatura</div>
+
+        {/* Resumo do pedido */}
+        <div style={{
+          marginTop: 18, padding: '16px 18px', borderRadius: 14,
+          border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>
+              Plano {plan.name}
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
+              {plan.limit} · renova todo mês · cancele quando quiser
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            {pct > 0 && (
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', textDecoration: 'line-through' }}>
+                {plan.price}
+              </div>
+            )}
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 20, color: pct > 0 ? 'var(--sage-ink)' : 'var(--ink)' }}>
+              {_fmtBRL(price)}<span style={{ fontSize: 12, fontWeight: 400, color: 'var(--ink-3)' }}>/mês</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Formulário do cartão */}
+        <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <CheckoutField label="número do cartão">
+            <input style={checkoutInputStyle} inputMode="numeric" autoComplete="cc-number"
+              placeholder="0000 0000 0000 0000" value={num}
+              onChange={e => setNum(fmtNum(e.target.value))}/>
+          </CheckoutField>
+          <CheckoutField label="nome impresso no cartão">
+            <input style={checkoutInputStyle} autoComplete="cc-name"
+              placeholder="Como está no cartão" value={name}
+              onChange={e => setName(e.target.value)}/>
+          </CheckoutField>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <CheckoutField label="validade">
+              <input style={checkoutInputStyle} inputMode="numeric" autoComplete="cc-exp"
+                placeholder="MM/AA" value={exp}
+                onChange={e => setExp(fmtExp(e.target.value))}/>
+            </CheckoutField>
+            <CheckoutField label="cvv">
+              <input style={checkoutInputStyle} inputMode="numeric" autoComplete="cc-csc"
+                placeholder="123" maxLength={4} value={cvv}
+                onChange={e => setCvv(_digits(e.target.value).slice(0, 4))}/>
+            </CheckoutField>
+          </div>
+          <CheckoutField label="cpf do titular">
+            <input style={checkoutInputStyle} inputMode="numeric"
+              placeholder="000.000.000-00" value={cpf}
+              onChange={e => setCpf(fmtCpf(e.target.value))}/>
+          </CheckoutField>
+
+          {err && (
+            <div style={{
+              padding: '10px 14px', borderRadius: 10,
+              background: 'var(--ember-soft)', color: 'var(--ember-ink)',
+              fontFamily: 'var(--font-sans)', fontSize: 13,
+            }}>{err}</div>
+          )}
+
+          <button onClick={pagar} disabled={busy} style={{
+            padding: '14px 18px', borderRadius: 12, border: 'none',
+            background: busy ? 'var(--paper-sunk)' : 'var(--ember)',
+            color: busy ? 'var(--ink-3)' : '#fff', cursor: busy ? 'default' : 'pointer',
+            fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: 600,
+          }}>
+            {busy ? 'Ativando sua assinatura…' : `Assinar por ${_fmtBRL(price)}/mês`}
+          </button>
+
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)',
+          }}>
+            <Icon name="lock" size={12}/>
+            Processado pelo Mercado Pago — seus dados não passam pela HUMA.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+Object.assign(window, { UsoScreen, IndicacaoScreen, CreditosScreen, PlanosScreen, TrialBanner, CheckoutScreen });

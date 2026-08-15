@@ -662,6 +662,12 @@ class SubscribeBody(BaseModel):
     coupon: str = Field(default="", max_length=40)
 
 
+class SubscribeCardBody(BaseModel):
+    plan: str = Field(..., min_length=1, max_length=30)
+    coupon: str = Field(default="", max_length=40)
+    card_token_id: str = Field(..., min_length=1, max_length=120)
+
+
 class CouponBody(BaseModel):
     plan: str = Field(..., min_length=1, max_length=30)
     coupon: str = Field(..., min_length=1, max_length=40)
@@ -687,6 +693,23 @@ async def billing_subscribe(client_id: str, payload: SubscribeBody, client=Depen
     )
     if result.get("status") != "ok":
         raise HTTPException(400, result.get("detail", "Não foi possível iniciar a assinatura."))
+    return result
+
+
+@router.post("/api/clients/{client_id}/billing/subscribe-card", tags=["Billing"])
+async def billing_subscribe_card(client_id: str, payload: SubscribeCardBody, client=Depends(verify_api_key)) -> dict:
+    """
+    Checkout transparente: cria a assinatura já autorizada com o cartão
+    tokenizado no navegador (SDK MP). O cliente nunca sai do Cockpit.
+    Crédito de conversas continua vindo só pelo webhook (regra de ouro).
+    """
+    from huma.services import subscription_service as subs
+    result = await subs.create_subscription_with_card(
+        client_id, payload.plan, getattr(client, "owner_email", "") or "",
+        payload.card_token_id, payload.coupon,
+    )
+    if result.get("status") != "ok":
+        raise HTTPException(400, result.get("detail", "Não foi possível ativar a assinatura."))
     return result
 
 

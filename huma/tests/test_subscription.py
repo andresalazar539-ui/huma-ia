@@ -561,3 +561,135 @@ class TestRedemptionNaAtivacao:
         monkeypatch.setattr(subs, "_record_redemption", record)
         asyncio.run(subs._handle_preapproval_change("pre_1"))
         assert effects["redemptions"] == []
+
+
+# ================================================================
+# CHECKOUT TRANSPARENTE (create_subscription_with_card)
+# ================================================================
+
+class TestSubscribeCard:
+
+    def _setup(self, monkeypatch, mp_resp, coupon_valid=None):
+        """Mocka MP + upsert + créditos; retorna efeitos gravados."""
+        effects = {"upserts": [], "credits": [], "redemptions": []}
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+
+        class FakeHTTP:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                FakeHTTP.last_body = json
+                return mp_resp
+
+        monkeypatch.setattr(subs.httpx, "AsyncClient", FakeHTTP)
+
+        async def upsert(cid, plan, pre_id, status):
+            effects["upserts"].append((cid, plan, pre_id, status))
+
+        async def add_conversations(cid, amount, source="", description=""):
+            effects["credits"].append((cid, amount, source))
+            return amount
+
+        async def record(code, cid, plan, pre_id=""):
+            effects["redemptions"].append((code, cid, pre_id))
+            return True
+
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
+        monkeypatch.setattr(subs, "_record_redemption", record)
+
+        if coupon_valid is not None:
+            async def validate(code, plan):
+                return coupon_valid
+
+            monkeypatch.setattr(subs, "validate_coupon", validate)
+        return effects, FakeHTTP
+
+    def test_cartao_autorizado_ativa_sem_creditar(self, monkeypatch):
+        """Regra de ouro: ativação NUNCA credita — só o webhook de cobrança."""
+        effects, http = self._setup(
+            monkeypatch, FakeResp(201, {"id": "pre_c1", "status": "authorized"})
+        )
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "tok_cartao_123"
+        ))
+        assert out["status"] == "ok"
+        assert out["subscription_status"] == "active"
+        assert effects["upserts"] == [("cli_x", "start", "pre_c1", "active")]
+        assert effects["credits"] == []  # crédito é do webhook, nunca daqui
+        body = http.last_body
+        assert body["card_token_id"] == "tok_cartao_123"
+        assert body["status"] == "authorized"
+
+    def test_cupom_99_desconta_no_valor(self, monkeypatch):
+        effects, http = self._setup(
+            monkeypatch,
+            FakeResp(201, {"id": "pre_c2", "status": "authorized"}),
+            coupon_valid={"valid": True, "percent_off": 99,
+                          "price_original": 347.70, "price_final": 3.48},
+        )
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "tok_1", coupon="TESTE99"
+        ))
+        assert out["status"] == "ok"
+        assert http.last_body["auto_recurring"]["transaction_amount"] == 3.48
+        # Cinto e suspensório: resgate registrado na ativação direta
+        assert effects["redemptions"] == [("TESTE99", "cli_x", "pre_c2")]
+
+    def test_sem_card_token_erro(self, monkeypatch):
+        effects, _ = self._setup(monkeypatch, FakeResp(201, {"id": "x", "status": "authorized"}))
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "  "
+        ))
+        assert out["status"] == "error"
+        assert effects["upserts"] == []
+
+    def test_cartao_recusado_mensagem_amigavel(self, monkeypatch):
+        effects, _ = self._setup(
+            monkeypatch, FakeResp(400, {"message": "Invalid card_token_id"})
+        )
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "tok_ruim"
+        ))
+        assert out["status"] == "error"
+        assert "cartão não foi aceito" in out["detail"].lower()
+        assert effects["upserts"] == []
+
+    def test_payer_igual_collector_mensagem_clara(self, monkeypatch):
+        _, _ = self._setup(
+            monkeypatch,
+            FakeResp(400, {"message": "Payer and collector cannot be the same user"}),
+        )
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "dono@mp.com", "tok_1"
+        ))
+        assert out["status"] == "error"
+        assert "assinar de si mesmo" in out["detail"]
+
+    def test_cupom_100_delega_pra_cortesia(self, monkeypatch):
+        called = {}
+
+        async def fake_checkout(cid, plan, email, coupon=""):
+            called["args"] = (cid, plan, email, coupon)
+            return {"status": "ok", "comp": True, "detail": "cortesia"}
+
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+
+        async def validate(code, plan):
+            return {"valid": True, "percent_off": 100,
+                    "price_original": 347.70, "price_final": 0.0}
+
+        monkeypatch.setattr(subs, "validate_coupon", validate)
+        monkeypatch.setattr(subs, "create_checkout", fake_checkout)
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "", coupon="TESTE100"
+        ))
+        assert out["comp"] is True
+        assert called["args"] == ("cli_x", "start", "cliente@negocio.com", "TESTE100")

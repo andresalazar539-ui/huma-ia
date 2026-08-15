@@ -30,6 +30,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from huma.config import (
     MERCADOPAGO_ACCESS_TOKEN,
+    MERCADOPAGO_PUBLIC_KEY,
     PUBLIC_BASE_URL,
     TRIAL_CONVERSATIONS,
     TRIAL_DAYS,
@@ -302,6 +303,125 @@ async def create_checkout(client_id: str, plan_value: str, payer_email: str, cou
 
 
 # ================================================================
+# CHECKOUT TRANSPARENTE — cartão tokenizado no navegador (SDK MP)
+#
+# O cliente digita o cartão NUMA TELA DO COCKPIT; o SDK JS do MP
+# tokeniza direto do navegador (os dados nunca tocam nosso servidor)
+# e o backend cria o preapproval JÁ AUTORIZADO com o card_token_id.
+# Sem redirect — a experiência inteira parece HUMA.
+#
+# Regra de ouro preservada: conversas são creditadas SOMENTE no
+# webhook de cobrança aprovada (authorized_payment), nunca aqui.
+# ================================================================
+
+
+async def create_subscription_with_card(
+    client_id: str,
+    plan_value: str,
+    payer_email: str,
+    card_token_id: str,
+    coupon: str = "",
+) -> dict:
+    """
+    Cria assinatura recorrente autorizada com cartão tokenizado.
+
+    Returns:
+        {"status": "ok", "subscription_status": "active"|"pending", "detail": ...}
+        ou {"status": "ok", "comp": True} (cupom 100% — sem cartão)
+        ou {"status": "error", "detail": ...} — nunca levanta exceção.
+    """
+    if not MERCADOPAGO_ACCESS_TOKEN:
+        return {"status": "error", "detail": "Cobrança não configurada no servidor."}
+
+    try:
+        plan = Plan(plan_value)
+    except ValueError:
+        return {"status": "error", "detail": f"Plano inválido: {plan_value}"}
+
+    config = PLAN_CONFIG[plan]
+    payer_email = (payer_email or "").strip().lower()
+    if "@" not in payer_email:
+        return {"status": "error", "detail": "Cliente sem e-mail cadastrado — faça login e tente de novo."}
+
+    coupon_code = (coupon or "").strip().upper()
+    amount = config["price_brl"]
+    if coupon_code:
+        result = await validate_coupon(coupon_code, plan.value)
+        if not result.get("valid"):
+            return {"status": "error", "detail": result.get("detail", "Cupom inválido ou expirado.")}
+        if result["percent_off"] >= 100:
+            # Cortesia não precisa de cartão — reusa o caminho existente
+            return await create_checkout(client_id, plan.value, payer_email, coupon_code)
+        amount = result["price_final"]
+
+    if not (card_token_id or "").strip():
+        return {"status": "error", "detail": "Cartão não validado. Confira os dados e tente de novo."}
+
+    reason = f"HUMA IA — Plano {config['name']}"
+    if coupon_code:
+        reason += f" (cupom {coupon_code})"
+    body = {
+        "reason": reason,
+        "external_reference": _build_ext_ref(client_id, plan.value, coupon_code),
+        "payer_email": payer_email,
+        "card_token_id": card_token_id.strip(),
+        "auto_recurring": {
+            "frequency": 1,
+            "frequency_type": "months",
+            "transaction_amount": amount,
+            "currency_id": "BRL",
+        },
+        "back_url": f"{PUBLIC_BASE_URL.rstrip('/')}/cockpit" if PUBLIC_BASE_URL else "",
+        "status": "authorized",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.post(f"{MP_BASE}/preapproval", headers=_headers(), json=body)
+    except httpx.TimeoutException:
+        log.error(f"Timeout | service=mercadopago | op=preapproval_card | client={client_id}")
+        return {"status": "error", "detail": "Mercado Pago indisponível. Tente de novo."}
+    except httpx.HTTPError as e:
+        log.error(f"HTTP erro | service=mercadopago | op=preapproval_card | client={client_id} | {type(e).__name__}: {e}")
+        return {"status": "error", "detail": "Mercado Pago indisponível. Tente de novo."}
+
+    if resp.status_code not in (200, 201):
+        log.error(f"MP preapproval_card recusado | client={client_id} | status={resp.status_code} | {resp.text[:300]}")
+        try:
+            mp_msg = str(resp.json().get("message", ""))[:140]
+        except ValueError:
+            mp_msg = ""
+        low = mp_msg.lower()
+        if "same user" in low:
+            return {"status": "error", "detail": "Este e-mail pertence à conta Mercado Pago que recebe os pagamentos — não dá pra assinar de si mesmo. Use outro e-mail/conta pra testar."}
+        if "card" in low or "token" in low:
+            return {"status": "error", "detail": "O cartão não foi aceito. Confira os dados (número, validade, CVV, CPF) e tente de novo."}
+        detail = f"Mercado Pago recusou: {mp_msg}" if mp_msg else "Não foi possível ativar a assinatura. Tente de novo."
+        return {"status": "error", "detail": detail}
+
+    data = resp.json()
+    preapproval_id = data.get("id", "")
+    mp_status = (data.get("status") or "").lower()
+    local_status = {"authorized": "active", "pending": "pending"}.get(mp_status, "pending")
+
+    await _upsert_subscription(client_id, plan.value, preapproval_id, local_status)
+    if local_status == "active" and coupon_code:
+        # Webhook também registra (dedup por índice único) — aqui é cinto
+        # e suspensório pra contagem de usos não depender só da reentrega.
+        await _record_redemption(coupon_code, client_id, plan.value, preapproval_id)
+
+    log.info(
+        f"ASSINATURA TRANSPARENTE | client={client_id} | plan={plan.value} | "
+        f"status={local_status} | preapproval={preapproval_id} | valor={amount}"
+    )
+    if local_status == "active":
+        detail = f"Assinatura {config['name']} ativa! Suas conversas do plano entram em instantes."
+    else:
+        detail = "Assinatura criada — aguardando confirmação do cartão. Isso pode levar alguns minutos."
+    return {"status": "ok", "subscription_status": local_status, "detail": detail}
+
+
+# ================================================================
 # TRIAL (Sprint Billing 2026-08-14)
 # ================================================================
 
@@ -451,6 +571,9 @@ async def get_billing_status(client_id: str) -> dict:
         "trial_expired": trial_expired,
         "trial_days_left": trial_days_left,
         "trial_ends_at": trial_ends_at,
+        # Checkout transparente: o front usa a public key pro SDK do MP
+        # tokenizar o cartão no navegador. Vazia = cai no checkout hospedado.
+        "mp_public_key": MERCADOPAGO_PUBLIC_KEY,
     }
 
 

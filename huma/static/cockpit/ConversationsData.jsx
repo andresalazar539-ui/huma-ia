@@ -334,6 +334,19 @@ async function subscribePlan(plan, coupon = '') {
   return data;
 }
 
+// Checkout transparente: assina com cartão tokenizado pelo SDK do MP
+// (o token nasce no navegador; dados do cartão nunca passam por aqui).
+async function subscribeCardPlan(plan, coupon, card_token_id) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/subscribe-card`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ plan, coupon, card_token_id }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Erro ao ativar assinatura');
+  return data;
+}
+
 // Pré-valida cupom pra dar feedback antes de assinar
 async function validateCoupon(coupon, plan) {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/validate-coupon`, {
@@ -356,7 +369,7 @@ async function cancelPlan() {
   return data;
 }
 
-Object.assign(window, { fetchBillingStatus, subscribePlan, cancelPlan, validateCoupon });
+Object.assign(window, { fetchBillingStatus, subscribePlan, subscribeCardPlan, cancelPlan, validateCoupon });
 
 /* ---------------- Disparos em massa (outbound — só WhatsApp oficial) ---------------- */
 // Backend recusa com 403 se o canal não for a API oficial da Meta

@@ -53,6 +53,9 @@
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<!-- SDK oficial do Mercado Pago (checkout transparente): tokeniza o cartão
+     direto do navegador — dados nunca passam pelo servidor da HUMA. -->
+<script src="https://sdk.mercadopago.com/js/v2"></script>
 
 <script type="text/babel" src="/static/cockpit/Atoms.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/ConversationsData.jsx?v=__ASSET_V__"></script>
@@ -177,6 +180,8 @@ function App() {
   })();
   const [route, setRoute] = useState(initialRoute);
   const [handoff, setHandoff] = useState(false);
+  // Contexto do checkout transparente: {planId, coupon, couponInfo}
+  const [checkoutCtx, setCheckoutCtx] = useState(null);
   const narrow = useNarrow(1400);
   const isMobile = useIsMobile();
   // Ref pro loadList (callback sem deps) saber se está no celular
@@ -328,7 +333,14 @@ function App() {
     case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
     case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;
     case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} />; break;
-    case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute} />; break;
+    case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute}
+                          onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
+    case 'checkout':    screen = <CheckoutScreen ctx={checkoutCtx} billing={billing}
+                          onBack={() => setRoute('planos')}
+                          onDone={() => {
+                            setCheckoutCtx(null); setRoute('inicio');
+                            fetchBillingStatus().then(setBilling).catch(() => {});
+                          }} />; break;
     case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
     case 'perfil':      screen = <PerfilScreen />; break;
     default:            screen = <InicioScreen
@@ -342,7 +354,7 @@ function App() {
     const inChat = route === 'conversas' && !!active;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)', position: 'relative' }}>
-        {!inChat && route !== 'planos' && <TrialBanner billing={billing} onGoto={setRoute} />}
+        {!inChat && !['planos', 'checkout'].includes(route) && <TrialBanner billing={billing} onGoto={setRoute} />}
         <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
           {screen}
         </div>
@@ -356,7 +368,7 @@ function App() {
     <div style={{ display: 'flex', height: '100vh', background: 'var(--paper)', position: 'relative' }}>
       <SidebarNav active={route} onNav={setRoute} onInvite={() => setInviteOpen(true)} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        {route !== 'planos' && <TrialBanner billing={billing} onGoto={setRoute} />}
+        {!['planos', 'checkout'].includes(route) && <TrialBanner billing={billing} onGoto={setRoute} />}
         <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0 }}>
           {screen}
         </div>

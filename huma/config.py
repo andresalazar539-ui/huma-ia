@@ -167,6 +167,9 @@ PIPEDRIVE_WEBHOOK_PASSWORD = os.getenv("PIPEDRIVE_WEBHOOK_PASSWORD", "")
 
 # ── Pagamentos ──
 MERCADOPAGO_ACCESS_TOKEN = os.getenv("MERCADOPAGO_ACCESS_TOKEN", "")
+# Public key do MP (checkout transparente): usada pelo SDK JS no navegador
+# pra tokenizar o cartão. É pública por natureza — sem risco em expor.
+MERCADOPAGO_PUBLIC_KEY = os.getenv("MERCADOPAGO_PUBLIC_KEY", "")
 # Sprint 1 / item 2 — webhook secret pra validar HMAC do MP (diferente do access_token)
 # Configurar no painel MP: Webhooks → Configurações → "Sua chave secreta"
 MERCADOPAGO_WEBHOOK_SECRET = os.getenv("MERCADOPAGO_WEBHOOK_SECRET", "")
