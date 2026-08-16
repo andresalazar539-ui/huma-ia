@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Atendimento</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F6F2EC;
+    --paper-raised: #FBF8F3;
+    --paper-sunk: #EFE9DF;
+    --paper-edge: #E5DED1;
+    --ink: #1C1714;
+    --ink-2: #3A332D;
+    --ink-3: #6B6259;
+    --ink-4: #9A9086;
+    --terracotta: #C8553D;
+    --terracotta-ink: #8E3724;
+    --terracotta-tint: #FBEEE8;
+    --sage-tint: #EAF0E7;
+    --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif;
+    --font-serif: 'Instrument Serif', Georgia, serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 15.5px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: var(--paper-raised);
+    border-bottom: 1px solid var(--paper-edge);
+    padding: 14px 18px calc(14px);
+    padding-top: max(14px, env(safe-area-inset-top));
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 50%;
+    background: var(--terracotta);
+    color: #FFF;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-serif);
+    font-size: 20px;
+    flex-shrink: 0;
+  }
+  .head-txt { min-width: 0; }
+  .biz-name {
+    font-weight: 600; font-size: 16px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .status-line {
+    font-size: 12.5px; color: var(--ink-3);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #4F7A4A; }
+
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 14px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .msg {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 16px;
+    line-height: 1.45;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    animation: rise .18s ease-out;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+  @media (prefers-reduced-motion: reduce) { .msg { animation: none; } }
+  .msg.bot {
+    background: var(--paper-raised);
+    border: 1px solid var(--paper-edge);
+    border-bottom-left-radius: 6px;
+    align-self: flex-start;
+  }
+  .msg.user {
+    background: var(--terracotta);
+    color: #FFF9F5;
+    border-bottom-right-radius: 6px;
+    align-self: flex-end;
+  }
+  .msg.sys {
+    background: var(--paper-sunk);
+    color: var(--ink-3);
+    font-size: 13px;
+    align-self: center;
+    text-align: center;
+    max-width: 92%;
+  }
+  .typing {
+    align-self: flex-start;
+    background: var(--paper-raised);
+    border: 1px solid var(--paper-edge);
+    border-radius: 16px;
+    border-bottom-left-radius: 6px;
+    padding: 12px 16px;
+    display: flex; gap: 5px;
+  }
+  .typing span {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ink-4);
+    animation: blink 1.2s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 60%, 100% { opacity: .3; } 30% { opacity: 1; } }
+
+  form {
+    flex-shrink: 0;
+    display: flex;
+    gap: 10px;
+    padding: 12px 14px;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    background: var(--paper-raised);
+    border-top: 1px solid var(--paper-edge);
+  }
+  input[type="text"] {
+    flex: 1;
+    border: 1px solid var(--paper-edge);
+    background: var(--paper);
+    border-radius: 22px;
+    padding: 11px 16px;
+    font-family: var(--font-sans);
+    font-size: 15.5px;
+    color: var(--ink);
+    outline: none;
+    min-width: 0;
+  }
+  input[type="text"]:focus { border-color: var(--terracotta); }
+  button {
+    border: none;
+    background: var(--terracotta);
+    color: #FFF;
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  button:disabled { background: var(--ink-4); cursor: default; }
+  button:focus-visible { outline: 2px solid var(--terracotta-ink); outline-offset: 2px; }
+
+  .powered {
+    text-align: center;
+    font-size: 11px;
+    color: var(--ink-4);
+    padding: 0 0 8px;
+    background: var(--paper-raised);
+    flex-shrink: 0;
+  }
+  .powered a { color: var(--ink-4); }
+</style>
+</head>
+<body>
+  <header>
+    <div class="avatar" id="avatar">·</div>
+    <div class="head-txt">
+      <div class="biz-name" id="bizName">Carregando…</div>
+      <div class="status-line"><span class="dot"></span> Online agora</div>
+    </div>
+  </header>
+
+  <main id="chat" aria-live="polite"></main>
+
+  <form id="form" autocomplete="off">
+    <input type="text" id="input" placeholder="Escreva sua mensagem…" maxlength="800" aria-label="Sua mensagem">
+    <button type="submit" id="send" aria-label="Enviar">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 2 11 13"/><path d="M22 2 15 22 11 13 2 9 22 2z"/>
+      </svg>
+    </button>
+  </form>
+  <div class="powered">com <a href="https://app.humaia.com.br" target="_blank" rel="noopener">HUMA IA</a></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // /c/<client_id> — o id vem da própria URL da página hospedada.
+  var parts = window.location.pathname.split('/').filter(Boolean);
+  var clientId = parts.length >= 2 && parts[0] === 'c' ? parts[1] : '';
+
+  var chat = document.getElementById('chat');
+  var form = document.getElementById('form');
+  var input = document.getElementById('input');
+  var sendBtn = document.getElementById('send');
+  var bizName = document.getElementById('bizName');
+  var avatar = document.getElementById('avatar');
+
+  // Sessão por negócio, persistida no navegador do visitante.
+  var sidKey = 'huma_balcao_sid_' + clientId;
+  var sessionId = localStorage.getItem(sidKey);
+  if (!sessionId || !/^[a-f0-9]{32}$/.test(sessionId)) {
+    sessionId = '';
+    var bytes = new Uint8Array(16);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    for (var i = 0; i < bytes.length; i++) {
+      sessionId += bytes[i].toString(16).padStart(2, '0');
+    }
+    localStorage.setItem(sidKey, sessionId);
+  }
+
+  var histKey = 'huma_balcao_hist_' + clientId;
+
+  function loadHistory() {
+    try { return JSON.parse(localStorage.getItem(histKey) || '[]'); }
+    catch (e) { return []; }
+  }
+  function saveHistory(items) {
+    try { localStorage.setItem(histKey, JSON.stringify(items.slice(-60))); }
+    catch (e) { /* storage cheio: histórico local é cosmético */ }
+  }
+
+  var history = loadHistory();
+
+  function addMsg(kind, text, persist) {
+    var el = document.createElement('div');
+    el.className = 'msg ' + kind;
+    el.textContent = text;
+    chat.appendChild(el);
+    chat.scrollTop = chat.scrollHeight;
+    if (persist !== false && kind !== 'sys') {
+      history.push({ k: kind, t: text });
+      saveHistory(history);
+    }
+    return el;
+  }
+
+  var typingEl = null;
+  function showTyping() {
+    if (typingEl) return;
+    typingEl = document.createElement('div');
+    typingEl.className = 'typing';
+    typingEl.innerHTML = '<span></span><span></span><span></span>';
+    chat.appendChild(typingEl);
+    chat.scrollTop = chat.scrollHeight;
+  }
+  function hideTyping() {
+    if (typingEl) { typingEl.remove(); typingEl = null; }
+  }
+
+  function setBusy(busy) {
+    sendBtn.disabled = busy;
+    input.disabled = busy;
+    if (!busy) input.focus();
+  }
+
+  // Restaura histórico local (a memória real vive no servidor).
+  history.forEach(function (m) { addMsg(m.k, m.t, false); });
+
+  fetch('/api/web/' + encodeURIComponent(clientId) + '/info')
+    .then(function (r) { if (!r.ok) throw new Error('offline'); return r.json(); })
+    .then(function (info) {
+      bizName.textContent = info.business_name;
+      document.title = info.business_name + ' — Atendimento';
+      avatar.textContent = (info.business_name || 'H').charAt(0).toUpperCase();
+      if (history.length === 0 && info.greeting) {
+        addMsg('bot', info.greeting);
+      }
+    })
+    .catch(function () {
+      bizName.textContent = 'Atendimento indisponível';
+      addMsg('sys', 'Este atendimento não está disponível no momento.');
+      setBusy(true);
+    });
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var text = input.value.trim();
+    if (!text || sendBtn.disabled) return;
+
+    addMsg('user', text);
+    input.value = '';
+    setBusy(true);
+    showTyping();
+
+    fetch('/api/web/' + encodeURIComponent(clientId) + '/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, text: text })
+    })
+      .then(function (r) {
+        if (r.status === 429) throw new Error('rate');
+        if (!r.ok) throw new Error('http');
+        return r.json();
+      })
+      .then(function (data) {
+        hideTyping();
+        var replies = data.reply_parts || [];
+        var delay = 0;
+        replies.forEach(function (part, idx) {
+          delay += idx === 0 ? 0 : Math.min(400 + part.length * 8, 1400);
+          setTimeout(function () {
+            addMsg('bot', part);
+            if (idx === replies.length - 1) setBusy(false);
+          }, delay);
+        });
+        if (replies.length === 0) setBusy(false);
+      })
+      .catch(function (err) {
+        hideTyping();
+        if (err.message === 'rate') {
+          addMsg('sys', 'Muitas mensagens seguidas. Espere um instante e tente de novo.');
+        } else {
+          addMsg('sys', 'Não consegui enviar agora. Tente de novo em instantes.');
+        }
+        setBusy(false);
+      });
+  });
+
+  input.focus();
+})();
+</script>
+</body>
+</html>

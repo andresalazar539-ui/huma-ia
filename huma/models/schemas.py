@@ -766,6 +766,24 @@ class Conversation(BaseModel):
     """Estado de uma conversa entre HUMA e um lead."""
     client_id: str
     phone: str
+    # v13.x — Balcão HUMA (canal web). Por onde a conversa acontece.
+    # 'whatsapp' = fluxo normal (Meta/Evolution/Twilio). 'web' = widget ou
+    # página de conversa hospedada; nesse caso `phone` é sintético no formato
+    # "web:<session_id>" e NUNCA deve receber envio via whatsapp_service.
+    channel: str = Field(
+        default="whatsapp",
+        description="Canal da conversa: 'whatsapp' | 'web'.",
+    )
+    # Deflection do canal web: número de WhatsApp que o lead deixou na
+    # conversa do site. Gravado pelo web_channel quando detecta um telefone
+    # BR no texto do lead. Vazio = lead ainda não deixou WhatsApp.
+    lead_whatsapp: str = Field(
+        default="",
+        description=(
+            "WhatsApp informado pelo lead num canal não-WhatsApp (só "
+            "dígitos, com DDI). Alimenta a deflection site→WhatsApp."
+        ),
+    )
     # Fase C (username/BSUID): Business-Scoped User ID da Meta. Mapeamento
     # telefone↔BSUID (contact book) gravado first-touch — nunca sobrescrito.
     # Vazio = lead identificado só por telefone. A Graph API aceita BSUID

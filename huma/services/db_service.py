@@ -272,6 +272,8 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             lead_source_detail=d.get("lead_source_detail", "") or "",
             lead_source_ref=d.get("lead_source_ref", "") or "",
             bsuid=d.get("bsuid", "") or "",
+            channel=d.get("channel", "whatsapp") or "whatsapp",
+            lead_whatsapp=d.get("lead_whatsapp", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -337,6 +339,8 @@ async def save_conversation(conv: Conversation):
         "crm_deal_id": conv.crm_deal_id,
         "crm_synced_at": conv.crm_synced_at.isoformat() if conv.crm_synced_at else None,
         "crm_outcome": conv.crm_outcome,
+        "channel": conv.channel or "whatsapp",
+        "lead_whatsapp": conv.lead_whatsapp,
         "updated_at": datetime.utcnow().isoformat(),
     }
     # Origem (atribuição first-touch): só entra no upsert quando preenchida.
@@ -608,6 +612,9 @@ async def list_stuck_conversations(
             )
             .lte("last_message_at", cutoff_min)
             .gte("last_message_at", cutoff_max)
+            # Canal web (Balcão): phone sintético "web:<sid>" não recebe
+            # follow-up de WhatsApp — o job enviaria pra um número inválido.
+            .not_.like("phone", "web:%")
             .in_("stage", ["discovery", "offer", "closing"])
             .lt("follow_up_count", max_follow_ups)
             .or_("active_appointment_event_id.is.null,active_appointment_event_id.eq.")
@@ -651,6 +658,7 @@ async def list_hot_stuck_conversations(
             )
             .lte("last_message_at", cutoff_min)
             .gte("last_message_at", cutoff_max)
+            .not_.like("phone", "web:%")
             .in_("stage", ["offer", "closing"])
             .or_("active_appointment_event_id.is.null,active_appointment_event_id.eq.")
             .limit(limit)
@@ -689,6 +697,7 @@ async def list_unanswered_conversations(
             .select("client_id,phone,last_message_at,stage,history")
             .lte("last_message_at", cutoff_min)
             .gte("last_message_at", cutoff_max)
+            .not_.like("phone", "web:%")
             .not_.in_("stage", ["won", "lost"])
             .limit(limit)
             .execute()

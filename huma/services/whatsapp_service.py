@@ -372,6 +372,12 @@ async def send_text(
         reply_to: message_id pra quoted reply (Meta: context; Evolution: quoted;
                   Twilio: ignorado, não suportado no sandbox).
     """
+    # Balcão HUMA (canal web): phone sintético "web:<sid>" nunca é um
+    # destino de WhatsApp. Defesa em profundidade — as queries de
+    # follow-up já filtram, mas qualquer caller novo fica protegido.
+    if phone.startswith("web:"):
+        log.warning(f"send_text bloqueado | destino=canal_web | phone={phone} | client={client_id}")
+        return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":
         return await _meta_send_text(identity, phone, message, reply_to)
