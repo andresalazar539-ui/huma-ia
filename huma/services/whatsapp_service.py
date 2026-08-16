@@ -352,6 +352,19 @@ async def _evo_send_media(
 # API PÚBLICA (assinaturas preservadas — dispatcher interno por canal)
 # ================================================================
 
+def _is_web_destination(phone: str, caller: str, client_id: str = "") -> bool:
+    """
+    Balcão HUMA (canal web): phone sintético "web:<sid>" nunca é um
+    destino de WhatsApp. Defesa em profundidade — as queries de
+    follow-up já filtram, mas qualquer caller novo fica protegido.
+    Cobre TODOS os senders públicos (texto, mídia, template).
+    """
+    if phone.startswith("web:"):
+        log.warning(f"{caller} bloqueado | destino=canal_web | phone={phone} | client={client_id}")
+        return True
+    return False
+
+
 async def send_text(
     phone: str,
     message: str,
@@ -372,11 +385,7 @@ async def send_text(
         reply_to: message_id pra quoted reply (Meta: context; Evolution: quoted;
                   Twilio: ignorado, não suportado no sandbox).
     """
-    # Balcão HUMA (canal web): phone sintético "web:<sid>" nunca é um
-    # destino de WhatsApp. Defesa em profundidade — as queries de
-    # follow-up já filtram, mas qualquer caller novo fica protegido.
-    if phone.startswith("web:"):
-        log.warning(f"send_text bloqueado | destino=canal_web | phone={phone} | client={client_id}")
+    if _is_web_destination(phone, "send_text", client_id):
         return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":
@@ -394,6 +403,8 @@ async def send_audio(
     **kwargs,
 ) -> str | None:
     """Envia áudio (voz) via WhatsApp. Retorna message_id."""
+    if _is_web_destination(phone, "send_audio", client_id):
+        return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":
         return await _meta_send_media(identity, phone, audio_url, "audio", reply_to=reply_to)
@@ -411,6 +422,8 @@ async def send_image(
     **kwargs,
 ) -> str | None:
     """Envia imagem via WhatsApp. Retorna message_id ou None se falhou."""
+    if _is_web_destination(phone, "send_image", client_id):
+        return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":
         return await _meta_send_media(identity, phone, image_url, "image", caption=caption, reply_to=reply_to)
@@ -428,6 +441,8 @@ async def send_video(
     **kwargs,
 ) -> str | None:
     """Envia vídeo via WhatsApp. Retorna message_id."""
+    if _is_web_destination(phone, "send_video", client_id):
+        return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":
         return await _meta_send_media(identity, phone, video_url, "video", caption=caption, reply_to=reply_to)
@@ -445,6 +460,8 @@ async def send_document(
     **kwargs,
 ) -> str | None:
     """Envia documento via WhatsApp. Retorna message_id."""
+    if _is_web_destination(phone, "send_document", client_id):
+        return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":
         return await _meta_send_media(identity, phone, doc_url, "document", caption=filename, filename=filename, reply_to=reply_to)
@@ -491,6 +508,8 @@ async def send_template(
     """
     if not params:
         params = []
+    if _is_web_destination(phone, "send_template", client_id):
+        return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":
         return await _meta_send_template(identity, phone, template_name, language, params)

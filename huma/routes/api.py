@@ -798,6 +798,10 @@ async def list_conversations_cockpit(
             "last_message_preview": preview,
             "active_appointment_datetime": r.get("active_appointment_datetime", "") or "",
             "active_appointment_service": r.get("active_appointment_service", "") or "",
+            # Balcão (canal web): o front usa pra rotular "Visitante do
+            # site" em vez de mascarar web:<sid> como telefone falso.
+            "channel": r.get("channel", "whatsapp") or "whatsapp",
+            "lead_whatsapp": r.get("lead_whatsapp", "") or "",
         })
 
     log.info(
@@ -951,10 +955,16 @@ async def conversation_send_cockpit(
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
 
-    msg_id = await wa.send_text(phone, text, client_id=client_id)
-    if not msg_id:
-        log.error(f"Cockpit send WA falhou | client_id={client_id} | phone={phone}")
-        raise HTTPException(502, "Falha ao enviar mensagem pelo WhatsApp")
+    # Balcão (canal web): não existe envio de WhatsApp — a entrega é o
+    # próprio history, que a página /c/<id> consome via poll de mensagens.
+    # Só grava e retorna; o visitante vê quando a página estiver aberta.
+    if conv.channel == "web" or phone.startswith("web:"):
+        msg_id = "web"
+    else:
+        msg_id = await wa.send_text(phone, text, client_id=client_id)
+        if not msg_id:
+            log.error(f"Cockpit send WA falhou | client_id={client_id} | phone={phone}")
+            raise HTTPException(502, "Falha ao enviar mensagem pelo WhatsApp")
 
     now = datetime.utcnow()
     conv.history.append({

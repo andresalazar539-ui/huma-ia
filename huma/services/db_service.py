@@ -339,10 +339,17 @@ async def save_conversation(conv: Conversation):
         "crm_deal_id": conv.crm_deal_id,
         "crm_synced_at": conv.crm_synced_at.isoformat() if conv.crm_synced_at else None,
         "crm_outcome": conv.crm_outcome,
-        "channel": conv.channel or "whatsapp",
-        "lead_whatsapp": conv.lead_whatsapp,
         "updated_at": datetime.utcnow().isoformat(),
     }
+    # Balcão (canal web): mesma convenção do bsuid — só entra no upsert
+    # quando difere do default. O caminho quente do WhatsApp não escreve
+    # as colunas novas (DEFAULT do banco cobre), e um ambiente que ainda
+    # não rodou scripts/migration_balcao_web.sql continua funcionando
+    # pro WhatsApp em vez de quebrar TODO save_conversation.
+    if conv.channel and conv.channel != "whatsapp":
+        data["channel"] = conv.channel
+    if conv.lead_whatsapp:
+        data["lead_whatsapp"] = conv.lead_whatsapp
     # Origem (atribuição first-touch): só entra no upsert quando preenchida.
     # O capture() do attribution_service grava direto no banco em paralelo
     # ao processamento — incluir "" aqui apagaria uma origem já capturada
@@ -734,6 +741,10 @@ async def list_active_appointments(limit: int = 300, client_id: str = "") -> lis
                 "lead_name_canonical,stage,lead_facts,history"
             )
             .neq("active_appointment_event_id", "")
+            # Canal web: lembrete pré-consulta e NPS saem por WhatsApp;
+            # sessão web:<sid> não é destino (hoje inalcançável — web não
+            # agenda — mas mantém a família de queries consistente).
+            .not_.like("phone", "web:%")
             .limit(limit)
         )
         if client_id:
@@ -796,7 +807,7 @@ async def list_conversations_for_cockpit(
             .select(
                 "phone,stage,handoff_status,last_message_at,history,"
                 "lead_name_canonical,active_appointment_datetime,"
-                "active_appointment_service"
+                "active_appointment_service,channel,lead_whatsapp"
             )
             .eq("client_id", client_id)
             .order("last_message_at", desc=True)

@@ -52,6 +52,15 @@ class TestExtractBrPhone:
         # CEP, valores etc. não podem virar telefone.
         assert web_channel.extract_br_phone("meu cep é 01310") == ""
 
+    def test_nao_casa_dentro_de_sequencia_longa(self):
+        """Revisão v1.1: CNPJ/cartão/nº de pedido não podem virar telefone."""
+        assert web_channel.extract_br_phone("cnpj 12345678000190") == ""
+        assert web_channel.extract_br_phone("cartão 1234567890123456") == ""
+        assert web_channel.extract_br_phone("pedido 123456789012345") == ""
+
+    def test_telefone_no_meio_de_frase_ainda_casa(self):
+        assert web_channel.extract_br_phone("anota aí: 11 98765-4321, me chama") == "5511987654321"
+
 
 class TestBuildWebIdentity:
     def _identity(self, **kwargs) -> ClientIdentity:
@@ -106,6 +115,25 @@ class TestConversationChannel:
         conv = Conversation(client_id="cli_x", phone="web:" + "a" * 32, channel="web")
         assert conv.channel == "web"
         assert conv.phone.startswith("web:")
+
+
+class TestPollEValidacao:
+    def test_get_web_messages_sessao_invalida_nao_toca_banco(self):
+        """Sessão inválida retorna 'invalid' sem query no Supabase."""
+        import asyncio
+        result = asyncio.run(web_channel.get_web_messages("cli_x", "não-hex!", 0))
+        assert result == {"status": "invalid", "total": 0, "messages": []}
+
+    def test_process_sessao_invalida_tem_history_len(self):
+        """Contrato do retorno inclui history_len (cursor do poll)."""
+        import asyncio
+        result = asyncio.run(web_channel.process_web_message("cli_x", "curto", "oi"))
+        assert result["status"] == "invalid"
+        assert result["history_len"] == 0
+
+    def test_tetos_anti_abuso_definidos(self):
+        """Endpoint público: tetos diários de sessão nova existem e são sãos."""
+        assert 0 < web_channel.MAX_NEW_SESSIONS_PER_IP_DAY < web_channel.MAX_NEW_SESSIONS_PER_CLIENT_DAY
 
 
 class TestReplyToolSemActions:

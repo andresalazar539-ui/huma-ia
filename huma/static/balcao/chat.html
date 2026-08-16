@@ -206,31 +206,50 @@
   var bizName = document.getElementById('bizName');
   var avatar = document.getElementById('avatar');
 
-  // Sessão por negócio, persistida no navegador do visitante.
-  var sidKey = 'huma_balcao_sid_' + clientId;
-  var sessionId = localStorage.getItem(sidKey);
-  if (!sessionId || !/^[a-f0-9]{32}$/.test(sessionId)) {
-    sessionId = '';
-    var bytes = new Uint8Array(16);
-    (window.crypto || window.msCrypto).getRandomValues(bytes);
-    for (var i = 0; i < bytes.length; i++) {
-      sessionId += bytes[i].toString(16).padStart(2, '0');
+  // localStorage pode LANÇAR (iframe com cookies de terceiros bloqueados,
+  // Safari privado, política corporativa). Sem storage o chat continua
+  // funcionando — só perde a persistência entre visitas.
+  var mem = {};
+  function sGet(k) { try { return localStorage.getItem(k); } catch (e) { return mem[k] || null; } }
+  function sSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { mem[k] = v; } }
+
+  function randomHex32() {
+    var out = '';
+    try {
+      var bytes = new Uint8Array(16);
+      (window.crypto || window.msCrypto).getRandomValues(bytes);
+      for (var i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+    } catch (e) {
+      for (var j = 0; j < 32; j++) out += Math.floor(Math.random() * 16).toString(16);
     }
-    localStorage.setItem(sidKey, sessionId);
+    return out;
+  }
+
+  var sidKey = 'huma_balcao_sid_' + clientId;
+  var sessionId = sGet(sidKey);
+  if (!sessionId || !/^[a-f0-9]{32}$/.test(sessionId)) {
+    sessionId = randomHex32();
+    sSet(sidKey, sessionId);
   }
 
   var histKey = 'huma_balcao_hist_' + clientId;
+  var seenKey = 'huma_balcao_seen_' + clientId;
 
   function loadHistory() {
-    try { return JSON.parse(localStorage.getItem(histKey) || '[]'); }
+    try { return JSON.parse(sGet(histKey) || '[]'); }
     catch (e) { return []; }
   }
   function saveHistory(items) {
-    try { localStorage.setItem(histKey, JSON.stringify(items.slice(-60))); }
-    catch (e) { /* storage cheio: histórico local é cosmético */ }
+    try { sSet(histKey, JSON.stringify(items.slice(-60))); }
+    catch (e) { /* histórico local é cosmético */ }
   }
 
   var history = loadHistory();
+  // Cursor do poll: índice do history do SERVIDOR já visto. null =
+  // ainda não conhecemos (só passa a existir após o 1º envio).
+  var seen = parseInt(sGet(seenKey), 10);
+  if (isNaN(seen)) seen = null;
+  function setSeen(n) { seen = n; sSet(seenKey, String(n)); }
 
   function addMsg(kind, text, persist) {
     var el = document.createElement('div');
@@ -267,28 +286,70 @@
   // Restaura histórico local (a memória real vive no servidor).
   history.forEach(function (m) { addMsg(m.k, m.t, false); });
 
-  fetch('/api/web/' + encodeURIComponent(clientId) + '/info')
-    .then(function (r) { if (!r.ok) throw new Error('offline'); return r.json(); })
-    .then(function (info) {
-      bizName.textContent = info.business_name;
-      document.title = info.business_name + ' — Atendimento';
-      avatar.textContent = (info.business_name || 'H').charAt(0).toUpperCase();
-      if (history.length === 0 && info.greeting) {
-        addMsg('bot', info.greeting);
-      }
-    })
-    .catch(function () {
-      bizName.textContent = 'Atendimento indisponível';
-      addMsg('sys', 'Este atendimento não está disponível no momento.');
-      setBusy(true);
-    });
+  // ── Info do negócio: 404 = indisponível de verdade; erro de rede =
+  // tenta de novo (elevador, troca de antena) antes de desistir. ──
+  var infoTries = 0;
+  function loadInfo() {
+    fetch('/api/web/' + encodeURIComponent(clientId) + '/info')
+      .then(function (r) {
+        if (r.status === 404) { var e = new Error('gone'); e.gone = true; throw e; }
+        if (!r.ok) throw new Error('http');
+        return r.json();
+      })
+      .then(function (info) {
+        bizName.textContent = info.business_name;
+        document.title = info.business_name + ' — Atendimento';
+        avatar.textContent = (info.business_name || 'H').charAt(0).toUpperCase();
+        if (history.length === 0 && info.greeting) {
+          addMsg('bot', info.greeting);
+        }
+        startPolling();
+      })
+      .catch(function (err) {
+        if (err.gone) {
+          bizName.textContent = 'Atendimento indisponível';
+          addMsg('sys', 'Este atendimento não está disponível no momento.');
+          setBusy(true);
+          return;
+        }
+        infoTries += 1;
+        if (infoTries < 4) {
+          setTimeout(loadInfo, 2500 * infoTries);
+        } else {
+          bizName.textContent = 'Sem conexão';
+          addMsg('sys', 'Não consegui conectar. Verifique a internet e recarregue a página.');
+        }
+      });
+  }
+  loadInfo();
+
+  // ── Poll: respostas assíncronas (dono respondendo pelo Cockpit). ──
+  var pollTimer = null;
+  function pollOnce() {
+    if (seen === null || document.visibilityState !== 'visible') return;
+    fetch('/api/web/' + encodeURIComponent(clientId) + '/messages?session_id=' + sessionId + '&after=' + seen)
+      .then(function (r) { if (!r.ok) throw new Error('http'); return r.json(); })
+      .then(function (data) {
+        (data.messages || []).forEach(function (m) {
+          if (m.content) addMsg('bot', m.content);
+        });
+        if (typeof data.total === 'number' && data.total > seen) setSeen(data.total);
+      })
+      .catch(function () { /* poll é oportunista; próximo tick tenta de novo */ });
+  }
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(pollOnce, 8000);
+  }
 
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     var text = input.value.trim();
     if (!text || sendBtn.disabled) return;
 
-    addMsg('user', text);
+    // Mostra na hora, mas só PERSISTE depois que o servidor confirmar —
+    // senão um reload após falha mostraria a mensagem como entregue.
+    addMsg('user', text, false);
     input.value = '';
     setBusy(true);
     showTyping();
@@ -305,16 +366,25 @@
       })
       .then(function (data) {
         hideTyping();
+        history.push({ k: 'user', t: text });
+        saveHistory(history);
+        if (typeof data.history_len === 'number' && data.history_len > 0) {
+          setSeen(data.history_len);
+        }
         var replies = data.reply_parts || [];
+        if (replies.length === 0) {
+          addMsg('sys', 'Mensagem recebida. A equipe te responde por aqui.');
+          setBusy(false);
+          return;
+        }
         var delay = 0;
         replies.forEach(function (part, idx) {
           delay += idx === 0 ? 0 : Math.min(400 + part.length * 8, 1400);
-          setTimeout(function () {
-            addMsg('bot', part);
-            if (idx === replies.length - 1) setBusy(false);
-          }, delay);
+          setTimeout(function () { addMsg('bot', part); }, delay);
         });
-        if (replies.length === 0) setBusy(false);
+        // Libera o campo junto com a última parte agendada — sem depender
+        // do callback rodar (aba escondida atrasa timer, storage pode falhar).
+        setTimeout(function () { setBusy(false); }, delay);
       })
       .catch(function (err) {
         hideTyping();

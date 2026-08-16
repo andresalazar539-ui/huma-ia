@@ -98,16 +98,22 @@ function formatTime(iso) {
 
 // Item da lista (GET /api/conversations) -> card
 function mapListItem(item) {
+  // Balcão (canal web): phone é sintético ("web:<sid>") — sem o guard,
+  // maskPhone extrairia dígitos do hash e renderizaria um telefone FALSO.
+  const isWeb = item.channel === 'web' || String(item.phone || '').startsWith('web:');
+  const webPhoneLabel = item.lead_whatsapp ? maskPhone(item.lead_whatsapp) : 'Chat do site';
   return {
     id: item.phone, // chave estável; usada no GET de detalhe
-    name: item.lead_name || maskPhone(item.phone),
-    initials: initialsFrom(item.lead_name),
+    name: item.lead_name || (isWeb ? 'Visitante do site' : maskPhone(item.phone)),
+    initials: isWeb && !item.lead_name ? '🌐' : initialsFrom(item.lead_name),
     tone: toneFrom(item.phone),
-    phone: maskPhone(item.phone),
+    phone: isWeb ? webPhoneLabel : maskPhone(item.phone),
     time: formatTime(item.last_message_at),
     preview: item.last_message_preview || '',
     status: deriveStatus(item),
     // brutos, caso precise depois
+    channel: isWeb ? 'web' : (item.channel || 'whatsapp'),
+    lead_whatsapp: item.lead_whatsapp || '',
     stage: item.stage,
     handoff_status: item.handoff_status,
     appointment: item.active_appointment_datetime
@@ -334,7 +340,13 @@ function getBalcaoUrl() {
   return `${location.origin}/c/${encodeURIComponent(CLIENT_ID)}`;
 }
 
-Object.assign(window, { fetchTrackingLink, getBalcaoUrl });
+// Client ativo da sessão — telas usam pra escopar estado local por
+// cliente (ex: agência com dois cockpits no mesmo navegador).
+function getClientId() {
+  return CLIENT_ID;
+}
+
+Object.assign(window, { fetchTrackingLink, getBalcaoUrl, getClientId });
 
 /* ---------------- Billing (assinatura recorrente MP) ---------------- */
 async function fetchBillingStatus() {

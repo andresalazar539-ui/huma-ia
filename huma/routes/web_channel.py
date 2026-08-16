@@ -117,7 +117,9 @@ async def web_message(client_id: str, body: WebMessageBody, request: Request) ->
 
     await _get_public_client(client_id)
 
-    result = await web_channel.process_web_message(client_id, body.session_id, body.text)
+    result = await web_channel.process_web_message(
+        client_id, body.session_id, body.text, client_ip=ip,
+    )
 
     status = result.get("status", "ok")
     if status == "rate_limited":
@@ -127,4 +129,58 @@ async def web_message(client_id: str, body: WebMessageBody, request: Request) ->
     if status == "unavailable":
         raise HTTPException(404, "Negócio não encontrado")
 
-    return {"status": "ok", "reply_parts": result.get("reply_parts", [])}
+    return {
+        "status": "ok",
+        "reply_parts": result.get("reply_parts", []),
+        "history_len": result.get("history_len", 0),
+    }
+
+
+# Poll de mensagens: limite próprio, mais folgado que o de envio —
+# a página consulta a cada ~8s enquanto aberta (leitura barata).
+_poll_rate: dict[str, list[float]] = {}
+_POLL_RATE_MAX = 20
+_POLL_RATE_WINDOW = 60
+
+
+def _check_poll_rate(ip: str) -> bool:
+    """Rate limit do poll por IP. True = pode seguir."""
+    now = time.time()
+    timestamps = [t for t in _poll_rate.get(ip, []) if now - t < _POLL_RATE_WINDOW]
+    if len(timestamps) >= _POLL_RATE_MAX:
+        _poll_rate[ip] = timestamps
+        return False
+    timestamps.append(now)
+    _poll_rate[ip] = timestamps
+    if len(_poll_rate) > 10_000:
+        cutoff = now - _POLL_RATE_WINDOW
+        for k in [k for k, v in _poll_rate.items() if not v or v[-1] < cutoff]:
+            _poll_rate.pop(k, None)
+    return True
+
+
+@router.get("/api/web/{client_id}/messages", tags=["Balcão"])
+async def web_messages_poll(
+    client_id: str,
+    session_id: str,
+    after: int = 0,
+    request: Request = None,
+) -> dict:
+    """
+    Poll do chat: mensagens novas de assistant/dono a partir do índice
+    `after`. É assim que a resposta do dono (Cockpit) chega ao visitante
+    com a página aberta — conversa web não tem push de WhatsApp.
+    """
+    ip = request.client.host if request and request.client else "unknown"
+    if not _check_poll_rate(ip):
+        raise HTTPException(429, "Muitas consultas. Aguarde um instante.")
+
+    if not web_channel.is_valid_session_id(session_id):
+        raise HTTPException(400, "session_id inválido")
+
+    await _get_public_client(client_id)
+
+    result = await web_channel.get_web_messages(client_id, session_id, after)
+    if result.get("status") == "invalid":
+        raise HTTPException(400, "session_id inválido")
+    return result

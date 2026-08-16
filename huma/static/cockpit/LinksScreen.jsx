@@ -7,7 +7,7 @@
 //      primeira mensagem do lead identifica de onde ele veio e os
 //      relatórios mostram origem → conversa → venda.
 // Backend: GET /api/clients/{id}/tracking-link (attribution_service).
-const { useState: useStateL, useEffect: useEffectL } = React;
+const { useState: useStateL } = React;
 
 // Origens aceitas pelo backend (attribution_service). Meta Ads fica de
 // fora do select: anúncio click-to-WhatsApp já chega com referral
@@ -48,10 +48,13 @@ const CopyBtn = ({ text, small }) => {
   return (
     <button
       onClick={() => {
+        // clipboard API só existe em contexto seguro (HTTPS) — em webview/
+        // HTTP cai no prompt pro dono copiar manualmente (padrão UsageScreens).
+        if (!navigator.clipboard) { window.prompt('Copie o link:', text); return; }
         navigator.clipboard.writeText(text).then(() => {
           setCopied(true);
           setTimeout(() => setCopied(false), 1800);
-        });
+        }).catch(() => { window.prompt('Copie o link:', text); });
       }}
       style={{
         border: 'none', cursor: 'pointer', flexShrink: 0,
@@ -85,7 +88,10 @@ const LinksScreen = () => {
   const balcaoUrl = window.getBalcaoUrl();
 
   // WhatsApp do negócio persiste no navegador — o dono digita uma vez.
-  const [bizPhone, setBizPhone] = useStateL(localStorage.getItem('huma_links_phone') || '');
+  // Chave ESCOPADA por cliente: agência com dois cockpits no mesmo
+  // navegador não pode herdar o número do cliente anterior.
+  const phoneKey = `huma_links_phone_${window.getClientId()}`;
+  const [bizPhone, setBizPhone] = useStateL(localStorage.getItem(phoneKey) || '');
   const [source, setSource] = useStateL('instagram');
   const [campaign, setCampaign] = useStateL('');
   const [result, setResult] = useStateL(null);
@@ -98,13 +104,15 @@ const LinksScreen = () => {
       setError('Informe o WhatsApp do negócio com DDI e DDD (ex: 5511999998888).');
       return;
     }
-    localStorage.setItem('huma_links_phone', phone);
+    localStorage.setItem(phoneKey, phone);
     setBusy(true); setError(''); setResult(null);
     try {
       const data = await window.fetchTrackingLink(source, campaign.trim(), phone);
       setResult(data);
     } catch (e) {
-      setError('Não consegui gerar o link agora. Tente de novo.');
+      // 401/403 (sessão expirada) e 400 (origem inválida) têm mensagens
+      // úteis do backend — repassar em vez de mandar tentar de novo à toa.
+      setError(String(e.message || 'Não consegui gerar o link agora. Tente de novo.'));
     } finally {
       setBusy(false);
     }
@@ -169,8 +177,8 @@ const LinksScreen = () => {
           </div>
           <div style={{ marginBottom: 16 }}>
             <label style={linksLabel} htmlFor="lk-phone">WhatsApp do negócio (com DDI)</label>
-            <input id="lk-phone" value={bizPhone} inputMode="numeric" maxLength={15}
-              onChange={e => setBizPhone(e.target.value)}
+            <input id="lk-phone" value={bizPhone} inputMode="numeric" maxLength={20}
+              onChange={e => setBizPhone(e.target.value.replace(/[^\d+\s().-]/g, ''))}
               placeholder="5511999998888" style={linksInput} />
           </div>
 
