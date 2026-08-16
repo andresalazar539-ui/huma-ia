@@ -8,6 +8,7 @@ const SidebarNav = ({ active, onNav, onInvite }) => {
     { id: 'voz',          label: 'Voz',          icon: 'mic',      count: null },
     { id: 'relatorios',   label: 'Relatórios',   icon: 'chart',    count: null },
     { id: 'disparos',     label: 'Disparos',     icon: 'send',     count: null },
+    { id: 'divulgacao',   label: 'Divulgação',   icon: 'link',     count: null },
     { id: 'integracoes',  label: 'Integrações',  icon: 'plug',     count: null },
     { id: 'ajustes',      label: 'Ajustes',      icon: 'settings', count: null,
       children: [
@@ -269,6 +270,7 @@ const MOBILE_MORE_ITEMS = [
   { id: 'clientes',    label: 'Clientes',                 icon: 'users' },
   { id: 'voz',         label: 'Voz',                      icon: 'mic' },
   { id: 'disparos',    label: 'Disparos',                 icon: 'send' },
+  { id: 'divulgacao',  label: 'Divulgação',               icon: 'link' },
   { id: 'integracoes', label: 'Integrações',              icon: 'plug' },
   { id: 'uso',         label: 'Plano e uso',              icon: 'card' },
   { id: 'ajustes',     label: 'Conta & plano',            icon: 'settings' },

@@ -314,6 +314,28 @@ async function saveSettings(partial) {
 
 Object.assign(window, { fetchSettings, saveSettings });
 
+/* ---------------- Divulgação (links rastreáveis + Balcão) ---------------- */
+// Gera link wa.me rastreável (código #h) — a origem aparece nos relatórios.
+async function fetchTrackingLink(source, campaign = '', phone = '', text = '') {
+  const params = new URLSearchParams({ source });
+  if (campaign) params.set('campaign', campaign);
+  if (phone) params.set('phone', phone);
+  if (text) params.set('text', text);
+  const r = await fetch(
+    `/api/clients/${encodeURIComponent(CLIENT_ID)}/tracking-link?${params.toString()}`,
+    { headers: { ...AUTH_HEADERS } },
+  );
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+// Link público do Balcão (página de conversa hospedada do clone).
+function getBalcaoUrl() {
+  return `${location.origin}/c/${encodeURIComponent(CLIENT_ID)}`;
+}
+
+Object.assign(window, { fetchTrackingLink, getBalcaoUrl });
+
 /* ---------------- Billing (assinatura recorrente MP) ---------------- */
 async function fetchBillingStatus() {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing`, { headers: { ...AUTH_HEADERS } });

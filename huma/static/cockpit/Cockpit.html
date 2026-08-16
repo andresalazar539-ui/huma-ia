@@ -65,6 +65,7 @@
 <script type="text/babel" src="/static/cockpit/AgendaPanel.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/InicioScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/ReportsScreen.jsx?v=__ASSET_V__"></script>
+<script type="text/babel" src="/static/cockpit/LinksScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/CampaignsScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/IntegrationsScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/PlaceholderScreens.jsx?v=__ASSET_V__"></script>
@@ -328,6 +329,7 @@ function App() {
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
     case 'disparos':    screen = <CampaignsScreen client={client} onNav={setRoute} />; break;
+    case 'divulgacao':  screen = <LinksScreen />; break;
     case 'integracoes': screen = <IntegrationsScreen client={client} onReloadStatus={reloadIntegrationsStatus} />; break;
     case 'ajustes':     screen = <AjustesScreen />; break;
     case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
