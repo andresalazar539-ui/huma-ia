@@ -2149,6 +2149,17 @@ async def _process_mp_payment(mp_payment_id: str):
         result = await pay.process_payment_notification(mp_payment_id)
 
         if not result.get("processed"):
+            # Cobrança de ASSINATURA da HUMA chegando como topic payment
+            # (formato alternativo do MP pra preapproval com cartão).
+            # Antes era descartada aqui — renovação paga sem crédito
+            # bloqueava cliente adimplente (bug E2E 2026-08-16).
+            ext_ref = result.get("external_reference", "") or ""
+            if ext_ref.startswith("humasub|"):
+                from huma.services import subscription_service as subs
+                await subs.credit_subscription_charge(
+                    str(mp_payment_id), ext_ref, result.get("status", ""),
+                )
+                return
             log.warning(f"MP payment não processado | id={mp_payment_id} | reason={result.get('reason', '?')}")
             return
 

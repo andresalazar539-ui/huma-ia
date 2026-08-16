@@ -118,7 +118,7 @@ class TestCreateCheckout:
 # AUTHORIZED PAYMENT (renovação mensal)
 # ================================================================
 
-def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, covered=False, ext_ref="humasub|cli_x|on"):
+def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, covered=False, recently=False, ext_ref="humasub|cli_x|on"):
     """Mocka a cadeia toda do _handle_authorized_payment e grava efeitos."""
     effects = {"credits": [], "upserts": []}
 
@@ -135,6 +135,9 @@ def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, cov
     async def first_charge_covered(cid, pre_id):
         return covered
 
+    async def recently_credited(cid, days=20):
+        return recently
+
     async def upsert(cid, plan, pre_id, status):
         effects["upserts"].append((cid, plan, pre_id, status))
 
@@ -145,6 +148,7 @@ def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, cov
     monkeypatch.setattr(subs, "_mp_get", mp_get)
     monkeypatch.setattr(subs, "_already_credited", already_credited)
     monkeypatch.setattr(subs, "_first_charge_covered", first_charge_covered)
+    monkeypatch.setattr(subs, "_recently_credited", recently_credited)
     monkeypatch.setattr(subs, "_upsert_subscription", upsert)
     monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
     return effects
@@ -779,3 +783,130 @@ class TestPendingNaoRebaixa:
         effects = self._setup(monkeypatch, "cancelled")
         asyncio.run(subs._handle_preapproval_change("pre_p"))
         assert effects["upserts"] == [("cli_x", "on", "pre_p", "pending")]
+
+
+# ================================================================
+# COBRANÇA DE ASSINATURA VIA TOPIC PAYMENT (formato alternativo MP)
+# ================================================================
+
+class _FakeSupaSimples:
+    """Fake mínimo: uma lista de rows pra qualquer select encadeado."""
+
+    def __init__(self, rows=None):
+        self._rows = rows or []
+
+    def table(self, name):
+        return self
+
+    def select(self, *a, **kw):
+        return self
+
+    def eq(self, *a):
+        return self
+
+    def like(self, *a):
+        return self
+
+    def in_(self, *a):
+        return self
+
+    def gt(self, *a):
+        return self
+
+    def limit(self, n):
+        return self
+
+    def execute(self):
+        class R:
+            pass
+
+        r = R()
+        r.data = self._rows
+        return r
+
+
+class TestChargeViaPaymentTopic:
+
+    def _setup(self, monkeypatch, *, dup_rows=None, recently=False):
+        effects = {"credits": [], "status_sets": []}
+
+        async def set_status(cid, status):
+            effects["status_sets"].append((cid, status))
+
+        async def recently_credited(cid, days=20):
+            return recently
+
+        async def add_conversations(cid, amount, source="", description=""):
+            effects["credits"].append((cid, amount, source, description))
+            return amount
+
+        monkeypatch.setattr(subs, "get_supabase", lambda: _FakeSupaSimples(dup_rows))
+        monkeypatch.setattr(subs, "_set_subscription_status", set_status)
+        monkeypatch.setattr(subs, "_recently_credited", recently_credited)
+        monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
+        return effects
+
+    def test_renovacao_via_payment_credita(self, monkeypatch):
+        effects = self._setup(monkeypatch)
+        asyncio.run(subs.credit_subscription_charge("pay_9", "humasub|cli_x|on", "approved"))
+
+        assert effects["status_sets"] == [("cli_x", "active")]
+        assert len(effects["credits"]) == 1
+        cid, amount, source, desc = effects["credits"][0]
+        assert amount == PLAN_CONFIG[Plan.ON]["included_conversations"]
+        assert source == "mp_renovacao"
+        assert "payid=pay_9" in desc
+
+    def test_mes_ja_creditado_por_outro_topic_nao_duplica(self, monkeypatch):
+        effects = self._setup(monkeypatch, recently=True)
+        asyncio.run(subs.credit_subscription_charge("pay_9", "humasub|cli_x|on", "approved"))
+
+        assert len(effects["credits"]) == 1
+        _, amount, _, desc = effects["credits"][0]
+        assert amount == 0  # só marcador de dedup
+        assert "payid=pay_9" in desc
+
+    def test_reentrega_do_mesmo_payid_ignorada(self, monkeypatch):
+        effects = self._setup(monkeypatch, dup_rows=[{"id": 1}])
+        asyncio.run(subs.credit_subscription_charge("pay_9", "humasub|cli_x|on", "approved"))
+        assert effects["credits"] == []
+        assert effects["status_sets"] == []
+
+    def test_nao_aprovada_nao_credita(self, monkeypatch):
+        effects = self._setup(monkeypatch)
+        asyncio.run(subs.credit_subscription_charge("pay_9", "humasub|cli_x|on", "rejected"))
+        assert effects["credits"] == []
+
+    def test_ext_ref_alheio_ignorado(self, monkeypatch):
+        effects = self._setup(monkeypatch)
+        asyncio.run(subs.credit_subscription_charge("pay_9", "pedido|loja|123", "approved"))
+        assert effects["credits"] == []
+
+    def test_nunca_levanta(self, monkeypatch):
+        def boom():
+            raise RuntimeError("supabase caiu")
+
+        monkeypatch.setattr(subs, "get_supabase", boom)
+        asyncio.run(subs.credit_subscription_charge("pay_9", "humasub|cli_x|on", "approved"))
+
+
+class TestRenovacaoDuplaEntrega:
+
+    def test_apid_depois_de_payid_no_mesmo_mes_so_marca(self, monkeypatch):
+        """Mês creditado via topic payment → apid chega depois → 0."""
+        effects = _setup_renewal(monkeypatch, recently=True)
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+
+        assert len(effects["credits"]) == 1
+        _, amount, _, desc = effects["credits"][0]
+        assert amount == 0
+        assert "mês já creditado" in desc
+
+    def test_renovacao_mes_seguinte_credita_normal(self, monkeypatch):
+        """Janela vencida (mês novo) → crédito integral, vida que segue."""
+        effects = _setup_renewal(monkeypatch, recently=False)
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+
+        assert len(effects["credits"]) == 1
+        _, amount, _, _ = effects["credits"][0]
+        assert amount == PLAN_CONFIG[Plan.ON]["included_conversations"]

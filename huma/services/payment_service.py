@@ -649,7 +649,15 @@ async def process_payment_notification(mp_payment_id: str) -> dict:
 
     if not record:
         log.warning(f"Webhook MP — pagamento não encontrado | mp_id={mp_payment_id}")
-        return {"processed": False, "reason": "payment_not_found"}
+        # Aditivo: ext_ref/status permitem ao caller rotear cobranças de
+        # ASSINATURA (humasub|) que chegam como topic payment — sem isso,
+        # renovação de mensalidade era descartada aqui (bug E2E 2026-08-16).
+        return {
+            "processed": False,
+            "reason": "payment_not_found",
+            "external_reference": mp_data.get("external_reference", ""),
+            "status": status,
+        }
 
     amount_cents = record.get("amount_cents", 0)
 

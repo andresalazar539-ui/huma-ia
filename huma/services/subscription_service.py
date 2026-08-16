@@ -23,7 +23,7 @@
 # ================================================================
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
@@ -762,6 +762,21 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         )
         return
 
+    # Janela anti-duplicação: a MESMA cobrança pode chegar também como
+    # topic payment (credit via payid=). Quem chegar por segundo no mês
+    # grava só o marcador — nunca franquia dupla.
+    if await _recently_credited(client_id):
+        await billing.add_conversations(
+            client_id, 0,
+            source="mp_renovacao",
+            description=(
+                f"apid={authorized_payment_id} pre={preapproval_id} "
+                f"plano {plan_value} (mês já creditado)"
+            ),
+        )
+        log.info(f"Mês já creditado por outro caminho | client={client_id} | apid={authorized_payment_id}")
+        return
+
     await billing.add_conversations(
         client_id, config["included_conversations"],
         source="mp_renovacao",
@@ -774,6 +789,90 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         f"RENOVAÇÃO PAGA | client={client_id} | plan={plan_value} | "
         f"+{config['included_conversations']} conversas | apid={authorized_payment_id}"
     )
+
+
+async def _recently_credited(client_id: str, days: int = 20) -> bool:
+    """
+    True se este cliente já recebeu crédito de mensalidade (renovação ou
+    primeira cobrança) nos últimos `days` dias. Janela anti-duplicação:
+    o MP pode notificar a MESMA cobrança por dois caminhos (topic
+    subscription_authorized_payment E topic payment) — cada mês credita
+    UMA vez, chegue o aviso como chegar. Renovações reais distam ~30d,
+    então a janela de 20d nunca segura um mês legítimo.
+    """
+    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    supa = get_supabase()
+    resp = await run_in_threadpool(
+        lambda: supa.table("credit_transactions").select("id")
+            .eq("client_id", client_id)
+            .in_("source", ["mp_renovacao", "mp_primeira_cobranca"])
+            .gt("amount", 0)
+            .gt("created_at", cutoff)
+            .limit(1).execute()
+    )
+    return bool(resp.data)
+
+
+async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_status: str) -> None:
+    """
+    Credita uma cobrança de assinatura que chegou como topic "payment"
+    (formato alternativo do MP pra cobranças de preapproval com cartão).
+
+    Dedup em duas camadas: marcador payid={id} (reentrega do mesmo
+    evento) + janela _recently_credited (mesma cobrança por outro topic).
+    Nunca levanta exceção.
+    """
+    try:
+        ref = _parse_ext_ref(ext_ref)
+        if not ref:
+            return
+        if (payment_status or "").lower() != "approved":
+            log.info(f"Cobrança de assinatura não aprovada | payid={mp_payment_id} | status={payment_status}")
+            return
+
+        client_id, plan_value = ref["client_id"], ref["plan"]
+        try:
+            config = PLAN_CONFIG[Plan(plan_value)]
+        except ValueError:
+            log.error(f"Cobrança de plano desconhecido | payid={mp_payment_id} | plan={plan_value}")
+            return
+
+        supa = get_supabase()
+        dup = await run_in_threadpool(
+            lambda: supa.table("credit_transactions").select("id")
+                .eq("client_id", client_id)
+                .like("description", f"%payid={mp_payment_id}%")
+                .limit(1).execute()
+        )
+        if dup.data:
+            log.info(f"Cobrança já processada (reentrega) | payid={mp_payment_id}")
+            return
+
+        # _set (não _upsert): preserva o preapproval_id já gravado —
+        # este topic não traz o id do preapproval.
+        await _set_subscription_status(client_id, "active")
+
+        if await _recently_credited(client_id):
+            await billing.add_conversations(
+                client_id, 0,
+                source="mp_renovacao",
+                description=f"payid={mp_payment_id} plano {plan_value} (mês já creditado)",
+            )
+            log.info(f"Mês já creditado por outro caminho | client={client_id} | payid={mp_payment_id}")
+            return
+
+        await billing.add_conversations(
+            client_id, config["included_conversations"],
+            source="mp_renovacao",
+            description=f"payid={mp_payment_id} plano {plan_value} (via topic payment)",
+        )
+        await cache.delete_key(f"wallet_bal:{client_id}")
+        log.info(
+            f"RENOVAÇÃO PAGA (topic payment) | client={client_id} | plan={plan_value} | "
+            f"+{config['included_conversations']} conversas | payid={mp_payment_id}"
+        )
+    except Exception as e:
+        log.critical(f"Erro creditando cobrança | payid={mp_payment_id} | {type(e).__name__}: {e}")
 
 
 async def _first_charge_covered(client_id: str, preapproval_id: str) -> bool:
