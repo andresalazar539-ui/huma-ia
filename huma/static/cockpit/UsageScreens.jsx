@@ -35,8 +35,26 @@ const UsoScreen = ({ onGoto }) => {
 
   const balance = billing ? (billing.balance ?? 0) : 0;
   const included = billing && billing.included_conversations ? billing.included_conversations : 0;
-  const percent = included > 0 ? Math.min(100, Math.round((balance / included) * 100)) : 0;
   const needsPlan = billing && billing.subscription_status !== 'active';
+
+  // Baldes reais do razão (indicação → extra → plano). Backend antigo
+  // sem buckets → tudo cai na barra do plano (comportamento anterior).
+  const buckets = (billing && billing.buckets) || null;
+  const refLeft = buckets ? buckets.referral.left : 0;
+  const refCredited = buckets ? buckets.referral.credited : 0;
+  const extraLeft = buckets ? buckets.extra.left : 0;
+  const extraCredited = buckets ? buckets.extra.credited : 0;
+  const planLeft = buckets ? buckets.plan.left : balance;
+
+  // Barra do plano no espírito do design: % de USO do ciclo. Sobra acima
+  // da franquia (ex: bônus do trial) não estoura a régua — vira nota.
+  const planBonus = included > 0 ? Math.max(0, planLeft - included) : 0;
+  const planUsed = included > 0 ? Math.max(0, included - Math.min(planLeft, included)) : 0;
+  const planUsedPct = included > 0 ? Math.min(100, Math.round((planUsed / included) * 100)) : (planLeft > 0 ? 0 : 100);
+  const planInfo = !billing ? 'Carregando…'
+    : included > 0
+      ? `${planUsed} de ${included} conversas usadas${billing.trial ? ' no teste grátis' : ' no ciclo'}${planBonus > 0 ? ` · +${planBonus} de bônus na carteira` : ''}`
+      : `${planLeft} conversas em saldo`;
 
   const subline = (() => {
     if (!billing) return '';
@@ -80,23 +98,53 @@ const UsoScreen = ({ onGoto }) => {
 
       <div style={{ padding: '24px 32px 48px', maxWidth: 1100, display: 'flex', flexDirection: 'column', gap: 28 }}>
 
-        {/* Saldo de conversas */}
+        {/* Saldo por balde: indicação → extra → plano (ordem de consumo).
+            Barras de indicação/extra só existem quando o balde tem crédito
+            de verdade — nada de número decorativo. */}
         <section>
           <div style={{
             border: '1px solid var(--paper-edge)', borderRadius: 16,
             background: 'var(--paper-raised)', overflow: 'hidden',
           }}>
+            {refCredited > 0 && (
+              <>
+                <UsageBar
+                  icon="gift"
+                  label="crédito por indicação"
+                  percent={Math.min(100, Math.round((refLeft / refCredited) * 100))}
+                  barColor="var(--sage)"
+                  barBg="var(--sage-tint)"
+                  info={`${refLeft} de ${refCredited} conversas extras`}
+                  ctaLabel="Indicar"
+                  ctaTone="sage"
+                  onCta={() => onGoto('indicacao')}
+                />
+                <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
+              </>
+            )}
+            {extraCredited > 0 && (
+              <>
+                <UsageBar
+                  icon="zap"
+                  label="crédito extra"
+                  percent={Math.min(100, Math.round((extraLeft / extraCredited) * 100))}
+                  barColor="var(--ember)"
+                  barBg="var(--ember-soft)"
+                  info={`${extraLeft} de ${extraCredited} conversas extras compradas`}
+                  ctaLabel="Comprar mais"
+                  ctaTone="ember"
+                  onCta={() => onGoto('creditos')}
+                />
+                <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
+              </>
+            )}
             <UsageBar
               icon="message"
-              label="conversas disponíveis"
-              percent={billing ? (included > 0 ? percent : (balance > 0 ? 100 : 0)) : 0}
+              label={included > 0 ? 'uso do plano' : 'conversas disponíveis'}
+              percent={billing ? planUsedPct : 0}
               barColor={billing && billing.trial_expired ? 'var(--ember)' : 'var(--ink)'}
               barBg="var(--paper-sunk)"
-              info={
-                !billing ? 'Carregando…'
-                : included > 0 ? `${balance} de ${included} conversas disponíveis${billing.trial ? ' no teste grátis' : ' no ciclo'}`
-                : `${balance} conversas em saldo`
-              }
+              info={planInfo}
               badge={billing && billing.trial ? { text: 'teste grátis', tone: 'sage' } : null}
               ctaLabel={needsPlan ? 'Assinar plano' : 'Fazer upgrade'}
               ctaTone={billing && billing.trial_expired ? 'ember' : 'ink'}
@@ -107,6 +155,9 @@ const UsoScreen = ({ onGoto }) => {
             fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)',
             marginTop: 10, padding: '0 4px', lineHeight: 1.5,
           }}>
+            {(refCredited > 0 || extraCredited > 0)
+              ? 'Créditos de indicação são consumidos primeiro, depois créditos extras, depois o plano base. '
+              : ''}
             Cada conversa é uma janela de 24h com um lead — mensagens dentro da janela não gastam saldo.
           </div>
         </section>
@@ -505,13 +556,26 @@ const IndicacaoScreen = ({ onBack }) => {
 // CRÉDITOS — sub-tela
 // ============================================================
 const CreditosScreen = ({ onBack }) => {
-  const packs = [
-    { size: '+500',   amount: 500,  price: 'R$ 19,90',  badge: null },
-    { size: '+1.500', amount: 1500, price: 'R$ 44,90',  badge: { text: '10% off', tone: 'sage' }, highlight: 'Melhor valor' },
-    { size: '+3.000', amount: 3000, price: 'R$ 79,90',  badge: { text: '20% off', tone: 'sage' } },
-    { size: '+6.000', amount: 6000, price: 'R$ 139,90', badge: { text: '30% off', tone: 'sage' } },
-  ];
-  const [selected, setSelected] = useStateU(1);
+  // Pacotes REAIS do backend (billing.extra_packs — fonte única de verdade).
+  // Fallback espelha os valores atuais do billing_service enquanto carrega.
+  const fmtBrl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
+  const [packs, setPacks] = useStateU([
+    { size: '+200', amount: 200, price: fmtBrl(39.90) },
+    { size: '+500', amount: 500, price: fmtBrl(79.90), highlight: 'Melhor valor' },
+  ]);
+  const [selected, setSelected] = useStateU(0);
+
+  useEffectU(() => {
+    fetchBillingStatus().then(b => {
+      const list = (b.extra_packs || []).map((p, i) => ({
+        size: `+${p.conversations.toLocaleString('pt-BR')}`,
+        amount: p.conversations,
+        price: fmtBrl(p.price_brl),
+        highlight: i === (b.extra_packs.length - 1) ? 'Melhor valor' : null,
+      }));
+      if (list.length) { setPacks(list); setSelected(list.length - 1); }
+    }).catch(() => {});
+  }, []);
 
   return (
     <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
@@ -582,20 +646,22 @@ const CreditosScreen = ({ onBack }) => {
           })}
         </div>
 
-        <button style={{
+        <button disabled title="Compra dentro do Cockpit em breve" style={{
           padding: '14px 16px', borderRadius: 12,
-          background: 'var(--ember)', color: 'var(--paper-raised)',
-          border: 'none', cursor: 'pointer',
+          background: 'var(--paper-sunk)', color: 'var(--ink-3)',
+          border: '1px solid var(--paper-edge)', cursor: 'default',
           fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
         }}>
-          Comprar pacote selecionado · {packs[selected].price}
+          Comprar {packs[selected].size} conversas · {packs[selected].price} — em breve no Cockpit
         </button>
 
         <div style={{
           fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)',
           lineHeight: 1.5, padding: '0 4px',
         }}>
-          Créditos não expiram e são consumidos depois dos créditos de indicação e antes do plano base.
+          A compra com Pix direto por aqui está chegando. Enquanto isso, fale com a HUMA
+          que liberamos seu pacote na hora. Créditos não expiram e são consumidos depois
+          dos créditos de indicação e antes do plano base.
         </div>
       </div>
     </div>

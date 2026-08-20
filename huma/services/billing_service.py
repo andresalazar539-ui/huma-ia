@@ -410,6 +410,80 @@ async def check_conversations(client_id: str) -> dict:
     }
 
 
+# ================================================================
+# BALDES DE CRÉDITO (tela Uso do Cockpit)
+#
+# A carteira é UMA (wallets.balance — fonte de verdade do gate e do
+# débito atômico). Os "baldes" são derivados do razão credit_transactions
+# com ordem de consumo determinística: indicação → extra → plano.
+# Identidade exata: ref_left + extra_left + plan_left == balance.
+# Nada aqui toca o caminho de débito — é leitura pra exibição.
+# ================================================================
+
+REFERRAL_SOURCES = frozenset({"indicacao"})
+EXTRA_PACK_SOURCES = frozenset({"pacote_extra"})
+
+
+async def credit_referral(client_id: str, amount: int, description: str = "") -> int:
+    """
+    Credita conversas de INDICAÇÃO (source='indicacao').
+
+    Primitiva do programa de indicação — o mecanismo de código/conversão
+    vem em sprint próprio; isto permite creditar (inclusive manualmente)
+    já caindo no balde certo da tela Uso.
+    """
+    return await add_conversations(
+        client_id, amount, "indicacao", description or "Crédito de indicação"
+    )
+
+
+async def get_credit_buckets(client_id: str) -> dict:
+    """
+    Saldos por balde derivados do razão, pra tela Uso.
+
+    Soma os créditos de todos os tempos por origem e atribui os débitos
+    na ordem prometida ao dono (indicação primeiro, depois extra, depois
+    plano). Como debits = total_creditado - balance, o resultado fecha
+    exatamente com a carteira real.
+
+    Returns:
+        dict {referral: {left, credited}, extra: {left, credited},
+              plan: {left}, balance}
+    """
+    balance = await get_balance(client_id)
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("credit_transactions")
+                .select("amount,source")
+                .eq("client_id", client_id)
+                .eq("type", "credit")
+                .limit(2000)
+                .execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        log.error(f"Buckets | razão indisponível | {client_id} | {type(e).__name__}: {e}")
+        rows = []
+
+    ref_credited = sum(int(r.get("amount") or 0) for r in rows if r.get("source") in REFERRAL_SOURCES)
+    extra_credited = sum(int(r.get("amount") or 0) for r in rows if r.get("source") in EXTRA_PACK_SOURCES)
+    total_credited = sum(int(r.get("amount") or 0) for r in rows)
+
+    debits = max(0, total_credited - balance)
+    ref_left = max(0, ref_credited - debits)
+    rem = max(0, debits - ref_credited)
+    extra_left = max(0, extra_credited - rem)
+    plan_left = max(0, balance - ref_left - extra_left)
+
+    return {
+        "referral": {"left": ref_left, "credited": ref_credited},
+        "extra": {"left": extra_left, "credited": extra_credited},
+        "plan": {"left": plan_left},
+        "balance": balance,
+    }
+
+
 async def purchase_extra_pack(client_id: str, pack_id: str) -> dict:
     pack = EXTRA_PACKS.get(pack_id)
     if not pack:

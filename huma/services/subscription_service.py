@@ -574,6 +574,13 @@ async def get_billing_status(client_id: str) -> dict:
         plan_name = "Teste grátis"
         included = (sub or {}).get("included_conversations")
 
+    # Baldes de crédito pra tela Uso (indicação/extra/plano). Falha de
+    # leitura do razão não pode derrubar o status — degrada sem buckets.
+    try:
+        buckets = await billing.get_credit_buckets(client_id)
+    except Exception:
+        buckets = None
+
     return {
         "plan": plan_value or None,
         "plan_name": plan_name,
@@ -585,6 +592,13 @@ async def get_billing_status(client_id: str) -> dict:
         "trial_expired": trial_expired,
         "trial_days_left": trial_days_left,
         "trial_ends_at": trial_ends_at,
+        # Baldes derivados do razão (aditivo — consumidores antigos intactos)
+        "buckets": buckets,
+        # Pacotes extras à venda (a tela Créditos renderiza os valores REAIS)
+        "extra_packs": [
+            {"id": pid, "conversations": p["conversations"], "price_brl": p["price_brl"]}
+            for pid, p in billing.EXTRA_PACKS.items()
+        ],
         # Checkout transparente: o front usa a public key pro SDK do MP
         # tokenizar o cartão no navegador. Vazia = cai no checkout hospedado.
         "mp_public_key": MERCADOPAGO_PUBLIC_KEY,
