@@ -80,8 +80,9 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
                 <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.35, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {c.preview}
                 </div>
-                <div style={{ marginTop: 6 }}>
+                <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <StatusPill status={c.status} />
+                  {c.channel === 'web' && <ChannelChip captured={!!c.lead_whatsapp} />}
                 </div>
               </div>
             </button>
@@ -91,6 +92,23 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
     </div>
   );
 };
+
+// Chip discreto de origem: conversa veio do Balcão (chat no navegador).
+// O check indica que o visitante já deixou o WhatsApp.
+const ChannelChip = ({ captured }) => (
+  <span title={captured ? 'Veio do chat do site · WhatsApp capturado' : 'Veio do chat do site'} style={{
+    display: 'inline-flex', alignItems: 'center', gap: 4,
+    fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 500,
+    letterSpacing: '0.06em', textTransform: 'uppercase',
+    padding: '2.5px 7px', borderRadius: 999,
+    background: 'var(--sage-tint)', color: 'var(--sage-ink)',
+    whiteSpace: 'nowrap', flexShrink: 0,
+  }}>
+    <Icon name="globe" size={10} stroke={2.2} />
+    Site
+    {captured && <Icon name="check" size={9} stroke={3} />}
+  </span>
+);
 
 const ListMessage = ({ text, action }) => (
   <div style={{
@@ -117,4 +135,4 @@ const ListSkeleton = () => (
   </div>
 );
 
-Object.assign(window, { ConversationList, ListMessage, ListSkeleton });
+Object.assign(window, { ConversationList, ChannelChip, ListMessage, ListSkeleton });

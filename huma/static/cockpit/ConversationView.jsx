@@ -13,6 +13,16 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
   };
   React.useEffect(() => () => clearTimeout(toastTimer.current), []);
 
+  // Balcão (canal web): identidade e ações específicas do chat do site.
+  const isWeb = conversation.channel === 'web';
+  const leadWa = isWeb ? (conversation.lead_whatsapp || '') : '';
+  const copyLead = () => {
+    if (!navigator.clipboard) { window.prompt('Copie o WhatsApp:', leadWa); return; }
+    navigator.clipboard.writeText(leadWa)
+      .then(() => showToast('ok', 'WhatsApp copiado'))
+      .catch(() => showToast('error', 'Não consegui copiar'));
+  };
+
   // Assumir / devolver: só muda a UI se o backend confirmar.
   const doHandoff = async () => {
     if (busy) return;
@@ -61,8 +71,24 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
         )}
         <Avatar initials={conversation.initials} tone={conversation.tone} size={36} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.015em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.name}</div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.phone}{conversation.since ? ` · cliente desde ${conversation.since}` : ''}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.015em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.name}</span>
+            {isWeb && !mobile && <ChannelChip captured={!!leadWa} />}
+          </div>
+          {leadWa ? (
+            <button onClick={copyLead} title="Copiar WhatsApp capturado" style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 3,
+              border: '1px solid var(--paper-edge)', borderRadius: 999,
+              background: 'var(--paper-raised)', padding: '2px 9px', cursor: 'pointer',
+              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-2)',
+              maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              WhatsApp capturado · {conversation.phone}
+              <Icon name="copy" size={11} />
+            </button>
+          ) : (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.phone}{conversation.since ? ` · cliente desde ${conversation.since}` : ''}</div>
+          )}
         </div>
         {!mobile && <StatusPill status={conversation.status || 'andamento'} />}
         {!mobile && onOpenAgenda && (
@@ -72,6 +98,18 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           {handoff ? (mobile ? 'Devolver' : 'Devolver para HUMA') : (mobile ? 'Assumir' : 'Assumir conversa')}
         </Button>
       </div>
+
+      {/* Balcão: contexto do canal web — respostas chegam com a página aberta */}
+      {isWeb && (
+        <div style={{
+          padding: mobile ? '6px 12px' : '7px 20px', borderBottom: '1px solid var(--paper-edge)',
+          background: 'var(--sage-tint)', display: 'flex', alignItems: 'center', gap: 7,
+          fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--sage-ink)',
+        }}>
+          <Icon name="globe" size={12} stroke={2.2} />
+          <span style={{ minWidth: 0 }}>Conversa pelo chat do site — o visitante vê suas respostas enquanto a página estiver aberta no navegador.</span>
+        </div>
+      )}
 
       {/* Messages */}
       <div style={{ flex: 1, overflow: 'auto', padding: mobile ? '16px 12px' : '24px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>

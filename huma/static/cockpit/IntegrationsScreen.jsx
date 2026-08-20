@@ -164,8 +164,27 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     onDisconnect: () => handleDisconnect('pipedrive'),
   };
 
-  const integrations = [...INTEGRATIONS, blingCard, pipedriveCard];
-  const connectedCount = integrations.filter(i => i.status === 'connected').length;
+  // Balcão: chat no navegador (/c/<client_id>) — mesmo clone, canal próprio.
+  // Sempre ativo (a página existe pra todo cliente ativo); ações próprias
+  // de copiar/abrir o link em vez do Conectar/Desconectar padrão.
+  const balcaoUrl = (window.getBalcaoUrl && window.getBalcaoUrl()) || '';
+  const balcaoCard = {
+    id: 'balcao',
+    name: 'Balcão — Chat no navegador',
+    category: 'Canal',
+    glyph: { type: 'balcao' },
+    status: 'active',
+    meta: [
+      ['LINK', balcaoUrl.replace(/^https?:\/\//, '')],
+      ['CLONE', 'O mesmo do WhatsApp'],
+      ['ONDE USAR', 'Bio do Instagram · site'],
+    ],
+    note: 'Visitantes conversam com a HUMA direto no navegador — o WhatsApp que deixarem aparece nas suas conversas.',
+    actions: <BalcaoActions url={balcaoUrl} />,
+  };
+
+  const integrations = [balcaoCard, ...INTEGRATIONS, blingCard, pipedriveCard];
+  const connectedCount = integrations.filter(i => i.status === 'connected' || i.status === 'active').length;
   const availableCount = integrations.length - connectedCount;
 
   return (
@@ -567,7 +586,25 @@ const WhatsAppQRModal = ({ qr, busy, onClose }) => (
   </div>
 );
 
-const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect, onDisconnect }) => {
+// BalcaoActions — ações do card do Balcão (copiar link + abrir a página).
+const BalcaoActions = ({ url }) => {
+  const [copied, setCopied] = React.useState(false);
+  const copy = () => {
+    if (!navigator.clipboard) { window.prompt('Copie o link:', url); return; }
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => { window.prompt('Copie o link:', url); });
+  };
+  return (
+    <>
+      <Button variant="primary" size="sm" icon={<Icon name={copied ? 'check' : 'copy'} size={13} />} onClick={copy}>{copied ? 'Link copiado' : 'Copiar link'}</Button>
+      <Button variant="ghost" size="sm" onClick={() => window.open(url, '_blank')}>Ver página</Button>
+    </>
+  );
+};
+
+const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect, onDisconnect, actions }) => {
   const connected = status === 'connected';
   const error = status === 'error';
   const handleDisconnect = () => {
@@ -618,7 +655,7 @@ const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect,
 
       {/* Action */}
       <div style={{ display: 'flex', gap: 8 }}>
-        {connected ? (
+        {actions ? actions : connected ? (
           <>
             <Button
               variant="ghost" size="sm"
@@ -645,6 +682,7 @@ const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect,
 const StatusDot = ({ status }) => {
   const cfg = {
     connected:    { bg: 'var(--sage-tint)',   fg: 'var(--sage-ink)',   dot: 'var(--sage)',     label: 'Conectado' },
+    active:       { bg: 'var(--sage-tint)',   fg: 'var(--sage-ink)',   dot: 'var(--sage)',     label: 'Ativo' },
     disconnected: { bg: 'var(--paper-sunk)',  fg: 'var(--ink-3)',      dot: 'var(--ink-4)',    label: 'Desconectado' },
     error:        { bg: 'var(--ember-soft)',  fg: 'var(--ember-ink)',  dot: 'var(--ember)',    label: 'Erro' },
   }[status];
@@ -671,6 +709,14 @@ const IntegrationGlyph = ({ type }) => {
     }}>{content}</div>
   );
   switch (type) {
+    case 'balcao':
+      return wrap('var(--sage)', (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="12" r="9"/>
+          <line x1="3" y1="12" x2="21" y2="12"/>
+          <path d="M12 3a13.7 13.7 0 0 1 3.6 9 13.7 13.7 0 0 1-3.6 9 13.7 13.7 0 0 1-3.6-9A13.7 13.7 0 0 1 12 3z"/>
+        </svg>
+      ));
     case 'gcal':
       return wrap('#FFFFFF', (
         <svg width="22" height="22" viewBox="0 0 24 24">
@@ -737,4 +783,4 @@ const IntegrationGlyph = ({ type }) => {
   }
 };
 
-Object.assign(window, { IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal });
+Object.assign(window, { IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal, BalcaoActions });

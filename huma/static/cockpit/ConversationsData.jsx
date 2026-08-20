@@ -148,12 +148,17 @@ function mapHistory(history) {
 
 // Detalhe (GET /api/conversations/{client_id}/{phone}) -> conversa completa
 function mapDetail(d) {
+  // Balcão (canal web): mesmo guard da lista — sem ele, maskPhone
+  // renderizaria o hash da sessão como um telefone falso.
+  const isWeb = d.channel === 'web' || String(d.phone || '').startsWith('web:');
   return {
     id: d.phone,
-    name: d.lead_name || maskPhone(d.phone),
-    initials: initialsFrom(d.lead_name),
+    name: d.lead_name || (isWeb ? 'Visitante do site' : maskPhone(d.phone)),
+    initials: isWeb && !d.lead_name ? '🌐' : initialsFrom(d.lead_name),
     tone: toneFrom(d.phone),
-    phone: maskPhone(d.phone),
+    phone: isWeb ? (d.lead_whatsapp ? maskPhone(d.lead_whatsapp) : 'Chat do site') : maskPhone(d.phone),
+    channel: isWeb ? 'web' : (d.channel || 'whatsapp'),
+    lead_whatsapp: d.lead_whatsapp || '',
     email: d.lead_email || '',
     status: deriveStatus(d),
     stage: d.stage,

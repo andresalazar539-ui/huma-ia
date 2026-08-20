@@ -846,6 +846,8 @@ async def get_conversation_cockpit(
         "last_message_at": conv.last_message_at.isoformat() if conv.last_message_at else None,
         "active_appointment_datetime": conv.active_appointment_datetime or "",
         "active_appointment_service": conv.active_appointment_service or "",
+        "channel": conv.channel or "whatsapp",
+        "lead_whatsapp": conv.lead_whatsapp or "",
         "history": conv.history,
     }
 
