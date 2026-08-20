@@ -420,6 +420,65 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
 })
 
 
+@router.get("/api/clients/{client_id}/referrals", tags=["Cockpit"])
+async def referral_stats(client_id: str, _=Depends(verify_api_key)) -> dict:
+    """
+    Programa de indicação: recompensas vigentes + indicados reais.
+
+    O link de indicação é /login?ref=<client_id> (o front monta com a
+    própria origem). Conversas ganhas vêm do razão (source='indicacao',
+    créditos de conversão), não de conta de cabeça.
+    """
+    from fastapi.concurrency import run_in_threadpool
+    from huma.services import billing_service as billing
+
+    supa = db.get_supabase()
+
+    try:
+        rows = await run_in_threadpool(
+            lambda: supa.table("clients")
+                .select("business_name,created_at,referral_credited_at")
+                .eq("referred_by", client_id)
+                .order("created_at", desc=True)
+                .limit(200).execute()
+        )
+        referrals = [
+            {
+                "business_name": r.get("business_name") or "",
+                "created_at": r.get("created_at"),
+                "converted": bool(r.get("referral_credited_at")),
+            }
+            for r in (rows.data or [])
+        ]
+    except Exception as e:
+        # Ambiente sem a migration_referral.sql: tela mostra zeros em vez
+        # de quebrar (indicação é bônus, não requisito).
+        log.warning(f"Referrals | consulta falhou | client={client_id} | {type(e).__name__}: {e}")
+        referrals = []
+
+    try:
+        credits = await run_in_threadpool(
+            lambda: supa.table("credit_transactions")
+                .select("amount,description")
+                .eq("client_id", client_id).eq("source", "indicacao")
+                .eq("type", "credit")
+                .like("description", "conversão%")
+                .limit(500).execute()
+        )
+        conversas_ganhas = sum(int(c.get("amount") or 0) for c in (credits.data or []))
+    except Exception:
+        conversas_ganhas = 0
+
+    return {
+        "status": "ok",
+        "reward_conversations": billing.REFERRAL_REWARD_CONVERSATIONS,
+        "welcome_bonus": billing.REFERRAL_WELCOME_BONUS,
+        "monthly_cap": billing.REFERRAL_MONTHLY_CONVERSION_CAP,
+        "conversas_ganhas": conversas_ganhas,
+        "referrals": referrals,
+    }
+
+
 @router.get("/api/clients/{client_id}/settings", tags=["Cockpit"])
 async def get_settings(client_id: str, _=Depends(verify_api_key)) -> dict:
     """Valores atuais dos campos editáveis (pra tela de Ajustes carregar dados reais)."""

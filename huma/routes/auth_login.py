@@ -80,6 +80,9 @@ class SignupRequest(BaseModel):
     email: str = Field(..., max_length=254)
     password: str = Field(..., min_length=8, max_length=128)
     business_name: str = Field(default="", max_length=80)
+    # Programa de indicação: client_id de quem indicou (?ref= na URL de
+    # login, guardado no navegador). Validado no provisionamento.
+    ref: str = Field(default="", max_length=40)
 
     _norm_email = field_validator("email")(classmethod(lambda cls, v: _validate_email(v)))
 
@@ -93,6 +96,7 @@ class ForgotRequest(BaseModel):
 class SupabaseSessionRequest(BaseModel):
     access_token: str = Field(..., min_length=20)
     remember: bool = True
+    ref: str = Field(default="", max_length=40)
 
 
 # ================================================================
@@ -257,10 +261,31 @@ async def _gotrue_signup(email: str, password: str, business_name: str = "") -> 
     return None
 
 
-async def _resolve_or_provision_client(email: str, business_name: str = ""):
+async def _validate_referrer(ref: str) -> str:
+    """
+    Valida o código de indicação (?ref= é o client_id do indicador).
+
+    Retorna o client_id válido ou "" — ref inválido nunca bloqueia o
+    cadastro (indicação é bônus, não requisito).
+    """
+    ref = (ref or "").strip()
+    if not ref or not ref.startswith("cli_"):
+        return ""
+    try:
+        referrer = await db.get_client(ref)
+        return ref if referrer else ""
+    except Exception as e:
+        log.warning(f"Indicação | validação do ref falhou | {type(e).__name__}: {e}")
+        return ""
+
+
+async def _resolve_or_provision_client(email: str, business_name: str = "", ref: str = ""):
     """
     Resolve o cliente do e-mail autenticado — criando um novo se não
     existir (signup self-service: qualquer conta válida ganha negócio).
+
+    ref: indicação first-touch — só é gravada na CRIAÇÃO da conta;
+    conta existente nunca muda de indicador.
 
     403 apenas no caso ambíguo (2+ clientes com o mesmo e-mail).
     """
@@ -271,9 +296,12 @@ async def _resolve_or_provision_client(email: str, business_name: str = ""):
         log.warning(f"Login | e-mail vinculado a 2+ clientes | email=***@{email.split('@')[-1]}")
         raise HTTPException(403, "Este e-mail está vinculado a mais de uma conta. Fale com o suporte.")
 
-    client = await db.create_client_signup(email, business_name)
+    referred_by = await _validate_referrer(ref)
+    client = await db.create_client_signup(email, business_name, referred_by=referred_by)
     if not client:
         raise HTTPException(503, "Não foi possível criar sua conta agora. Tente de novo.")
+    if referred_by:
+        log.info(f"Indicação | signup indicado | client={client.client_id} | ref={referred_by}")
 
     # Sprint Billing: com TRIAL_TRIGGER="signup" o trial nasce aqui; no
     # default ("activation") esta chamada é no-op. Nunca levanta exceção.
@@ -375,7 +403,7 @@ async def session_from_supabase(payload: SupabaseSessionRequest) -> JSONResponse
     # GoTrue (ver _gotrue_signup) — é aqui que o provisionamento acontece
     # no fluxo com confirmação de e-mail.
     business_name = str((user.get("user_metadata") or {}).get("business_name", ""))
-    client = await _resolve_or_provision_client(email, business_name)
+    client = await _resolve_or_provision_client(email, business_name, ref=payload.ref)
 
     log.info(f"Login | sessão via supabase token | client={client.client_id}")
     return _session_response(client, payload.remember)
@@ -458,7 +486,7 @@ async def signup(payload: SignupRequest) -> JSONResponse:
             "message": "Conta criada! Enviamos um link de confirmação pro seu e-mail — clica nele pra entrar.",
         })
 
-    client = await _resolve_or_provision_client(email, payload.business_name)
+    client = await _resolve_or_provision_client(email, payload.business_name, ref=payload.ref)
     log.info(f"Signup | conta criada e logada | client={client.client_id}")
     return _session_response(client, remember=True)
 
@@ -671,6 +699,20 @@ function setTab(signup) {{
 $("tab-login").addEventListener("click", () => setTab(false));
 $("tab-signup").addEventListener("click", () => setTab(true));
 
+// Programa de indicação: ?ref=cli_xxx na URL fica guardado no navegador
+// (sobrevive à confirmação de e-mail e ao OAuth) e viaja no cadastro.
+// Link de indicação abre direto na aba de criar conta.
+try {{
+  const refParam = new URLSearchParams(location.search).get("ref");
+  if (refParam && /^cli_[a-f0-9]+$/.test(refParam)) {{
+    localStorage.setItem("huma_ref", refParam);
+    setTab(true);
+  }}
+}} catch (e) {{ /* storage bloqueado: indicação é bônus, não requisito */ }}
+function getRef() {{
+  try {{ return localStorage.getItem("huma_ref") || ""; }} catch (e) {{ return ""; }}
+}}
+
 async function doLogin() {{
   const email = $("email").value.trim();
   const password = $("password").value;
@@ -704,7 +746,7 @@ async function doSignup() {{
     const r = await fetch("/auth/signup", {{
       method: "POST",
       headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{email, password, business_name}}),
+      body: JSON.stringify({{email, password, business_name, ref: getRef()}}),
     }});
     const data = await r.json();
     if (r.ok && data.redirect) {{ location.href = data.redirect; return; }}
@@ -778,10 +820,12 @@ async def oauth_callback_page() -> HTMLResponse:
     return;
   }}
   try {{
+    let ref = "";
+    try {{ ref = localStorage.getItem("huma_ref") || ""; }} catch (e) {{}}
     const r = await fetch("/auth/session-from-supabase", {{
       method: "POST",
       headers: {{"Content-Type": "application/json"}},
-      body: JSON.stringify({{access_token: token, remember: true}}),
+      body: JSON.stringify({{access_token: token, remember: true, ref}}),
     }});
     const data = await r.json();
     if (r.ok) {{ location.replace(data.redirect); return; }}

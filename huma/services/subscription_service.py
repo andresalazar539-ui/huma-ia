@@ -423,6 +423,8 @@ async def create_subscription_with_card(
             description=f"primeira pre={preapproval_id} plano {plan.value}",
         )
         await cache.delete_key(f"wallet_bal:{client_id}")
+        # Indicação: cliente virou pagante — credita o indicador (idempotente)
+        await credit_referral_conversion(client_id)
 
     log.info(
         f"ASSINATURA TRANSPARENTE | client={client_id} | plan={plan.value} | "
@@ -509,6 +511,29 @@ async def start_trial_if_eligible(client_id: str, trigger: str = "activation") -
             source="trial",
             description=f"trial {TRIAL_DAYS}d",
         )
+
+        # Programa de indicação: quem chegou por indicação ganha bônus de
+        # boas-vindas no trial (source='indicacao' → cai no balde certo da
+        # tela Uso). Dentro dos guards do trial = mesma idempotência.
+        try:
+            row = await run_in_threadpool(
+                lambda: supa.table("clients").select("referred_by")
+                    .eq("client_id", client_id).limit(1).execute()
+            )
+            referred_by = (row.data[0].get("referred_by") or "") if row.data else ""
+            if referred_by:
+                await billing.add_conversations(
+                    client_id, billing.REFERRAL_WELCOME_BONUS,
+                    source="indicacao",
+                    description=f"bônus de boas-vindas (indicado por {referred_by})",
+                )
+                log.info(
+                    f"Indicação | bônus de boas-vindas | client={client_id} | "
+                    f"+{billing.REFERRAL_WELCOME_BONUS} | ref={referred_by}"
+                )
+        except Exception as e:
+            log.error(f"Indicação | bônus falhou | client={client_id} | {type(e).__name__}: {e}")
+
         await cache.delete_key(f"sub_gate:{client_id}")
         await cache.delete_key(f"wallet_bal:{client_id}")
 
@@ -521,6 +546,88 @@ async def start_trial_if_eligible(client_id: str, trigger: str = "activation") -
     except Exception as e:
         log.error(f"start_trial falhou | client={client_id} | {type(e).__name__}: {str(e)[:150]}")
         return {"status": "skipped", "reason": "error"}
+
+
+async def credit_referral_conversion(client_id: str) -> None:
+    """
+    Credita o INDICADOR quando este cliente vira pagante (1ª cobrança).
+
+    Idempotente por clients.referral_credited_at (gravado antes do
+    crédito: reentrega de webhook no pior caso perde 1 crédito, nunca
+    duplica). Teto mensal por indicador via razão. Nunca levanta
+    exceção — indicação jamais pode quebrar um fluxo de pagamento.
+    Chamada em TODOS os caminhos que creditam mês pago; a marcação
+    de idempotência faz só o primeiro agir.
+    """
+    try:
+        supa = get_supabase()
+        row = await run_in_threadpool(
+            lambda: supa.table("clients")
+                .select("referred_by,referral_credited_at,business_name")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        data = row.data[0] if row.data else {}
+        referred_by = data.get("referred_by") or ""
+        if not referred_by or data.get("referral_credited_at"):
+            return
+
+        # Marca ANTES de creditar (anti-duplicação em reentrega de webhook)
+        await run_in_threadpool(
+            lambda: supa.table("clients").update({
+                "referral_credited_at": datetime.utcnow().isoformat(),
+            }).eq("client_id", client_id).execute()
+        )
+
+        # Teto mensal do indicador (anti-farm de contas)
+        month_start = datetime.utcnow().replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        ).isoformat()
+        month_credits = await run_in_threadpool(
+            lambda: supa.table("credit_transactions").select("id")
+                .eq("client_id", referred_by).eq("source", "indicacao")
+                .like("description", "conversão%")
+                .gte("created_at", month_start)
+                .limit(billing.REFERRAL_MONTHLY_CONVERSION_CAP + 1).execute()
+        )
+        if len(month_credits.data or []) >= billing.REFERRAL_MONTHLY_CONVERSION_CAP:
+            log.warning(
+                f"Indicação | teto mensal atingido | referrer={referred_by} | "
+                f"cap={billing.REFERRAL_MONTHLY_CONVERSION_CAP} | conversão de {client_id} sem crédito"
+            )
+            return
+
+        await billing.add_conversations(
+            referred_by, billing.REFERRAL_REWARD_CONVERSATIONS,
+            source="indicacao",
+            description=f"conversão do indicado {client_id}",
+        )
+        await cache.delete_key(f"wallet_bal:{referred_by}")
+
+        # Avisa o indicador no WhatsApp dele (melhor notificação possível)
+        try:
+            from huma.services import whatsapp_service as wa
+            from huma.services.db_service import get_client as db_get_client
+            referrer = await db_get_client(referred_by)
+            if referrer and referrer.owner_phone:
+                nome = data.get("business_name") or "Um negócio que você indicou"
+                await wa.notify_owner(
+                    referrer.owner_phone,
+                    (
+                        f"🎉 {nome} virou assinante da HUMA pela sua indicação! "
+                        f"+{billing.REFERRAL_REWARD_CONVERSATIONS} conversas na sua conta. "
+                        f"Continue indicando em app.humaia.com.br"
+                    ),
+                    client_id=referred_by,
+                )
+        except Exception as e:
+            log.error(f"Indicação | notify indicador falhou | {referred_by} | {type(e).__name__}: {e}")
+
+        log.info(
+            f"Indicação | CONVERSÃO creditada | referrer={referred_by} | "
+            f"+{billing.REFERRAL_REWARD_CONVERSATIONS} | indicado={client_id}"
+        )
+    except Exception as e:
+        log.error(f"Indicação | conversão falhou | client={client_id} | {type(e).__name__}: {e}")
 
 
 # ================================================================
@@ -799,6 +906,9 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     # Saldo mudou por fora: derruba o cache de 60s pra quem estava
     # bloqueado (ex.: trial expirado que acabou de assinar) destravar já.
     await cache.delete_key(f"wallet_bal:{client_id}")
+    # Indicação: se esta foi a PRIMEIRA cobrança paga do cliente, credita
+    # o indicador (a marcação referral_credited_at faz só a 1ª agir).
+    await credit_referral_conversion(client_id)
     log.info(
         f"RENOVAÇÃO PAGA | client={client_id} | plan={plan_value} | "
         f"+{config['included_conversations']} conversas | apid={authorized_payment_id}"
@@ -881,6 +991,7 @@ async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_s
             description=f"payid={mp_payment_id} plano {plan_value} (via topic payment)",
         )
         await cache.delete_key(f"wallet_bal:{client_id}")
+        await credit_referral_conversion(client_id)
         log.info(
             f"RENOVAÇÃO PAGA (topic payment) | client={client_id} | plan={plan_value} | "
             f"+{config['included_conversations']} conversas | payid={mp_payment_id}"

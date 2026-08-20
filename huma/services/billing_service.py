@@ -423,6 +423,15 @@ async def check_conversations(client_id: str) -> dict:
 REFERRAL_SOURCES = frozenset({"indicacao"})
 EXTRA_PACK_SOURCES = frozenset({"pacote_extra"})
 
+# ── Programa de indicação (valores em UM lugar — fáceis de trocar) ──
+# Quem indica ganha ao ver o indicado VIRAR PAGANTE (1ª cobrança paga,
+# nunca no cadastro — senão vira farm de conta). O indicado ganha bônus
+# de boas-vindas no trial. Teto mensal de conversões creditadas por
+# indicador limita abuso.
+REFERRAL_REWARD_CONVERSATIONS = 100   # pro indicador, por conversão
+REFERRAL_WELCOME_BONUS = 50           # pro indicado, no trial
+REFERRAL_MONTHLY_CONVERSION_CAP = 5   # conversões creditadas/mês por indicador
+
 
 async def credit_referral(client_id: str, amount: int, description: str = "") -> int:
     """

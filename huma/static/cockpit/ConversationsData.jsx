@@ -351,7 +351,17 @@ function getClientId() {
   return CLIENT_ID;
 }
 
-Object.assign(window, { fetchTrackingLink, getBalcaoUrl, getClientId });
+// Programa de indicação: recompensas + lista real de indicados.
+async function fetchReferrals() {
+  const r = await fetch(
+    `/api/clients/${encodeURIComponent(CLIENT_ID)}/referrals`,
+    { headers: { ...AUTH_HEADERS } },
+  );
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+Object.assign(window, { fetchTrackingLink, getBalcaoUrl, getClientId, fetchReferrals });
 
 /* ---------------- Billing (assinatura recorrente MP) ---------------- */
 async function fetchBillingStatus() {

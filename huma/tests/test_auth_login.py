@@ -249,7 +249,7 @@ class TestLogin:
         async def grant_ok(email, password):
             return {"access_token": "tok", "user": {"email": email}}
 
-        async def create(email, business_name=""):
+        async def create(email, business_name="", referred_by=""):
             created["email"] = email
             return FakeIdentity(client_id="cli_novo", onboarding_status="pending")
 
@@ -352,7 +352,7 @@ class TestSignup:
         async def signup_ok(email, password, business_name=""):
             return {"access_token": "tok", "user": {"email": email}}
 
-        async def create(email, business_name=""):
+        async def create(email, business_name="", referred_by=""):
             created["business_name"] = business_name
             return FakeIdentity(client_id="cli_novo", onboarding_status="pending")
 
@@ -440,7 +440,7 @@ class TestSessionFromSupabase:
         async def user_ok(token):
             return {"email": "novato@gmail.com"}
 
-        async def create(email, business_name=""):
+        async def create(email, business_name="", referred_by=""):
             return FakeIdentity(client_id="cli_google", onboarding_status="pending")
 
         monkeypatch.setattr(al, "_gotrue_get_user", user_ok)

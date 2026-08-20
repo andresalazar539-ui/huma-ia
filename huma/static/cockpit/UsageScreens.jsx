@@ -358,17 +358,30 @@ const MiniTrend = () => {
 // ============================================================
 const IndicacaoScreen = ({ onBack }) => {
   const [copied, setCopied] = useStateU(false);
-  const link = 'https://huma.ia/r/marina-costa';
-  const levels = [
-    { id: 'starter',    label: 'Starter',    range: '0–3 indicações' },
-    { id: 'embaixador', label: 'Embaixador', range: '3–7 indicações', active: true },
-    { id: 'partner',    label: 'Partner',    range: '7–15 indicações' },
-  ];
+  // Programa REAL: link com ?ref= do cliente; recompensas e lista vêm
+  // do GET /api/clients/{id}/referrals.
+  const link = `${location.origin}/login?ref=${window.getClientId()}`;
+  const [stats, setStats] = useStateU(null);
+
+  useEffectU(() => {
+    window.fetchReferrals().then(setStats).catch(() => {});
+  }, []);
+
+  const reward = stats ? stats.reward_conversations : 100;
+  const welcome = stats ? stats.welcome_bonus : 50;
+  const referrals = (stats && stats.referrals) || [];
+  const converted = referrals.filter(r => r.converted).length;
+  const ganhas = stats ? stats.conversas_ganhas : 0;
 
   const copyLink = () => {
     navigator.clipboard?.writeText(link).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
+  };
+
+  const shareWhatsApp = () => {
+    const msg = `Uso a HUMA IA pra atender e vender no WhatsApp no automático. Criando conta pelo meu link você ganha ${welcome} conversas a mais no teste grátis: ${link}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
   };
 
   return (
@@ -418,38 +431,37 @@ const IndicacaoScreen = ({ onBack }) => {
               </div>
             </div>
             <div style={{ textAlign: 'right' }}>
-              <Eyebrow>ganho por indicação</Eyebrow>
+              <Eyebrow>ganho por conversão</Eyebrow>
               <div style={{
                 fontFamily: 'var(--font-sans)', fontSize: 22, fontWeight: 600,
                 letterSpacing: '-0.02em', color: 'var(--ember)', marginTop: 4,
-              }}>US$ 3,50</div>
+              }}>+{reward} conversas</div>
             </div>
           </div>
 
-          <div style={{ marginTop: 20 }}>
-            <div style={{
-              display: 'flex', justifyContent: 'space-between',
-              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginBottom: 6,
-            }}>
-              <span>1 de 7 indicações pro próximo nível</span>
-              <span>14%</span>
-            </div>
-            <ProgressBar percent={14} color="var(--terracotta)" bg="var(--paper-sunk)" height={8}/>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
+            Você ganha <strong style={{ color: 'var(--ink)' }}>{reward} conversas</strong> quando
+            um negócio indicado vira assinante — e quem chega pelo seu link ganha{' '}
+            <strong style={{ color: 'var(--ink)' }}>+{welcome} conversas</strong> no teste grátis.
+            Os créditos aparecem na tela Uso e são consumidos antes do seu plano.
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 16 }}>
-            {levels.map(l => (
-              <div key={l.id} style={{
-                padding: '10px 12px', borderRadius: 10,
-                background: l.active ? 'var(--paper-raised)' : 'var(--paper-sunk)',
-                border: l.active ? '1.5px solid var(--ember)' : '1px solid var(--paper-edge)',
+            {[
+              { label: 'Indicações', value: referrals.length },
+              { label: 'Viraram assinantes', value: converted },
+              { label: 'Conversas ganhas', value: ganhas },
+            ].map((s, i) => (
+              <div key={i} style={{
+                padding: '12px', borderRadius: 10,
+                background: 'var(--paper-sunk)', border: '1px solid var(--paper-edge)',
                 textAlign: 'center',
               }}>
                 <div style={{
-                  fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-                  color: l.active ? 'var(--ink)' : 'var(--ink-3)',
-                }}>{l.label}</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', marginTop: 2 }}>{l.range}</div>
+                  fontFamily: 'var(--font-sans)', fontSize: 22, fontWeight: 600,
+                  letterSpacing: '-0.02em', color: 'var(--ink)',
+                }}>{s.value}</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{s.label}</div>
               </div>
             ))}
           </div>
@@ -464,7 +476,7 @@ const IndicacaoScreen = ({ onBack }) => {
             Compartilhe seu link
           </div>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4, lineHeight: 1.5 }}>
-            Vocês dois ganham: quem indica recebe créditos, quem chega ganha 7 dias grátis.
+            Vocês dois ganham: você recebe {reward} conversas por assinante, quem chega ganha +{welcome} no teste.
           </div>
 
           <div style={{
@@ -488,7 +500,7 @@ const IndicacaoScreen = ({ onBack }) => {
             </button>
           </div>
 
-          <button style={{
+          <button onClick={shareWhatsApp} style={{
             width: '100%', marginTop: 12, padding: '13px 16px', borderRadius: 12,
             background: 'var(--sage)', color: 'var(--paper-raised)',
             border: 'none', cursor: 'pointer',
@@ -510,32 +522,36 @@ const IndicacaoScreen = ({ onBack }) => {
             padding: '18px 20px', borderBottom: '1px solid var(--paper-edge)',
           }}>
             <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)' }}>Suas indicações</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>2 total</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{referrals.length} total</div>
           </div>
-          {[
-            { name: 'Clínica Sorriso', date: '12 abr',   status: 'Ativa',     tone: 'sage',  gain: '+US$ 2' },
-            { name: 'Studio Bella',    date: '16 abr',   status: 'Pendente',  tone: 'ink',   gain: null },
-          ].map((r, i) => (
+          {referrals.length === 0 ? (
+            <div style={{
+              padding: '28px 20px', textAlign: 'center',
+              fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5,
+            }}>
+              Nenhuma indicação ainda. Compartilhe seu link — quando alguém criar conta por ele, aparece aqui.
+            </div>
+          ) : referrals.map((r, i) => (
             <div key={i} style={{
               display: 'flex', alignItems: 'center', gap: 14, padding: '14px 20px',
               borderTop: i ? '1px solid var(--paper-edge)' : 'none',
             }}>
-              <Avatar initials={r.name.split(' ').map(n => n[0]).slice(0,2).join('')} tone={r.tone === 'sage' ? 'sage' : 'ink'} size={32}/>
+              <Avatar initials={(r.business_name || '?').split(' ').map(n => n[0]).slice(0,2).join('').toUpperCase()} tone={r.converted ? 'sage' : 'ink'} size={32}/>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{r.name}</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{r.date}</div>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{r.business_name || 'Negócio indicado'}</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{r.created_at ? formatTime(r.created_at) : ''}</div>
               </div>
               <span style={{
                 fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500,
                 padding: '3px 9px', borderRadius: 999,
-                background: r.tone === 'sage' ? 'var(--sage-tint)' : 'var(--paper-sunk)',
-                color:       r.tone === 'sage' ? 'var(--sage-ink)' : 'var(--ink-3)',
-              }}>{r.status}</span>
+                background: r.converted ? 'var(--sage-tint)' : 'var(--paper-sunk)',
+                color:       r.converted ? 'var(--sage-ink)' : 'var(--ink-3)',
+              }}>{r.converted ? 'Assinante' : 'No teste'}</span>
               <span style={{
-                width: 60, textAlign: 'right',
+                width: 90, textAlign: 'right',
                 fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-                color: r.gain ? 'var(--sage-ink)' : 'var(--ink-4)',
-              }}>{r.gain || '—'}</span>
+                color: r.converted ? 'var(--sage-ink)' : 'var(--ink-4)',
+              }}>{r.converted ? `+${reward} conversas` : '—'}</span>
             </div>
           ))}
           <div style={{
@@ -544,7 +560,7 @@ const IndicacaoScreen = ({ onBack }) => {
             fontFamily: 'var(--font-sans)', fontSize: 13,
           }}>
             <span style={{ color: 'var(--ink-3)' }}>Total ganho com indicações</span>
-            <span style={{ color: 'var(--sage-ink)', fontWeight: 600 }}>US$ 4,00</span>
+            <span style={{ color: 'var(--sage-ink)', fontWeight: 600 }}>{ganhas} conversas</span>
           </div>
         </div>
       </div>

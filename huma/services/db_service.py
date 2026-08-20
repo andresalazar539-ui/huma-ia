@@ -177,13 +177,19 @@ async def get_client_by_owner_email(email: str) -> ClientIdentity | None:
     return clients[0]
 
 
-async def create_client_signup(owner_email: str, business_name: str = "") -> ClientIdentity | None:
+async def create_client_signup(
+    owner_email: str, business_name: str = "", referred_by: str = ""
+) -> ClientIdentity | None:
     """
     Signup self-service: cria o cliente mínimo pro dono recém-cadastrado.
 
     Só client_id e business_name são NOT NULL na tabela — o resto nasce
     com default e vai sendo preenchido no wizard/settings. api_key é
     gerada na hora (uso legado/integrações; o Cockpit usa cookie).
+
+    referred_by: client_id de quem indicou (programa de indicação,
+    first-touch). Só entra no insert quando preenchido — ambiente sem a
+    migration_referral.sql continua criando contas orgânicas normalmente.
 
     Retorna a identidade criada ou None em falha (caller decide o erro).
     """
@@ -201,6 +207,8 @@ async def create_client_signup(owner_email: str, business_name: str = "") -> Cli
         "api_key": secrets.token_urlsafe(32),
         "onboarding_status": OnboardingStatus.PENDING.value,
     }
+    if referred_by:
+        row["referred_by"] = referred_by
     try:
         await run_in_threadpool(
             lambda: get_supabase().table("clients").insert(row).execute()
