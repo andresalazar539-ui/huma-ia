@@ -622,22 +622,42 @@ const IndicacaoScreen = ({ onBack }) => {
 // ============================================================
 const CreditosScreen = ({ onBack }) => {
   // Pacotes REAIS do backend (billing.extra_packs — fonte única de verdade).
-  // Fallback espelha os valores atuais do billing_service enquanto carrega.
   const fmtBrl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
   const [packs, setPacks] = useStateU([
     { id: 'pack_200', size: '+200', amount: 200, price: fmtBrl(39.90) },
     { id: 'pack_500', size: '+500', amount: 500, price: fmtBrl(79.90), highlight: 'Melhor valor' },
   ]);
   const [selected, setSelected] = useStateU(0);
+  const [billing, setBilling] = useStateU(null);
 
-  // Fluxo Pix: idle → creating → pix na tela (poll) → paid
-  const [pix, setPix] = useStateU(null);          // {payment_id, qr_code, qr_code_base64, amount, conversations}
-  const [pixState, setPixState] = useStateU('idle'); // idle|creating|waiting|paid|error
-  const [pixError, setPixError] = useStateU('');
+  // Método de pagamento: cartão salvo (1 clique) > cartão novo > Pix.
+  const [metodo, setMetodo] = useStateU('card');
+  // Fluxo: idle | busy | pix_waiting | paid | pending
+  const [flow, setFlow] = useStateU('idle');
+  const [err, setErr] = useStateU('');
+  const [paidInfo, setPaidInfo] = useStateU(null);
+
+  // Pix
+  const [pix, setPix] = useStateU(null);
   const [pixCopied, setPixCopied] = useStateU(false);
+
+  // Cartão salvo: só o CVV
+  const [cvvSalvo, setCvvSalvo] = useStateU('');
+
+  // Cartão novo (mesmo padrão do checkout de assinatura)
+  const [cNum, setCNum] = useStateU('');
+  const [cNome, setCNome] = useStateU('');
+  const [cExp, setCExp] = useStateU('');
+  const [cCvv, setCCvv] = useStateU('');
+  const [cCpf, setCCpf] = useStateU('');
+  const [salvarCartao, setSalvarCartao] = useStateU(true);
+
+  const _digits = (s) => String(s || '').replace(/\D/g, '');
+  const savedCard = billing && billing.saved_card;
 
   useEffectU(() => {
     fetchBillingStatus().then(b => {
+      setBilling(b);
       const list = (b.extra_packs || []).map((p, i) => ({
         id: p.id,
         size: `+${p.conversations.toLocaleString('pt-BR')}`,
@@ -646,33 +666,117 @@ const CreditosScreen = ({ onBack }) => {
         highlight: i === (b.extra_packs.length - 1) ? 'Melhor valor' : null,
       }));
       if (list.length) { setPacks(list); setSelected(list.length - 1); }
+      if (b.saved_card) setMetodo('saved');
     }).catch(() => {});
   }, []);
 
-  // Poll do pagamento enquanto o QR está na tela (a cada 4s).
+  // Poll do Pix enquanto o QR está na tela (a cada 4s).
   useEffectU(() => {
-    if (pixState !== 'waiting' || !pix) return;
+    if (flow !== 'pix_waiting' || !pix) return;
     const t = setInterval(() => {
       window.fetchExtraPackStatus(pix.payment_id).then(s => {
-        if (s.status === 'approved') setPixState('paid');
+        if (s.status === 'approved') { setPaidInfo({ conversations: pix.conversations }); setFlow('paid'); }
         if (['cancelled', 'rejected', 'expired'].includes(s.status)) {
-          setPixState('error');
-          setPixError('O pagamento não foi concluído. Gere um novo Pix e tente de novo.');
+          setFlow('idle');
+          setErr('O pagamento não foi concluído. Gere um novo Pix e tente de novo.');
         }
       }).catch(() => {});
     }, 4000);
     return () => clearInterval(t);
-  }, [pixState, pix]);
+  }, [flow, pix]);
 
-  const comprar = async () => {
-    setPixState('creating'); setPixError('');
+  const _mpReady = () => {
+    if (!window.MercadoPago || !billing || !billing.mp_public_key) {
+      setErr('Pagamento indisponível agora — recarregue a página e tente de novo.');
+      return null;
+    }
+    return new window.MercadoPago(billing.mp_public_key);
+  };
+
+  const _finaliza = (r) => {
+    if (r.paid) { setPaidInfo({ conversations: r.conversations }); setFlow('paid'); }
+    else { setFlow('pending'); setErr(''); }
+  };
+
+  const pagarPix = async () => {
+    setFlow('busy'); setErr('');
     try {
-      const data = await window.buyExtraPack(packs[selected].id);
+      const data = await window.buyExtraPack(packs[selected].id, { method: 'pix' });
       setPix(data);
-      setPixState('waiting');
+      setFlow('pix_waiting');
     } catch (e) {
-      setPixState('error');
-      setPixError(String(e.message || 'Não foi possível gerar o Pix. Tente de novo.'));
+      setFlow('idle');
+      setErr(String(e.message || 'Não foi possível gerar o Pix. Tente de novo.'));
+    }
+  };
+
+  const pagarSalvo = async () => {
+    if (cvvSalvo.length < 3) { setErr('Digite o CVV do cartão (3 ou 4 dígitos).'); return; }
+    const mp = _mpReady();
+    if (!mp) return;
+    setFlow('busy'); setErr('');
+    try {
+      const token = await mp.createCardToken({ cardId: savedCard.card_id, securityCode: cvvSalvo });
+      if (!token || !token.id) throw new Error('Cartão não validado — confere o CVV.');
+      const r = await window.buyExtraPack(packs[selected].id, {
+        method: 'card', card_token_id: token.id, payment_method_id: savedCard.brand,
+      });
+      setCvvSalvo('');
+      _finaliza(r);
+    } catch (e) {
+      setFlow('idle');
+      setErr(String(e.message || 'Não deu certo — confere o CVV e tenta de novo.'));
+    }
+  };
+
+  const pagarNovo = async () => {
+    const cardNumber = _digits(cNum);
+    const expD = _digits(cExp);
+    const cpfD = _digits(cCpf);
+    if (cardNumber.length < 13) { setErr('Confere o número do cartão.'); return; }
+    if (!cNome.trim()) { setErr('Preenche o nome como está no cartão.'); return; }
+    if (expD.length !== 4) { setErr('Validade no formato MM/AA.'); return; }
+    if (cCvv.length < 3) { setErr('Confere o código de segurança (CVV).'); return; }
+    if (cpfD.length !== 11) { setErr('Confere o CPF do titular.'); return; }
+    const mp = _mpReady();
+    if (!mp) return;
+    setFlow('busy'); setErr('');
+    try {
+      const formData = {
+        cardNumber,
+        cardholderName: cNome.trim(),
+        cardExpirationMonth: expD.slice(0, 2),
+        cardExpirationYear: '20' + expD.slice(2),
+        securityCode: cCvv,
+        identificationType: 'CPF',
+        identificationNumber: cpfD,
+      };
+      // payment_method_id vem do BIN (6 primeiros dígitos)
+      const pms = await mp.getPaymentMethods({ bin: cardNumber.slice(0, 6) });
+      const pmId = pms && pms.results && pms.results[0] && pms.results[0].id;
+      if (!pmId) throw new Error('Não reconheci a bandeira do cartão — confere o número.');
+
+      const token = await mp.createCardToken(formData);
+      if (!token || !token.id) throw new Error('Cartão não validado — confere os dados.');
+
+      // Token do MP é de uso único: um pra pagar, outro pra salvar.
+      let saveTokenId = '';
+      if (salvarCartao) {
+        try {
+          const token2 = await mp.createCardToken(formData);
+          saveTokenId = (token2 && token2.id) || '';
+        } catch (e) { /* salvar é bônus; pagamento segue */ }
+      }
+
+      const r = await window.buyExtraPack(packs[selected].id, {
+        method: 'card', card_token_id: token.id,
+        payment_method_id: pmId, save_token_id: saveTokenId,
+      });
+      _finaliza(r);
+    } catch (e) {
+      setFlow('idle');
+      const msg = String((e && e.message) || 'Não deu certo — confere os dados do cartão.');
+      setErr(msg.includes('cardNumber') || msg.includes('security') ? 'Dados do cartão inválidos — confere número, validade e CVV.' : msg);
     }
   };
 
@@ -683,6 +787,25 @@ const CreditosScreen = ({ onBack }) => {
       setTimeout(() => setPixCopied(false), 1800);
     }).catch(() => { window.prompt('Copie o código Pix:', pix.qr_code); });
   };
+
+  const inputStyle = {
+    width: '100%', boxSizing: 'border-box',
+    border: '1px solid var(--paper-edge)', borderRadius: 8,
+    background: 'var(--paper)', color: 'var(--ink)',
+    fontFamily: 'var(--font-sans)', fontSize: 14,
+    padding: '10px 12px', outline: 'none',
+  };
+  const labelStyle = {
+    fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 500,
+    letterSpacing: '0.08em', textTransform: 'uppercase',
+    color: 'var(--ink-3)', display: 'block', marginBottom: 6,
+  };
+
+  const metodos = [
+    ...(savedCard ? [{ id: 'saved', label: `Cartão •••• ${savedCard.last4}` }] : []),
+    { id: 'card', label: savedCard ? 'Outro cartão' : 'Cartão' },
+    { id: 'pix', label: 'Pix' },
+  ];
 
   return (
     <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
@@ -709,7 +832,7 @@ const CreditosScreen = ({ onBack }) => {
           {packs.map((p, i) => {
             const active = selected === i;
             return (
-              <button key={i} onClick={() => setSelected(i)} style={{
+              <button key={i} onClick={() => { setSelected(i); if (flow === 'pix_waiting') { setFlow('idle'); setPix(null); } }} style={{
                 position: 'relative', textAlign: 'left', cursor: 'pointer',
                 border: active ? '1.5px solid var(--ember)' : '1px solid var(--paper-edge)',
                 borderRadius: 16,
@@ -739,21 +862,13 @@ const CreditosScreen = ({ onBack }) => {
                     fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 22,
                     letterSpacing: '-0.015em', color: 'var(--ink)',
                   }}>{p.price}</div>
-                  {p.badge && (
-                    <span style={{
-                      fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-                      letterSpacing: '0.06em', textTransform: 'uppercase',
-                      padding: '2px 7px', borderRadius: 4,
-                      background: 'var(--sage-tint)', color: 'var(--sage-ink)',
-                    }}>{p.badge.text}</span>
-                  )}
                 </div>
               </button>
             );
           })}
         </div>
 
-        {pixState === 'paid' ? (
+        {flow === 'paid' ? (
           <div style={{
             padding: '20px', borderRadius: 12, textAlign: 'center',
             background: 'var(--sage-tint)', border: '1px solid var(--sage)',
@@ -762,10 +877,22 @@ const CreditosScreen = ({ onBack }) => {
               ✓ Pagamento confirmado!
             </div>
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 6 }}>
-              +{pix ? pix.conversations : ''} conversas já estão na sua conta. Veja na tela Uso.
+              +{paidInfo ? paidInfo.conversations : ''} conversas já estão na sua conta. Veja na tela Uso.
             </div>
           </div>
-        ) : pixState === 'waiting' && pix ? (
+        ) : flow === 'pending' ? (
+          <div style={{
+            padding: '20px', borderRadius: 12, textAlign: 'center',
+            background: 'var(--paper-sunk)', border: '1px solid var(--paper-edge)',
+          }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>
+              Pagamento em análise pelo banco
+            </div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 6 }}>
+              As conversas entram sozinhas assim que aprovar — você recebe a confirmação no WhatsApp.
+            </div>
+          </div>
+        ) : flow === 'pix_waiting' && pix ? (
           <div style={{
             padding: '20px', borderRadius: 12,
             background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)',
@@ -790,27 +917,132 @@ const CreditosScreen = ({ onBack }) => {
               {pixCopied ? 'Código copiado!' : 'Copiar código Pix (copia e cola)'}
             </button>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
-              <span className="pulse-dot" style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--warning, #B8831E)' }}/>
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--warning, #B8831E)' }}/>
               Esperando o pagamento… assim que cair, as conversas entram sozinhas.
             </div>
           </div>
         ) : (
-          <button onClick={comprar} disabled={pixState === 'creating'} style={{
-            padding: '14px 16px', borderRadius: 12,
-            background: 'var(--ember)', color: 'var(--paper-raised)',
-            border: 'none', cursor: pixState === 'creating' ? 'wait' : 'pointer',
-            fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
-            opacity: pixState === 'creating' ? 0.6 : 1,
+          <div style={{
+            border: '1px solid var(--paper-edge)', borderRadius: 16,
+            background: 'var(--paper-raised)', padding: 20,
+            display: 'flex', flexDirection: 'column', gap: 16,
           }}>
-            {pixState === 'creating'
-              ? 'Gerando Pix…'
-              : `Comprar ${packs[selected].size} conversas · ${packs[selected].price} — pagar com Pix`}
-          </button>
+            {/* Seletor de método */}
+            <div style={{ display: 'flex', gap: 8 }}>
+              {metodos.map(m => {
+                const on = metodo === m.id;
+                return (
+                  <button key={m.id} onClick={() => { setMetodo(m.id); setErr(''); }} style={{
+                    fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+                    padding: '7px 14px', borderRadius: 999, cursor: 'pointer',
+                    background: on ? 'var(--ink)' : 'transparent',
+                    color: on ? 'var(--paper)' : 'var(--ink-3)',
+                    border: on ? 'none' : '1px solid var(--paper-edge)',
+                  }}>{m.label}</button>
+                );
+              })}
+            </div>
+
+            {metodo === 'saved' && savedCard && (
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <span style={labelStyle}>Cartão salvo</span>
+                  <div style={{
+                    fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)',
+                    padding: '10px 12px', borderRadius: 8,
+                    background: 'var(--paper-sunk)', border: '1px solid var(--paper-edge)',
+                  }}>
+                    {(savedCard.brand || 'cartão').toUpperCase()} •••• {savedCard.last4}
+                  </div>
+                </div>
+                <div style={{ width: 110 }}>
+                  <label style={labelStyle} htmlFor="cvv-salvo">CVV</label>
+                  <input id="cvv-salvo" value={cvvSalvo} inputMode="numeric" maxLength={4}
+                    onChange={e => setCvvSalvo(_digits(e.target.value))}
+                    placeholder="123" style={inputStyle}/>
+                </div>
+                <button onClick={pagarSalvo} disabled={flow === 'busy'} style={{
+                  padding: '11px 20px', borderRadius: 10, border: 'none',
+                  cursor: flow === 'busy' ? 'wait' : 'pointer',
+                  background: 'var(--ember)', color: 'var(--paper-raised)',
+                  fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
+                  opacity: flow === 'busy' ? 0.6 : 1,
+                }}>
+                  {flow === 'busy' ? 'Cobrando…' : `Pagar ${packs[selected].price}`}
+                </button>
+              </div>
+            )}
+
+            {metodo === 'card' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div>
+                  <label style={labelStyle} htmlFor="cc-num">Número do cartão</label>
+                  <input id="cc-num" value={cNum} inputMode="numeric" maxLength={23}
+                    onChange={e => setCNum(e.target.value.replace(/[^\d ]/g, ''))}
+                    placeholder="0000 0000 0000 0000" style={inputStyle}/>
+                </div>
+                <div>
+                  <label style={labelStyle} htmlFor="cc-nome">Nome no cartão</label>
+                  <input id="cc-nome" value={cNome} maxLength={60}
+                    onChange={e => setCNome(e.target.value)}
+                    placeholder="Como está impresso" style={inputStyle}/>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                  <div>
+                    <label style={labelStyle} htmlFor="cc-exp">Validade</label>
+                    <input id="cc-exp" value={cExp} inputMode="numeric" maxLength={5}
+                      onChange={e => setCExp(e.target.value.replace(/[^\d/]/g, ''))}
+                      placeholder="MM/AA" style={inputStyle}/>
+                  </div>
+                  <div>
+                    <label style={labelStyle} htmlFor="cc-cvv">CVV</label>
+                    <input id="cc-cvv" value={cCvv} inputMode="numeric" maxLength={4}
+                      onChange={e => setCCvv(_digits(e.target.value))}
+                      placeholder="123" style={inputStyle}/>
+                  </div>
+                  <div>
+                    <label style={labelStyle} htmlFor="cc-cpf">CPF do titular</label>
+                    <input id="cc-cpf" value={cCpf} inputMode="numeric" maxLength={14}
+                      onChange={e => setCCpf(e.target.value.replace(/[^\d.-]/g, ''))}
+                      placeholder="000.000.000-00" style={inputStyle}/>
+                  </div>
+                </div>
+                <label style={{
+                  display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                  fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)',
+                }}>
+                  <input type="checkbox" checked={salvarCartao} onChange={e => setSalvarCartao(e.target.checked)}/>
+                  Salvar cartão pra pagar em segundos na próxima (fica guardado no Mercado Pago, não na HUMA)
+                </label>
+                <button onClick={pagarNovo} disabled={flow === 'busy'} style={{
+                  padding: '13px 16px', borderRadius: 12, border: 'none',
+                  cursor: flow === 'busy' ? 'wait' : 'pointer',
+                  background: 'var(--ember)', color: 'var(--paper-raised)',
+                  fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
+                  opacity: flow === 'busy' ? 0.6 : 1,
+                }}>
+                  {flow === 'busy' ? 'Cobrando…' : `Pagar ${packs[selected].price} no cartão`}
+                </button>
+              </div>
+            )}
+
+            {metodo === 'pix' && (
+              <button onClick={pagarPix} disabled={flow === 'busy'} style={{
+                padding: '13px 16px', borderRadius: 12, border: 'none',
+                cursor: flow === 'busy' ? 'wait' : 'pointer',
+                background: 'var(--ember)', color: 'var(--paper-raised)',
+                fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
+                opacity: flow === 'busy' ? 0.6 : 1,
+              }}>
+                {flow === 'busy' ? 'Gerando Pix…' : `Gerar Pix de ${packs[selected].price}`}
+              </button>
+            )}
+          </div>
         )}
 
-        {pixState === 'error' && pixError && (
+        {err && (
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--danger)', padding: '0 4px' }}>
-            {pixError}
+            {err}
           </div>
         )}
 
@@ -818,7 +1050,8 @@ const CreditosScreen = ({ onBack }) => {
           fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)',
           lineHeight: 1.5, padding: '0 4px',
         }}>
-          Pagamento via Pix pelo Mercado Pago, crédito automático na confirmação.
+          Pagamento pelo Mercado Pago, crédito automático na confirmação.
+          Dados de cartão são tokenizados no seu navegador e nunca passam pela HUMA.
           Créditos não expiram e são consumidos depois dos créditos de indicação
           e antes do plano base.
         </div>

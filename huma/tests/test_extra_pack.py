@@ -133,3 +133,86 @@ class TestPackPaymentStatus:
         })
         assert result == {"status": "pending", "credited": False}
         assert credited == []
+
+
+class TestCreatePackPaymentCard:
+    def _run(self, monkeypatch, *, mp_response, method="card",
+             card_token="tok_1", pm_id="visa", save_token=""):
+        calls = {"credit": [], "save": [], "mp": []}
+
+        async def mp_post(path, body, idem_key=""):
+            calls["mp"].append((path, body))
+            return mp_response
+
+        async def fake_credit(payid, ext_ref, status):
+            calls["credit"].append((payid, status))
+
+        async def fake_save(cid, token, email):
+            calls["save"].append((cid, token))
+
+        async def get_client(cid):
+            class C:
+                client_id = cid
+                owner_email = "dono@teste.com"
+            return C()
+
+        async def no_saved(cid):
+            return None
+
+        monkeypatch.setattr(subs, "_mp_post", mp_post)
+        monkeypatch.setattr(subs, "credit_pack_purchase", fake_credit)
+        monkeypatch.setattr(subs, "save_card_for_client", fake_save)
+        monkeypatch.setattr(subs, "get_saved_card", no_saved)
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok-fake")
+        import huma.services.db_service as dbs
+        monkeypatch.setattr(dbs, "get_client", get_client)
+
+        result = asyncio.run(subs.create_pack_payment(
+            "cli_x", "pack_200", method=method,
+            card_token_id=card_token, payment_method_id=pm_id,
+            save_token_id=save_token,
+        ))
+        return result, calls
+
+    def test_cartao_aprovado_credita_na_hora(self, monkeypatch):
+        result, calls = self._run(monkeypatch, mp_response={"id": 777, "status": "approved"})
+        assert result["status"] == "ok" and result["paid"] is True
+        assert calls["credit"] == [("777", "approved")]
+        # sem save_token: não tenta salvar cartão
+        assert calls["save"] == []
+
+    def test_cartao_aprovado_com_save_salva(self, monkeypatch):
+        result, calls = self._run(
+            monkeypatch, mp_response={"id": 778, "status": "approved"},
+            save_token="tok_save",
+        )
+        assert result["paid"] is True
+        assert calls["save"] == [("cli_x", "tok_save")]
+
+    def test_cartao_recusado_mensagem_amigavel(self, monkeypatch):
+        result, calls = self._run(monkeypatch, mp_response={
+            "id": 779, "status": "rejected",
+            "status_detail": "cc_rejected_insufficient_amount",
+        })
+        assert result["status"] == "error"
+        assert "limite" in result["detail"]
+        assert calls["credit"] == []
+
+    def test_cartao_em_analise_nao_credita(self, monkeypatch):
+        result, calls = self._run(monkeypatch, mp_response={"id": 780, "status": "in_process"})
+        assert result["status"] == "ok" and result["paid"] is False
+        assert calls["credit"] == []
+
+    def test_cartao_sem_token_e_erro(self, monkeypatch):
+        result, calls = self._run(monkeypatch, mp_response={}, card_token="", pm_id="")
+        assert result["status"] == "error"
+        assert calls["mp"] == []
+
+    def test_payload_do_cartao_tem_campos_obrigatorios(self, monkeypatch):
+        _, calls = self._run(monkeypatch, mp_response={"id": 781, "status": "approved"})
+        path, body = calls["mp"][0]
+        assert path == "/v1/payments"
+        assert body["token"] == "tok_1"
+        assert body["payment_method_id"] == "visa"
+        assert body["installments"] == 1
+        assert body["external_reference"] == "humapack|cli_x|pack_200"

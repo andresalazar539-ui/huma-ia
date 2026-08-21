@@ -787,8 +787,15 @@ async def billing_validate_coupon(client_id: str, payload: CouponBody, _=Depends
 
 
 class ExtraPackBody(BaseModel):
-    """Compra de pacote de conversas extras via Pix."""
+    """Compra de pacote de conversas extras (Pix ou cartão)."""
     pack_id: str = Field(..., min_length=1, max_length=40)
+    method: str = Field(default="pix", pattern="^(pix|card)$")
+    # Cartão: token gerado no NAVEGADOR pelo SDK do MP (dados do cartão
+    # nunca passam pela HUMA). save_token_id = segundo token pra salvar
+    # o cartão pro 1-clique (token do MP é de uso único).
+    card_token_id: str = Field(default="", max_length=64)
+    payment_method_id: str = Field(default="", max_length=40)
+    save_token_id: str = Field(default="", max_length=64)
 
 
 @router.post("/api/clients/{client_id}/billing/extra-pack", tags=["Billing"])
@@ -796,14 +803,18 @@ async def billing_buy_extra_pack(
     client_id: str, payload: ExtraPackBody, _=Depends(verify_api_key)
 ) -> dict:
     """
-    Cria a cobrança Pix de um pacote extra e devolve QR + copia-e-cola.
-
-    O crédito das conversas acontece quando o MP confirma o pagamento
-    (webhook), com rede de segurança no poll de status.
+    Compra de pacote extra: Pix (QR + copia-e-cola, crédito no webhook)
+    ou cartão (cobrança síncrona — aprovou, creditou na hora).
     """
     from huma.services import subscription_service as subs
 
-    result = await subs.create_pack_payment(client_id, payload.pack_id)
+    result = await subs.create_pack_payment(
+        client_id, payload.pack_id,
+        method=payload.method,
+        card_token_id=payload.card_token_id,
+        payment_method_id=payload.payment_method_id,
+        save_token_id=payload.save_token_id,
+    )
     if result.get("status") != "ok":
         raise HTTPException(400, result.get("detail", "Não foi possível criar a cobrança."))
     return result

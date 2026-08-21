@@ -361,12 +361,13 @@ async function fetchReferrals() {
   return r.json();
 }
 
-// Pacotes extras: cria a cobrança Pix e consulta o status até aprovar.
-async function buyExtraPack(packId) {
+// Pacotes extras: cria a cobrança (Pix ou cartão) e consulta o status.
+// extra: {method:'pix'|'card', card_token_id, payment_method_id, save_token_id}
+async function buyExtraPack(packId, extra = {}) {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/extra-pack`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
-    body: JSON.stringify({ pack_id: packId }),
+    body: JSON.stringify({ pack_id: packId, ...extra }),
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data.detail || 'Não foi possível criar a cobrança.');

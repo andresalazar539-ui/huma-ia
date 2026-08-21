@@ -688,6 +688,12 @@ async def get_billing_status(client_id: str) -> dict:
     except Exception:
         buckets = None
 
+    sc = await get_saved_card(client_id)
+    saved_card = (
+        {"card_id": sc["card_id"], "last4": sc["last4"], "brand": sc["brand"]}
+        if sc else None
+    )
+
     return {
         "plan": plan_value or None,
         "plan_name": plan_name,
@@ -701,6 +707,9 @@ async def get_billing_status(client_id: str) -> dict:
         "trial_ends_at": trial_ends_at,
         # Baldes derivados do razão (aditivo — consumidores antigos intactos)
         "buckets": buckets,
+        # Cartão salvo (1-clique nos pacotes): exibição + card_id pro SDK
+        # tokenizar com CVV. O cartão vive no MP, nunca aqui.
+        "saved_card": saved_card,
         # Recompensas do programa de indicação (a tela Uso mostra o convite)
         "referral_reward": billing.REFERRAL_REWARD_CONVERSATIONS,
         "referral_welcome_bonus": billing.REFERRAL_WELCOME_BONUS,
@@ -960,13 +969,130 @@ def _parse_pack_ext_ref(ref: str) -> Optional[dict]:
     return {"client_id": parts[1], "pack_id": parts[2]}
 
 
-async def create_pack_payment(client_id: str, pack_id: str) -> dict:
+async def get_saved_card(client_id: str) -> Optional[dict]:
     """
-    Cria um pagamento Pix no MP pra um pacote de conversas extras.
+    Cartão salvo do cliente pra compra em 1 clique (só referências —
+    o cartão em si vive no Mercado Pago).
 
-    Retorna {status:"ok", payment_id, qr_code (copia-e-cola),
-    qr_code_base64 (imagem), amount, conversations} ou
-    {status:"error", detail}. Nunca levanta exceção pro caller HTTP.
+    Retorna {card_id, customer_id, last4, brand} ou None (sem cartão
+    salvo, ou ambiente sem a migration_saved_card.sql — degrada).
+    """
+    try:
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("clients")
+                .select("mp_customer_id,mp_card_id,mp_card_last4,mp_card_brand")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        row = resp.data[0] if resp.data else {}
+        if row.get("mp_customer_id") and row.get("mp_card_id"):
+            return {
+                "customer_id": row["mp_customer_id"],
+                "card_id": row["mp_card_id"],
+                "last4": row.get("mp_card_last4", "") or "",
+                "brand": row.get("mp_card_brand", "") or "",
+            }
+    except Exception as e:
+        log.warning(f"Saved card | consulta falhou | {client_id} | {type(e).__name__}: {e}")
+    return None
+
+
+async def _mp_post(path: str, body: dict, idem_key: str = "") -> Optional[dict]:
+    """POST na API do MP. Retorna dict (2xx) ou None (erro logado)."""
+    headers = _headers()
+    if idem_key:
+        headers["X-Idempotency-Key"] = idem_key
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(f"{MP_BASE}{path}", headers=headers, json=body)
+        if resp.status_code in (200, 201):
+            return resp.json()
+        log.error(f"MP POST {path} | status={resp.status_code} | {resp.text[:300]}")
+        return None
+    except httpx.TimeoutException:
+        log.error(f"Timeout | service=mercadopago | op=POST {path}")
+        return None
+    except httpx.HTTPError as e:
+        log.error(f"HTTP erro | service=mercadopago | op=POST {path} | {type(e).__name__}: {e}")
+        return None
+
+
+async def save_card_for_client(client_id: str, save_token: str, payer_email: str) -> None:
+    """
+    Salva o cartão no MP (customer + card) e guarda as referências.
+
+    Melhor esforço: falha aqui NUNCA afeta o pagamento que já rodou —
+    o dono só não ganha o 1-clique desta vez.
+    """
+    try:
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("clients").select("mp_customer_id")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        customer_id = (resp.data[0].get("mp_customer_id") or "") if resp.data else ""
+
+        if not customer_id:
+            customer = await _mp_post("/v1/customers", {"email": payer_email})
+            if not customer:
+                # E-mail já pode ter customer no MP: procura antes de desistir
+                found = await _mp_get(f"/v1/customers/search?email={payer_email}")
+                results = (found or {}).get("results") or []
+                if results:
+                    customer = results[0]
+            if not customer or not customer.get("id"):
+                log.error(f"Saved card | customer falhou | {client_id}")
+                return
+            customer_id = str(customer["id"])
+
+        card = await _mp_post(f"/v1/customers/{customer_id}/cards", {"token": save_token})
+        if not card or not card.get("id"):
+            log.error(f"Saved card | card falhou | {client_id}")
+            return
+
+        pm = (card.get("payment_method") or {})
+        await run_in_threadpool(
+            lambda: supa.table("clients").update({
+                "mp_customer_id": customer_id,
+                "mp_card_id": str(card["id"]),
+                "mp_card_last4": str(card.get("last_four_digits", "") or ""),
+                "mp_card_brand": str(pm.get("id", "") or ""),
+            }).eq("client_id", client_id).execute()
+        )
+        log.info(f"Saved card | cartão salvo | client={client_id} | last4={card.get('last_four_digits')}")
+    except Exception as e:
+        log.error(f"Saved card | falhou | {client_id} | {type(e).__name__}: {e}")
+
+
+# Tradução amigável das recusas mais comuns do MP (status_detail)
+_CARD_DECLINE_PT = {
+    "cc_rejected_insufficient_amount": "Cartão sem limite disponível. Tente outro cartão ou Pix.",
+    "cc_rejected_bad_filled_security_code": "CVV incorreto. Confere o código de segurança.",
+    "cc_rejected_bad_filled_date": "Validade incorreta. Confere o mês e o ano.",
+    "cc_rejected_bad_filled_other": "Dados do cartão incorretos. Confere e tenta de novo.",
+    "cc_rejected_call_for_authorize": "O banco pediu autorização. Ligue pro seu banco ou use Pix.",
+    "cc_rejected_disabled_card": "Cartão bloqueado pelo banco. Tente outro cartão ou Pix.",
+    "cc_rejected_high_risk": "Pagamento recusado por segurança. Tente Pix.",
+}
+
+
+async def create_pack_payment(
+    client_id: str,
+    pack_id: str,
+    method: str = "pix",
+    card_token_id: str = "",
+    payment_method_id: str = "",
+    save_token_id: str = "",
+) -> dict:
+    """
+    Cria a cobrança de um pacote de conversas extras no MP.
+
+    method="pix": devolve QR + copia-e-cola (crédito via webhook/poll).
+    method="card": cobra o cartão NA HORA (token do navegador — cartão
+        novo ou salvo). Aprovou → credita inline e devolve paid=True.
+        save_token_id preenchido → salva o cartão pro 1-clique.
+
+    Nunca levanta exceção pro caller HTTP.
     """
     pack = billing.EXTRA_PACKS.get(pack_id)
     if not pack:
@@ -981,36 +1107,73 @@ async def create_pack_payment(client_id: str, pack_id: str) -> dict:
     payer_email = client.owner_email or f"{client_id}@humaia.com.br"
 
     import uuid as _uuid
-    body = {
+    idem = f"humapack-{client_id}-{pack_id}-{_uuid.uuid4().hex[:12]}"
+    ext_ref = f"{PACK_EXT_REF_PREFIX}|{client_id}|{pack_id}"
+    base = {
         "transaction_amount": float(pack["price_brl"]),
         "description": f"HUMA IA — pacote de {pack['conversations']} conversas extras",
+        "external_reference": ext_ref,
+    }
+
+    # ── CARTÃO (novo ou salvo) — síncrono ──
+    if method == "card":
+        if not card_token_id or not payment_method_id:
+            return {"status": "error", "detail": "Dados do cartão incompletos. Tente de novo."}
+
+        saved = await get_saved_card(client_id)
+        payer: dict = {"email": payer_email}
+        if saved and not save_token_id:
+            # Recobrança de cartão salvo: paga em nome do customer do MP
+            payer = {"type": "customer", "id": saved["customer_id"]}
+
+        body = {
+            **base,
+            "token": card_token_id,
+            "payment_method_id": payment_method_id,
+            "installments": 1,
+            "payer": payer,
+        }
+        data = await _mp_post("/v1/payments", body, idem_key=idem)
+        if not data:
+            return {"status": "error", "detail": "Não consegui falar com o Mercado Pago. Tente de novo."}
+
+        mp_status = (data.get("status") or "").lower()
+        payment_id = str(data.get("id", ""))
+
+        if mp_status == "approved":
+            # Crédito NA HORA (dedup por payid segura o webhook que vem depois)
+            await credit_pack_purchase(payment_id, ext_ref, mp_status)
+            if save_token_id:
+                await save_card_for_client(client_id, save_token_id, payer_email)
+            log.info(f"PACOTE CARTÃO APROVADO | client={client_id} | pack={pack_id} | payid={payment_id}")
+            return {
+                "status": "ok", "paid": True, "payment_id": payment_id,
+                "amount": pack["price_brl"], "conversations": pack["conversations"],
+            }
+        if mp_status in ("in_process", "pending"):
+            log.info(f"PACOTE CARTÃO EM ANÁLISE | client={client_id} | payid={payment_id}")
+            return {
+                "status": "ok", "paid": False, "payment_id": payment_id,
+                "detail": "Pagamento em análise pelo banco — as conversas entram assim que aprovar.",
+                "amount": pack["price_brl"], "conversations": pack["conversations"],
+            }
+        detail = _CARD_DECLINE_PT.get(
+            (data.get("status_detail") or "").lower(),
+            "O cartão foi recusado. Tente outro cartão ou pague com Pix.",
+        )
+        log.warning(f"PACOTE CARTÃO RECUSADO | client={client_id} | payid={payment_id} | {data.get('status_detail')}")
+        return {"status": "error", "detail": detail}
+
+    # ── PIX (default) — assíncrono ──
+    body = {
+        **base,
         "payment_method_id": "pix",
         "payer": {"email": payer_email},
-        "external_reference": f"{PACK_EXT_REF_PREFIX}|{client_id}|{pack_id}",
     }
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(
-                f"{MP_BASE}/v1/payments",
-                headers={
-                    **_headers(),
-                    # Exigido pelo MP em /v1/payments; retry de rede não duplica cobrança
-                    "X-Idempotency-Key": f"humapack-{client_id}-{pack_id}-{_uuid.uuid4().hex[:12]}",
-                },
-                json=body,
-            )
-    except httpx.TimeoutException:
-        log.error(f"Timeout | service=mercadopago | op=create_pack_payment | client={client_id}")
-        return {"status": "error", "detail": "Mercado Pago demorou a responder. Tente de novo."}
-    except httpx.HTTPError as e:
-        log.error(f"HTTP erro | service=mercadopago | op=create_pack_payment | {type(e).__name__}: {e}")
+    data = await _mp_post("/v1/payments", body, idem_key=idem)
+    if not data:
         return {"status": "error", "detail": "Não consegui falar com o Mercado Pago. Tente de novo."}
 
-    if resp.status_code not in (200, 201):
-        log.error(f"MP create pack payment | status={resp.status_code} | {resp.text[:300]}")
-        return {"status": "error", "detail": "O Mercado Pago recusou a cobrança. Tente de novo."}
-
-    data = resp.json()
     tx = ((data.get("point_of_interaction") or {}).get("transaction_data")) or {}
     log.info(
         f"PACOTE PIX CRIADO | client={client_id} | pack={pack_id} | "
@@ -1018,6 +1181,7 @@ async def create_pack_payment(client_id: str, pack_id: str) -> dict:
     )
     return {
         "status": "ok",
+        "paid": False,
         "payment_id": str(data.get("id", "")),
         "qr_code": tx.get("qr_code", ""),
         "qr_code_base64": tx.get("qr_code_base64", ""),
