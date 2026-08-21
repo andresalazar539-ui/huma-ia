@@ -701,6 +701,9 @@ async def get_billing_status(client_id: str) -> dict:
         "trial_ends_at": trial_ends_at,
         # Baldes derivados do razão (aditivo — consumidores antigos intactos)
         "buckets": buckets,
+        # Recompensas do programa de indicação (a tela Uso mostra o convite)
+        "referral_reward": billing.REFERRAL_REWARD_CONVERSATIONS,
+        "referral_welcome_bonus": billing.REFERRAL_WELCOME_BONUS,
         # Pacotes extras à venda (a tela Créditos renderiza os valores REAIS)
         "extra_packs": [
             {"id": pid, "conversations": p["conversations"], "price_brl": p["price_brl"]}

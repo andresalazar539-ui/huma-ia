@@ -106,38 +106,52 @@ const UsoScreen = ({ onGoto }) => {
             border: '1px solid var(--paper-edge)', borderRadius: 16,
             background: 'var(--paper-raised)', overflow: 'hidden',
           }}>
-            {refCredited > 0 && (
-              <>
-                <UsageBar
-                  icon="gift"
-                  label="crédito por indicação"
-                  percent={Math.min(100, Math.round((refLeft / refCredited) * 100))}
-                  barColor="var(--sage)"
-                  barBg="var(--sage-tint)"
-                  info={`${refLeft} de ${refCredited} conversas extras`}
-                  ctaLabel="Indicar"
-                  ctaTone="sage"
-                  onCta={() => onGoto('indicacao')}
-                />
-                <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
-              </>
+            {refCredited > 0 ? (
+              <UsageBar
+                icon="gift"
+                label="crédito por indicação"
+                percent={Math.min(100, Math.round((refLeft / refCredited) * 100))}
+                barColor="var(--sage)"
+                barBg="var(--sage-tint)"
+                info={`${refLeft} de ${refCredited} conversas extras`}
+                ctaLabel="Indicar"
+                ctaTone="sage"
+                onCta={() => onGoto('indicacao')}
+              />
+            ) : (
+              <InviteRow
+                icon="gift"
+                label="crédito por indicação"
+                text={`Indique um negócio e ganhe ${billing ? (billing.referral_reward || 100) : 100} conversas quando ele assinar — quem chega ganha +${billing ? (billing.referral_welcome_bonus || 50) : 50} no teste.`}
+                ctaLabel="Indicar"
+                ctaTone="sage"
+                onCta={() => onGoto('indicacao')}
+              />
             )}
-            {extraCredited > 0 && (
-              <>
-                <UsageBar
-                  icon="zap"
-                  label="crédito extra"
-                  percent={Math.min(100, Math.round((extraLeft / extraCredited) * 100))}
-                  barColor="var(--ember)"
-                  barBg="var(--ember-soft)"
-                  info={`${extraLeft} de ${extraCredited} conversas extras compradas`}
-                  ctaLabel="Comprar mais"
-                  ctaTone="ember"
-                  onCta={() => onGoto('creditos')}
-                />
-                <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
-              </>
+            <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
+            {extraCredited > 0 ? (
+              <UsageBar
+                icon="zap"
+                label="crédito extra"
+                percent={Math.min(100, Math.round((extraLeft / extraCredited) * 100))}
+                barColor="var(--ember)"
+                barBg="var(--ember-soft)"
+                info={`${extraLeft} de ${extraCredited} conversas extras compradas`}
+                ctaLabel="Comprar mais"
+                ctaTone="ember"
+                onCta={() => onGoto('creditos')}
+              />
+            ) : (
+              <InviteRow
+                icon="zap"
+                label="crédito extra"
+                text="Pico de movimento? Compre pacotes de conversas avulsos, sem trocar de plano."
+                ctaLabel="Ver pacotes"
+                ctaTone="ember"
+                onCta={() => onGoto('creditos')}
+              />
             )}
+            <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
             <UsageBar
               icon="message"
               label={included > 0 ? 'uso do plano' : 'conversas disponíveis'}
@@ -212,6 +226,41 @@ const TrialBanner = ({ billing, onGoto }) => {
       }}>
         {expired ? 'Reativar agora' : 'Assinar agora'}
       </button>
+    </div>
+  );
+};
+
+// ---------- Invite row (balde vazio: convite em vez de barra fake) ----------
+const InviteRow = ({ icon, label, text, ctaLabel, ctaTone, onCta }) => {
+  const ctaVariants = {
+    sage:  { background: 'transparent', color: 'var(--sage-ink)',  border: '1px solid var(--sage)' },
+    ember: { background: 'var(--ember)', color: 'var(--paper-raised)', border: 'none' },
+    ink:   { background: 'var(--ink)',   color: 'var(--paper)',        border: 'none' },
+  };
+  return (
+    <div style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', gap: 20 }}>
+      <div style={{
+        width: 38, height: 38, borderRadius: 10,
+        background: 'var(--paper-sunk)', color: 'var(--ink-3)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+      }}>
+        <Icon name={icon} size={18}/>
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 500,
+          letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)',
+        }}>{label}</div>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 4, lineHeight: 1.45 }}>
+          {text}
+        </div>
+      </div>
+      <button onClick={onCta} style={{
+        padding: '9px 16px', borderRadius: 10, cursor: 'pointer',
+        fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+        whiteSpace: 'nowrap', flexShrink: 0,
+        ...ctaVariants[ctaTone],
+      }}>{ctaLabel}</button>
     </div>
   );
 };
