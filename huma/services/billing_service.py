@@ -78,7 +78,10 @@ PLAN_CONFIG = {
 }
 
 EXTRA_PACKS = {
-    "pack_200": {"conversations": 200, "price_brl": 39.90},
+    # ⚠️ TEMPORÁRIO (2026-08-21): pack_200 a R$ 1,00 pro teste E2E de
+    # pagamento real do André. REVERTER pra 39.90 (ou o preço novo
+    # decidido) antes de qualquer cliente real comprar.
+    "pack_200": {"conversations": 200, "price_brl": 1.00},
     "pack_500": {"conversations": 500, "price_brl": 79.90},
 }
 
