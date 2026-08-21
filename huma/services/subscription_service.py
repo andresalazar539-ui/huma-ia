@@ -999,6 +999,18 @@ async def get_saved_card(client_id: str) -> Optional[dict]:
 
 async def _mp_post(path: str, body: dict, idem_key: str = "") -> Optional[dict]:
     """POST na API do MP. Retorna dict (2xx) ou None (erro logado)."""
+    data, _err = await _mp_post_full(path, body, idem_key=idem_key)
+    return data
+
+
+async def _mp_post_full(path: str, body: dict, idem_key: str = "") -> tuple[Optional[dict], str]:
+    """
+    POST na API do MP devolvendo também o ERRO legível quando falha.
+
+    Returns:
+        (dict, "") em 2xx; (None, "mensagem do MP") em erro — pro caller
+        mostrar a causa real na tela em vez de um genérico.
+    """
     headers = _headers()
     if idem_key:
         headers["X-Idempotency-Key"] = idem_key
@@ -1006,15 +1018,45 @@ async def _mp_post(path: str, body: dict, idem_key: str = "") -> Optional[dict]:
         async with httpx.AsyncClient(timeout=15.0) as http:
             resp = await http.post(f"{MP_BASE}{path}", headers=headers, json=body)
         if resp.status_code in (200, 201):
-            return resp.json()
-        log.error(f"MP POST {path} | status={resp.status_code} | {resp.text[:300]}")
-        return None
+            return resp.json(), ""
+        log.error(f"MP POST {path} | status={resp.status_code} | {resp.text[:400]}")
+        try:
+            err_body = resp.json()
+            causes = err_body.get("cause") or []
+            cause_txt = "; ".join(
+                str(c.get("description") or c.get("code") or "") for c in causes if isinstance(c, dict)
+            )
+            message = str(err_body.get("message") or "")
+            return None, (f"{message} {cause_txt}").strip() or f"HTTP {resp.status_code}"
+        except Exception:
+            return None, f"HTTP {resp.status_code}"
     except httpx.TimeoutException:
         log.error(f"Timeout | service=mercadopago | op=POST {path}")
-        return None
+        return None, "timeout"
     except httpx.HTTPError as e:
         log.error(f"HTTP erro | service=mercadopago | op=POST {path} | {type(e).__name__}: {e}")
-        return None
+        return None, "conexão"
+
+
+def _friendly_mp_error(raw: str, context: str) -> str:
+    """Traduz os erros de criação de pagamento mais comuns do MP."""
+    low = (raw or "").lower()
+    if "key enabled" in low or "collector_user_without_key" in low or "without key" in low:
+        return (
+            "Sua conta Mercado Pago ainda não tem chave Pix cadastrada. "
+            "Cadastre uma chave no app do MP e tente de novo."
+        )
+    if ("collector" in low and "payer" in low) or "same user" in low or "own account" in low:
+        return (
+            "O Mercado Pago não permite pagar pra própria conta — você está "
+            "testando com o mesmo e-mail da conta MP da HUMA. Pra clientes "
+            "reais funciona normalmente; teste com outro e-mail/conta."
+        )
+    if low in ("timeout", "conexão"):
+        return "Mercado Pago demorou a responder. Tente de novo."
+    if raw:
+        return f"O Mercado Pago recusou: {raw[:160]}"
+    return f"Não foi possível criar a cobrança ({context}). Tente de novo."
 
 
 async def save_card_for_client(client_id: str, save_token: str, payer_email: str) -> None:
@@ -1133,9 +1175,9 @@ async def create_pack_payment(
             "installments": 1,
             "payer": payer,
         }
-        data = await _mp_post("/v1/payments", body, idem_key=idem)
+        data, mp_err = await _mp_post_full("/v1/payments", body, idem_key=idem)
         if not data:
-            return {"status": "error", "detail": "Não consegui falar com o Mercado Pago. Tente de novo."}
+            return {"status": "error", "detail": _friendly_mp_error(mp_err, "cartão")}
 
         mp_status = (data.get("status") or "").lower()
         payment_id = str(data.get("id", ""))
@@ -1170,9 +1212,9 @@ async def create_pack_payment(
         "payment_method_id": "pix",
         "payer": {"email": payer_email},
     }
-    data = await _mp_post("/v1/payments", body, idem_key=idem)
+    data, mp_err = await _mp_post_full("/v1/payments", body, idem_key=idem)
     if not data:
-        return {"status": "error", "detail": "Não consegui falar com o Mercado Pago. Tente de novo."}
+        return {"status": "error", "detail": _friendly_mp_error(mp_err, "Pix")}
 
     tx = ((data.get("point_of_interaction") or {}).get("transaction_data")) or {}
     log.info(

@@ -142,7 +142,7 @@ class TestCreatePackPaymentCard:
 
         async def mp_post(path, body, idem_key=""):
             calls["mp"].append((path, body))
-            return mp_response
+            return mp_response, ("" if mp_response else "erro simulado")
 
         async def fake_credit(payid, ext_ref, status):
             calls["credit"].append((payid, status))
@@ -159,7 +159,7 @@ class TestCreatePackPaymentCard:
         async def no_saved(cid):
             return None
 
-        monkeypatch.setattr(subs, "_mp_post", mp_post)
+        monkeypatch.setattr(subs, "_mp_post_full", mp_post)
         monkeypatch.setattr(subs, "credit_pack_purchase", fake_credit)
         monkeypatch.setattr(subs, "save_card_for_client", fake_save)
         monkeypatch.setattr(subs, "get_saved_card", no_saved)
@@ -216,3 +216,21 @@ class TestCreatePackPaymentCard:
         assert body["payment_method_id"] == "visa"
         assert body["installments"] == 1
         assert body["external_reference"] == "humapack|cli_x|pack_200"
+
+
+class TestFriendlyMpError:
+    def test_chave_pix_ausente(self):
+        msg = subs._friendly_mp_error("Collector user without key enabled for QR render", "Pix")
+        assert "chave Pix" in msg
+
+    def test_self_payment(self):
+        msg = subs._friendly_mp_error("Payer and collector cannot be the same user", "Pix")
+        assert "própria conta" in msg
+
+    def test_erro_generico_mostra_causa(self):
+        msg = subs._friendly_mp_error("invalid transaction_amount", "Pix")
+        assert "invalid transaction_amount" in msg
+
+    def test_vazio_cai_no_generico(self):
+        msg = subs._friendly_mp_error("", "Pix")
+        assert "Pix" in msg
