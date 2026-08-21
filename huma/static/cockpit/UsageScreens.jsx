@@ -870,55 +870,120 @@ const CreditosScreen = ({ onBack }) => {
 
         {flow === 'paid' ? (
           <div style={{
-            padding: '20px', borderRadius: 12, textAlign: 'center',
-            background: 'var(--sage-tint)', border: '1px solid var(--sage)',
+            padding: '28px 24px', borderRadius: 16, textAlign: 'center',
+            background: 'var(--paper-raised)', border: '1px solid var(--sage)',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
           }}>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 16, fontWeight: 600, color: 'var(--sage-ink)' }}>
-              ✓ Pagamento confirmado!
+            <div style={{
+              width: 52, height: 52, borderRadius: 999,
+              background: 'var(--sage-tint)', color: 'var(--sage-ink)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon name="check" size={26} stroke={2.5}/>
             </div>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 6 }}>
-              +{paidInfo ? paidInfo.conversations : ''} conversas já estão na sua conta. Veja na tela Uso.
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 18, fontWeight: 600, color: 'var(--ink)' }}>
+              Pagamento confirmado!
             </div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)', maxWidth: 380, lineHeight: 1.5 }}>
+              +{paidInfo ? paidInfo.conversations : ''} conversas já estão na sua carteira,
+              prontas pra HUMA atender.
+            </div>
+            <button onClick={onBack} style={{
+              marginTop: 8, padding: '10px 20px', borderRadius: 10, border: 'none', cursor: 'pointer',
+              background: 'var(--ink)', color: 'var(--paper)',
+              fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 500,
+            }}>
+              Ver na tela Uso
+            </button>
           </div>
         ) : flow === 'pending' ? (
           <div style={{
-            padding: '20px', borderRadius: 12, textAlign: 'center',
-            background: 'var(--paper-sunk)', border: '1px solid var(--paper-edge)',
+            padding: '28px 24px', borderRadius: 16, textAlign: 'center',
+            background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
           }}>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>
+            <div style={{
+              width: 52, height: 52, borderRadius: 999,
+              background: 'var(--terracotta-tint)', color: 'var(--terracotta)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Icon name="clock" size={24} stroke={2}/>
+            </div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 16, fontWeight: 600, color: 'var(--ink)' }}>
               Pagamento em análise pelo banco
             </div>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 6 }}>
-              As conversas entram sozinhas assim que aprovar — você recebe a confirmação no WhatsApp.
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)', maxWidth: 400, lineHeight: 1.5 }}>
+              As conversas entram sozinhas assim que aprovar — você recebe a confirmação no seu WhatsApp.
             </div>
+            <button onClick={onBack} style={{
+              marginTop: 8, padding: '10px 20px', borderRadius: 10, cursor: 'pointer',
+              background: 'transparent', color: 'var(--ink-2)', border: '1px solid var(--paper-edge)',
+              fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 500,
+            }}>
+              Voltar pro Uso
+            </button>
           </div>
         ) : flow === 'pix_waiting' && pix ? (
           <div style={{
-            padding: '20px', borderRadius: 12,
+            borderRadius: 16, overflow: 'hidden',
             background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)',
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
           }}>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>
-              Pague com Pix pra liberar na hora
-            </div>
-            {pix.qr_code_base64 && (
-              <img
-                alt="QR Code Pix"
-                src={`data:image/png;base64,${pix.qr_code_base64}`}
-                style={{ width: 200, height: 200, borderRadius: 8, border: '1px solid var(--paper-edge)' }}
-              />
-            )}
-            <button onClick={copiarPix} style={{
-              padding: '10px 18px', borderRadius: 10, border: 'none', cursor: 'pointer',
-              background: pixCopied ? 'var(--sage-tint)' : 'var(--ink)',
-              color: pixCopied ? 'var(--sage-ink)' : 'var(--paper)',
-              fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+            {/* Cabeçalho do pedido + trocar método */}
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              padding: '14px 20px', borderBottom: '1px solid var(--paper-edge)',
             }}>
-              {pixCopied ? 'Código copiado!' : 'Copiar código Pix (copia e cola)'}
-            </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
-              <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--warning, #B8831E)' }}/>
-              Esperando o pagamento… assim que cair, as conversas entram sozinhas.
+              <div>
+                <div style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 500,
+                  letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)',
+                }}>seu pedido</div>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 600, color: 'var(--ink)', marginTop: 2 }}>
+                  {packs[selected].size} conversas · {packs[selected].price}
+                </div>
+              </div>
+              <button onClick={() => { setFlow('idle'); setPix(null); setErr(''); }} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '8px 14px', borderRadius: 999, cursor: 'pointer',
+                background: 'transparent', color: 'var(--ink-2)',
+                border: '1px solid var(--paper-edge)',
+                fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500,
+              }}>
+                <Icon name="chevronL" size={12}/> Trocar forma de pagamento
+              </button>
+            </div>
+
+            <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+              {pix.qr_code_base64 && (
+                <div style={{
+                  padding: 12, borderRadius: 14, background: '#FFFFFF',
+                  border: '1px solid var(--paper-edge)',
+                }}>
+                  <img
+                    alt="QR Code Pix"
+                    src={`data:image/png;base64,${pix.qr_code_base64}`}
+                    style={{ width: 190, height: 190, display: 'block' }}
+                  />
+                </div>
+              )}
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', textAlign: 'center', lineHeight: 1.5, maxWidth: 360 }}>
+                Abra o app do seu banco, escolha <strong style={{ color: 'var(--ink-2)' }}>pagar com Pix</strong> e
+                aponte a câmera — ou copie o código abaixo.
+              </div>
+              <button onClick={copiarPix} style={{
+                padding: '11px 20px', borderRadius: 10, border: 'none', cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                background: pixCopied ? 'var(--sage-tint)' : 'var(--ink)',
+                color: pixCopied ? 'var(--sage-ink)' : 'var(--paper)',
+                fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 500,
+              }}>
+                <Icon name={pixCopied ? 'check' : 'copy'} size={14}/>
+                {pixCopied ? 'Código copiado!' : 'Copiar código Pix'}
+              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--warning, #B8831E)' }}/>
+                Esperando o pagamento… assim que cair, as conversas entram sozinhas.
+              </div>
             </div>
           </div>
         ) : (
@@ -928,19 +993,32 @@ const CreditosScreen = ({ onBack }) => {
             display: 'flex', flexDirection: 'column', gap: 16,
           }}>
             {/* Seletor de método */}
-            <div style={{ display: 'flex', gap: 8 }}>
-              {metodos.map(m => {
-                const on = metodo === m.id;
-                return (
-                  <button key={m.id} onClick={() => { setMetodo(m.id); setErr(''); }} style={{
-                    fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-                    padding: '7px 14px', borderRadius: 999, cursor: 'pointer',
-                    background: on ? 'var(--ink)' : 'transparent',
-                    color: on ? 'var(--paper)' : 'var(--ink-3)',
-                    border: on ? 'none' : '1px solid var(--paper-edge)',
-                  }}>{m.label}</button>
-                );
-              })}
+            <div>
+              <div style={{
+                fontFamily: 'var(--font-mono)', fontSize: 10.5, fontWeight: 500,
+                letterSpacing: '0.08em', textTransform: 'uppercase',
+                color: 'var(--ink-3)', marginBottom: 8,
+              }}>forma de pagamento</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {metodos.map(m => {
+                  const on = metodo === m.id;
+                  const glyph = m.id === 'pix' ? 'zap' : 'card';
+                  return (
+                    <button key={m.id} onClick={() => { setMetodo(m.id); setErr(''); }} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                      fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+                      padding: '8px 15px', borderRadius: 999, cursor: 'pointer',
+                      background: on ? 'var(--ink)' : 'transparent',
+                      color: on ? 'var(--paper)' : 'var(--ink-3)',
+                      border: on ? 'none' : '1px solid var(--paper-edge)',
+                      transition: 'all 140ms ease',
+                    }}>
+                      <Icon name={glyph} size={13}/>
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {metodo === 'saved' && savedCard && (
@@ -1041,7 +1119,14 @@ const CreditosScreen = ({ onBack }) => {
         )}
 
         {err && (
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--danger)', padding: '0 4px' }}>
+          <div style={{
+            display: 'flex', alignItems: 'flex-start', gap: 10,
+            padding: '12px 16px', borderRadius: 10,
+            background: 'var(--ember-soft)', border: '1px solid var(--ember)',
+            fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ember-ink)',
+            lineHeight: 1.5,
+          }}>
+            <span style={{ flexShrink: 0, marginTop: 1 }}><Icon name="alert" size={15} stroke={2}/></span>
             {err}
           </div>
         )}
