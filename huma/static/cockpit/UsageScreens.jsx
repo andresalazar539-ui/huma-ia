@@ -625,14 +625,21 @@ const CreditosScreen = ({ onBack }) => {
   // Fallback espelha os valores atuais do billing_service enquanto carrega.
   const fmtBrl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
   const [packs, setPacks] = useStateU([
-    { size: '+200', amount: 200, price: fmtBrl(39.90) },
-    { size: '+500', amount: 500, price: fmtBrl(79.90), highlight: 'Melhor valor' },
+    { id: 'pack_200', size: '+200', amount: 200, price: fmtBrl(39.90) },
+    { id: 'pack_500', size: '+500', amount: 500, price: fmtBrl(79.90), highlight: 'Melhor valor' },
   ]);
   const [selected, setSelected] = useStateU(0);
+
+  // Fluxo Pix: idle → creating → pix na tela (poll) → paid
+  const [pix, setPix] = useStateU(null);          // {payment_id, qr_code, qr_code_base64, amount, conversations}
+  const [pixState, setPixState] = useStateU('idle'); // idle|creating|waiting|paid|error
+  const [pixError, setPixError] = useStateU('');
+  const [pixCopied, setPixCopied] = useStateU(false);
 
   useEffectU(() => {
     fetchBillingStatus().then(b => {
       const list = (b.extra_packs || []).map((p, i) => ({
+        id: p.id,
         size: `+${p.conversations.toLocaleString('pt-BR')}`,
         amount: p.conversations,
         price: fmtBrl(p.price_brl),
@@ -641,6 +648,41 @@ const CreditosScreen = ({ onBack }) => {
       if (list.length) { setPacks(list); setSelected(list.length - 1); }
     }).catch(() => {});
   }, []);
+
+  // Poll do pagamento enquanto o QR está na tela (a cada 4s).
+  useEffectU(() => {
+    if (pixState !== 'waiting' || !pix) return;
+    const t = setInterval(() => {
+      window.fetchExtraPackStatus(pix.payment_id).then(s => {
+        if (s.status === 'approved') setPixState('paid');
+        if (['cancelled', 'rejected', 'expired'].includes(s.status)) {
+          setPixState('error');
+          setPixError('O pagamento não foi concluído. Gere um novo Pix e tente de novo.');
+        }
+      }).catch(() => {});
+    }, 4000);
+    return () => clearInterval(t);
+  }, [pixState, pix]);
+
+  const comprar = async () => {
+    setPixState('creating'); setPixError('');
+    try {
+      const data = await window.buyExtraPack(packs[selected].id);
+      setPix(data);
+      setPixState('waiting');
+    } catch (e) {
+      setPixState('error');
+      setPixError(String(e.message || 'Não foi possível gerar o Pix. Tente de novo.'));
+    }
+  };
+
+  const copiarPix = () => {
+    if (!pix) return;
+    navigator.clipboard?.writeText(pix.qr_code).then(() => {
+      setPixCopied(true);
+      setTimeout(() => setPixCopied(false), 1800);
+    }).catch(() => { window.prompt('Copie o código Pix:', pix.qr_code); });
+  };
 
   return (
     <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
@@ -711,22 +753,74 @@ const CreditosScreen = ({ onBack }) => {
           })}
         </div>
 
-        <button disabled title="Compra dentro do Cockpit em breve" style={{
-          padding: '14px 16px', borderRadius: 12,
-          background: 'var(--paper-sunk)', color: 'var(--ink-3)',
-          border: '1px solid var(--paper-edge)', cursor: 'default',
-          fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
-        }}>
-          Comprar {packs[selected].size} conversas · {packs[selected].price} — em breve no Cockpit
-        </button>
+        {pixState === 'paid' ? (
+          <div style={{
+            padding: '20px', borderRadius: 12, textAlign: 'center',
+            background: 'var(--sage-tint)', border: '1px solid var(--sage)',
+          }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 16, fontWeight: 600, color: 'var(--sage-ink)' }}>
+              ✓ Pagamento confirmado!
+            </div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 6 }}>
+              +{pix ? pix.conversations : ''} conversas já estão na sua conta. Veja na tela Uso.
+            </div>
+          </div>
+        ) : pixState === 'waiting' && pix ? (
+          <div style={{
+            padding: '20px', borderRadius: 12,
+            background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+          }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>
+              Pague com Pix pra liberar na hora
+            </div>
+            {pix.qr_code_base64 && (
+              <img
+                alt="QR Code Pix"
+                src={`data:image/png;base64,${pix.qr_code_base64}`}
+                style={{ width: 200, height: 200, borderRadius: 8, border: '1px solid var(--paper-edge)' }}
+              />
+            )}
+            <button onClick={copiarPix} style={{
+              padding: '10px 18px', borderRadius: 10, border: 'none', cursor: 'pointer',
+              background: pixCopied ? 'var(--sage-tint)' : 'var(--ink)',
+              color: pixCopied ? 'var(--sage-ink)' : 'var(--paper)',
+              fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+            }}>
+              {pixCopied ? 'Código copiado!' : 'Copiar código Pix (copia e cola)'}
+            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+              <span className="pulse-dot" style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--warning, #B8831E)' }}/>
+              Esperando o pagamento… assim que cair, as conversas entram sozinhas.
+            </div>
+          </div>
+        ) : (
+          <button onClick={comprar} disabled={pixState === 'creating'} style={{
+            padding: '14px 16px', borderRadius: 12,
+            background: 'var(--ember)', color: 'var(--paper-raised)',
+            border: 'none', cursor: pixState === 'creating' ? 'wait' : 'pointer',
+            fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500,
+            opacity: pixState === 'creating' ? 0.6 : 1,
+          }}>
+            {pixState === 'creating'
+              ? 'Gerando Pix…'
+              : `Comprar ${packs[selected].size} conversas · ${packs[selected].price} — pagar com Pix`}
+          </button>
+        )}
+
+        {pixState === 'error' && pixError && (
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--danger)', padding: '0 4px' }}>
+            {pixError}
+          </div>
+        )}
 
         <div style={{
           fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)',
           lineHeight: 1.5, padding: '0 4px',
         }}>
-          A compra com Pix direto por aqui está chegando. Enquanto isso, fale com a HUMA
-          que liberamos seu pacote na hora. Créditos não expiram e são consumidos depois
-          dos créditos de indicação e antes do plano base.
+          Pagamento via Pix pelo Mercado Pago, crédito automático na confirmação.
+          Créditos não expiram e são consumidos depois dos créditos de indicação
+          e antes do plano base.
         </div>
       </div>
     </div>

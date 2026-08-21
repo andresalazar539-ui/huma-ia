@@ -786,6 +786,41 @@ async def billing_validate_coupon(client_id: str, payload: CouponBody, _=Depends
     return await subs.validate_coupon(payload.coupon, payload.plan)
 
 
+class ExtraPackBody(BaseModel):
+    """Compra de pacote de conversas extras via Pix."""
+    pack_id: str = Field(..., min_length=1, max_length=40)
+
+
+@router.post("/api/clients/{client_id}/billing/extra-pack", tags=["Billing"])
+async def billing_buy_extra_pack(
+    client_id: str, payload: ExtraPackBody, _=Depends(verify_api_key)
+) -> dict:
+    """
+    Cria a cobrança Pix de um pacote extra e devolve QR + copia-e-cola.
+
+    O crédito das conversas acontece quando o MP confirma o pagamento
+    (webhook), com rede de segurança no poll de status.
+    """
+    from huma.services import subscription_service as subs
+
+    result = await subs.create_pack_payment(client_id, payload.pack_id)
+    if result.get("status") != "ok":
+        raise HTTPException(400, result.get("detail", "Não foi possível criar a cobrança."))
+    return result
+
+
+@router.get("/api/clients/{client_id}/billing/extra-pack/{payment_id}", tags=["Billing"])
+async def billing_extra_pack_status(
+    client_id: str, payment_id: str, _=Depends(verify_api_key)
+) -> dict:
+    """Poll do Cockpit: status do Pix do pacote (pending/approved) + creditado."""
+    from huma.services import subscription_service as subs
+
+    if not payment_id.isdigit() or len(payment_id) > 20:
+        raise HTTPException(400, "payment_id inválido")
+    return await subs.get_pack_payment_status(client_id, payment_id)
+
+
 @router.post("/api/clients/{client_id}/billing/cancel", tags=["Billing"])
 async def billing_cancel(client_id: str, _=Depends(verify_api_key)) -> dict:
     """Cancela a assinatura no MP (saldo já pago permanece na carteira)."""
@@ -2228,6 +2263,13 @@ async def _process_mp_payment(mp_payment_id: str):
             if ext_ref.startswith("humasub|"):
                 from huma.services import subscription_service as subs
                 await subs.credit_subscription_charge(
+                    str(mp_payment_id), ext_ref, result.get("status", ""),
+                )
+                return
+            # Pacote de conversas extras (Pix avulso do Cockpit)
+            if ext_ref.startswith("humapack|"):
+                from huma.services import subscription_service as subs
+                await subs.credit_pack_purchase(
                     str(mp_payment_id), ext_ref, result.get("status", ""),
                 )
                 return

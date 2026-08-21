@@ -361,7 +361,28 @@ async function fetchReferrals() {
   return r.json();
 }
 
-Object.assign(window, { fetchTrackingLink, getBalcaoUrl, getClientId, fetchReferrals });
+// Pacotes extras: cria a cobrança Pix e consulta o status até aprovar.
+async function buyExtraPack(packId) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/extra-pack`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ pack_id: packId }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Não foi possível criar a cobrança.');
+  return data;
+}
+
+async function fetchExtraPackStatus(paymentId) {
+  const r = await fetch(
+    `/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/extra-pack/${encodeURIComponent(paymentId)}`,
+    { headers: { ...AUTH_HEADERS } },
+  );
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+Object.assign(window, { fetchTrackingLink, getBalcaoUrl, getClientId, fetchReferrals, buyExtraPack, fetchExtraPackStatus });
 
 /* ---------------- Billing (assinatura recorrente MP) ---------------- */
 async function fetchBillingStatus() {

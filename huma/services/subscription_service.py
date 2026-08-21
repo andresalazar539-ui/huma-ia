@@ -940,6 +940,188 @@ async def _recently_credited(client_id: str, days: int = 20) -> bool:
     return bool(resp.data)
 
 
+# ================================================================
+# PACOTES EXTRAS — compra avulsa com Pix (dinheiro na hora)
+#
+# Fluxo: Cockpit → create_pack_payment (POST /v1/payments no MP, Pix)
+# → dono paga o QR/copia-e-cola → MP notifica /webhook/mercadopago
+# (topic payment, ext_ref "humapack|...") → credit_pack_purchase
+# credita as conversas. Dedup por payid no razão.
+# ================================================================
+
+PACK_EXT_REF_PREFIX = "humapack"
+
+
+def _parse_pack_ext_ref(ref: str) -> Optional[dict]:
+    """'humapack|cli_x|pack_500' → {client_id, pack_id}; None se não for nosso."""
+    parts = (ref or "").split("|")
+    if len(parts) != 3 or parts[0] != PACK_EXT_REF_PREFIX:
+        return None
+    return {"client_id": parts[1], "pack_id": parts[2]}
+
+
+async def create_pack_payment(client_id: str, pack_id: str) -> dict:
+    """
+    Cria um pagamento Pix no MP pra um pacote de conversas extras.
+
+    Retorna {status:"ok", payment_id, qr_code (copia-e-cola),
+    qr_code_base64 (imagem), amount, conversations} ou
+    {status:"error", detail}. Nunca levanta exceção pro caller HTTP.
+    """
+    pack = billing.EXTRA_PACKS.get(pack_id)
+    if not pack:
+        return {"status": "error", "detail": "Pacote não encontrado."}
+    if not MERCADOPAGO_ACCESS_TOKEN:
+        return {"status": "error", "detail": "Pagamentos indisponíveis no momento."}
+
+    from huma.services.db_service import get_client as db_get_client
+    client = await db_get_client(client_id)
+    if not client:
+        return {"status": "error", "detail": "Conta não encontrada."}
+    payer_email = client.owner_email or f"{client_id}@humaia.com.br"
+
+    import uuid as _uuid
+    body = {
+        "transaction_amount": float(pack["price_brl"]),
+        "description": f"HUMA IA — pacote de {pack['conversations']} conversas extras",
+        "payment_method_id": "pix",
+        "payer": {"email": payer_email},
+        "external_reference": f"{PACK_EXT_REF_PREFIX}|{client_id}|{pack_id}",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(
+                f"{MP_BASE}/v1/payments",
+                headers={
+                    **_headers(),
+                    # Exigido pelo MP em /v1/payments; retry de rede não duplica cobrança
+                    "X-Idempotency-Key": f"humapack-{client_id}-{pack_id}-{_uuid.uuid4().hex[:12]}",
+                },
+                json=body,
+            )
+    except httpx.TimeoutException:
+        log.error(f"Timeout | service=mercadopago | op=create_pack_payment | client={client_id}")
+        return {"status": "error", "detail": "Mercado Pago demorou a responder. Tente de novo."}
+    except httpx.HTTPError as e:
+        log.error(f"HTTP erro | service=mercadopago | op=create_pack_payment | {type(e).__name__}: {e}")
+        return {"status": "error", "detail": "Não consegui falar com o Mercado Pago. Tente de novo."}
+
+    if resp.status_code not in (200, 201):
+        log.error(f"MP create pack payment | status={resp.status_code} | {resp.text[:300]}")
+        return {"status": "error", "detail": "O Mercado Pago recusou a cobrança. Tente de novo."}
+
+    data = resp.json()
+    tx = ((data.get("point_of_interaction") or {}).get("transaction_data")) or {}
+    log.info(
+        f"PACOTE PIX CRIADO | client={client_id} | pack={pack_id} | "
+        f"payid={data.get('id')} | valor={pack['price_brl']}"
+    )
+    return {
+        "status": "ok",
+        "payment_id": str(data.get("id", "")),
+        "qr_code": tx.get("qr_code", ""),
+        "qr_code_base64": tx.get("qr_code_base64", ""),
+        "ticket_url": tx.get("ticket_url", ""),
+        "amount": pack["price_brl"],
+        "conversations": pack["conversations"],
+    }
+
+
+async def get_pack_payment_status(client_id: str, payment_id: str) -> dict:
+    """
+    Status de um pagamento de pacote (poll do Cockpit enquanto o QR
+    está na tela). Valida que o pagamento pertence a este cliente.
+    """
+    data = await _mp_get(f"/v1/payments/{payment_id}")
+    if not data:
+        return {"status": "unknown"}
+    ref = _parse_pack_ext_ref(data.get("external_reference", ""))
+    if not ref or ref["client_id"] != client_id:
+        return {"status": "unknown"}
+    mp_status = (data.get("status") or "").lower()
+
+    credited = False
+    if mp_status == "approved":
+        supa = get_supabase()
+        dup = await run_in_threadpool(
+            lambda: supa.table("credit_transactions").select("id")
+                .eq("client_id", client_id)
+                .like("description", f"%payid={payment_id}%")
+                .limit(1).execute()
+        )
+        credited = bool(dup.data)
+        # Rede de segurança: MP aprovou mas o webhook ainda não creditou
+        # (atraso/reentrega). O poll credita — dedup por payid segura dupla.
+        if not credited:
+            await credit_pack_purchase(str(payment_id), data.get("external_reference", ""), mp_status)
+            credited = True
+
+    return {"status": mp_status, "credited": credited}
+
+
+async def credit_pack_purchase(mp_payment_id: str, ext_ref: str, payment_status: str) -> None:
+    """
+    Credita um pacote extra pago (webhook topic payment OU poll).
+
+    Dedup por marcador payid={id} no razão. Nunca levanta exceção —
+    é chamada em fluxo de webhook.
+    """
+    try:
+        ref = _parse_pack_ext_ref(ext_ref)
+        if not ref:
+            return
+        if (payment_status or "").lower() != "approved":
+            log.info(f"Pacote não aprovado ainda | payid={mp_payment_id} | status={payment_status}")
+            return
+
+        client_id, pack_id = ref["client_id"], ref["pack_id"]
+        pack = billing.EXTRA_PACKS.get(pack_id)
+        if not pack:
+            log.error(f"Pacote desconhecido no webhook | payid={mp_payment_id} | pack={pack_id}")
+            return
+
+        supa = get_supabase()
+        dup = await run_in_threadpool(
+            lambda: supa.table("credit_transactions").select("id")
+                .eq("client_id", client_id)
+                .like("description", f"%payid={mp_payment_id}%")
+                .limit(1).execute()
+        )
+        if dup.data:
+            log.info(f"Pacote já creditado (reentrega) | payid={mp_payment_id}")
+            return
+
+        await billing.add_conversations(
+            client_id, pack["conversations"],
+            source="pacote_extra",
+            description=f"payid={mp_payment_id} pacote {pack_id} R${pack['price_brl']}",
+        )
+        await cache.delete_key(f"wallet_bal:{client_id}")
+
+        try:
+            from huma.services import whatsapp_service as wa
+            from huma.services.db_service import get_client as db_get_client
+            client = await db_get_client(client_id)
+            if client and client.owner_phone:
+                await wa.notify_owner(
+                    client.owner_phone,
+                    (
+                        f"✅ Pagamento confirmado! +{pack['conversations']} conversas "
+                        f"extras na sua conta HUMA. Bom atendimento!"
+                    ),
+                    client_id=client_id,
+                )
+        except Exception as e:
+            log.error(f"Pacote | notify dono falhou | {client_id} | {type(e).__name__}: {e}")
+
+        log.info(
+            f"PACOTE CREDITADO | client={client_id} | pack={pack_id} | "
+            f"+{pack['conversations']} | payid={mp_payment_id}"
+        )
+    except Exception as e:
+        log.error(f"Pacote | crédito falhou | payid={mp_payment_id} | {type(e).__name__}: {e}")
+
+
 async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_status: str) -> None:
     """
     Credita uma cobrança de assinatura que chegou como topic "payment"
