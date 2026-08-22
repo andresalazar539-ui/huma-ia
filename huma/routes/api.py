@@ -317,17 +317,36 @@ async def get_metrics(client_id: str, _=Depends(verify_api_key)):
 
 
 @router.get("/api/clients/{client_id}/reports", tags=["Cockpit"])
-async def get_reports(client_id: str, days: int = 30, client=Depends(verify_api_key)) -> dict:
+async def get_reports(
+    client_id: str,
+    days: int = 30,
+    date_from: str = "",
+    date_to: str = "",
+    client=Depends(verify_api_key),
+) -> dict:
     """
     Relatório de outcome do período pro Cockpit (ReportsScreen).
 
     Seções condicionais às metas (capabilities) do cliente: vendas só
     pra quem vende, agenda só pra quem agenda, qualificação só pra
     quem qualifica. Atendimento/funil/follow-up/inteligência sempre.
+
+    date_from/date_to (yyyy-mm-dd, opcionais): período personalizado e
+    comparação com época arbitrária. Máx. 12 meses atrás.
     """
     days = max(1, min(days, 90))
+    if date_from:
+        # Sanidade: formato de data e janela máxima de 12 meses atrás
+        import re as _re
+        limite = (datetime.utcnow() - timedelta(days=366)).strftime("%Y-%m-%d")
+        if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_from) or not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_to or ""):
+            raise HTTPException(400, "Datas no formato AAAA-MM-DD")
+        if date_from < limite:
+            raise HTTPException(400, "Período máximo: 12 meses atrás")
     from huma.services import report_service
-    return await report_service.build_report(client, days=days)
+    return await report_service.build_report(
+        client, days=days, date_from=date_from, date_to=date_to,
+    )
 
 
 @router.get("/api/clients/{client_id}/reports/export", tags=["Cockpit"])

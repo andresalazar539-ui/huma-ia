@@ -494,8 +494,11 @@ async function fetchWhatsappHealth() {
 Object.assign(window, { createCampaign, reviewCampaign, fetchWhatsappHealth });
 
 /* ---------------- Relatórios de outcome (por meta do cliente) ---------------- */
-async function fetchReport(days = 30) {
-  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/reports?days=${days}`, { headers: { ...AUTH_HEADERS } });
+async function fetchReport(days = 30, dateFrom = '', dateTo = '') {
+  const range = dateFrom && dateTo
+    ? `&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`
+    : '';
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/reports?days=${days}${range}`, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }

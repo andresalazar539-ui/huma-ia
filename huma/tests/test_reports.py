@@ -47,6 +47,7 @@ def _fake_supa(monkeypatch, *, conversations=None, payments=None, classification
         def eq(self, *a): return self
         def neq(self, *a): return self
         def gte(self, *a): return self
+        def lte(self, *a): return self
         def limit(self, n): return self
 
         def execute(self):

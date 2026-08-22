@@ -91,16 +91,35 @@ def _brl(cents: int) -> str:
 # ================================================================
 
 
-async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
+async def build_report(
+    identity: ClientIdentity,
+    days: int = 7,
+    date_from: str = "",
+    date_to: str = "",
+) -> dict:
     """
     Monta o relatório de outcome do período, com seções condicionais
     às capabilities (metas) do cliente. Consultas baratas: campos
     mínimos, filtro por período, sem LLM.
+
+    date_from/date_to (ISO yyyy-mm-dd, ADITIVO): período personalizado
+    e comparação com época arbitrária no Cockpit. Vazios/inválidos →
+    comportamento original (últimos `days` até agora).
     """
     client_id = identity.client_id
     now = datetime.utcnow()
-    since = now - timedelta(days=days)
+    f_dt = _parse_dt(date_from)
+    t_dt = _parse_dt(date_to)
+    if f_dt and t_dt and f_dt <= t_dt:
+        since = f_dt
+        # dia final INCLUSIVO (o dono escolhe "até 05/07" esperando o dia 05 dentro)
+        until = min(t_dt + timedelta(days=1), now)
+        days = max(1, (until - since).days)
+    else:
+        until = now
+        since = now - timedelta(days=days)
     since_iso = since.isoformat()
+    until_iso = until.isoformat()
     supa = get_supabase()
 
     caps = identity.capabilities_resolved
@@ -117,11 +136,15 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
             "lead_name_canonical,lead_email,lead_facts,"
             "lead_source,is_outbound"
         ).eq("client_id", client_id).gte("last_message_at", since_iso)
+         .lte("last_message_at", until_iso)
          .limit(1000).execute()
     )
     convs = resp.data or []
 
-    novas = [c for c in convs if (_parse_dt(c.get("created_at")) or now) >= since]
+    novas = [
+        c for c in convs
+        if since <= (_parse_dt(c.get("created_at")) or now) < until
+    ]
     fora_horario = sum(1 for c in convs if _fora_do_horario(_parse_dt(c.get("last_message_at"))))
 
     sections: dict = {}
@@ -149,7 +172,8 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
         pay_resp = await run_in_threadpool(
             lambda: supa.table("payments").select("amount_cents,paid_at,status,phone")
                 .eq("client_id", client_id).eq("status", "approved")
-                .gte("paid_at", since_iso).limit(1000).execute()
+                .gte("paid_at", since_iso).lte("paid_at", until_iso)
+                .limit(1000).execute()
         )
         pays = pay_resp.data or []
         receita_cents = sum(int(p.get("amount_cents") or 0) for p in pays)
@@ -173,7 +197,7 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
             if not dt:
                 continue
             agendados += 1
-            if dt < now:
+            if dt < until:
                 realizados += 1
             else:
                 proximos += 1
@@ -264,6 +288,7 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
     cls_resp = await run_in_threadpool(
         lambda: supa.table("message_classifications").select("msg_type")
             .eq("client_id", client_id).gte("created_at", since_iso)
+            .lte("created_at", until_iso)
             .limit(2000).execute()
     )
     tipos = Counter(r.get("msg_type", "") for r in (cls_resp.data or []))
@@ -281,6 +306,8 @@ async def build_report(identity: ClientIdentity, days: int = 7) -> dict:
     return {
         "client_id": client_id,
         "period_days": days,
+        "period_from": since_iso,
+        "period_to": until_iso,
         "generated_at": now.isoformat(),
         "goals": sorted(c.value for c in caps),
         "sections": sections,
