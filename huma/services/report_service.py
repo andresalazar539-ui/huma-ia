@@ -422,6 +422,36 @@ def format_report_email(identity: ClientIdentity, report: dict, frequency: str =
 # ================================================================
 
 
+def _report_attachments(identity: ClientIdentity, report: dict) -> list[dict]:
+    """
+    Planilha (.xlsx) e apresentação (.pptx) do período, no formato de
+    anexo do Resend (base64). Falha de geração não derruba o envio:
+    loga e segue com o que deu certo (e-mail sem anexo > sem e-mail).
+    """
+    import base64
+
+    from huma.services import export_service
+
+    days = int(report.get("period_days") or 7)
+    out: list[dict] = []
+    for ext, builder in (
+        ("xlsx", export_service.report_to_xlsx),
+        ("pptx", export_service.report_to_pptx),
+    ):
+        try:
+            data = builder(identity, report)
+            out.append({
+                "filename": f"huma-relatorio-{days}d.{ext}",
+                "content": base64.b64encode(data).decode("ascii"),
+            })
+        except Exception as e:
+            log.error(
+                f"owner_report | anexo {ext} falhou | client={identity.client_id} | "
+                f"{type(e).__name__}: {e}"
+            )
+    return out
+
+
 async def _dispatch_report(
     identity: ClientIdentity,
     report: dict,
@@ -431,7 +461,8 @@ async def _dispatch_report(
 ) -> list[dict]:
     """
     Envia o relatório pra lista mista de destinos: com "@" vai por
-    e-mail (Resend), sem "@" vai pelo WhatsApp do canal do cliente.
+    e-mail (Resend, com planilha/apresentação anexas), sem "@" vai
+    pelo WhatsApp do canal do cliente.
 
     Returns:
         [{"target": str, "channel": "whatsapp"|"email", "ok": bool}]
@@ -443,11 +474,21 @@ async def _dispatch_report(
 
     msg = format_report_whatsapp(identity, report, frequency)
     em = format_report_email(identity, report, frequency)
+    attachments: list[dict] = []
+    if any("@" in t for t in targets):
+        attachments = _report_attachments(identity, report)
+    rodape = em["rodape"]
+    if attachments:
+        rodape = (
+            "Vão anexas a planilha (.xlsx) e a apresentação (.pptx) do período. "
+            + rodape
+        )
     results: list[dict] = []
     for target in targets:
         if "@" in target:
             ok = await mail.send_owner_report(
-                target, em["subject"], em["title"], em["intro"], em["linhas"], em["rodape"],
+                target, em["subject"], em["title"], em["intro"], em["linhas"],
+                rodape, attachments=attachments or None,
             )
             results.append({"target": target, "channel": "email", "ok": bool(ok)})
         else:

@@ -334,7 +334,7 @@ class TestOwnerReportJob:
             wpp.append(phone)
             return "m1"
 
-        async def send_owner_report(to, subject, title, intro, linhas, rodape=""):
+        async def send_owner_report(to, subject, title, intro, linhas, rodape="", attachments=None):
             mails.append(to)
             return True
 
@@ -400,7 +400,7 @@ class TestSendReportNow:
     """Envio sob demanda (botão de teste do drawer)."""
 
     def _setup(self, monkeypatch):
-        wpp, mails = [], []
+        wpp, mails, anexos = [], [], []
         import huma.services.email_service as mail_mod
         import huma.services.whatsapp_service as wa_mod
 
@@ -408,21 +408,25 @@ class TestSendReportNow:
             wpp.append(phone)
             return "m1"
 
-        async def send_owner_report(to, subject, title, intro, linhas, rodape=""):
+        async def send_owner_report(to, subject, title, intro, linhas, rodape="", attachments=None):
             mails.append(to)
+            anexos.append(attachments)
             return True
 
         async def fake_build(identity, days=7, date_from="", date_to=""):
-            return {"sections": {"atendimento": {"conversas_ativas": 2, "conversas_novas": 1, "fora_do_horario": 0},
-                                 "funil": {}, "follow_up": {}, "inteligencia": {"top_assuntos": []}}}
+            return {"period_days": days,
+                    "sections": {"atendimento": {"conversas_ativas": 2, "conversas_novas": 1, "fora_do_horario": 0},
+                                 "funil": {"descoberta": 1, "negociando": 1, "compromissados": 0, "ganhos": 0, "perdidos": 0},
+                                 "follow_up": {"leads_reengajados": 0, "voltaram_a_negociar": 0},
+                                 "inteligencia": {"top_assuntos": []}}}
 
         monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
         monkeypatch.setattr(mail_mod, "send_owner_report", send_owner_report)
         monkeypatch.setattr(rs, "build_report", fake_build)
-        return wpp, mails
+        return wpp, mails, anexos
 
     def test_sem_target_manda_pro_dono_e_extras(self, monkeypatch):
-        wpp, mails = self._setup(monkeypatch)
+        wpp, mails, _ = self._setup(monkeypatch)
         ident = _identity(["schedule"]).model_copy(
             update={"report_recipients": ["socio@empresa.com", "5511888887777"]},
         )
@@ -432,11 +436,24 @@ class TestSendReportNow:
         assert result["sent"] == 3 and result["total"] == 3
 
     def test_target_email_unico(self, monkeypatch):
-        wpp, mails = self._setup(monkeypatch)
+        wpp, mails, _ = self._setup(monkeypatch)
         result = asyncio.run(rs.send_report_now(_identity(["schedule"]), target="andre@x.com"))
         assert wpp == []
         assert mails == ["andre@x.com"]
         assert result["results"][0]["channel"] == "email"
+
+    def test_email_vai_com_planilha_e_apresentacao_anexas(self, monkeypatch):
+        import base64
+        _, mails, anexos = self._setup(monkeypatch)
+        asyncio.run(rs.send_report_now(_identity(["schedule"]), target="andre@x.com"))
+        assert mails == ["andre@x.com"]
+        atts = anexos[0]
+        nomes = [a["filename"] for a in atts]
+        assert any(n.endswith(".xlsx") for n in nomes)
+        assert any(n.endswith(".pptx") for n in nomes)
+        # Conteúdo é base64 de um zip válido (xlsx/pptx começam com PK)
+        for a in atts:
+            assert base64.b64decode(a["content"])[:2] == b"PK"
 
 
 class TestClientDueNow:

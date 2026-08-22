@@ -54,10 +54,18 @@ def _shell(title: str, body_html: str) -> str:
 """
 
 
-async def send_email(to: str, subject: str, html: str) -> bool:
+async def send_email(
+    to: str,
+    subject: str,
+    html: str,
+    attachments: list[dict] | None = None,
+) -> bool:
     """
     Envia um e-mail via Resend. Retorna False (e loga) em qualquer falha —
     nunca levanta exceção. RESEND_API_KEY vazia = no-op silencioso.
+
+    attachments: lista no formato do Resend —
+    [{"filename": "x.xlsx", "content": "<base64>"}].
     """
     if not RESEND_API_KEY:
         log.info(f"Email desligado (sem RESEND_API_KEY) | to=***@{to.split('@')[-1] if '@' in to else '?'}")
@@ -65,12 +73,16 @@ async def send_email(to: str, subject: str, html: str) -> bool:
     if "@" not in (to or ""):
         return False
 
+    payload: dict = {"from": EMAIL_FROM, "to": [to], "subject": subject, "html": html}
+    if attachments:
+        payload["attachments"] = attachments
+
     try:
-        async with httpx.AsyncClient(timeout=10.0) as http:
+        async with httpx.AsyncClient(timeout=20.0) as http:
             resp = await http.post(
                 RESEND_URL,
                 headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-                json={"from": EMAIL_FROM, "to": [to], "subject": subject, "html": html},
+                json=payload,
             )
         if resp.status_code in (200, 201):
             log.info(f"Email enviado | to=***@{to.split('@')[-1]} | subject={subject[:40]}")
@@ -139,11 +151,14 @@ async def send_owner_report(
     intro: str,
     linhas: list[str],
     rodape: str = "",
+    attachments: list[dict] | None = None,
 ) -> bool:
     """
     Relatório de resultados por e-mail (drawer "Receber automático").
     `linhas` são as mesmas do texto do WhatsApp (emoji + frase) — um
-    canal, uma verdade. Nunca levanta exceção: retorna False em falha.
+    canal, uma verdade. `attachments` (formato Resend, base64) leva a
+    planilha/apresentação do período. Nunca levanta exceção: retorna
+    False em falha.
     """
     linhas_html = "<br>\n              ".join(linhas)
     body = f"""
@@ -159,11 +174,11 @@ async def send_owner_report(
         </table>
         <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px 0;">
           <tr><td style="background-color:{_EMBER};border-radius:8px;">
-            <a href="https://app.humaia.com.br/cockpit" target="_blank" style="display:inline-block;padding:13px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Ver detalhes no Cockpit</a>
+            <a href="https://app.humaia.com.br/cockpit?screen=relatorios" target="_blank" style="display:inline-block;padding:13px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Ver detalhes no Cockpit</a>
           </td></tr>
         </table>
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{_MUTED};margin:0;">
           {rodape}
         </p>
     """
-    return await send_email(to, subject, _shell(title, body))
+    return await send_email(to, subject, _shell(title, body), attachments=attachments)
