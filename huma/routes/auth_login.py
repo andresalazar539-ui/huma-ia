@@ -603,119 +603,159 @@ _BASE_STYLE = """
     }
     .tab.active { background: var(--paper-raised); color: var(--ink); box-shadow: var(--sh-2); }
 
-    /* ---- Fundo: Cockpit desfocado atrás do card (teaser do produto).
-       Réplica decorativa em CSS puro — sem screenshot, sem JS, respeita
-       modo claro/escuro pelos tokens. pointer-events:none = puro cenário. ---- */
+    /* ---- Fundo: Cockpit VIVO desfocado atrás do card (teaser do produto).
+       Um negócio fictício rodando — conversa fechando agendamento, Pix
+       chegando, números do dia — desfocado o bastante pra não se ler,
+       vivo o bastante pra dar curiosidade. Puro CSS/HTML, aria-hidden,
+       pointer-events:none = puro cenário; tokens = modo claro/escuro. ---- */
     .mock { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; user-select: none; }
     .mock-blur {
-      position: absolute; inset: -28px;
-      display: flex; gap: 18px; padding: 46px 48px;
-      filter: blur(7px) saturate(0.96);
+      position: absolute; inset: -24px;
+      display: flex; gap: 18px; padding: 40px 44px;
+      filter: blur(4px) saturate(1.02);
       transform: scale(1.02);
+      color: var(--ink); font-size: 13px; line-height: 1.4;
     }
-    .mock-side {
-      width: 212px; flex: none; align-self: stretch;
-      background: var(--paper-raised); border: 1px solid var(--paper-edge);
-      border-radius: var(--r-lg); padding: 20px 14px;
-      display: flex; flex-direction: column; gap: 10px;
+    .mock-card { background: var(--paper-raised); border: 1px solid var(--paper-edge); border-radius: var(--r-lg); }
+    .mock-side { width: 200px; flex: none; padding: 18px 14px; display: flex; flex-direction: column; gap: 4px; }
+    .m-brand { font-weight: 600; font-size: 20px; letter-spacing: -0.02em; }
+    .m-brand-sub { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 16px; }
+    .m-nav { padding: 9px 10px; border-radius: var(--r-sm); color: var(--ink-2); font-weight: 500; }
+    .m-nav.on { background: var(--terracotta-soft); color: var(--terracotta-ink); }
+    .m-plan { margin-top: auto; background: var(--paper-sunk); border-radius: var(--r-sm); padding: 10px; font-size: 11px; color: var(--ink-3); }
+    .mock-main { flex: 1.15; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+    .mock-hello { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .mock-hello h2 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+    .m-live {
+      display: flex; align-items: center; gap: 7px; flex: none;
+      background: var(--sage-tint); border: 1px solid var(--sage-soft); color: var(--sage-ink);
+      border-radius: var(--r-full); padding: 6px 12px; font-weight: 600; font-size: 12px;
     }
-    .m-logo { height: 26px; width: 96px; border-radius: 7px; background: var(--ink); opacity: 0.82; margin-bottom: 14px; }
-    .m-nav { height: 34px; flex: none; border-radius: var(--r-sm); background: var(--paper-sunk); }
-    .m-nav.on { background: var(--terracotta-soft); }
-    .mock-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
-    .mock-top { display: flex; align-items: center; justify-content: space-between; }
-    .m-title { height: 28px; width: 230px; border-radius: 8px; background: var(--ink); opacity: 0.75; }
-    .m-pill { height: 26px; width: 132px; border-radius: var(--r-full); background: var(--sage-soft); }
-    .mock-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
-    .m-kpi { background: var(--paper-raised); border: 1px solid var(--paper-edge); border-radius: var(--r-lg); padding: 16px; }
-    .m-kpi i { display: block; height: 10px; width: 60%; border-radius: 5px; background: var(--paper-sunk); }
-    .m-kpi b { display: block; height: 26px; width: 46%; border-radius: 7px; background: var(--ink); opacity: 0.78; margin: 12px 0 9px; }
-    .m-kpi s { display: block; height: 10px; width: 34%; border-radius: 5px; background: var(--sage-soft); text-decoration: none; }
-    .m-kpi.hot s { background: var(--terracotta-soft); }
-    .mock-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 3fr 2fr; gap: 18px; }
-    .mock-chart {
-      background: var(--paper-raised); border: 1px solid var(--paper-edge);
-      border-radius: var(--r-lg); padding: 22px 20px 20px;
-      display: flex; align-items: flex-end; gap: 12px;
+    .m-live::before { content: ""; width: 8px; height: 8px; border-radius: var(--r-full); background: var(--status-live); }
+    .mock-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .m-kpi { padding: 14px; }
+    .k-label { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.05em; }
+    .k-num { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 6px 0 2px; }
+    .k-delta { font-size: 12px; color: var(--sage-ink); font-weight: 600; }
+    .k-delta.hot { color: var(--terracotta-ink); }
+    .mock-chart { flex: 1; min-height: 0; padding: 16px; display: flex; flex-direction: column; }
+    .c-title { font-weight: 600; margin-bottom: 10px; }
+    .c-bars { flex: 1; min-height: 0; display: flex; align-items: flex-end; gap: 10px; }
+    .c-col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; text-align: center; }
+    .c-col i { display: block; border-radius: 6px 6px 0 0; background: var(--terracotta-soft); }
+    .c-col.t i { background: var(--terracotta); opacity: 0.8; }
+    .c-col b { font-size: 10px; color: var(--ink-4); font-weight: 500; }
+    .mock-chat { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+    .mock-convo { padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+    .m-convo-head {
+      display: flex; justify-content: space-between; align-items: baseline; font-weight: 600;
+      padding-bottom: 8px; border-bottom: 1px solid var(--paper-edge); margin-bottom: 4px;
     }
-    .mock-chart i { flex: 1; border-radius: 6px 6px 0 0; background: var(--terracotta-soft); }
-    .mock-chart i.t { background: var(--terracotta); opacity: 0.72; }
-    .mock-chart i.s { background: var(--sage-soft); }
-    .mock-list {
-      background: var(--paper-raised); border: 1px solid var(--paper-edge);
-      border-radius: var(--r-lg); padding: 14px;
-      display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+    .m-convo-head span { color: var(--ink-4); font-weight: 500; font-size: 11px; }
+    .m-bub {
+      max-width: 84%; padding: 8px 11px; border-radius: 12px;
+      background: var(--paper-sunk); color: var(--ink-2);
+      align-self: flex-start; border-bottom-left-radius: 4px;
     }
-    .m-row { display: flex; align-items: center; gap: 10px; flex: none; }
-    .m-av { width: 34px; height: 34px; flex: none; border-radius: var(--r-full); background: var(--terracotta-soft); }
-    .m-row:nth-child(even) .m-av { background: var(--sage-soft); }
-    .m-lines { flex: 1; min-width: 0; }
-    .m-lines i { display: block; height: 9px; border-radius: 5px; background: var(--paper-sunk); margin: 4px 0; }
-    .m-lines i:first-child { background: var(--ink-line); }
-    .m-dot { width: 9px; height: 9px; flex: none; border-radius: var(--r-full); background: var(--status-live); }
-    .m-dot.wait { background: var(--status-waiting); }
-    .m-dot.book { background: var(--status-booked); }
+    .m-bub.ia {
+      background: var(--sage-tint); border: 1px solid var(--sage-soft);
+      align-self: flex-end; border-bottom-left-radius: 12px; border-bottom-right-radius: 4px;
+    }
+    .m-chip {
+      align-self: center; background: var(--sage-soft); color: var(--sage-ink);
+      font-weight: 600; font-size: 12px; border-radius: var(--r-full); padding: 5px 12px; margin-top: 2px;
+    }
+    .mock-inbox { flex: 1; min-height: 0; padding: 8px 14px; display: flex; flex-direction: column; overflow: hidden; }
+    .m-row { display: flex; gap: 10px; align-items: center; padding: 9px 2px; border-bottom: 1px solid var(--paper-edge); }
+    .m-row:last-child { border-bottom: 0; }
+    .m-av {
+      width: 34px; height: 34px; flex: none; border-radius: var(--r-full);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 600; font-size: 12px;
+      background: var(--terracotta-soft); color: var(--terracotta-ink);
+    }
+    .m-row:nth-child(odd) .m-av { background: var(--sage-soft); color: var(--sage-ink); }
+    .m-who { flex: 1; min-width: 0; }
+    .m-who b { display: block; font-size: 13px; font-weight: 600; }
+    .m-who span { display: block; font-size: 12px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .m-meta { text-align: right; font-size: 10px; color: var(--ink-4); flex: none; }
+    .m-badge {
+      display: inline-block; min-width: 17px; text-align: center;
+      background: var(--ember); color: #fff; border-radius: var(--r-full);
+      font-size: 10px; font-weight: 600; padding: 2px 5px; margin-top: 3px;
+    }
     /* Véu: mais denso no centro (card legível), mais aberto nas bordas
        (o Cockpit aparece e desperta a curiosidade). */
     .mock-scrim {
       position: absolute; inset: 0;
       background: radial-gradient(
         760px 660px at 50% 46%,
-        color-mix(in srgb, var(--paper) 68%, transparent) 0%,
-        color-mix(in srgb, var(--paper) 34%, transparent) 100%
+        color-mix(in srgb, var(--paper) 66%, transparent) 0%,
+        color-mix(in srgb, var(--paper) 28%, transparent) 100%
       );
     }
-    @media (max-width: 720px) {
-      .mock-side { display: none; }
-      .mock-kpis { grid-template-columns: repeat(2, 1fr); }
-      .mock-body { grid-template-columns: 1fr; }
-      .mock-list { display: none; }
+    @media (max-width: 900px) {
+      .mock-side, .mock-main { display: none; }
     }
 """
 
-# Cenário de fundo: o Cockpit "de mentira" que aparece desfocado atrás do
-# card de login. Puramente decorativo (aria-hidden) — sidebar, KPIs, gráfico
-# e lista de conversas, tudo em blocos abstratos com os tokens oficiais.
+# Cenário de fundo: o Cockpit de um negócio fictício ("Clínica Bella Pele",
+# a mesma do placeholder de cadastro) RODANDO — a IA fechando um agendamento
+# no WhatsApp, Pix chegando na caixa de entrada, números do dia. Puramente
+# decorativo (aria-hidden); desfocado pelo CSS, então ninguém lê os detalhes
+# — mas sente que tem um negócio vivo ali atrás.
 _BACKDROP_HTML = """<div class="mock" aria-hidden="true">
     <div class="mock-blur">
-      <div class="mock-side">
-        <div class="m-logo"></div>
-        <div class="m-nav on"></div>
-        <div class="m-nav"></div>
-        <div class="m-nav"></div>
-        <div class="m-nav"></div>
-        <div class="m-nav"></div>
-        <div class="m-nav"></div>
+      <div class="mock-side mock-card">
+        <div class="m-brand">HUMA</div>
+        <div class="m-brand-sub">Cockpit</div>
+        <div class="m-nav">In&iacute;cio</div>
+        <div class="m-nav on">Conversas</div>
+        <div class="m-nav">Agenda</div>
+        <div class="m-nav">Relat&oacute;rios</div>
+        <div class="m-nav">Divulga&ccedil;&atilde;o</div>
+        <div class="m-nav">Configura&ccedil;&otilde;es</div>
+        <div class="m-plan">Plano Pro &middot; cr&eacute;ditos 82%</div>
       </div>
       <div class="mock-main">
-        <div class="mock-top">
-          <div class="m-title"></div>
-          <div class="m-pill"></div>
+        <div class="mock-hello">
+          <h2>Boa tarde, Bella Pele &#9728;&#65039;</h2>
+          <div class="m-live">IA respondendo &middot; 3 conversas agora</div>
         </div>
         <div class="mock-kpis">
-          <div class="m-kpi"><i></i><b></b><s></s></div>
-          <div class="m-kpi hot"><i></i><b></b><s></s></div>
-          <div class="m-kpi"><i></i><b></b><s></s></div>
-          <div class="m-kpi hot"><i></i><b></b><s></s></div>
+          <div class="m-kpi mock-card"><div class="k-label">Conversas hoje</div><div class="k-num">47</div><div class="k-delta">+12% vs ontem</div></div>
+          <div class="m-kpi mock-card"><div class="k-label">Agendamentos</div><div class="k-num">9</div><div class="k-delta">6 confirmados</div></div>
+          <div class="m-kpi mock-card"><div class="k-label">Vendas do m&ecirc;s</div><div class="k-num">R$ 12.480</div><div class="k-delta hot">+R$ 450 hoje</div></div>
+          <div class="m-kpi mock-card"><div class="k-label">Resposta m&eacute;dia</div><div class="k-num">6 seg</div><div class="k-delta">24h no ar</div></div>
         </div>
-        <div class="mock-body">
-          <div class="mock-chart">
-            <i style="height:34%"></i>
-            <i class="t" style="height:58%"></i>
-            <i style="height:46%"></i>
-            <i class="t" style="height:78%"></i>
-            <i class="s" style="height:52%"></i>
-            <i class="t" style="height:88%"></i>
-            <i style="height:64%"></i>
-            <i class="s" style="height:42%"></i>
+        <div class="mock-chart mock-card">
+          <div class="c-title">Conversas na semana</div>
+          <div class="c-bars">
+            <div class="c-col"><i style="height:38%"></i><b>seg</b></div>
+            <div class="c-col t"><i style="height:52%"></i><b>ter</b></div>
+            <div class="c-col"><i style="height:44%"></i><b>qua</b></div>
+            <div class="c-col t"><i style="height:76%"></i><b>qui</b></div>
+            <div class="c-col"><i style="height:60%"></i><b>sex</b></div>
+            <div class="c-col t"><i style="height:88%"></i><b>s&aacute;b</b></div>
+            <div class="c-col"><i style="height:30%"></i><b>dom</b></div>
           </div>
-          <div class="mock-list">
-            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:62%"></i><i style="width:86%"></i></div><span class="m-dot"></span></div>
-            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:48%"></i><i style="width:74%"></i></div><span class="m-dot wait"></span></div>
-            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:70%"></i><i style="width:58%"></i></div><span class="m-dot book"></span></div>
-            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:54%"></i><i style="width:80%"></i></div><span class="m-dot"></span></div>
-            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:66%"></i><i style="width:44%"></i></div><span class="m-dot wait"></span></div>
-          </div>
+        </div>
+      </div>
+      <div class="mock-chat">
+        <div class="mock-convo mock-card">
+          <div class="m-convo-head">Mariana Lopes <span>WhatsApp &middot; agora</span></div>
+          <div class="m-bub">Oi! Vi voc&ecirc;s no Instagram &#128525; quanto t&aacute; a limpeza de pele?</div>
+          <div class="m-bub ia">Oi Mariana! T&aacute; R$ 180 &mdash; e o pacote com 3 sess&otilde;es sai por R$ 450 &#128522;</div>
+          <div class="m-bub">Adorei! Tem hor&aacute;rio quinta &agrave; tarde?</div>
+          <div class="m-bub ia">Tenho quinta &agrave;s 14h livre. Quer que eu j&aacute; reserve pra voc&ecirc;?</div>
+          <div class="m-bub">pode ser!! &#127881;</div>
+          <div class="m-chip">&#10003; Agendado &middot; quinta, 14h</div>
+        </div>
+        <div class="mock-inbox mock-card">
+          <div class="m-row"><div class="m-av">JF</div><div class="m-who"><b>Ju Ferreira</b><span>Acabei de fazer o Pix! &#128176;</span></div><div class="m-meta">09:42<br><span class="m-badge">1</span></div></div>
+          <div class="m-row"><div class="m-av">CM</div><div class="m-who"><b>Carlos Mendes</b><span>Fechado, quinta &agrave;s 14h ent&atilde;o &#128588;</span></div><div class="m-meta">09:31</div></div>
+          <div class="m-row"><div class="m-av">RD</div><div class="m-who"><b>Renata Dias</b><span>Voc&ecirc;s atendem s&aacute;bado?</span></div><div class="m-meta">09:18<br><span class="m-badge">2</span></div></div>
+          <div class="m-row"><div class="m-av">PA</div><div class="m-who"><b>Pedro Almeida</b><span>Me manda o endere&ccedil;o por favor</span></div><div class="m-meta">08:55</div></div>
         </div>
       </div>
     </div>
