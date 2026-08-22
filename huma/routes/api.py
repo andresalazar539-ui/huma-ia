@@ -472,7 +472,7 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     "personality_traits", "use_emojis", "fallback_message",
     "silent_hours_start", "silent_hours_end", "silent_hours_message",
     "owner_phone", "report_frequency", "report_hour", "report_day",
-    "report_recipients",
+    "report_recipients", "report_formats",
     "notify_owner_on_appointment", "notify_owner_on_payment",
     "notify_owner_on_cancellation", "notify_owner_on_stuck_lead",
     "max_discount_percent", "max_installments", "accepted_payment_methods",

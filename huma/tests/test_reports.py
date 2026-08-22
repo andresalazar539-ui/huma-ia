@@ -208,6 +208,34 @@ class TestRecipientsComEmail:
         assert ident.report_recipients == ["a@b.com", "5511888887777"]
 
 
+class TestReportFormats:
+    """report_formats: mensagem sempre presente, só valores conhecidos."""
+
+    def test_default_mensagem(self):
+        ident = ClientIdentity(client_id="x", business_name="B")
+        assert ident.report_formats == ["mensagem"]
+
+    def test_mensagem_forcada_e_invalidos_fora(self):
+        ident = ClientIdentity(
+            client_id="x", business_name="B",
+            report_formats=["audio", "pdf", "completo", "audio"],
+        )
+        assert ident.report_formats == ["mensagem", "audio", "completo"]
+
+
+class TestAudioScript:
+
+    def test_roteiro_curto_e_com_numeros(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, payments=_PAYMENTS, classifications=_CLASSIFICATIONS)
+        identity = _identity(["sell_digital"])
+        report = asyncio.run(rs.build_report(identity, days=7))
+        script = rs.format_report_audio_script(identity, report, "weekly")
+        assert len(script.split()) <= 80  # limite do audio_service
+        assert "500 reais" in script
+        assert "da semana" in script
+        assert "🧠" not in script and "R$" not in script  # falado, não escrito
+
+
 class TestOwnerReportJob:
 
     def _patch_hour(self, monkeypatch, hour):
@@ -454,6 +482,61 @@ class TestSendReportNow:
         # Conteúdo é base64 de um zip válido (xlsx/pptx começam com PK)
         for a in atts:
             assert base64.b64decode(a["content"])[:2] == b"PK"
+
+    def test_formato_audio_e_completo_no_whatsapp(self, monkeypatch):
+        wpp, _, _ = self._setup(monkeypatch)
+        audios, docs = [], []
+        import huma.services.audio_service as audio_mod
+        import huma.services.whatsapp_service as wa_mod
+
+        async def generate_and_upload(text, voice_id, sentiment="neutral", stage=""):
+            assert "prestar contas" in text
+            return "https://storage/audios/x.mp3"
+
+        async def send_audio(phone, audio_url, client_id="", **kw):
+            audios.append((phone, audio_url))
+            return "a1"
+
+        async def send_document(phone, doc_url, filename="", client_id="", **kw):
+            docs.append((phone, filename))
+            return "d1"
+
+        async def fake_upload_doc(identity, report):
+            return "https://storage/audios/reports/x.pptx", "huma-relatorio-7d.pptx"
+
+        monkeypatch.setattr(audio_mod, "generate_and_upload", generate_and_upload)
+        monkeypatch.setattr(wa_mod, "send_audio", send_audio)
+        monkeypatch.setattr(wa_mod, "send_document", send_document)
+        monkeypatch.setattr(rs, "_upload_report_doc", fake_upload_doc)
+
+        ident = _identity(["schedule"]).model_copy(update={
+            "voice_id": "voz123",
+            "report_formats": ["mensagem", "audio", "completo"],
+        })
+        result = asyncio.run(rs.send_report_now(ident))
+        assert wpp == ["5511999998888"]
+        assert audios == [("5511999998888", "https://storage/audios/x.mp3")]
+        assert docs == [("5511999998888", "huma-relatorio-7d.pptx")]
+        assert result["sent"] == 1
+
+    def test_audio_sem_voz_e_pulado_sem_quebrar(self, monkeypatch):
+        wpp, _, _ = self._setup(monkeypatch)
+        audios = []
+        import huma.services.whatsapp_service as wa_mod
+
+        async def send_audio(phone, audio_url, client_id="", **kw):
+            audios.append(phone)
+            return "a1"
+
+        monkeypatch.setattr(wa_mod, "send_audio", send_audio)
+
+        ident = _identity(["schedule"]).model_copy(update={
+            "report_formats": ["mensagem", "audio"],  # sem voice_id
+        })
+        result = asyncio.run(rs.send_report_now(ident))
+        assert wpp == ["5511999998888"]  # texto foi
+        assert audios == []              # áudio pulado
+        assert result["sent"] == 1
 
 
 class TestClientDueNow:

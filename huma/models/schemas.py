@@ -691,6 +691,29 @@ class ClientIdentity(BaseModel):
             if 10 <= len(digits) <= 15 and digits not in out:
                 out.append(digits)
         return out
+
+    report_formats: list[str] = Field(
+        default_factory=lambda: ["mensagem"],
+        description=(
+            "Formatos do relatório automático (drawer Receber automático): "
+            "mensagem (resumo em texto, sempre presente), audio (a HUMA "
+            "conta o resultado na voz clonada, exige voice_id), completo "
+            "(apresentação .pptx como documento no WhatsApp; no e-mail os "
+            "anexos já vão sempre)."
+        ),
+    )
+
+    @field_validator("report_formats")
+    @classmethod
+    def _valid_report_formats(cls, v: list) -> list:
+        validos = ("mensagem", "audio", "completo")
+        out = [
+            f for f in dict.fromkeys(str(x).strip().lower() for x in (v or []))
+            if f in validos
+        ]
+        if "mensagem" not in out:  # o resumo em texto é o coração — sempre vai
+            out.insert(0, "mensagem")
+        return out
     # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe
     # tudo até desligar conscientemente. notify_on_payment já era enviado.
     notify_owner_on_appointment: bool = Field(

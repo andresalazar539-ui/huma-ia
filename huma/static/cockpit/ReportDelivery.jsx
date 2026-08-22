@@ -1,7 +1,8 @@
 // ReportDelivery.jsx — drawer "Receber automático" do design, ligado no REAL:
-// report_frequency/report_hour/report_day/report_recipients do cliente
-// (salvos via /settings). Formatos áudio/PDF ainda não existem no motor —
-// aparecem como "em breve" (fidelidade visual sem mentir função).
+// report_frequency/report_hour/report_day/report_recipients/report_formats
+// do cliente (salvos via /settings). Formatos: mensagem (sempre), áudio na
+// voz clonada (exige voz gravada na aba Voz) e relatório completo (.pptx
+// como documento no WhatsApp; no e-mail os anexos já vão sempre).
 const { useState: useStateRD, useEffect: useEffectRD } = React;
 
 const RDSwitch = ({ on, onChange }) => (
@@ -91,6 +92,7 @@ const RDPreview = ({ cfg, sections }) => {
 const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
   const [cfg, setCfg] = useStateRD(null);   // null = carregando settings reais
   const [ownerPhone, setOwnerPhone] = useStateRD('');
+  const [voiceOk, setVoiceOk] = useStateRD(null); // null = checando | true/false
   const [saveState, setSaveState] = useStateRD('idle'); // idle | saving | saved | error
   const [testState, setTestState] = useStateRD('idle'); // idle | sending | sent | error
   const [adding, setAdding] = useStateRD(false);
@@ -106,9 +108,14 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
         diaSemana: ['weekly', 'biweekly'].includes(freq) ? String(settings.report_day ?? '') : '',
         diaMes: freq === 'monthly' ? String(settings.report_day ?? '') : '',
         recipients: settings.report_recipients || [],
+        formats: settings.report_formats || ['mensagem'],
       });
       setOwnerPhone(settings.owner_phone || '');
     }).catch(() => setCfg(false));
+    // Voz clonada existe? Decide se o formato "Áudio explicando" é elegível
+    window.fetchVoiceStatus()
+      .then(s => setVoiceOk(!!(s && s.voice_id)))
+      .catch(() => setVoiceOk(false));
   }, []);
 
   if (cfg === null || cfg === false) {
@@ -136,6 +143,7 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
     report_hour: parseInt(cfg.hora),
     report_day: String((cfg.freq === 'monthly' ? cfg.diaMes : cfg.diaSemana) || ''),
     report_recipients: cfg.recipients,
+    report_formats: cfg.formats,
   });
 
   const salvar = async () => {
@@ -190,10 +198,22 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
     }}>{children}</div>
   );
 
+  const toggleFormat = (id) => {
+    if (id === 'mensagem') return; // o resumo em texto sempre vai
+    const has = cfg.formats.includes(id);
+    set({ formats: has ? cfg.formats.filter(f => f !== id) : [...cfg.formats, id] });
+  };
+
+  const semVoz = voiceOk === false;
   const formatos = [
-    { id: 'mensagem', icon: 'message', title: 'Resumo em mensagem', desc: 'os números principais, direto no WhatsApp', on: true, soon: false },
-    { id: 'audio',    icon: 'mic',     title: 'Áudio explicando',   desc: 'a HUMA conta como foi, na voz dela', on: false, soon: true },
-    { id: 'pdf',      icon: 'chart',   title: 'Relatório completo', desc: 'o documento com todos os gráficos', on: false, soon: true },
+    { id: 'mensagem', icon: 'message', title: 'Resumo em mensagem', desc: 'os números principais, direto no WhatsApp',
+      on: true, locked: true, chip: '' },
+    { id: 'audio',    icon: 'mic',     title: 'Áudio explicando',   desc: semVoz ? 'grave sua voz na aba Voz pra liberar' : 'a HUMA conta como foi, na sua voz clonada',
+      on: cfg.formats.includes('audio'),
+      locked: semVoz && !cfg.formats.includes('audio'),  // sem voz só impede LIGAR (desligar sempre pode)
+      chip: semVoz ? 'precisa da voz' : '' },
+    { id: 'completo', icon: 'chart',   title: 'Relatório completo', desc: 'a apresentação com os números, como documento',
+      on: cfg.formats.includes('completo'), locked: false, chip: '' },
   ];
 
   return (
@@ -244,12 +264,14 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
             <SectionLabel>o que chega</SectionLabel>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {formatos.map(f => (
-                <div key={f.id} style={{
+                <div key={f.id} onClick={() => !f.locked && toggleFormat(f.id)} style={{
                   display: 'flex', alignItems: 'center', gap: 12,
                   padding: '12px 14px', borderRadius: 12, boxSizing: 'border-box',
                   border: `1px solid ${f.on ? 'var(--ink)' : 'var(--paper-edge)'}`,
                   background: 'var(--paper-raised)',
-                  opacity: f.soon ? 0.55 : 1,
+                  opacity: f.locked && !f.on ? 0.55 : 1,
+                  cursor: f.locked ? 'default' : 'pointer',
+                  transition: 'border-color 180ms cubic-bezier(0.22,1,0.36,1)',
                 }}>
                   <span style={{
                     width: 18, height: 18, borderRadius: 5, flexShrink: 0, boxSizing: 'border-box',
@@ -262,13 +284,13 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
                     <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>{f.title}</span>
                     <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 11.5, color: 'var(--ink-3)', marginTop: 1 }}>{f.desc}</span>
                   </span>
-                  {f.soon && (
+                  {f.chip && (
                     <span style={{
                       fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 500,
                       letterSpacing: '0.06em', textTransform: 'uppercase',
                       padding: '2px 8px', borderRadius: 999,
                       background: 'var(--paper-sunk)', color: 'var(--ink-3)', flexShrink: 0,
-                    }}>em breve</span>
+                    }}>{f.chip}</span>
                   )}
                 </div>
               ))}

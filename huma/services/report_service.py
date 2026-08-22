@@ -422,6 +422,118 @@ def format_report_email(identity: ClientIdentity, report: dict, frequency: str =
 # ================================================================
 
 
+def format_report_audio_script(
+    identity: ClientIdentity,
+    report: dict,
+    frequency: str = "weekly",
+) -> str:
+    """
+    Roteiro FALADO do relatório (formato "Áudio explicando" do drawer):
+    a HUMA presta contas na voz clonada. Curto de propósito — o
+    audio_service trunca em ~80 palavras — e sem emoji/URL (o
+    sanitizador do TTS limpa o resto). Números em dígito puro: o
+    ElevenLabs lê "3240 reais" naturalmente em PT-BR.
+    """
+    s = report.get("sections", {})
+    label = FREQUENCY_LABELS.get(frequency, "do período")
+    partes = [f"Oi! Aqui é a HUMA, passando pra prestar contas {label}."]
+
+    at = s.get("atendimento", {})
+    frase = f"Atendi {at.get('conversas_ativas', 0)} conversas"
+    if at.get("conversas_novas", 0):
+        frase += f", {at['conversas_novas']} de leads novos"
+    partes.append(frase + ".")
+
+    v = s.get("vendas") or {}
+    if v.get("pagamentos", 0):
+        reais = int(v.get("receita_cents", 0)) // 100
+        frase = f"Entraram {reais} reais em {v['pagamentos']} pagamentos"
+        if v.get("fechadas_sem_humano", 0):
+            frase += f", e {v['fechadas_sem_humano']} vendas eu fechei sozinha"
+        partes.append(frase + ".")
+
+    a = s.get("agenda") or {}
+    if a.get("agendamentos", 0):
+        partes.append(f"Marquei {a['agendamentos']} agendamentos.")
+
+    q = s.get("qualificacao") or {}
+    if q.get("leads_com_dados", 0):
+        partes.append(f"Qualifiquei {q['leads_com_dados']} leads prontos pra você.")
+
+    f = s.get("follow_up") or {}
+    if f.get("leads_reengajados", 0):
+        partes.append(f"Resgatei {f['leads_reengajados']} leads que tinham sumido.")
+
+    top = (s.get("inteligencia") or {}).get("top_assuntos") or []
+    if top:
+        partes.append(f"O que mais perguntaram foi {top[0]['tipo']}.")
+
+    partes.append("O resumo completo tá aqui no seu WhatsApp e no Cockpit. Tamo junto!")
+    return " ".join(partes)
+
+
+async def _generate_report_audio(
+    identity: ClientIdentity,
+    report: dict,
+    frequency: str,
+) -> Optional[str]:
+    """
+    Gera o áudio do relatório na voz clonada e devolve a URL pública.
+    Sem voice_id ou em falha → None (loga e segue; áudio é bônus,
+    nunca bloqueia o resumo em texto).
+    """
+    voice_id = getattr(identity, "voice_id", "") or ""
+    if not voice_id:
+        log.info(f"owner_report | audio pulado (sem voice_id) | client={identity.client_id}")
+        return None
+    from huma.services import audio_service
+
+    script = format_report_audio_script(identity, report, frequency)
+    vendeu = bool((report.get("sections", {}).get("vendas") or {}).get("pagamentos"))
+    return await audio_service.generate_and_upload(
+        script, voice_id, sentiment="excited" if vendeu else "neutral",
+    )
+
+
+async def _upload_report_doc(
+    identity: ClientIdentity,
+    report: dict,
+) -> Optional[tuple[str, str]]:
+    """
+    Gera a apresentação (.pptx) do período e sobe pro Storage (bucket
+    público `audios`, prefixo reports/, nome UUID — não adivinhável).
+
+    Returns:
+        (url_publica, nome_do_arquivo) ou None em falha (loga e segue).
+    """
+    import uuid as _uuid
+
+    from huma.services import export_service
+
+    days = int(report.get("period_days") or 7)
+    filename = f"huma-relatorio-{days}d.pptx"
+    try:
+        data = export_service.report_to_pptx(identity, report)
+        path = f"reports/{_uuid.uuid4()}.pptx"
+        supa = get_supabase()
+        await run_in_threadpool(
+            lambda: supa.storage.from_("audios").upload(
+                path,
+                data,
+                {"content-type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+            )
+        )
+        url = supa.storage.from_("audios").get_public_url(path)
+        log.info(f"owner_report | doc no storage | client={identity.client_id} | bytes={len(data)}")
+        return url, filename
+    except Exception as e:
+        log.error(
+            f"owner_report | upload doc falhou | client={identity.client_id} | "
+            f"{type(e).__name__}: {e}"
+        )
+        return None
+
+
 def _report_attachments(identity: ClientIdentity, report: dict) -> list[dict]:
     """
     Planilha (.xlsx) e apresentação (.pptx) do período, no formato de
@@ -464,6 +576,11 @@ async def _dispatch_report(
     e-mail (Resend, com planilha/apresentação anexas), sem "@" vai
     pelo WhatsApp do canal do cliente.
 
+    Formatos extras do drawer (report_formats), só nos destinos de
+    WhatsApp: "audio" = a HUMA conta o resultado na voz clonada;
+    "completo" = a apresentação .pptx chega como documento. Cada
+    extra falha de forma independente — o resumo em texto sempre vai.
+
     Returns:
         [{"target": str, "channel": "whatsapp"|"email", "ok": bool}]
     """
@@ -483,6 +600,17 @@ async def _dispatch_report(
             "Vão anexas a planilha (.xlsx) e a apresentação (.pptx) do período. "
             + rodape
         )
+
+    # Extras de WhatsApp: gerados UMA vez, mandados pra cada telefone
+    formats = getattr(identity, "report_formats", None) or ["mensagem"]
+    phones = [t for t in targets if "@" not in t]
+    audio_url: Optional[str] = None
+    doc: Optional[tuple[str, str]] = None
+    if phones and "audio" in formats:
+        audio_url = await _generate_report_audio(identity, report, frequency)
+    if phones and "completo" in formats:
+        doc = await _upload_report_doc(identity, report)
+
     results: list[dict] = []
     for target in targets:
         if "@" in target:
@@ -493,6 +621,12 @@ async def _dispatch_report(
             results.append({"target": target, "channel": "email", "ok": bool(ok)})
         else:
             mid = await wa.notify_owner(target, msg, client_id=client_id)
+            if audio_url:
+                await asyncio.sleep(0.3)
+                await wa.send_audio(target, audio_url, client_id=client_id)
+            if doc:
+                await asyncio.sleep(0.3)
+                await wa.send_document(target, doc[0], filename=doc[1], client_id=client_id)
             results.append({"target": target, "channel": "whatsapp", "ok": mid is not None})
             await asyncio.sleep(0.3)  # pacing só entre mensagens de WhatsApp
     return results
