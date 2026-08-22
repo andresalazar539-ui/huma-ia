@@ -250,15 +250,23 @@ const ReportsScreen = () => {
               </>
             )}
 
-            {/* Funil — sempre */}
+            {/* Funil — sempre. Visual do design (proporcional + PNG) com
+                toggle pros cartões por etapa de sempre. */}
             <SectionTitle>Funil</SectionTitle>
-            <Grid cols={5}>
-              <StatTile label="Descobrindo" value={funil.descoberta ?? 0}/>
-              <StatTile label="Negociando" value={funil.negociando ?? 0}/>
-              <StatTile label="Compromissados" value={funil.compromissados ?? 0}/>
-              <StatTile label="Ganhos" value={funil.ganhos ?? 0} accent/>
-              <StatTile label="Perdidos" value={funil.perdidos ?? 0}/>
-            </Grid>
+            <FunnelSection
+              sections={s}
+              periodo={days}
+              periodoLabel={`últimos ${days} dias`}
+              cardsView={(
+                <Grid cols={5}>
+                  <StatTile label="Descobrindo" value={funil.descoberta ?? 0}/>
+                  <StatTile label="Negociando" value={funil.negociando ?? 0}/>
+                  <StatTile label="Compromissados" value={funil.compromissados ?? 0}/>
+                  <StatTile label="Ganhos" value={funil.ganhos ?? 0} accent/>
+                  <StatTile label="Perdidos" value={funil.perdidos ?? 0}/>
+                </Grid>
+              )}
+            />
 
             {/* Origem — sempre: de onde vêm as conversas e as conversões */}
             {s.origem && (s.origem.fontes || []).length > 0 && (
