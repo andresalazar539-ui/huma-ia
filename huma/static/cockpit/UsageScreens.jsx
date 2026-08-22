@@ -7,9 +7,15 @@ const { useState: useStateU, useEffect: useEffectU } = React;
 const UsoScreen = ({ onGoto }) => {
   const [billing, setBilling] = useStateU(null);
   const [loadErr, setLoadErr] = useStateU(false);
+  // Seção "para você": indicações e resultado — dados REAIS, carregados
+  // em paralelo (falha de um não derruba a tela).
+  const [refStats, setRefStats] = useStateU(null);
+  const [report, setReport] = useStateU(null);
 
   useEffectU(() => {
     fetchBillingStatus().then(setBilling).catch(() => setLoadErr(true));
+    window.fetchReferrals().then(setRefStats).catch(() => {});
+    window.fetchReport(30).then(setReport).catch(() => {});
   }, []);
 
   // Pill do plano no header: cor e texto por situação
@@ -153,7 +159,7 @@ const UsoScreen = ({ onGoto }) => {
             )}
             <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
             <UsageBar
-              icon="message"
+              icon="trendUp"
               label={included > 0 ? 'uso do plano' : 'conversas disponíveis'}
               percent={billing ? planUsedPct : 0}
               barColor={billing && billing.trial_expired ? 'var(--ember)' : 'var(--ink)'}
@@ -192,8 +198,105 @@ const UsoScreen = ({ onGoto }) => {
             </div>
           </section>
         )}
+
+        {/* PARA VOCÊ — indicações e resultado, com dados reais */}
+        <section>
+          <div style={{ marginBottom: 12 }}><Eyebrow>para você</Eyebrow></div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
+            <ParaVoceIndicacao refStats={refStats} onGoto={onGoto} />
+            <ParaVoceResultado report={report} onGoto={onGoto} />
+          </div>
+        </section>
       </div>
     </div>
+  );
+};
+
+// ---------- "Para você": indicações (dados reais do /referrals) ----------
+const ParaVoceIndicacao = ({ refStats, onGoto }) => {
+  const reward = refStats ? refStats.reward_conversations : 100;
+  const welcome = refStats ? refStats.welcome_bonus : 50;
+  const refs = (refStats && refStats.referrals) || [];
+  const conv = refs.filter(r => r.converted).length;
+  const ganhas = refStats ? refStats.conversas_ganhas : 0;
+
+  if (refs.length === 0) {
+    return (
+      <UpsellCard
+        icon="gift" tone="terracotta"
+        title="Indique e ganhe conversas"
+        subtitle={`Cada negócio que assinar pelo seu link vale +${reward} conversas pra você — e quem chega ganha +${welcome} no teste grátis.`}
+        cta="Começar a indicar"
+        onClick={() => onGoto('indicacao')}
+      />
+    );
+  }
+  return (
+    <UpsellCard
+      icon="trophy" tone="terracotta"
+      title={ganhas > 0 ? `+${ganhas} conversas ganhas indicando` : 'Suas indicações'}
+      subtitle={`${refs.length} ${refs.length === 1 ? 'negócio indicado' : 'negócios indicados'} · ${conv} ${conv === 1 ? 'virou assinante' : 'viraram assinantes'}`}
+      extra={(
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+          {refs.slice(0, 2).map((r, i) => (
+            <MiniReferralRow
+              key={i}
+              name={r.business_name || 'Negócio indicado'}
+              status={r.converted ? 'assinante' : 'no teste'}
+              gain={r.converted ? `+${reward}` : null}
+            />
+          ))}
+        </div>
+      )}
+      cta="Ver programa completo"
+      onClick={() => onGoto('indicacao')}
+    />
+  );
+};
+
+// ---------- "Para você": resultado (dados reais do /reports 30d) ----------
+const ParaVoceResultado = ({ report, onGoto }) => {
+  const s = (report && report.sections) || {};
+  const vendas = s.vendas;
+  const agenda = s.agenda;
+  const atend = s.atendimento;
+
+  let title = 'Seu resultado dos últimos 30 dias';
+  let subtitle = 'Carregando os números…';
+  if (vendas && vendas.receita_cents > 0) {
+    title = (<>
+      HUMA gerou <span style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>{vendas.receita_display}</span> em receita
+    </>);
+    subtitle = [
+      `${vendas.pagamentos} ${vendas.pagamentos === 1 ? 'pagamento' : 'pagamentos'} em 30 dias`,
+      agenda ? `${agenda.agendamentos} agendamentos` : null,
+      vendas.fechadas_sem_humano ? `${vendas.fechadas_sem_humano} vendas 100% no automático` : null,
+    ].filter(Boolean).join(' · ');
+  } else if (agenda && agenda.agendamentos > 0) {
+    title = (<>
+      <span style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>{agenda.agendamentos}</span> agendamentos em 30 dias
+    </>);
+    subtitle = [
+      agenda.proximos ? `${agenda.proximos} ainda por vir` : null,
+      atend ? `${atend.conversas_ativas} conversas atendidas` : null,
+    ].filter(Boolean).join(' · ') || 'A HUMA cuidando da sua agenda.';
+  } else if (atend) {
+    title = (<>
+      <span style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>{atend.conversas_ativas}</span> conversas nos últimos 30 dias
+    </>);
+    subtitle = atend.conversas_novas
+      ? `${atend.conversas_novas} leads novos chegaram nesse período.`
+      : 'Divulgue seu link do Balcão e seu WhatsApp pra encher esse número.';
+  }
+
+  return (
+    <UpsellCard
+      icon="sparkle" tone="sage"
+      title={title}
+      subtitle={subtitle}
+      cta="Ver relatório completo"
+      onClick={() => onGoto('relatorios')}
+    />
   );
 };
 
@@ -370,7 +473,7 @@ const UpsellCard = ({ icon, tone, title, subtitle, extra, cta, onClick }) => {
 };
 
 const MiniReferralRow = ({ name, status, gain }) => {
-  const isActive = status === 'ativa';
+  const isActive = status === 'ativa' || status === 'assinante';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-sans)', fontSize: 12 }}>
       <span style={{ width: 5, height: 5, borderRadius: 999,
