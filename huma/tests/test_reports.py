@@ -209,7 +209,7 @@ class TestOwnerReportJob:
             sent.append((phone, msg))
             return "m1"
 
-        async def fake_build(identity, days=7):
+        async def fake_build(identity, days=7, date_from="", date_to=""):
             return {"sections": {"atendimento": {"conversas_ativas": 5, "conversas_novas": 2, "fora_do_horario": 0},
                                  "funil": {}, "follow_up": {}, "inteligencia": {"top_assuntos": []}}}
 
@@ -284,7 +284,7 @@ class TestReportsEndpoint:
         async def get_client(cid):
             return identity if cid == "cli_rep" else None
 
-        async def fake_build(client, days=30):
+        async def fake_build(client, days=30, date_from="", date_to=""):
             assert days == 30
             return {"client_id": "cli_rep", "sections": {"atendimento": {"conversas_ativas": 1}}}
 
@@ -419,7 +419,7 @@ class TestExportEndpoint:
         async def get_client(cid):
             return identity if cid == "cli_rep" else None
 
-        async def fake_build(client, days=30):
+        async def fake_build(client, days=30, date_from="", date_to=""):
             return _FAKE_REPORT
 
         monkeypatch.setattr(auth_mod, "get_client", get_client)
