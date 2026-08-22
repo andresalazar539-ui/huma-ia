@@ -175,22 +175,31 @@ class TestOwnerReportJob:
 
         monkeypatch.setattr(rs, "datetime", FakeDT)
 
-    def test_fora_da_janela_8h_nao_faz_nada(self, monkeypatch):
+    def test_fora_da_hora_do_cliente_nao_envia(self, monkeypatch):
+        # 15h UTC = 12h BRT; cliente default (report_hour=8) não é a hora dele
         self._patch_hour(monkeypatch, 15)
-        called = {"ping": 0}
-
-        async def ping():
-            called["ping"] += 1
-            return True
-
-        monkeypatch.setattr(rs.cache, "ping", ping)
-        asyncio.run(rs.run_owner_reports())
-        assert called["ping"] == 0  # nem chegou no Redis
-
-    def test_envia_na_janela_e_marca_dedup(self, monkeypatch):
-        self._patch_hour(monkeypatch, 11)
         _fake_supa(monkeypatch, clients=[
             {"client_id": "cli_rep", "report_frequency": "weekly", "owner_phone": "5511999998888"},
+        ])
+        sent = []
+
+        async def ping(): return True
+        async def notify_owner(phone, msg, client_id=""):
+            sent.append(phone)
+
+        import huma.services.whatsapp_service as wa_mod
+        monkeypatch.setattr(rs.cache, "ping", ping)
+        monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
+
+        asyncio.run(rs.run_owner_reports())
+        assert sent == []
+
+    def test_hora_personalizada_do_cliente(self, monkeypatch):
+        # Cliente escolheu 12h BRT no drawer → envia às 15h UTC
+        self._patch_hour(monkeypatch, 15)
+        _fake_supa(monkeypatch, clients=[
+            {"client_id": "cli_rep", "report_frequency": "daily",
+             "owner_phone": "5511999998888", "report_hour": 12},
         ])
         sent = []
         markers = {}
@@ -206,11 +215,11 @@ class TestOwnerReportJob:
             return _identity(["schedule"])
 
         async def notify_owner(phone, msg, client_id=""):
-            sent.append((phone, msg))
+            sent.append(phone)
             return "m1"
 
         async def fake_build(identity, days=7, date_from="", date_to=""):
-            return {"sections": {"atendimento": {"conversas_ativas": 5, "conversas_novas": 2, "fora_do_horario": 0},
+            return {"sections": {"atendimento": {"conversas_ativas": 3, "conversas_novas": 1, "fora_do_horario": 0},
                                  "funil": {}, "follow_up": {}, "inteligencia": {"top_assuntos": []}}}
 
         monkeypatch.setattr(rs.cache, "ping", ping)
@@ -221,9 +230,44 @@ class TestOwnerReportJob:
         monkeypatch.setattr(rs, "build_report", fake_build)
 
         asyncio.run(rs.run_owner_reports())
-        assert len(sent) == 1
-        assert sent[0][0] == "5511999998888"
-        assert "owner_report:last:cli_rep" in markers
+        assert sent == ["5511999998888"]
+
+    def test_destinatarios_extras_recebem_tambem(self, monkeypatch):
+        self._patch_hour(monkeypatch, 11)
+        _fake_supa(monkeypatch, clients=[
+            {"client_id": "cli_rep", "report_frequency": "weekly", "owner_phone": "5511999998888"},
+        ])
+        sent = []
+
+        async def ping(): return True
+        async def get_value(key): return None
+        async def set_with_ttl(key, value, ttl=0): pass
+
+        import huma.services.db_service as db_mod
+        import huma.services.whatsapp_service as wa_mod
+
+        async def get_client(cid):
+            ident = _identity(["schedule"])
+            return ident.model_copy(update={"report_recipients": ["5511888887777"]})
+
+        async def notify_owner(phone, msg, client_id=""):
+            sent.append(phone)
+            return "m1"
+
+        async def fake_build(identity, days=7, date_from="", date_to=""):
+            return {"sections": {"atendimento": {"conversas_ativas": 3, "conversas_novas": 1, "fora_do_horario": 0},
+                                 "funil": {}, "follow_up": {}, "inteligencia": {"top_assuntos": []}}}
+
+        monkeypatch.setattr(rs.cache, "ping", ping)
+        monkeypatch.setattr(rs.cache, "get_value", get_value)
+        monkeypatch.setattr(rs.cache, "set_with_ttl", set_with_ttl)
+        monkeypatch.setattr(db_mod, "get_client", get_client)
+        monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
+        monkeypatch.setattr(rs, "build_report", fake_build)
+
+        asyncio.run(rs.run_owner_reports())
+        assert sent == ["5511999998888", "5511888887777"]
+
 
     def test_frequencia_respeitada_nao_reenvia(self, monkeypatch):
         self._patch_hour(monkeypatch, 11)
@@ -264,6 +308,38 @@ class TestOwnerReportJob:
 
         asyncio.run(rs.run_owner_reports())
         assert sent == []
+
+
+class TestClientDueNow:
+    """_client_due_now: gate puro de hora/dia por cliente."""
+
+    def test_hora_default_8h_brt(self):
+        row = {"report_frequency": "weekly", "owner_phone": "x"}
+        due, dedup = rs._client_due_now(row, datetime(2026, 7, 6, 11, 5))  # 8h BRT
+        assert due and dedup == 7
+        due2, _ = rs._client_due_now(row, datetime(2026, 7, 6, 12, 5))
+        assert not due2
+
+    def test_dia_da_semana_semanal(self):
+        # 2026-07-06 é segunda (weekday 0 em BRT)
+        row = {"report_frequency": "weekly", "report_day": "0"}
+        due, _ = rs._client_due_now(row, datetime(2026, 7, 6, 11, 5))
+        assert due
+        row2 = {"report_frequency": "weekly", "report_day": "3"}  # quinta
+        due2, _ = rs._client_due_now(row2, datetime(2026, 7, 6, 11, 5))
+        assert not due2
+
+    def test_dia_do_mes_mensal_com_dedup_ajustado(self):
+        row = {"report_frequency": "monthly", "report_day": "6"}
+        due, dedup = rs._client_due_now(row, datetime(2026, 7, 6, 11, 5))
+        assert due and dedup == 25  # fevereiro não pode engolir um mês
+        row2 = {"report_frequency": "monthly", "report_day": "15"}
+        due2, _ = rs._client_due_now(row2, datetime(2026, 7, 6, 11, 5))
+        assert not due2
+
+    def test_off_nunca(self):
+        due, _ = rs._client_due_now({"report_frequency": "off"}, datetime(2026, 7, 6, 11, 5))
+        assert not due
 
 
 class TestReportsEndpoint:

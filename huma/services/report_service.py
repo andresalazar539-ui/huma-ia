@@ -386,16 +386,55 @@ def format_report_whatsapp(identity: ClientIdentity, report: dict, frequency: st
 # JOB — envio na frequência escolhida pelo dono
 # ================================================================
 
-_SEND_HOUR_UTC = 11  # 8h da manhã em Brasília (UTC-3)
+_DEFAULT_SEND_HOUR_BRT = 8  # comportamento original: 8h da manhã em Brasília
+
+
+def _client_due_now(row: dict, now: datetime) -> tuple[bool, int]:
+    """
+    Decide se ESTE cliente recebe relatório nesta hora do ciclo.
+
+    Personalização do drawer "Receber automático": hora BRT escolhida
+    (report_hour) e, quando definido, dia da semana (semanal/quinzenal,
+    '0'..'6', 0=segunda) ou dia do mês (mensal, '1'..'28').
+
+    Returns:
+        (due, dedup_days): due=False → pula sem consultar nada;
+        dedup_days = mínimo de dias desde o último envio (mensal
+        alinhado por dia usa 25 pra fevereiro não engolir um mês).
+    """
+    freq = (row.get("report_frequency") or "weekly").strip().lower()
+    days = FREQUENCY_DAYS.get(freq)
+    if not days:  # "off" e valores desconhecidos
+        return False, 0
+
+    try:
+        hour_brt = int(row.get("report_hour") if row.get("report_hour") is not None else _DEFAULT_SEND_HOUR_BRT)
+    except (TypeError, ValueError):
+        hour_brt = _DEFAULT_SEND_HOUR_BRT
+    if now.hour != (hour_brt + 3) % 24:  # BRT = UTC-3
+        return False, 0
+
+    day = str(row.get("report_day") or "").strip()
+    brt_now = now - timedelta(hours=3)
+    if day.isdigit():
+        if freq in ("weekly", "biweekly") and brt_now.weekday() != int(day):
+            return False, 0
+        if freq == "monthly" and brt_now.day != int(day):
+            return False, 0
+
+    dedup_days = 25 if (freq == "monthly" and day.isdigit()) else days
+    return True, dedup_days
 
 
 async def run_owner_reports() -> None:
     """
-    Roda a cada 1h (scheduler). Só age na janela das 8h BRT.
+    Roda a cada 1h (scheduler). Cada cliente tem sua própria janela
+    (hora BRT + dia escolhidos no drawer; default 8h, qualquer dia).
 
     Pra cada cliente ativo com owner_phone e frequency != off:
-    se passaram >= N dias do último envio (marcador no Redis),
-    monta o relatório do período e manda no WhatsApp do dono.
+    se é a hora/dia dele e passaram >= N dias do último envio
+    (marcador no Redis), monta o relatório do período e manda no
+    WhatsApp do dono + destinatários extras.
 
     Redis fora do ar → pula o ciclo (melhor silêncio que spam).
     """
@@ -403,27 +442,39 @@ async def run_owner_reports() -> None:
     from huma.services import whatsapp_service as wa
 
     now = datetime.utcnow()
-    if now.hour != _SEND_HOUR_UTC:
-        return
 
     if not await cache.ping():
         log.warning("owner_report | Redis off — ciclo pulado (dedup indisponível)")
         return
 
     supa = get_supabase()
-    resp = await run_in_threadpool(
-        lambda: supa.table("clients").select("client_id,report_frequency,owner_phone")
-            .eq("onboarding_status", "active").neq("owner_phone", "")
-            .limit(500).execute()
-    )
+
+    def _select_clients():
+        base = supa.table("clients")
+        try:
+            return (
+                base.select("client_id,report_frequency,owner_phone,report_hour,report_day,report_recipients")
+                .eq("onboarding_status", "active").neq("owner_phone", "")
+                .limit(500).execute()
+            )
+        except Exception:
+            # Ambiente sem a migration_report_delivery.sql: segue no
+            # comportamento original (8h, sem extras) em vez de parar o job.
+            return (
+                base.select("client_id,report_frequency,owner_phone")
+                .eq("onboarding_status", "active").neq("owner_phone", "")
+                .limit(500).execute()
+            )
+
+    resp = await run_in_threadpool(_select_clients)
     rows = resp.data or []
 
     sent = skipped = errors = 0
     for row in rows:
         client_id = row.get("client_id", "")
         freq = (row.get("report_frequency") or "weekly").strip().lower()
-        days = FREQUENCY_DAYS.get(freq)
-        if not client_id or not days:  # inclui "off" e valores desconhecidos
+        due, dedup_days = _client_due_now(row, now)
+        if not client_id or not due:
             skipped += 1
             continue
 
@@ -432,7 +483,7 @@ async def run_owner_reports() -> None:
             last_raw = await cache.get_value(marker_key)
             if last_raw:
                 last = _parse_dt(last_raw)
-                if last and (now - last).days < days:
+                if last and (now - last).days < dedup_days:
                     skipped += 1
                     continue
 
@@ -441,6 +492,7 @@ async def run_owner_reports() -> None:
                 skipped += 1
                 continue
 
+            days = FREQUENCY_DAYS.get(freq) or 7
             report = await build_report(identity, days=days)
             # Sem atividade no período = sem mensagem (silêncio > spam vazio)
             if report["sections"]["atendimento"]["conversas_ativas"] == 0:
@@ -449,13 +501,21 @@ async def run_owner_reports() -> None:
                 continue
 
             msg = format_report_whatsapp(identity, report, freq)
-            await wa.notify_owner(identity.owner_phone, msg, client_id=client_id)
+            # Dono sempre recebe; extras (sócio/gerente) do drawer também.
+            targets = [identity.owner_phone]
+            for extra in (getattr(identity, "report_recipients", None) or []):
+                if extra and extra not in targets:
+                    targets.append(extra)
+            import asyncio
+            for target in targets:
+                await wa.notify_owner(target, msg, client_id=client_id)
+                await asyncio.sleep(0.3)
             await cache.set_with_ttl(marker_key, now.isoformat(), ttl=45 * 86400)
             sent += 1
-            log.info(f"owner_report | enviado | client={client_id} | freq={freq}")
-
-            import asyncio
-            await asyncio.sleep(0.3)
+            log.info(
+                f"owner_report | enviado | client={client_id} | freq={freq} | "
+                f"destinatarios={len(targets)}"
+            )
 
         except Exception as e:
             errors += 1

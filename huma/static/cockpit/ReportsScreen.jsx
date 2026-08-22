@@ -195,17 +195,15 @@ const ReportsScreen = () => {
   const [cmpFrom, setCmpFrom] = useStateR(_isoShift(_hojeIso(), -59));
   const [cmpTo, setCmpTo] = useStateR(_isoShift(_hojeIso(), -30));
   const [cmpPopOpen, setCmpPopOpen] = useStateR(false);
-  // Entrega automática (report_frequency REAL do cliente)
+  // Entrega automática (report_frequency REAL do cliente) — drawer do design
   const [freq, setFreq] = useStateR(null);
-  const [freqOpen, setFreqOpen] = useStateR(false);
-  const [freqBusy, setFreqBusy] = useStateR(false);
+  const [deliveryOpen, setDeliveryOpen] = useStateR(false);
 
   const [report, setReport] = useStateR(null);
   const [prevReport, setPrevReport] = useStateR(null);
   const [state, setState] = useStateR('loading'); // loading | ready | error
   const popRef = React.useRef(null);
   const cmpRef = React.useRef(null);
-  const freqRef = React.useRef(null);
 
   // Janela atual em datas concretas (o custom usa direto; 7/30/90 derivam de hoje)
   const hoje = _hojeIso();
@@ -235,23 +233,14 @@ const ReportsScreen = () => {
   }, [periodo, customFrom, customTo, compare, compareMode, cmpFrom, cmpTo]);
 
   useEffectR(() => {
-    window.fetchSettings().then(cfg => setFreq(cfg.report_frequency || 'weekly')).catch(() => {});
+    window.fetchSettings().then(({ settings }) => setFreq(settings.report_frequency || 'weekly')).catch(() => {});
     const h = (e) => {
       if (popRef.current && !popRef.current.contains(e.target)) setPopOpen(false);
       if (cmpRef.current && !cmpRef.current.contains(e.target)) setCmpPopOpen(false);
-      if (freqRef.current && !freqRef.current.contains(e.target)) setFreqOpen(false);
     };
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, []);
-
-  const salvarFreq = async (novo) => {
-    setFreqBusy(true);
-    try { await window.saveSettings({ report_frequency: novo }); setFreq(novo); }
-    catch (e) { /* mantém o anterior; badge não mente */ }
-    setFreqBusy(false);
-    setFreqOpen(false);
-  };
 
   const s = (report && report.sections) || {};
   const at = s.atendimento || {};
@@ -314,54 +303,26 @@ const ReportsScreen = () => {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          {/* Entrega automática — report_frequency REAL */}
-          <div ref={freqRef} style={{ position: 'relative' }}>
-            <button onClick={() => setFreqOpen(o => !o)} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 7,
-              fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-              padding: '7px 14px', borderRadius: 999, cursor: 'pointer',
-              border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)', color: 'var(--ink-2)',
-            }}>
-              {freq && freq !== 'off' ? (
-                <>
-                  <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--sage)', boxShadow: '0 0 0 3px var(--sage-tint)', flexShrink: 0 }}/>
-                  <span>Automático · {(RD_FREQS.find(f => f[0] === freq) || [])[1] || freq}</span>
-                </>
-              ) : (
-                <>
-                  <Icon name="bell" size={14} stroke={1.7}/>
-                  <span>Receber automático</span>
-                </>
-              )}
-            </button>
-            {freqOpen && (
-              <div style={popStyle(230)}>
-                <Eyebrow>relatório no seu whatsapp</Eyebrow>
-                {RD_FREQS.map(([id, label]) => {
-                  const on = freq === id;
-                  return (
-                    <button key={id} onClick={() => salvarFreq(id)} disabled={freqBusy} style={{
-                      display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
-                      padding: '8px 10px', borderRadius: 10, cursor: 'pointer', width: '100%', boxSizing: 'border-box',
-                      border: `1px solid ${on ? 'var(--ink)' : 'var(--paper-edge)'}`,
-                      background: 'var(--paper-raised)',
-                      fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)',
-                      opacity: freqBusy ? 0.6 : 1, textTransform: 'capitalize',
-                    }}>
-                      <span style={{
-                        width: 15, height: 15, borderRadius: 999, flexShrink: 0, boxSizing: 'border-box',
-                        border: `1px solid ${on ? 'var(--ink)' : 'var(--ink-line)'}`,
-                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                      }}>
-                        {on && <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--ink)' }}/>}
-                      </span>
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
+          {/* Entrega automática — abre o drawer do design (report_frequency REAL) */}
+          <button onClick={() => setDeliveryOpen(true)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 7,
+            fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
+            padding: '7px 14px', borderRadius: 999, cursor: 'pointer',
+            border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)', color: 'var(--ink-2)',
+            transition: 'all 180ms cubic-bezier(0.22,1,0.36,1)',
+          }}>
+            {freq && freq !== 'off' ? (
+              <>
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--sage)', boxShadow: '0 0 0 3px var(--sage-tint)', flexShrink: 0 }}/>
+                <span>Automático · {(RD_FREQS.find(f => f[0] === freq) || [])[1] || freq}</span>
+              </>
+            ) : (
+              <>
+                <Icon name="bell" size={14} stroke={1.7}/>
+                <span>Receber automático</span>
+              </>
             )}
-          </div>
+          </button>
 
           <ExportButton label="⬇ Planilha (.xlsx)" format="xlsx" days={days}/>
           <ExportButton label="⬇ Apresentação (.pptx)" format="pptx" days={days}/>
@@ -592,6 +553,14 @@ const ReportsScreen = () => {
           </>
         )}
       </div>
+
+      {deliveryOpen && (
+        <ReportDeliveryDrawer
+          sections={s}
+          onClose={() => setDeliveryOpen(false)}
+          onSaved={(novaFreq) => setFreq(novaFreq)}
+        />
+      )}
     </div>
   );
 };

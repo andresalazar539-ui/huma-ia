@@ -636,6 +636,51 @@ class ClientIdentity(BaseModel):
         if v not in ("daily", "weekly", "biweekly", "monthly", "off"):
             raise ValueError("report_frequency deve ser daily, weekly, biweekly, monthly ou off")
         return v
+
+    # Entrega automática do relatório (drawer "Receber automático")
+    report_hour: int = Field(
+        default=8,
+        description="Hora BRT (0-23) em que o relatório automático chega.",
+    )
+    report_day: str = Field(
+        default="",
+        description=(
+            "Dia do envio do relatório: semanal/quinzenal = '0'..'6' "
+            "(0=segunda); mensal = '1'..'28'; '' = qualquer dia."
+        ),
+    )
+    report_recipients: list[str] = Field(
+        default_factory=list,
+        description=(
+            "WhatsApps EXTRAS que também recebem o relatório (sócio, "
+            "gerente...), com DDI e só dígitos. O owner_phone sempre recebe."
+        ),
+    )
+
+    @field_validator("report_hour")
+    @classmethod
+    def _valid_report_hour(cls, v: int) -> int:
+        if not (0 <= int(v) <= 23):
+            raise ValueError("report_hour deve estar entre 0 e 23")
+        return int(v)
+
+    @field_validator("report_day")
+    @classmethod
+    def _valid_report_day(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v and (not v.isdigit() or not (0 <= int(v) <= 28)):
+            raise ValueError("report_day deve ser '' ou um número de 0 a 28")
+        return v
+
+    @field_validator("report_recipients")
+    @classmethod
+    def _valid_report_recipients(cls, v: list) -> list:
+        out = []
+        for item in (v or [])[:5]:  # máx 5 destinatários extras
+            digits = "".join(ch for ch in str(item) if ch.isdigit())
+            if 10 <= len(digits) <= 15:
+                out.append(digits)
+        return out
     # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe
     # tudo até desligar conscientemente. notify_on_payment já era enviado.
     notify_owner_on_appointment: bool = Field(
