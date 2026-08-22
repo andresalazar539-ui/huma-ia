@@ -533,7 +533,8 @@ _BASE_STYLE = """
       border: 1px solid var(--paper-edge);
       border-radius: var(--r-xl); padding: 36px 32px 30px;
       max-width: 420px; width: 100%;
-      box-shadow: var(--sh-4);
+      box-shadow: var(--sh-5);
+      position: relative; z-index: 1;
     }
     .brand {
       font-family: var(--font-sans); font-weight: 600; font-size: 24px;
@@ -601,7 +602,125 @@ _BASE_STYLE = """
       transition: background 120ms var(--ease-out), color 120ms var(--ease-out);
     }
     .tab.active { background: var(--paper-raised); color: var(--ink); box-shadow: var(--sh-2); }
+
+    /* ---- Fundo: Cockpit desfocado atrás do card (teaser do produto).
+       Réplica decorativa em CSS puro — sem screenshot, sem JS, respeita
+       modo claro/escuro pelos tokens. pointer-events:none = puro cenário. ---- */
+    .mock { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; user-select: none; }
+    .mock-blur {
+      position: absolute; inset: -28px;
+      display: flex; gap: 18px; padding: 46px 48px;
+      filter: blur(7px) saturate(0.96);
+      transform: scale(1.02);
+    }
+    .mock-side {
+      width: 212px; flex: none; align-self: stretch;
+      background: var(--paper-raised); border: 1px solid var(--paper-edge);
+      border-radius: var(--r-lg); padding: 20px 14px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .m-logo { height: 26px; width: 96px; border-radius: 7px; background: var(--ink); opacity: 0.82; margin-bottom: 14px; }
+    .m-nav { height: 34px; flex: none; border-radius: var(--r-sm); background: var(--paper-sunk); }
+    .m-nav.on { background: var(--terracotta-soft); }
+    .mock-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 18px; }
+    .mock-top { display: flex; align-items: center; justify-content: space-between; }
+    .m-title { height: 28px; width: 230px; border-radius: 8px; background: var(--ink); opacity: 0.75; }
+    .m-pill { height: 26px; width: 132px; border-radius: var(--r-full); background: var(--sage-soft); }
+    .mock-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+    .m-kpi { background: var(--paper-raised); border: 1px solid var(--paper-edge); border-radius: var(--r-lg); padding: 16px; }
+    .m-kpi i { display: block; height: 10px; width: 60%; border-radius: 5px; background: var(--paper-sunk); }
+    .m-kpi b { display: block; height: 26px; width: 46%; border-radius: 7px; background: var(--ink); opacity: 0.78; margin: 12px 0 9px; }
+    .m-kpi s { display: block; height: 10px; width: 34%; border-radius: 5px; background: var(--sage-soft); text-decoration: none; }
+    .m-kpi.hot s { background: var(--terracotta-soft); }
+    .mock-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 3fr 2fr; gap: 18px; }
+    .mock-chart {
+      background: var(--paper-raised); border: 1px solid var(--paper-edge);
+      border-radius: var(--r-lg); padding: 22px 20px 20px;
+      display: flex; align-items: flex-end; gap: 12px;
+    }
+    .mock-chart i { flex: 1; border-radius: 6px 6px 0 0; background: var(--terracotta-soft); }
+    .mock-chart i.t { background: var(--terracotta); opacity: 0.72; }
+    .mock-chart i.s { background: var(--sage-soft); }
+    .mock-list {
+      background: var(--paper-raised); border: 1px solid var(--paper-edge);
+      border-radius: var(--r-lg); padding: 14px;
+      display: flex; flex-direction: column; gap: 12px; overflow: hidden;
+    }
+    .m-row { display: flex; align-items: center; gap: 10px; flex: none; }
+    .m-av { width: 34px; height: 34px; flex: none; border-radius: var(--r-full); background: var(--terracotta-soft); }
+    .m-row:nth-child(even) .m-av { background: var(--sage-soft); }
+    .m-lines { flex: 1; min-width: 0; }
+    .m-lines i { display: block; height: 9px; border-radius: 5px; background: var(--paper-sunk); margin: 4px 0; }
+    .m-lines i:first-child { background: var(--ink-line); }
+    .m-dot { width: 9px; height: 9px; flex: none; border-radius: var(--r-full); background: var(--status-live); }
+    .m-dot.wait { background: var(--status-waiting); }
+    .m-dot.book { background: var(--status-booked); }
+    /* Véu: mais denso no centro (card legível), mais aberto nas bordas
+       (o Cockpit aparece e desperta a curiosidade). */
+    .mock-scrim {
+      position: absolute; inset: 0;
+      background: radial-gradient(
+        760px 660px at 50% 46%,
+        color-mix(in srgb, var(--paper) 68%, transparent) 0%,
+        color-mix(in srgb, var(--paper) 34%, transparent) 100%
+      );
+    }
+    @media (max-width: 720px) {
+      .mock-side { display: none; }
+      .mock-kpis { grid-template-columns: repeat(2, 1fr); }
+      .mock-body { grid-template-columns: 1fr; }
+      .mock-list { display: none; }
+    }
 """
+
+# Cenário de fundo: o Cockpit "de mentira" que aparece desfocado atrás do
+# card de login. Puramente decorativo (aria-hidden) — sidebar, KPIs, gráfico
+# e lista de conversas, tudo em blocos abstratos com os tokens oficiais.
+_BACKDROP_HTML = """<div class="mock" aria-hidden="true">
+    <div class="mock-blur">
+      <div class="mock-side">
+        <div class="m-logo"></div>
+        <div class="m-nav on"></div>
+        <div class="m-nav"></div>
+        <div class="m-nav"></div>
+        <div class="m-nav"></div>
+        <div class="m-nav"></div>
+        <div class="m-nav"></div>
+      </div>
+      <div class="mock-main">
+        <div class="mock-top">
+          <div class="m-title"></div>
+          <div class="m-pill"></div>
+        </div>
+        <div class="mock-kpis">
+          <div class="m-kpi"><i></i><b></b><s></s></div>
+          <div class="m-kpi hot"><i></i><b></b><s></s></div>
+          <div class="m-kpi"><i></i><b></b><s></s></div>
+          <div class="m-kpi hot"><i></i><b></b><s></s></div>
+        </div>
+        <div class="mock-body">
+          <div class="mock-chart">
+            <i style="height:34%"></i>
+            <i class="t" style="height:58%"></i>
+            <i style="height:46%"></i>
+            <i class="t" style="height:78%"></i>
+            <i class="s" style="height:52%"></i>
+            <i class="t" style="height:88%"></i>
+            <i style="height:64%"></i>
+            <i class="s" style="height:42%"></i>
+          </div>
+          <div class="mock-list">
+            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:62%"></i><i style="width:86%"></i></div><span class="m-dot"></span></div>
+            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:48%"></i><i style="width:74%"></i></div><span class="m-dot wait"></span></div>
+            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:70%"></i><i style="width:58%"></i></div><span class="m-dot book"></span></div>
+            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:54%"></i><i style="width:80%"></i></div><span class="m-dot"></span></div>
+            <div class="m-row"><div class="m-av"></div><div class="m-lines"><i style="width:66%"></i><i style="width:44%"></i></div><span class="m-dot wait"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="mock-scrim"></div>
+  </div>"""
 
 _GOOGLE_ICON = (
     '<svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53'
@@ -632,6 +751,7 @@ async def login_page() -> HTMLResponse:
   <style>{_BASE_STYLE}</style>
 </head>
 <body>
+  {_BACKDROP_HTML}
   <div class="card">
     {_BRAND_HTML}
     <div class="tabs">
@@ -805,6 +925,7 @@ async def oauth_callback_page() -> HTMLResponse:
   <style>{_BASE_STYLE}</style>
 </head>
 <body>
+  {_BACKDROP_HTML}
   <div class="card">
     {_BRAND_HTML}
     <h1>Entrando...</h1>
@@ -862,6 +983,7 @@ async def reset_password_page() -> HTMLResponse:
   <style>{_BASE_STYLE}</style>
 </head>
 <body>
+  {_BACKDROP_HTML}
   <div class="card">
     {_BRAND_HTML}
     <h1>Definir sua senha</h1>
