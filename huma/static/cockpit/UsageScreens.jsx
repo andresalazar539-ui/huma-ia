@@ -116,10 +116,10 @@ const UsoScreen = ({ onGoto }) => {
               <UsageBar
                 icon="gift"
                 label="crédito por indicação"
-                percent={Math.min(100, Math.round((refLeft / refCredited) * 100))}
+                percent={Math.min(100, Math.floor((refLeft / refCredited) * 100))}
                 barColor="var(--sage)"
                 barBg="var(--sage-tint)"
-                info={`${refLeft} de ${refCredited} conversas extras`}
+                info={`Restam ${refLeft} das ${refCredited} conversas ganhas`}
                 ctaLabel="Indicar"
                 ctaTone="sage"
                 onCta={() => onGoto('indicacao')}
@@ -139,10 +139,10 @@ const UsoScreen = ({ onGoto }) => {
               <UsageBar
                 icon="zap"
                 label="crédito extra"
-                percent={Math.min(100, Math.round((extraLeft / extraCredited) * 100))}
+                percent={Math.min(100, Math.floor((extraLeft / extraCredited) * 100))}
                 barColor="var(--ember)"
                 barBg="var(--ember-soft)"
-                info={`${extraLeft} de ${extraCredited} conversas extras compradas`}
+                info={`Restam ${extraLeft} das ${extraCredited} conversas compradas`}
                 ctaLabel="Comprar mais"
                 ctaTone="ember"
                 onCta={() => onGoto('creditos')}
