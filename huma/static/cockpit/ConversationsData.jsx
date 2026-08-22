@@ -323,7 +323,20 @@ async function saveSettings(partial) {
   return r.json();
 }
 
-Object.assign(window, { fetchSettings, saveSettings });
+// Envia o relatório AGORA (teste do drawer Receber automático).
+// target: WhatsApp com DDI ou e-mail; vazio = dono + extras salvos.
+async function sendReportTest(target = '') {
+  const url = `/api/clients/${encodeURIComponent(CLIENT_ID)}/reports/send-test`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ target }),
+  });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+Object.assign(window, { fetchSettings, saveSettings, sendReportTest });
 
 /* ---------------- Divulgação (links rastreáveis + Balcão) ---------------- */
 // Gera link wa.me rastreável (código #h) — a origem aparece nos relatórios.

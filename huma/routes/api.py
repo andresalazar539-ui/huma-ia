@@ -383,6 +383,45 @@ async def export_report(
     )
 
 
+class ReportTestRequest(BaseModel):
+    """Body do envio de teste do relatório (drawer Receber automático)."""
+    target: str = Field(
+        default="",
+        description=(
+            "Destino único do teste: WhatsApp com DDI (só dígitos) ou "
+            "e-mail. Vazio = dono + destinatários extras salvos."
+        ),
+    )
+
+
+@router.post("/api/clients/{client_id}/reports/send-test", tags=["Cockpit"])
+async def send_test_report(
+    client_id: str,
+    body: Optional[ReportTestRequest] = None,
+    client=Depends(verify_api_key),
+) -> dict:
+    """
+    Envia o relatório do período AGORA — botão "Salvar e enviar teste"
+    do drawer Receber automático. Telefone → WhatsApp; e-mail → Resend.
+    Não toca no dedup do job automático (o envio agendado segue normal).
+    """
+    target = (body.target if body else "").strip()
+    if target and "@" not in target:
+        digits = "".join(ch for ch in target if ch.isdigit())
+        if not (10 <= len(digits) <= 15):
+            raise HTTPException(400, "Destino inválido: use WhatsApp com DDI ou e-mail")
+        target = digits
+
+    from huma.services import report_service
+    result = await report_service.send_report_now(client, target=target)
+    if not result["total"]:
+        raise HTTPException(
+            400, "Nenhum destinatário: defina seu WhatsApp nos Ajustes ou informe um destino",
+        )
+    log.info(f"Relatório teste | client={client_id} | sent={result['sent']}/{result['total']}")
+    return result
+
+
 @router.get("/api/clients/{client_id}/tracking-link", tags=["Cockpit"])
 async def get_tracking_link(
     client_id: str,

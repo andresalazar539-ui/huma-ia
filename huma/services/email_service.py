@@ -130,3 +130,40 @@ async def send_subscription_welcome(
         f"Sua IA agora é oficial — bem-vindo ao {plan_name} 🚀",
         _shell(f"Agora é pra valer, {nome}!", body),
     )
+
+
+async def send_owner_report(
+    to: str,
+    subject: str,
+    title: str,
+    intro: str,
+    linhas: list[str],
+    rodape: str = "",
+) -> bool:
+    """
+    Relatório de resultados por e-mail (drawer "Receber automático").
+    `linhas` são as mesmas do texto do WhatsApp (emoji + frase) — um
+    canal, uma verdade. Nunca levanta exceção: retorna False em falha.
+    """
+    linhas_html = "<br>\n              ".join(linhas)
+    body = f"""
+        <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:{_INK_SOFT};margin:0 0 16px 0;">
+          {intro}
+        </p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:{_PAPER};border-radius:10px;margin:0 0 20px 0;">
+          <tr><td style="padding:16px 18px;">
+            <p style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:2;color:{_INK_SOFT};margin:0;">
+              {linhas_html}
+            </p>
+          </td></tr>
+        </table>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px 0;">
+          <tr><td style="background-color:{_EMBER};border-radius:8px;">
+            <a href="https://app.humaia.com.br/cockpit" target="_blank" style="display:inline-block;padding:13px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Ver detalhes no Cockpit</a>
+          </td></tr>
+        </table>
+        <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{_MUTED};margin:0;">
+          {rodape}
+        </p>
+    """
+    return await send_email(to, subject, _shell(title, body))

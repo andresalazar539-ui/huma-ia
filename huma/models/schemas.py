@@ -652,8 +652,9 @@ class ClientIdentity(BaseModel):
     report_recipients: list[str] = Field(
         default_factory=list,
         description=(
-            "WhatsApps EXTRAS que também recebem o relatório (sócio, "
-            "gerente...), com DDI e só dígitos. O owner_phone sempre recebe."
+            "Destinatários EXTRAS do relatório (sócio, gerente...): "
+            "WhatsApp com DDI (só dígitos) ou e-mail. O owner_phone "
+            "sempre recebe no WhatsApp."
         ),
     )
 
@@ -677,8 +678,17 @@ class ClientIdentity(BaseModel):
     def _valid_report_recipients(cls, v: list) -> list:
         out = []
         for item in (v or [])[:5]:  # máx 5 destinatários extras
-            digits = "".join(ch for ch in str(item) if ch.isdigit())
-            if 10 <= len(digits) <= 15:
+            raw = str(item).strip()
+            if "@" in raw:
+                # E-mail: validação leve (local@dominio.tld, sem espaço) —
+                # quem decide de verdade é o Resend na hora do envio
+                email = raw.lower()
+                local, _, domain = email.partition("@")
+                if local and "." in domain and " " not in email and email not in out:
+                    out.append(email)
+                continue
+            digits = "".join(ch for ch in raw if ch.isdigit())
+            if 10 <= len(digits) <= 15 and digits not in out:
                 out.append(digits)
         return out
     # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe

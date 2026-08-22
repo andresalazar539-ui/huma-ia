@@ -165,6 +165,49 @@ class TestWhatsAppText:
         assert "de ontem" in msg
 
 
+class TestEmailFormat:
+
+    def test_email_mesmo_conteudo_do_whatsapp(self, monkeypatch):
+        _fake_supa(monkeypatch, conversations=_CONVS, payments=_PAYMENTS, classifications=_CLASSIFICATIONS)
+        identity = _identity(["sell_digital"])
+        report = asyncio.run(rs.build_report(identity, days=7))
+        em = rs.format_report_email(identity, report, "weekly")
+        blob = "\n".join(em["linhas"])
+        assert "R$ 500,00" in blob
+        assert "da semana" in em["subject"]
+        assert "Clínica Relatório" in em["subject"]
+        assert em["title"] == "Resultado da semana"
+        # Mesmas linhas do WhatsApp (um canal, uma verdade)
+        msg = rs.format_report_whatsapp(identity, report, "weekly")
+        for linha in em["linhas"]:
+            assert linha in msg
+
+
+class TestRecipientsComEmail:
+    """report_recipients aceita WhatsApp (dígitos) E e-mail."""
+
+    def test_email_aceito_e_normalizado(self):
+        ident = ClientIdentity(
+            client_id="x", business_name="B",
+            report_recipients=["Socio@Empresa.com.br", "5511888887777"],
+        )
+        assert ident.report_recipients == ["socio@empresa.com.br", "5511888887777"]
+
+    def test_invalidos_descartados(self):
+        ident = ClientIdentity(
+            client_id="x", business_name="B",
+            report_recipients=["sem-arroba", "a@b", "123", "ok@dominio.com"],
+        )
+        assert ident.report_recipients == ["ok@dominio.com"]
+
+    def test_duplicados_descartados(self):
+        ident = ClientIdentity(
+            client_id="x", business_name="B",
+            report_recipients=["a@b.com", "a@b.com", "5511888887777", "5511888887777"],
+        )
+        assert ident.report_recipients == ["a@b.com", "5511888887777"]
+
+
 class TestOwnerReportJob:
 
     def _patch_hour(self, monkeypatch, hour):
@@ -268,6 +311,49 @@ class TestOwnerReportJob:
         asyncio.run(rs.run_owner_reports())
         assert sent == ["5511999998888", "5511888887777"]
 
+    def test_destinatario_email_recebe_por_email(self, monkeypatch):
+        self._patch_hour(monkeypatch, 11)
+        _fake_supa(monkeypatch, clients=[
+            {"client_id": "cli_rep", "report_frequency": "weekly", "owner_phone": "5511999998888"},
+        ])
+        wpp, mails = [], []
+
+        async def ping(): return True
+        async def get_value(key): return None
+        async def set_with_ttl(key, value, ttl=0): pass
+
+        import huma.services.db_service as db_mod
+        import huma.services.email_service as mail_mod
+        import huma.services.whatsapp_service as wa_mod
+
+        async def get_client(cid):
+            ident = _identity(["schedule"])
+            return ident.model_copy(update={"report_recipients": ["socio@empresa.com"]})
+
+        async def notify_owner(phone, msg, client_id=""):
+            wpp.append(phone)
+            return "m1"
+
+        async def send_owner_report(to, subject, title, intro, linhas, rodape=""):
+            mails.append(to)
+            return True
+
+        async def fake_build(identity, days=7, date_from="", date_to=""):
+            return {"sections": {"atendimento": {"conversas_ativas": 3, "conversas_novas": 1, "fora_do_horario": 0},
+                                 "funil": {}, "follow_up": {}, "inteligencia": {"top_assuntos": []}}}
+
+        monkeypatch.setattr(rs.cache, "ping", ping)
+        monkeypatch.setattr(rs.cache, "get_value", get_value)
+        monkeypatch.setattr(rs.cache, "set_with_ttl", set_with_ttl)
+        monkeypatch.setattr(db_mod, "get_client", get_client)
+        monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
+        monkeypatch.setattr(mail_mod, "send_owner_report", send_owner_report)
+        monkeypatch.setattr(rs, "build_report", fake_build)
+
+        asyncio.run(rs.run_owner_reports())
+        assert wpp == ["5511999998888"]
+        assert mails == ["socio@empresa.com"]
+
 
     def test_frequencia_respeitada_nao_reenvia(self, monkeypatch):
         self._patch_hour(monkeypatch, 11)
@@ -308,6 +394,49 @@ class TestOwnerReportJob:
 
         asyncio.run(rs.run_owner_reports())
         assert sent == []
+
+
+class TestSendReportNow:
+    """Envio sob demanda (botão de teste do drawer)."""
+
+    def _setup(self, monkeypatch):
+        wpp, mails = [], []
+        import huma.services.email_service as mail_mod
+        import huma.services.whatsapp_service as wa_mod
+
+        async def notify_owner(phone, msg, client_id=""):
+            wpp.append(phone)
+            return "m1"
+
+        async def send_owner_report(to, subject, title, intro, linhas, rodape=""):
+            mails.append(to)
+            return True
+
+        async def fake_build(identity, days=7, date_from="", date_to=""):
+            return {"sections": {"atendimento": {"conversas_ativas": 2, "conversas_novas": 1, "fora_do_horario": 0},
+                                 "funil": {}, "follow_up": {}, "inteligencia": {"top_assuntos": []}}}
+
+        monkeypatch.setattr(wa_mod, "notify_owner", notify_owner)
+        monkeypatch.setattr(mail_mod, "send_owner_report", send_owner_report)
+        monkeypatch.setattr(rs, "build_report", fake_build)
+        return wpp, mails
+
+    def test_sem_target_manda_pro_dono_e_extras(self, monkeypatch):
+        wpp, mails = self._setup(monkeypatch)
+        ident = _identity(["schedule"]).model_copy(
+            update={"report_recipients": ["socio@empresa.com", "5511888887777"]},
+        )
+        result = asyncio.run(rs.send_report_now(ident))
+        assert wpp == ["5511999998888", "5511888887777"]
+        assert mails == ["socio@empresa.com"]
+        assert result["sent"] == 3 and result["total"] == 3
+
+    def test_target_email_unico(self, monkeypatch):
+        wpp, mails = self._setup(monkeypatch)
+        result = asyncio.run(rs.send_report_now(_identity(["schedule"]), target="andre@x.com"))
+        assert wpp == []
+        assert mails == ["andre@x.com"]
+        assert result["results"][0]["channel"] == "email"
 
 
 class TestClientDueNow:
@@ -372,6 +501,59 @@ class TestReportsEndpoint:
         resp = TestClient(app).get("/api/clients/cli_rep/reports?days=30", cookies=cookies)
         assert resp.status_code == 200
         assert resp.json()["client_id"] == "cli_rep"
+
+
+class TestSendTestEndpoint:
+
+    def test_sem_auth_401(self):
+        from fastapi.testclient import TestClient
+        from huma.app import app
+        resp = TestClient(app).post("/api/clients/cli_rep/reports/send-test", json={})
+        assert resp.status_code == 401
+
+    def test_envia_pro_target_informado(self, monkeypatch):
+        import huma.core.auth as auth_mod
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        identity = _identity(["sell_digital"])
+
+        async def get_client(cid):
+            return identity if cid == "cli_rep" else None
+
+        async def fake_send(client, target=""):
+            assert target == "andre@x.com"
+            return {"results": [{"target": target, "channel": "email", "ok": True}],
+                    "sent": 1, "total": 1}
+
+        monkeypatch.setattr(auth_mod, "get_client", get_client)
+        monkeypatch.setattr(auth_mod, "SESSION_SECRET", "segredo-teste")
+        monkeypatch.setattr(rs, "send_report_now", fake_send)
+
+        cookies = {"huma_session": auth_mod.create_session_token("cli_rep")}
+        resp = TestClient(app).post(
+            "/api/clients/cli_rep/reports/send-test",
+            json={"target": "andre@x.com"}, cookies=cookies,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["sent"] == 1
+
+    def test_target_invalido_400(self, monkeypatch):
+        import huma.core.auth as auth_mod
+        from fastapi.testclient import TestClient
+        from huma.app import app
+
+        async def get_client(cid):
+            return _identity(["sell_digital"])
+
+        monkeypatch.setattr(auth_mod, "get_client", get_client)
+        monkeypatch.setattr(auth_mod, "SESSION_SECRET", "segredo-teste")
+        cookies = {"huma_session": auth_mod.create_session_token("cli_rep")}
+        resp = TestClient(app).post(
+            "/api/clients/cli_rep/reports/send-test",
+            json={"target": "123"}, cookies=cookies,
+        )
+        assert resp.status_code == 400
 
 
 class TestReportFrequencyValidation:

@@ -52,6 +52,9 @@ const rdMaskPhone = (raw) => {
   return `${cc}${rest.slice(0, 2)} ${rest.slice(2, -4)}-${rest.slice(-4)}`;
 };
 
+const rdIsEmail = (v) => String(v || '').includes('@');
+const rdMaskDest = (v) => rdIsEmail(v) ? v : rdMaskPhone(v);
+
 // Prévia — bolha estilo WhatsApp com os NÚMEROS REAIS do período aberto
 const RDPreview = ({ cfg, sections }) => {
   const s = sections || {};
@@ -89,6 +92,7 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
   const [cfg, setCfg] = useStateRD(null);   // null = carregando settings reais
   const [ownerPhone, setOwnerPhone] = useStateRD('');
   const [saveState, setSaveState] = useStateRD('idle'); // idle | saving | saved | error
+  const [testState, setTestState] = useStateRD('idle'); // idle | sending | sent | error
   const [adding, setAdding] = useStateRD(false);
   const [novoValor, setNovoValor] = useStateRD('');
 
@@ -127,30 +131,54 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
   const dis = !cfg.enabled;
   const dimStyle = { opacity: dis ? 0.4 : 1, pointerEvents: dis ? 'none' : 'auto', transition: 'opacity 180ms cubic-bezier(0.22,1,0.36,1)' };
 
+  const payload = () => ({
+    report_frequency: cfg.enabled ? cfg.freq : 'off',
+    report_hour: parseInt(cfg.hora),
+    report_day: String((cfg.freq === 'monthly' ? cfg.diaMes : cfg.diaSemana) || ''),
+    report_recipients: cfg.recipients,
+  });
+
   const salvar = async () => {
     setSaveState('saving');
-    const freqFinal = cfg.enabled ? cfg.freq : 'off';
-    const day = cfg.freq === 'monthly' ? cfg.diaMes : cfg.diaSemana;
     try {
-      await window.saveSettings({
-        report_frequency: freqFinal,
-        report_hour: parseInt(cfg.hora),
-        report_day: String(day || ''),
-        report_recipients: cfg.recipients,
-      });
+      const p = payload();
+      await window.saveSettings(p);
       setSaveState('saved');
-      onSaved && onSaved(freqFinal);
+      onSaved && onSaved(p.report_frequency);
       setTimeout(onClose, 900);
     } catch (e) {
       setSaveState('error');
     }
   };
 
+  // Salva a configuração atual e manda o relatório AGORA pra todo mundo
+  // da lista (você + extras) — telefone no WhatsApp, e-mail no e-mail.
+  const enviarTeste = async () => {
+    setTestState('sending');
+    try {
+      const p = payload();
+      await window.saveSettings(p);
+      onSaved && onSaved(p.report_frequency);
+      await window.sendReportTest();
+      setTestState('sent');
+      setTimeout(() => setTestState('idle'), 3000);
+    } catch (e) {
+      setTestState('error');
+    }
+  };
+
   const addDest = () => {
-    const digits = novoValor.replace(/\D/g, '');
-    if (digits.length < 10) return;
     if (cfg.recipients.length >= 5) return;
-    set({ recipients: [...cfg.recipients, digits] });
+    const raw = novoValor.trim();
+    let dest = '';
+    if (raw.includes('@')) {
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) dest = raw.toLowerCase();
+    } else {
+      const digits = raw.replace(/\D/g, '');
+      if (digits.length >= 10 && digits.length <= 15) dest = digits;
+    }
+    if (!dest || cfg.recipients.includes(dest)) return;
+    set({ recipients: [...cfg.recipients, dest] });
     setNovoValor(''); setAdding(false);
   };
 
@@ -309,10 +337,10 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
                     background: 'var(--sage-tint)', color: 'var(--sage-ink)',
                     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   }}>
-                    <Icon name="message" size={13} stroke={1.7}></Icon>
+                    <Icon name={rdIsEmail(dest) ? 'mail' : 'message'} size={13} stroke={1.7}></Icon>
                   </span>
                   <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {rdMaskPhone(dest)}
+                    {rdMaskDest(dest)}
                   </span>
                   <button onClick={() => set({ recipients: cfg.recipients.filter((_, j) => j !== i) })}
                     style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--ink-4)', padding: 2, display: 'inline-flex' }}>
@@ -322,9 +350,9 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
               ))}
               {adding ? (
                 <div style={{ display: 'flex', gap: 8, padding: '12px 14px', borderTop: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
-                  <input autoFocus value={novoValor} onChange={e => setNovoValor(e.target.value.replace(/[^\d+\s()-]/g, ''))}
+                  <input autoFocus value={novoValor} onChange={e => setNovoValor(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && addDest()}
-                    placeholder="5511999998888 (com DDI)"
+                    placeholder="5511999998888 ou nome@email.com"
                     style={{
                       flex: 1, background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 10,
                       padding: '7px 10px', fontFamily: 'var(--font-mono)',
@@ -342,13 +370,13 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
                     fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, textAlign: 'left',
                   }}>
                     <Icon name="plus" size={14} stroke={1.8}></Icon>
-                    Adicionar outro WhatsApp
+                    Adicionar WhatsApp ou e-mail
                   </button>
                 )
               )}
             </div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', marginTop: 8 }}>
-              sócio, gerente, contador — todo mundo na mesma página
+              sócio, gerente, contador — WhatsApp ou e-mail, todo mundo na mesma página
             </div>
           </div>
 
@@ -361,15 +389,34 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
 
         {/* Footer */}
         <div style={{ padding: '14px 24px 18px', borderTop: '1px solid var(--paper-edge)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <Button variant="primary" size="lg" disabled={saveState === 'saving'} onClick={salvar}>
-            {saveState === 'saving' ? 'Salvando…' : saveState === 'saved' ? 'Salvo ✓' : 'Salvar'}
-          </Button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+              <Button variant="ghost" size="lg" disabled={testState === 'sending' || saveState === 'saving'} onClick={enviarTeste}>
+                {testState === 'sending' ? 'Enviando…' : testState === 'sent' ? 'Teste enviado ✓' : 'Salvar e testar'}
+              </Button>
+            </div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+              <Button variant="primary" size="lg" disabled={saveState === 'saving' || testState === 'sending'} onClick={salvar}>
+                {saveState === 'saving' ? 'Salvando…' : saveState === 'saved' ? 'Salvo ✓' : 'Salvar'}
+              </Button>
+            </div>
+          </div>
           {saveState === 'error' && (
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--danger)', textAlign: 'center' }}>
               Não consegui salvar. Tenta de novo.
             </div>
           )}
-          {cfg.enabled && saveState !== 'error' && (
+          {testState === 'error' && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--danger)', textAlign: 'center' }}>
+              Não consegui enviar o teste. Confere seu WhatsApp nos Ajustes e tenta de novo.
+            </div>
+          )}
+          {testState === 'sent' && (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', textAlign: 'center' }}>
+              relatório enviado agora pra você e pros destinatários da lista
+            </div>
+          )}
+          {cfg.enabled && saveState !== 'error' && testState !== 'error' && testState !== 'sent' && (
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', textAlign: 'center' }}>
               o próximo chega {rdQuandoLabel(cfg)}
             </div>

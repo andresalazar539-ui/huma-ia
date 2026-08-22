@@ -319,12 +319,16 @@ async def build_report(
 # ================================================================
 
 
-def format_report_whatsapp(identity: ClientIdentity, report: dict, frequency: str = "weekly") -> str:
-    """Resumo compacto de outcome, no tom de sócio que presta contas."""
+def _report_lines(report: dict) -> tuple[list[str], str]:
+    """
+    Linhas de outcome do relatório — conteúdo compartilhado entre o
+    texto do WhatsApp e o corpo do e-mail (um canal, uma verdade).
+
+    Returns:
+        (linhas principais, linha de insight ou "" se não houver).
+    """
     s = report.get("sections", {})
-    label = FREQUENCY_LABELS.get(frequency, "do período")
-    nome = (identity.business_name or "seu negócio").strip()
-    lines = [f"📊 HUMA — resultado {label} ({nome})", ""]
+    lines: list[str] = []
 
     at = s.get("atendimento", {})
     linha_at = f"💬 {at.get('conversas_ativas', 0)} conversas atendidas ({at.get('conversas_novas', 0)} leads novos)"
@@ -373,13 +377,116 @@ def format_report_whatsapp(identity: ClientIdentity, report: dict, frequency: st
 
     intel = s.get("inteligencia", {})
     top = intel.get("top_assuntos") or []
-    if top:
-        lines.append("")
-        lines.append(f"🧠 Assunto mais pedido: {top[0]['tipo']} ({top[0]['vezes']}x)")
+    insight = f"🧠 Assunto mais pedido: {top[0]['tipo']} ({top[0]['vezes']}x)" if top else ""
+    return lines, insight
 
+
+def format_report_whatsapp(identity: ClientIdentity, report: dict, frequency: str = "weekly") -> str:
+    """Resumo compacto de outcome, no tom de sócio que presta contas."""
+    label = FREQUENCY_LABELS.get(frequency, "do período")
+    nome = (identity.business_name or "seu negócio").strip()
+    principais, insight = _report_lines(report)
+    lines = [f"📊 HUMA — resultado {label} ({nome})", ""]
+    lines.extend(principais)
+    if insight:
+        lines.append("")
+        lines.append(insight)
     lines.append("")
     lines.append("Detalhes no seu Cockpit, aba Relatórios.")
     return "\n".join(lines)
+
+
+def format_report_email(identity: ClientIdentity, report: dict, frequency: str = "weekly") -> dict:
+    """
+    Assunto/título/conteúdo do relatório pro e-mail do dono — mesmas
+    linhas do WhatsApp, embaladas pro send_owner_report do email_service.
+
+    Returns:
+        dict com subject, title, intro, linhas (list[str]) e rodape.
+    """
+    label = FREQUENCY_LABELS.get(frequency, "do período")
+    nome = (identity.business_name or "seu negócio").strip()
+    principais, insight = _report_lines(report)
+    linhas = principais + ([insight] if insight else [])
+    return {
+        "subject": f"📊 HUMA — resultado {label} ({nome})",
+        "title": f"Resultado {label}",
+        "intro": f"Enquanto você cuidava do resto, a HUMA trabalhou por {nome}. Olha o que aconteceu:",
+        "linhas": linhas,
+        "rodape": "Os detalhes completos, com funil e origem de cada lead, estão no Cockpit, aba Relatórios.",
+    }
+
+
+# ================================================================
+# ENVIO — canais mistos (telefone → WhatsApp, e-mail → Resend)
+# ================================================================
+
+
+async def _dispatch_report(
+    identity: ClientIdentity,
+    report: dict,
+    frequency: str,
+    targets: list[str],
+    client_id: str,
+) -> list[dict]:
+    """
+    Envia o relatório pra lista mista de destinos: com "@" vai por
+    e-mail (Resend), sem "@" vai pelo WhatsApp do canal do cliente.
+
+    Returns:
+        [{"target": str, "channel": "whatsapp"|"email", "ok": bool}]
+    """
+    import asyncio
+
+    from huma.services import email_service as mail
+    from huma.services import whatsapp_service as wa
+
+    msg = format_report_whatsapp(identity, report, frequency)
+    em = format_report_email(identity, report, frequency)
+    results: list[dict] = []
+    for target in targets:
+        if "@" in target:
+            ok = await mail.send_owner_report(
+                target, em["subject"], em["title"], em["intro"], em["linhas"], em["rodape"],
+            )
+            results.append({"target": target, "channel": "email", "ok": bool(ok)})
+        else:
+            mid = await wa.notify_owner(target, msg, client_id=client_id)
+            results.append({"target": target, "channel": "whatsapp", "ok": mid is not None})
+            await asyncio.sleep(0.3)  # pacing só entre mensagens de WhatsApp
+    return results
+
+
+async def send_report_now(identity: ClientIdentity, target: str = "") -> dict:
+    """
+    Monta e envia o relatório AGORA (botão "Enviar teste" do drawer).
+
+    Ignora hora/dia/dedup do job — teste é sob demanda e não marca o
+    Redis, então o envio automático segue normal. Período = o da
+    frequência configurada (off/inválida → semanal).
+
+    Args:
+        target: destino único (WhatsApp só dígitos ou e-mail). Vazio →
+            dono + destinatários extras salvos.
+
+    Returns:
+        {"results": [...], "sent": int, "total": int}
+    """
+    freq = identity.report_frequency if identity.report_frequency in FREQUENCY_DAYS else "weekly"
+    report = await build_report(identity, days=FREQUENCY_DAYS[freq])
+    if target:
+        targets = [target]
+    else:
+        targets = list(dict.fromkeys(
+            t for t in [identity.owner_phone, *(identity.report_recipients or [])] if t
+        ))
+    results = await _dispatch_report(identity, report, freq, targets, identity.client_id)
+    ok = sum(1 for r in results if r["ok"])
+    log.info(
+        f"owner_report | teste sob demanda | client={identity.client_id} | "
+        f"ok={ok}/{len(results)}"
+    )
+    return {"results": results, "sent": ok, "total": len(results)}
 
 
 # ================================================================
@@ -439,7 +546,6 @@ async def run_owner_reports() -> None:
     Redis fora do ar → pula o ciclo (melhor silêncio que spam).
     """
     from huma.services import db_service as db
-    from huma.services import whatsapp_service as wa
 
     now = datetime.utcnow()
 
@@ -500,21 +606,19 @@ async def run_owner_reports() -> None:
                 skipped += 1
                 continue
 
-            msg = format_report_whatsapp(identity, report, freq)
-            # Dono sempre recebe; extras (sócio/gerente) do drawer também.
+            # Dono sempre recebe no WhatsApp; extras (sócio/gerente) do
+            # drawer vão pelo canal do formato: dígitos → WhatsApp, @ → e-mail.
             targets = [identity.owner_phone]
             for extra in (getattr(identity, "report_recipients", None) or []):
                 if extra and extra not in targets:
                     targets.append(extra)
-            import asyncio
-            for target in targets:
-                await wa.notify_owner(target, msg, client_id=client_id)
-                await asyncio.sleep(0.3)
+            results = await _dispatch_report(identity, report, freq, targets, client_id)
             await cache.set_with_ttl(marker_key, now.isoformat(), ttl=45 * 86400)
             sent += 1
             log.info(
                 f"owner_report | enviado | client={client_id} | freq={freq} | "
-                f"destinatarios={len(targets)}"
+                f"destinatarios={len(results)} | "
+                f"ok={sum(1 for r in results if r['ok'])}"
             )
 
         except Exception as e:
