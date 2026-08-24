@@ -425,6 +425,14 @@ async def create_subscription_with_card(
         await cache.delete_key(f"wallet_bal:{client_id}")
         # Indicação: cliente virou pagante — credita o indicador (idempotente)
         await credit_referral_conversion(client_id)
+        # Analytics server-side (GA4/Meta): assinatura nova paga. create_task =
+        # zero latência no checkout; tx = preapproval_id (mesmo id que o
+        # frontend usa no dataLayer — GA4/Meta deduplicam navegador × servidor).
+        from huma.services import analytics_events as ae
+        asyncio.create_task(ae.track_purchase(
+            client_id, preapproval_id, float(amount),
+            item_id=plan.value, item_name=f"Plano {config['name']}", kind="assinatura",
+        ))
 
     log.info(
         f"ASSINATURA TRANSPARENTE | client={client_id} | plan={plan.value} | "
@@ -434,7 +442,12 @@ async def create_subscription_with_card(
         detail = f"Assinatura {config['name']} ativa! Suas {config['included_conversations']} conversas já estão na conta."
     else:
         detail = "Assinatura criada — aguardando confirmação do cartão. Isso pode levar alguns minutos."
-    return {"status": "ok", "subscription_status": local_status, "detail": detail}
+    return {
+        "status": "ok", "subscription_status": local_status, "detail": detail,
+        # preapproval_id: o frontend usa como transaction_id no dataLayer,
+        # casando com o purchase server-side (dedup GA4/Meta por id igual).
+        "preapproval_id": preapproval_id,
+    }
 
 
 # ================================================================
@@ -921,6 +934,19 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     # Indicação: se esta foi a PRIMEIRA cobrança paga do cliente, credita
     # o indicador (a marcação referral_credited_at faz só a 1ª agir).
     await credit_referral_conversion(client_id)
+    # Analytics server-side (GA4/Meta): renovação — venda que o navegador
+    # NUNCA veria. Valor real cobrado quando o MP informa (cupom %), senão
+    # preço de tabela. Dedup herdado do razão acima.
+    from huma.services import analytics_events as ae
+    _charged = float(
+        ((data.get("payment") or {}).get("transaction_amount"))
+        or data.get("transaction_amount")
+        or config["price_brl"]
+    )
+    asyncio.create_task(ae.track_purchase(
+        client_id, str(authorized_payment_id), _charged,
+        item_id=plan_value, item_name=f"Plano {config['name']}", kind="renovacao",
+    ))
     log.info(
         f"RENOVAÇÃO PAGA | client={client_id} | plan={plan_value} | "
         f"+{config['included_conversations']} conversas | apid={authorized_payment_id}"
@@ -1303,6 +1329,13 @@ async def credit_pack_purchase(mp_payment_id: str, ext_ref: str, payment_status:
             description=f"payid={mp_payment_id} pacote {pack_id} R${pack['price_brl']}",
         )
         await cache.delete_key(f"wallet_bal:{client_id}")
+        # Analytics server-side (GA4/Meta): pacote pago (cartão ou Pix).
+        # tx = payid do MP — o mesmo que o frontend usa (dedup por id igual).
+        from huma.services import analytics_events as ae
+        asyncio.create_task(ae.track_purchase(
+            client_id, str(mp_payment_id), float(pack["price_brl"]),
+            item_id=pack_id, item_name=f"Pacote +{pack['conversations']} conversas", kind="pacote",
+        ))
 
         try:
             from huma.services import whatsapp_service as wa
@@ -1383,6 +1416,13 @@ async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_s
         )
         await cache.delete_key(f"wallet_bal:{client_id}")
         await credit_referral_conversion(client_id)
+        # Analytics server-side (GA4/Meta): mesma renovação, formato
+        # alternativo do MP. Dedup herdado do razão (payid credita 1x).
+        from huma.services import analytics_events as ae
+        asyncio.create_task(ae.track_purchase(
+            client_id, str(mp_payment_id), float(config["price_brl"]),
+            item_id=plan_value, item_name=f"Plano {config['name']}", kind="renovacao",
+        ))
         log.info(
             f"RENOVAÇÃO PAGA (topic payment) | client={client_id} | plan={plan_value} | "
             f"+{config['included_conversations']} conversas | payid={mp_payment_id}"

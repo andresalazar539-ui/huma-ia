@@ -201,6 +201,18 @@ function App() {
     } catch (e) { /* analytics nunca derruba o app */ }
   }, [route]);
 
+  // Analytics: captura os cookies GA/Meta do dono e guarda no backend
+  // (alimenta o purchase server-side do webhook do MP). No load com um
+  // respiro de 3s (o GA precisa criar o cookie primeiro) e de novo ao
+  // entrar nas telas de compra — o ID mais fresco atribui melhor.
+  useEffect(() => {
+    const t = setTimeout(() => { window.sendAnalyticsIds?.(); }, 3000);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (['planos', 'checkout', 'creditos'].includes(route)) window.sendAnalyticsIds?.();
+  }, [route]);
+
   const [handoff, setHandoff] = useState(false);
   // Contexto do checkout transparente: {planId, coupon, couponInfo}
   const [checkoutCtx, setCheckoutCtx] = useState(null);

@@ -901,6 +901,32 @@ async def billing_cancel(client_id: str, _=Depends(verify_api_key)) -> dict:
     return result
 
 
+class AnalyticsIdsBody(BaseModel):
+    """Cookies de analytics do navegador do dono (valores CRUS; o backend parseia)."""
+    ga: str = Field(default="", max_length=128, description="Cookie _ga cru")
+    ga_stream: str = Field(default="", max_length=256, description="Cookie _ga_<stream> cru")
+    fbp: str = Field(default="", max_length=128, description="Cookie _fbp cru")
+    fbc: str = Field(default="", max_length=256, description="Cookie _fbc cru")
+
+
+@router.post("/api/clients/{client_id}/analytics-ids", tags=["Billing"])
+async def save_analytics_ids(
+    client_id: str, payload: AnalyticsIdsBody, _=Depends(verify_api_key)
+) -> dict:
+    """
+    Guarda os IDs de analytics do dono logado (GA client_id, fbp/fbc).
+
+    Alimenta as conversões server-side: quando o webhook do MP confirma
+    uma venda, o purchase sai pro GA4/Meta com estes IDs e a venda é
+    atribuída à campanha que trouxe o dono. Best-effort — nunca 500.
+    """
+    from huma.services import analytics_events as ae
+    saved = await ae.save_web_ids(
+        client_id, payload.ga, payload.ga_stream, payload.fbp, payload.fbc
+    )
+    return {"status": "ok", "saved": saved}
+
+
 # ── Cockpit (T2) ──
 
 @router.get("/api/conversations", tags=["Cockpit"])

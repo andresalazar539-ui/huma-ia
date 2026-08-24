@@ -86,6 +86,16 @@ SENTRY_DSN = clean_secret_env("SENTRY_DSN")
 # Dentro do GTM é que se pluga GA4, Meta Pixel etc. — sem mexer em código.
 GTM_CONTAINER_ID = os.getenv("GTM_CONTAINER_ID", "").strip()
 
+# ── Conversões server-side (purchase via webhook do MP) ──
+# GA4 Measurement Protocol: measurement_id (G-XXXX) + api_secret (criado em
+# Administrador → Fluxo de dados → Chaves secretas da Measurement Protocol).
+# Meta Conversions API: pixel_id + token (Gerenciador de Eventos da Meta).
+# Cada par vazio = aquele destino fica desligado (degradação graciosa).
+GA4_MEASUREMENT_ID = os.getenv("GA4_MEASUREMENT_ID", "").strip()
+GA4_API_SECRET = clean_secret_env("GA4_API_SECRET")
+META_PIXEL_ID = os.getenv("META_PIXEL_ID", "").strip()
+META_CAPI_ACCESS_TOKEN = clean_secret_env("META_CAPI_ACCESS_TOKEN")
+
 # ── Twilio (teste via Sandbox) ──
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")

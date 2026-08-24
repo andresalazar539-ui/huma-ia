@@ -84,6 +84,7 @@ Há um LLM-as-judge que avalia a saída do Haiku em busca de erro ortográfico (
 - `billing_service.py` — Credit/plan middleware
 - `message_buffer.py` — Aggregates rapid messages before processing
 - `attribution_service.py` — Origem do lead (first-touch): referral CTWA (Meta/Evolution), código `#h` de link rastreável, `utm_*`. Alimenta a seção "Origem" dos relatórios. Captura disparada pelos webhooks em `routes/api.py` (gate barato `has_signal`), grava via `db_service.set_lead_source` (nunca sobrescreve origem existente)
+- `analytics_events.py` — Conversões server-side do NEGÓCIO DA HUMA (não do lead): `purchase` pro GA4 (Measurement Protocol) e Meta (CAPI) disparado pelos pontos de "dinheiro novo" do `subscription_service` (ativação, renovação, pacote). Gated por `GA4_MEASUREMENT_ID`+`GA4_API_SECRET` / `META_PIXEL_ID`+`META_CAPI_ACCESS_TOKEN` (sem env = no-op). Tabela `analytics_ids` guarda cookies GA/Meta do dono (capturados pelo Cockpit via `/analytics-ids`) pra atribuição de campanha. NUNCA levanta exceção (roda em fluxo de webhook de pagamento). Dedup navegador×servidor por transaction_id/event_id iguais — não mude os ids de um lado só.
 - `learning_engine.py` — Analyzes completed conversations for insights
 - `sales_intelligence.py` / `conversation_intelligence.py` / `image_intelligence.py` — Specialized AI analysis
 

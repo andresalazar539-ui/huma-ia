@@ -80,13 +80,37 @@ No GTM: **Tags → Nova → Descobrir mais tags → Meta Pixel** (template ofici
 ID do Pixel (criado no Gerenciador de Eventos da Meta) → acionador All Pages +
 eventos `purchase`/`sign_up` mapeados. Sem mexer em código.
 
+## Nível A — purchase server-side (IMPLEMENTADO 2026-08-23)
+
+O webhook do Mercado Pago manda o `purchase` direto do backend pro GA4
+(Measurement Protocol) e pra Meta (Conversions API): 100% das vendas,
+**renovações mensais incluídas**, imune a adblocker e a aba fechada no Pix.
+
+Como funciona:
+- `huma/services/analytics_events.py` dispara nos pontos de "dinheiro novo"
+  do billing: ativação de assinatura, renovação (2 formatos do MP) e pacote.
+- O Cockpit captura os cookies `_ga`/`_fbp`/`_fbc` do dono logado
+  (POST `/api/clients/{id}/analytics-ids` → tabela `analytics_ids`) — é o
+  que permite atribuir a venda do webhook à campanha de origem.
+- Dedup: navegador e servidor usam o MESMO `transaction_id`
+  (payment_id/preapproval_id do MP) — GA4 e Meta contam a venda 1 vez.
+- Renovação sem cookie capturado entra com client_id sintético estável:
+  a receita nunca some do GA4, só perde a atribuição de campanha.
+
+Env vars (cada par vazio = destino desligado):
+```
+GA4_MEASUREMENT_ID=G-CZJPMNYDNM
+GA4_API_SECRET=<criar em GA4 Admin → Fluxo de dados → HUMA App →
+               Chaves secretas da Measurement Protocol → Criar>
+META_PIXEL_ID=<Gerenciador de Eventos da Meta, quando for anunciar>
+META_CAPI_ACCESS_TOKEN=<Configurações do Pixel → Conversions API → Gerar token>
+```
+Migration `create_analytics_ids` aplicada em 2026-08-23.
+
 ## Depois (não agora)
 - **Landing na raiz** (`humaia.com.br`): quando existir, usar o MESMO container
   GTM — a atribuição landing→app funciona sozinha (mesmo domínio raiz).
   A landing pública vai precisar de **banner de consentimento** (Consent Mode
   v2) antes de rodar Google Ads.
-- **Server-side**: `purchase` confirmado pelo webhook do Mercado Pago via
-  GA4 Measurement Protocol + Meta Conversions API (imune a adblocker). Fazer
-  quando começar tráfego pago de verdade.
 - **Onboarding concluído**: evento de ativação do wizard (hoje o funil se mede
   por page_view do `/onboarding/page` → `whatsapp_connected`).

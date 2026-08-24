@@ -455,6 +455,35 @@ async function cancelPlan() {
 
 Object.assign(window, { fetchBillingStatus, subscribePlan, subscribeCardPlan, cancelPlan, validateCoupon });
 
+/* ---------------- Analytics: IDs do navegador → backend ---------------- */
+// Manda os cookies do GA (_ga/_ga_*) e da Meta (_fbp/_fbc) pro backend.
+// É o que permite o purchase server-side (webhook do MP) sair atribuído
+// à campanha que trouxe o dono. Best-effort: falha silenciosa, nunca
+// atrapalha o app. Sem GTM na página os cookies não existem → no-op.
+async function sendAnalyticsIds() {
+  try {
+    const cookies = document.cookie.split('; ');
+    const get = (name) => {
+      const hit = cookies.find(c => c.startsWith(name + '='));
+      return hit ? decodeURIComponent(hit.slice(name.length + 1)) : '';
+    };
+    // _ga_<stream>: nome varia por propriedade — pega o primeiro _ga_*
+    const streamHit = cookies.find(c => c.startsWith('_ga_'));
+    const gaStream = streamHit ? decodeURIComponent(streamHit.split('=').slice(1).join('=')) : '';
+    const ga = get('_ga');
+    const fbp = get('_fbp');
+    const fbc = get('_fbc');
+    if (!ga && !fbp && !fbc) return;
+    await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/analytics-ids`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+      body: JSON.stringify({ ga, ga_stream: gaStream, fbp, fbc }),
+    });
+  } catch (e) { /* analytics é bônus — nunca quebra o Cockpit */ }
+}
+
+Object.assign(window, { sendAnalyticsIds });
+
 /* ---------------- Disparos em massa (outbound — só WhatsApp oficial) ---------------- */
 // Backend recusa com 403 se o canal não for a API oficial da Meta
 // (canal não-oficial toma ban por envio em massa) ou se o plano não for ON.
