@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from huma.core.auth import SESSION_COOKIE_NAME, verify_session_token
+from huma.utils.analytics import inject_gtm
 
 router = APIRouter(tags=["cockpit"])
 
@@ -39,4 +40,7 @@ async def cockpit_page(request: Request) -> HTMLResponse:
     if session_client:
         inject = f"<script>window.HUMA_CLIENT_ID = {json.dumps(session_client)};</script>"
         html = html.replace("<head>", "<head>" + inject, 1)
+    # GTM por último: o snippet ancora antes de </head> e lê o
+    # HUMA_CLIENT_ID já injetado acima (user_id do GA4).
+    html = inject_gtm(html)
     return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})

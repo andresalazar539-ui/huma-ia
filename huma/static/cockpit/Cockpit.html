@@ -182,6 +182,25 @@ function App() {
     return valid.includes(s) ? s : 'inicio';
   })();
   const [route, setRoute] = useState(initialRoute);
+
+  // Analytics: reflete a tela ativa na URL (?screen=) via replaceState —
+  // o GA4 (Enhanced Measurement) detecta a troca de history e conta um
+  // page_view por tela, com tempo de permanência. replaceState (e não
+  // pushState) de propósito: o app não escuta popstate, então criar
+  // histórico quebraria o botão Voltar. Preserva os outros params
+  // (?client_id= do dev, ?ref=...). O screen_view no dataLayer é o
+  // fallback pra acionar tags no GTM sem depender do Enhanced Measurement.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(location.search);
+      if (route === 'inicio') params.delete('screen');
+      else params.set('screen', route);
+      const qs = params.toString();
+      history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+      window.humaTrack?.('screen_view', { screen_name: route });
+    } catch (e) { /* analytics nunca derruba o app */ }
+  }, [route]);
+
   const [handoff, setHandoff] = useState(false);
   // Contexto do checkout transparente: {planId, coupon, couponInfo}
   const [checkoutCtx, setCheckoutCtx] = useState(null);

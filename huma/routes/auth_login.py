@@ -47,6 +47,7 @@ from huma.core.auth import (
 )
 from huma.services import db_service as db
 from huma.services import redis_service as cache
+from huma.utils.analytics import inject_gtm
 from huma.utils.logger import get_logger
 
 log = get_logger("auth_login")
@@ -844,6 +845,12 @@ async def login_page() -> HTMLResponse:
 const $ = (id) => document.getElementById(id);
 const AUTHORIZE_URL = {authorize_url!r};
 
+// Analytics: eventos de login/cadastro no dataLayer (lido pelo GTM).
+// Sem GTM na página o push cai num array que ninguém lê — inofensivo.
+function track(ev, params) {{
+  try {{ (window.dataLayer = window.dataLayer || []).push(Object.assign({{event: ev}}, params || {{}})); }} catch (e) {{}}
+}}
+
 function show(kind, text) {{
   $("msg").className = "msg " + kind;
   $("msg").textContent = text;
@@ -885,7 +892,7 @@ async function doLogin() {{
       body: JSON.stringify({{email, password, remember: $("remember").checked}}),
     }});
     const data = await r.json();
-    if (r.ok) {{ location.href = data.redirect; return; }}
+    if (r.ok) {{ track("login", {{method: "password"}}); location.href = data.redirect; return; }}
     show("err", data.detail || "Não foi possível entrar. Tente de novo.");
   }} catch (e) {{
     show("err", "Erro de conexão. Tente de novo.");
@@ -909,8 +916,8 @@ async function doSignup() {{
       body: JSON.stringify({{email, password, business_name, ref: getRef()}}),
     }});
     const data = await r.json();
-    if (r.ok && data.redirect) {{ location.href = data.redirect; return; }}
-    if (r.ok) {{ show("ok", data.message); }}
+    if (r.ok && data.redirect) {{ track("sign_up", {{method: "password"}}); location.href = data.redirect; return; }}
+    if (r.ok) {{ track("sign_up", {{method: "password"}}); show("ok", data.message); }}
     else {{ show("err", data.detail || "Não foi possível criar a conta."); }}
   }} catch (e) {{
     show("err", "Erro de conexão. Tente de novo.");
@@ -946,7 +953,7 @@ $("google").addEventListener("click", () => {{
 </script>
 </body>
 </html>"""
-    return HTMLResponse(content=html, status_code=200)
+    return HTMLResponse(content=inject_gtm(html), status_code=200)
 
 
 @router.get("/auth/callback", response_class=HTMLResponse)
@@ -989,7 +996,12 @@ async def oauth_callback_page() -> HTMLResponse:
       body: JSON.stringify({{access_token: token, remember: true, ref}}),
     }});
     const data = await r.json();
-    if (r.ok) {{ location.replace(data.redirect); return; }}
+    if (r.ok) {{
+      // Analytics: login via Google (inclui o primeiro acesso pós-confirmação)
+      try {{ (window.dataLayer = window.dataLayer || []).push({{event: "login", method: "google"}}); }} catch (e) {{}}
+      location.replace(data.redirect);
+      return;
+    }}
     document.getElementById("msg").className = "msg err";
     document.getElementById("msg").textContent = data.detail || "Não foi possível entrar.";
     document.getElementById("status").textContent = "";
@@ -1001,7 +1013,7 @@ async def oauth_callback_page() -> HTMLResponse:
 </script>
 </body>
 </html>"""
-    return HTMLResponse(content=html, status_code=200)
+    return HTMLResponse(content=inject_gtm(html), status_code=200)
 
 
 @router.get("/auth/reset", response_class=HTMLResponse)
@@ -1090,4 +1102,4 @@ $("save").addEventListener("click", async () => {{
 </script>
 </body>
 </html>"""
-    return HTMLResponse(content=html, status_code=200)
+    return HTMLResponse(content=inject_gtm(html), status_code=200)

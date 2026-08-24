@@ -80,6 +80,12 @@ SESSION_SECRET = clean_secret_env("SESSION_SECRET")
 # DSN do Sentry (error tracking). Vazio = Sentry desligado (dev/testes).
 SENTRY_DSN = clean_secret_env("SENTRY_DSN")
 
+# ── Analytics (Google Tag Manager) ──
+# ID do container GTM (formato GTM-XXXXXXX). Vazio = analytics desligado:
+# nenhum snippet é injetado nas páginas (dev/testes ficam limpos).
+# Dentro do GTM é que se pluga GA4, Meta Pixel etc. — sem mexer em código.
+GTM_CONTAINER_ID = os.getenv("GTM_CONTAINER_ID", "").strip()
+
 # ── Twilio (teste via Sandbox) ──
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")

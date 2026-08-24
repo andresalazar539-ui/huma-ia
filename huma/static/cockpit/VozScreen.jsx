@@ -85,6 +85,8 @@ const ClonarModal = ({ onClose, onDone }) => {
     setFase('processando'); setErro('');
     try {
       await cloneVoice(files);
+      // Analytics: voz clonada — segundo marco de ativação (GA4/GTM)
+      window.humaTrack?.('voice_cloned', {});
       setFase('pronto');
     } catch (e) {
       setErro(e.message);

@@ -263,7 +263,11 @@ const WhatsAppCard = () => {
     if (modal !== 'qr') { clearInterval(pollRef.current); return; }
     pollRef.current = setInterval(async () => {
       const s = await refresh();
-      if (s && s.connected) { setModal(null); clearInterval(pollRef.current); }
+      if (s && s.connected) {
+        // Analytics: ativação via QR (o poll para aqui, dispara uma vez só)
+        window.humaTrack?.('whatsapp_connected', { channel: 'evolution' });
+        setModal(null); clearInterval(pollRef.current);
+      }
     }, 3000);
     return () => clearInterval(pollRef.current);
   }, [modal, refresh]);
@@ -297,6 +301,8 @@ const WhatsAppCard = () => {
         phone_number_id: (es && es.phone_number_id) || '',
       });
       if (r.connected) {
+        // Analytics: ativação — o "aha moment" da conta (GA4/GTM)
+        window.humaTrack?.('whatsapp_connected', { channel: 'meta' });
         setMetaMsg({ kind: 'success', text: 'WhatsApp oficial conectado! A HUMA já está atendendo nesse número.' });
         await refresh();
       } else {
@@ -358,6 +364,7 @@ const WhatsAppCard = () => {
     try {
       const r = await window.whatsappMetaConnect({ code: '' });
       if (r.connected) {
+        window.humaTrack?.('whatsapp_connected', { channel: 'meta' });
         setMetaMsg({ kind: 'success', text: 'Pronto! WhatsApp oficial conectado.' });
         await refresh();
       } else {

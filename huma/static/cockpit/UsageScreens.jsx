@@ -727,8 +727,8 @@ const CreditosScreen = ({ onBack }) => {
   // Pacotes REAIS do backend (billing.extra_packs — fonte única de verdade).
   const fmtBrl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
   const [packs, setPacks] = useStateU([
-    { id: 'pack_200', size: '+200', amount: 200, price: fmtBrl(39.90) },
-    { id: 'pack_500', size: '+500', amount: 500, price: fmtBrl(79.90), highlight: 'Melhor valor' },
+    { id: 'pack_200', size: '+200', amount: 200, price: fmtBrl(39.90), priceNum: 39.90 },
+    { id: 'pack_500', size: '+500', amount: 500, price: fmtBrl(79.90), priceNum: 79.90, highlight: 'Melhor valor' },
   ]);
   const [selected, setSelected] = useStateU(0);
   const [billing, setBilling] = useStateU(null);
@@ -766,6 +766,7 @@ const CreditosScreen = ({ onBack }) => {
         size: `+${p.conversations.toLocaleString('pt-BR')}`,
         amount: p.conversations,
         price: fmtBrl(p.price_brl),
+        priceNum: p.price_brl,
         highlight: i === (b.extra_packs.length - 1) ? 'Melhor valor' : null,
       }));
       if (list.length) { setPacks(list); setSelected(list.length - 1); }
@@ -778,7 +779,17 @@ const CreditosScreen = ({ onBack }) => {
     if (flow !== 'pix_waiting' || !pix) return;
     const t = setInterval(() => {
       window.fetchExtraPackStatus(pix.payment_id).then(s => {
-        if (s.status === 'approved') { setPaidInfo({ conversations: pix.conversations }); setFlow('paid'); }
+        if (s.status === 'approved') {
+          // Analytics: Pix do pacote caiu (purchase) — payment_id real
+          // do MP como transaction_id (o GA4 deduplica se o poll repetir)
+          const pk = packs[selected];
+          window.humaTrack?.('purchase', {
+            currency: 'BRL', value: pk.priceNum,
+            transaction_id: String(pix.payment_id),
+            item_id: pk.id, item_name: 'Pacote ' + pk.size + ' conversas', kind: 'pacote',
+          });
+          setPaidInfo({ conversations: pix.conversations }); setFlow('paid');
+        }
         if (['cancelled', 'rejected', 'expired'].includes(s.status)) {
           setFlow('idle');
           setErr('O pagamento não foi concluído. Gere um novo Pix e tente de novo.');
@@ -797,7 +808,17 @@ const CreditosScreen = ({ onBack }) => {
   };
 
   const _finaliza = (r) => {
-    if (r.paid) { setPaidInfo({ conversations: r.conversations }); setFlow('paid'); }
+    if (r.paid) {
+      // Analytics: pacote pago no cartão (purchase). payment_id do MP
+      // quando o backend devolve; senão um id sintético (dedup do GA4).
+      const pk = packs[selected];
+      window.humaTrack?.('purchase', {
+        currency: 'BRL', value: pk.priceNum,
+        transaction_id: String(r.payment_id || ('pack_' + Date.now())),
+        item_id: pk.id, item_name: 'Pacote ' + pk.size + ' conversas', kind: 'pacote',
+      });
+      setPaidInfo({ conversations: r.conversations }); setFlow('paid');
+    }
     else { setFlow('pending'); setErr(''); }
   };
 
@@ -1593,6 +1614,19 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
   const [err, setErr] = useStateU('');
   const [done, setDone] = useStateU(false);
 
+  // Analytics: entrada no checkout de assinatura (GA4 begin_checkout)
+  useEffectU(() => {
+    if (!ctx) return;
+    const p = HUMA_PLANS.find(x => x.id === ctx.planId) || HUMA_PLANS[0];
+    const off = ctx.couponInfo ? ctx.couponInfo.percent_off : 0;
+    window.humaTrack?.('begin_checkout', {
+      currency: 'BRL',
+      value: off > 0 ? p.priceNum * (100 - off) / 100 : p.priceNum,
+      item_id: p.id,
+      item_name: 'Plano ' + p.name,
+    });
+  }, []);
+
   if (!ctx) {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--paper)' }}>
@@ -1644,6 +1678,12 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
       });
       if (!token || !token.id) throw new Error('Cartão não validado — confere os dados.');
       await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id);
+      // Analytics: assinatura paga — o evento que alimenta GA4/Meta (purchase)
+      window.humaTrack?.('purchase', {
+        currency: 'BRL', value: price,
+        transaction_id: 'sub_' + ctx.planId + '_' + Date.now(),
+        item_id: ctx.planId, item_name: 'Plano ' + plan.name, kind: 'assinatura',
+      });
       setDone(true);
       setTimeout(() => onDone && onDone(), 2600);
     } catch (e) {

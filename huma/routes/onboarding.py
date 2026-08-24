@@ -40,6 +40,7 @@ from huma.onboarding.categories import analyze_market, apply_market_analysis
 from huma.services import ai_service as ai
 from huma.services import db_service as db
 from huma.services import transcription_service
+from huma.utils.analytics import inject_gtm
 from huma.utils.logger import get_logger
 
 log = get_logger("onboarding_routes")
@@ -174,6 +175,8 @@ async def onboarding_page(request: Request):
     html = ONBOARDING_HTML.read_text(encoding="utf-8")
     inject = f"<script>window.HUMA_CLIENT_ID = {json.dumps(session_client)};</script>"
     html = html.replace("<head>", "<head>" + inject, 1)
+    # GTM por último (ancora antes de </head>, depois do HUMA_CLIENT_ID)
+    html = inject_gtm(html)
     return HTMLResponse(content=html)
 
 
