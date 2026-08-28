@@ -454,6 +454,14 @@ async def _process_web_message_locked(
     if len(conv.lead_facts) > 15:
         conv.lead_facts = conv.lead_facts[-15:]
 
+    # F4 — leitura viva do lead (espelho do orchestrator)
+    _lead_read = ai_result.get("lead_read")
+    if isinstance(_lead_read, dict) and _lead_read:
+        from huma.services.goal_engine import merge_lead_state
+        conv.lead_state = merge_lead_state(
+            conv.lead_state, _lead_read, ai_result.get("micro_objective", "")
+        )
+
     conv.stage = _apply_stage_action(client_data, conv.stage, ai_result.get("stage_action", "hold"))
 
     # ── Deflection: lead deixou WhatsApp no texto ──

@@ -282,6 +282,7 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             bsuid=d.get("bsuid", "") or "",
             channel=d.get("channel", "whatsapp") or "whatsapp",
             lead_whatsapp=d.get("lead_whatsapp", "") or "",
+            lead_state=d.get("lead_state") if isinstance(d.get("lead_state"), dict) else {},
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -371,9 +372,29 @@ async def save_conversation(conv: Conversation):
     # task do webhook); incluir "" aqui apagaria um mapeamento já capturado.
     if conv.bsuid:
         data["bsuid"] = conv.bsuid
-    await run_in_threadpool(
-        lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
-    )
+    # F4 — leitura viva do lead: só entra no upsert quando preenchida
+    # (mesma convenção do bsuid). Ambiente sem a coluna (migration
+    # scripts/migration_lead_state.sql ainda não rodou) NÃO pode derrubar
+    # todo save_conversation: se o upsert falhar por causa dela, refaz
+    # sem o campo e avisa no log.
+    if conv.lead_state:
+        data["lead_state"] = conv.lead_state
+    try:
+        await run_in_threadpool(
+            lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+        )
+    except Exception as e:
+        if "lead_state" in data and "lead_state" in str(e):
+            log.warning(
+                f"save_conversation | coluna lead_state ausente (rodar scripts/migration_lead_state.sql) | "
+                f"client={conv.client_id} | phone={conv.phone} | retry sem lead_state"
+            )
+            data.pop("lead_state", None)
+            await run_in_threadpool(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            )
+        else:
+            raise
 
 
 async def set_lead_source(

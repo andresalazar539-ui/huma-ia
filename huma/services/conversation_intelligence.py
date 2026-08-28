@@ -629,6 +629,7 @@ def format_rule_response(
         "confidence": result.confidence,
         "lead_facts": [],
         "actions": [],
+        "lead_read": {},  # F4 — contrato do generate_response
         "resolved_by": "rule",  # Flag pra saber que não usou IA
         "msg_type": result.msg_type.value,
     }

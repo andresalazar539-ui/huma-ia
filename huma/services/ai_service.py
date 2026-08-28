@@ -1104,6 +1104,19 @@ def build_dynamic_prompt(
     # ── Anti-tique (F1 — últimas aberturas reais, zero custo) ──
     prompt += _build_anti_tique(conv)
 
+    # ── Motor de meta + leitura viva do lead (F4 — zero chamada de API) ──
+    # META derivada das capabilities + checklist do que falta; leitura do
+    # turno anterior com regras condicionais; plano pra objeção ativa SÓ
+    # quando existe. Tudo "" quando não se aplica.
+    from huma.services.goal_engine import (
+        build_goal_prompt,
+        build_lead_state_prompt,
+        build_objection_plan,
+    )
+    prompt += build_goal_prompt(identity, conv)
+    prompt += build_lead_state_prompt(conv)
+    prompt += build_objection_plan(identity, conv)
+
     # ── Memória do lead ──
     capped_facts = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
     prompt += "\n\n" + _format_lead_memory(capped_facts, conv.history_summary)
@@ -1746,6 +1759,29 @@ def _build_reply_tool_compact(
                 "confidence": {"type": "number"},
                 "micro_objective": {"type": "string"},
                 "emotional_reading": {"type": "string"},
+                # F4 — leitura viva do lead. Description é ESTRUTURAL (o shape
+                # não se infere do nome): vira Conversation.lead_state e volta
+                # pro prompt no turno seguinte.
+                "lead_read": {
+                    "type": "object",
+                    "description": (
+                        "Sua leitura do lead NESTE turno (vira contexto pra você no próximo). "
+                        "modo: direto|consultivo|explorando. pressa: alta|normal|baixa. "
+                        "humor: 1-3 palavras. confianca: subindo|estavel|caindo. "
+                        "perfil: perfil da vertical detectado ou ''. "
+                        "objecao_ativa: a objeção que ele está levantando AGORA, ou '' se nenhuma. "
+                        "sinal_de_compra: true se ele deu sinal claro de compra."
+                    ),
+                    "properties": {
+                        "modo": {"type": "string", "enum": ["direto", "consultivo", "explorando"]},
+                        "pressa": {"type": "string", "enum": ["alta", "normal", "baixa"]},
+                        "humor": {"type": "string"},
+                        "confianca": {"type": "string", "enum": ["subindo", "estavel", "caindo"]},
+                        "perfil": {"type": "string"},
+                        "objecao_ativa": {"type": "string"},
+                        "sinal_de_compra": {"type": "boolean"},
+                    },
+                },
                 "new_facts": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1962,6 +1998,8 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         "micro_objective": parsed.get("micro_objective", ""),
         "emotional_reading": parsed.get("emotional_reading", ""),
         "audio_text": parsed.get("audio_text", ""),
+        # F4 — chave nova com default neutro (contrato do CLAUDE.md §1).
+        "lead_read": parsed.get("lead_read") if isinstance(parsed.get("lead_read"), dict) else {},
     }
 
     if "reply_parts" in parsed and isinstance(parsed["reply_parts"], list) and parsed["reply_parts"]:
@@ -1997,6 +2035,7 @@ def _fallback_result(text):
         "micro_objective": "",
         "emotional_reading": "",
         "audio_text": "",
+        "lead_read": {},
     }
 
 

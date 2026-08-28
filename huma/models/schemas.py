@@ -889,6 +889,17 @@ class Conversation(BaseModel):
     lead_name_canonical: str = ""
     lead_cpf: str = ""
 
+    # F4 (Devorador de Metas) — leitura viva do lead, persistida entre turnos.
+    # Preenchido por goal_engine.merge_lead_state a partir do `lead_read` da
+    # tool: modo (direto|consultivo|explorando), pressa, humor, confianca,
+    # perfil, objecao_ativa, sinal_de_compra, micro_objetivo(_anterior),
+    # historico_confianca, turnos. Coluna JSONB (scripts/migration_lead_state.sql).
+    # Vazio = ainda sem leitura (primeiro turno).
+    lead_state: dict = Field(
+        default_factory=dict,
+        description="Leitura viva do lead (goal_engine). Vazio = sem leitura ainda.",
+    )
+
     # v12.x — Fase 3: estado de handoff humano (capability QUALIFY).
     # "active" = IA conduz a conversa normalmente.
     # "handed_off" = humano assumiu, IA para de responder até reset manual.

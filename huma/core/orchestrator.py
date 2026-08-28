@@ -682,6 +682,16 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         if len(conv.lead_facts) > MAX_LEAD_FACTS:
             conv.lead_facts = conv.lead_facts[-MAX_LEAD_FACTS:]
 
+        # F4 (Devorador de Metas) — leitura viva do lead: persiste a leitura
+        # deste turno (modo, pressa, humor, confiança, objeção ativa,
+        # micro-objetivo) pra calibrar o próximo. Só quando a IA devolveu.
+        _lead_read = ai_result.get("lead_read")
+        if isinstance(_lead_read, dict) and _lead_read:
+            from huma.services.goal_engine import merge_lead_state
+            conv.lead_state = merge_lead_state(
+                conv.lead_state, _lead_read, ai_result.get("micro_objective", "")
+            )
+
         # Atualiza estágio
         prev_stage = conv.stage
         conv.stage = _apply_stage_action(client_data, conv.stage, ai_result["stage_action"])

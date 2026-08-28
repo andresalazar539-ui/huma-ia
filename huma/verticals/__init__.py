@@ -29,8 +29,10 @@ __all__ = [
     "VerticalBrain",
     "BRAINS",
     "build_vertical_brain",
+    "find_objection",
     "get_brain",
     "has_brain",
+    "tokens",
 ]
 
 # slug da BusinessCategory → cérebro
@@ -63,3 +65,45 @@ def build_vertical_brain(category) -> str:
     """Bloco de prompt do cérebro da vertical. "" quando não há cérebro."""
     brain = get_brain(category)
     return brain.render() if brain else ""
+
+
+# ================================================================
+# Busca de objeção (F4 — plano pra objeção ativa)
+# ================================================================
+
+_STOPWORDS = {
+    "a", "o", "e", "de", "do", "da", "dos", "das", "em", "no", "na", "um", "uma",
+    "que", "eu", "ta", "tá", "ne", "né", "pra", "para", "com", "sem", "meu", "minha",
+    "isso", "esse", "essa", "mais", "muito", "nao", "não", "so", "só", "ou", "por",
+}
+
+
+def tokens(text: str) -> set[str]:
+    """Tokens normalizados (sem acento, sem stopwords, >2 chars) pra casar objeções."""
+    import re
+    import unicodedata
+
+    if not text:
+        return set()
+    plain = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode("ascii").lower()
+    return {t for t in re.findall(r"[a-z0-9]+", plain) if len(t) > 2 and t not in _STOPWORDS}
+
+
+def find_objection(category, text: str) -> Objecao | None:
+    """
+    Objeção do cérebro da vertical que mais casa com `text` (overlap de
+    tokens entre o texto e os gatilhos da objeção). None se a categoria
+    não tem cérebro ou nada casa.
+    """
+    brain = get_brain(category)
+    if not brain:
+        return None
+    alvo = tokens(text)
+    if not alvo:
+        return None
+    melhor: tuple[int, Objecao] | None = None
+    for obj in brain.objecoes:
+        score = len(alvo & tokens(obj.gatilho))
+        if score and (melhor is None or score > melhor[0]):
+            melhor = (score, obj)
+    return melhor[1] if melhor else None
