@@ -268,7 +268,19 @@ TOM AUTOMOTIVO: Técnico mas acessível, transparente com preço/prazo.""",
 
 
 def _build_vertical_tone_prompt(category: str) -> str:
-    """Retorna regras de tom da vertical do negócio."""
+    """
+    Retorna o bloco da vertical do negócio.
+
+    F2 (Devorador de Metas): se a categoria tem cérebro dedicado em
+    huma/verticals, o cérebro COMPLETO entra aqui (tom + jornada +
+    descoberta + objeções + gatilhos + exemplos) e substitui os blocos
+    legados. Sem cérebro, mantém o tom legado de _VERTICAL_TONE.
+    """
+    from huma.verticals import build_vertical_brain
+
+    brain = build_vertical_brain(category)
+    if brain:
+        return brain
     return _VERTICAL_TONE.get(category, "")
 
 
@@ -734,7 +746,10 @@ REGRAS ABSOLUTAS:
       o negócio — atitude profissional sem ser moralista.\""""
 
     # ── Vertical knowledge (learning engine) ──
-    if identity.category:
+    # F2: só pra categorias SEM cérebro dedicado (o cérebro já traz
+    # perfis, objeções e insights; repetir aqui duplicaria tokens).
+    from huma.verticals import has_brain
+    if identity.category and not has_brain(identity.category):
         from huma.services.learning_engine import build_vertical_prompt
         vertical_prompt = build_vertical_prompt(identity.category)
         if vertical_prompt:
@@ -904,8 +919,17 @@ _VERTICAL_COMPRESSED = {
 
 
 def _build_vertical_compressed(category) -> str:
-    """Retorna tabela comprimida por vertical (Tier 3)."""
+    """
+    Retorna tabela comprimida por vertical (Tier 3).
+
+    F2: vazio quando a categoria tem cérebro dedicado (o cérebro já
+    cobre perfis/objeções/follow-up; manter a tabela duplicaria).
+    """
     if not category:
+        return ""
+    from huma.verticals import has_brain
+
+    if has_brain(category):
         return ""
     key = category.value if hasattr(category, "value") else str(category)
     return _VERTICAL_COMPRESSED.get(key, "")
@@ -1871,8 +1895,10 @@ async def validate_response(identity, reply, confidence):
 # ================================================================
 
 def _vertical_followup_hint(category) -> str:
-    """Extrai a linha FOLLOW-UP: da tabela comprimida da vertical (tom/estilo ideais)."""
-    block = _build_vertical_compressed(category)
+    """Extrai a linha FOLLOW-UP: do cérebro da vertical (F2) ou da tabela comprimida legada."""
+    from huma.verticals import build_vertical_brain
+
+    block = build_vertical_brain(category) or _build_vertical_compressed(category)
     for line in block.splitlines():
         stripped = line.strip()
         if stripped.startswith("FOLLOW-UP:"):
