@@ -51,6 +51,28 @@ log = get_logger("orchestrator")
 # TIERED INTELLIGENCE v11.0 — seleção de tier e modelo
 # ================================================================
 
+def _momento_de_valor(conv: Conversation) -> str:
+    """
+    Motivo (string) pra usar o modelo forte neste turno, lido do
+    lead_state da conversa; "" quando o turno é rotina.
+
+    Sinais (todos vêm da leitura da própria IA no turno anterior):
+      - objecao_ativa preenchida → "objecao"
+      - confianca == "caindo"     → "confianca_caindo"
+      - sinal_de_compra True      → "sinal_de_compra"
+    """
+    state = conv.lead_state if isinstance(conv.lead_state, dict) else {}
+    if not state:
+        return ""
+    if str(state.get("objecao_ativa") or "").strip():
+        return "objecao"
+    if state.get("confianca") == "caindo":
+        return "confianca_caindo"
+    if state.get("sinal_de_compra") is True:
+        return "sinal_de_compra"
+    return ""
+
+
 def _select_tier(classification, conv: Conversation, text: str, image_url, client_data=None) -> tuple[int, bool]:
     """
     Retorna (tier, use_sonnet) baseado em classificação, stage e conteúdo.
@@ -65,9 +87,17 @@ def _select_tier(classification, conv: Conversation, text: str, image_url, clien
     re-pergunta e ignora contexto, queimando o lead. O lead qualificado vale
     caro demais pra arriscar no modelo barato (qualidade > custo, custo é teto).
 
+    F5 (Devorador de Metas) — política POR MOMENTO, lida do lead_state
+    (leitura da própria IA no turno anterior, não regex): objeção ativa,
+    confiança caindo e sinal de compra são os momentos em que o lead
+    sente a diferença de modelo. Estimativa: 15-25% dos turnos vão pro
+    Sonnet numa conversa média; o resto fica no Haiku com cache.
+
     Regras:
       - Imagem → Tier 3 + Sonnet (precisa de image intelligence)
       - objection/complex → Tier 3 + Sonnet
+      - Primeira mensagem da conversa → Tier 3 + Sonnet (primeira impressão)
+      - lead_state: objeção ativa | confiança caindo | sinal de compra → Tier 3 + Sonnet
       - Modo QUALIFY → Tier 3 + Sonnet (coerência de SDR)
       - Tudo mais → Tier 2 + Haiku (com cache)
     """
@@ -83,6 +113,13 @@ def _select_tier(classification, conv: Conversation, text: str, image_url, clien
     # saiu; quem abre a conversa é o modelo forte, no tom do dono.
     # Custo: 1 chamada Sonnet por lead novo (~R$0,04 a mais/conversa).
     if not conv.history:
+        return 3, True
+
+    # F5: momentos de valor lidos do lead_state (goal_engine). Logado
+    # com o motivo pra medir quanto a política custa de verdade.
+    momento = _momento_de_valor(conv)
+    if momento:
+        log.info(f"TierPolicy | {conv.phone} | sonnet | motivo={momento}")
         return 3, True
 
     # Modo qualificador (SDR): sempre Sonnet pela coerência.
