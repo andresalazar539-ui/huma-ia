@@ -225,6 +225,13 @@ PLAYGROUND_TOKEN = os.getenv("PLAYGROUND_TOKEN", "")
 AI_MODEL_PRIMARY = os.getenv("AI_MODEL_PRIMARY", "claude-sonnet-4-5-20250929")  # Sonnet (complexo)
 AI_MODEL_FAST = os.getenv("AI_MODEL_FAST", "claude-haiku-4-5-20251001")        # Haiku (simples)
 
+# F6 (medição) — câmbio pra estimar custo de IA em BRL na tabela ai_usage.
+# Só afeta o número mostrado ao dono; não muda nada do fluxo.
+try:
+    USD_BRL_RATE = float(os.getenv("USD_BRL_RATE", "5.5"))
+except ValueError:
+    USD_BRL_RATE = 5.5
+
 # ── Rate Limiting ──
 RATE_LIMIT_MAX_MSGS = int(os.getenv("RATE_LIMIT_MAX_MSGS", "10"))
 RATE_LIMIT_WINDOW_SEC = int(os.getenv("RATE_LIMIT_WINDOW_SEC", "60"))

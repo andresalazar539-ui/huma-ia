@@ -349,6 +349,19 @@ async def get_reports(
     )
 
 
+@router.get("/api/clients/{client_id}/ai-usage", tags=["Cockpit"])
+async def get_ai_usage(client_id: str, days: int = 30, _=Depends(verify_api_key)) -> dict:
+    """
+    F6 (medição) — custo real de IA do cliente no período: chamadas,
+    conversas, tokens por tipo, custo em BRL, custo por conversa e share
+    do modelo forte. Base da margem por cliente (tabela ai_usage).
+
+    Sem a tabela (migration pendente) devolve zeros, nunca erro.
+    """
+    from huma.services.usage_service import get_ai_usage_summary
+    return await get_ai_usage_summary(client_id, days=days)
+
+
 @router.get("/api/clients/{client_id}/reports/export", tags=["Cockpit"])
 async def export_report(
     client_id: str,

@@ -1960,6 +1960,20 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
                 f"input={usage.input_tokens} | output={usage.output_tokens} | "
                 f"cache_read={cache_read} | cache_creation={cache_creation}"
             )
+            # F6 (medição) — persiste a chamada na tabela ai_usage em
+            # background. O Railway apaga logs a cada deploy; a margem
+            # por cliente precisa de dado que sobrevive. Nunca bloqueia.
+            try:
+                import asyncio as _aio_usage
+                from huma.services.usage_service import log_ai_usage
+
+                _aio_usage.create_task(log_ai_usage(
+                    identity.client_id, conv.phone, model, tier,
+                    usage.input_tokens, usage.output_tokens,
+                    cache_read, cache_creation, purpose="reply",
+                ))
+            except Exception as e:
+                log.debug(f"ai_usage | skip | {type(e).__name__}: {e}")
     except Exception:
         pass  # log de métrica não pode quebrar a resposta
 

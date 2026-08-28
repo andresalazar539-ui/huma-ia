@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 > **Sobre este arquivo (ler primeiro):** O Claude Code lê este `CLAUDE.md` automaticamente no início de toda sessão. Ele é **guia, não fonte de verdade — quando este arquivo e o código divergirem, o código vence.** Por isso ele evita cravar dados voláteis (números de versão, contagens exatas de token, listas que mudam a cada deploy) e prefere apontar para o arquivo onde a verdade vive. Atualize-o sempre que fizer uma mudança *estrutural* que uma sessão futura precise saber (matar um tier, novo arquivo sensível, novo contrato de retorno).
-> _Última revisão de freshness: 2026-05-23._
+> _Última revisão de freshness: 2026-08-27._
 
 ## Project Overview
 
@@ -56,6 +56,7 @@ The system uses cost/complexity tiers to balance latency and quality. **A fonte 
 - **Tier 0** (no LLM): Deterministic responses for greetings, FAQ, price queries, hours — resolved in `conversation_intelligence.py`.
 - **Tier 2** (Haiku): Standard conversation — `build_static_prompt + build_dynamic_prompt`.
 - **Tier 3** (Sonnet): Full intelligence + learned insights + lead profiling + image intelligence — for objections, complex closing, images.
+- **Sonnet por MOMENTO (F5, 2026-08-27)**: além de imagem/objection/QUALIFY, `_select_tier` sobe pro Sonnet na **primeira mensagem** da conversa e quando o `lead_state` (leitura da própria IA no turno anterior) diz objeção ativa, confiança caindo ou sinal de compra — ver `_momento_de_valor()`. Cada escolha é logada (`TierPolicy | ... | motivo=`). **Saudação e preço saíram do Tier 0** (template era a mensagem mais robótica); FAQ/horário/endereço continuam determinísticos.
 
 > **Tier 1 foi DESCONTINUADO na v11.2.** Permanece apenas como fallback defensivo no `ai_service.py` (se alguém chamar com `tier=1`, degrada para single-string). Não trate o Tier 1 como caminho ativo nem adicione lógica nova nele.
 
@@ -86,6 +87,10 @@ Há um LLM-as-judge que avalia a saída do Haiku em busca de erro ortográfico (
 - `attribution_service.py` — Origem do lead (first-touch): referral CTWA (Meta/Evolution), código `#h` de link rastreável, `utm_*`. Alimenta a seção "Origem" dos relatórios. Captura disparada pelos webhooks em `routes/api.py` (gate barato `has_signal`), grava via `db_service.set_lead_source` (nunca sobrescreve origem existente)
 - `analytics_events.py` — Conversões server-side do NEGÓCIO DA HUMA (não do lead): `purchase` pro GA4 (Measurement Protocol) e Meta (CAPI) disparado pelos pontos de "dinheiro novo" do `subscription_service` (ativação, renovação, pacote). Gated por `GA4_MEASUREMENT_ID`+`GA4_API_SECRET` / `META_PIXEL_ID`+`META_CAPI_ACCESS_TOKEN` (sem env = no-op). Tabela `analytics_ids` guarda cookies GA/Meta do dono (capturados pelo Cockpit via `/analytics-ids`) pra atribuição de campanha. NUNCA levanta exceção (roda em fluxo de webhook de pagamento). Dedup navegador×servidor por transaction_id/event_id iguais — não mude os ids de um lado só.
 - `learning_engine.py` — Analyzes completed conversations for insights
+- `goal_engine.py` — **Devorador de Metas (F4)**: `merge_lead_state` (tool `lead_read` → `Conversation.lead_state`), `build_goal_prompt` (META derivada das capabilities + checklist "PRA BATER A META FALTA"), `build_lead_state_prompt` (leitura do turno anterior com regras SE/QUANDO), `build_objection_plan` (só com objeção ativa: técnica da vertical + resposta do playbook). Zero chamada de API; tudo "" quando não se aplica
+- `usage_service.py` — **Medição (F6)**: grava cada chamada de IA na tabela `ai_usage` (tokens por tipo, modelo, tier, custo BRL via `USD_BRL_RATE`), fire-and-forget a partir do bloco de log `CACHE |` do `generate_response`. `GET /api/clients/{id}/ai-usage` devolve custo por conversa e share do modelo forte. Nunca levanta exceção
+- `huma/verticals/` (pacote, F2) — **cérebro por vertical** (`clinica`, `ecommerce`, `imobiliaria`): `VerticalBrain` renderizado no bloco ESTÁTICO (cacheado). Substitui, pra essas categorias, `_VERTICAL_TONE`/`_VERTICAL_COMPRESSED` (ai_service) e `VERTICAL_KNOWLEDGE` (learning_engine); as outras 8 categorias seguem no caminho legado. Regras de construção no topo de `_base.py` (instrução condicional, tom do dono manda, gatilho só com fato real, exemplos sem markdown). `find_objection()` alimenta o plano de objeção
+- `onboarding/categories.py::analyze_market` — **Playbook do negócio (F3)**: recebe o cérebro da vertical + texto do site e gera `market_analysis["playbook"]` (objeções instanciadas no negócio, provas reais, gatilhos com fato, lacunas pro dono). Renderizado por `ai_service._format_playbook` no estático. `POST /onboarding/{id}/playbook` regera pra cliente existente (só grava `market_analysis`)
 - `sales_intelligence.py` / `conversation_intelligence.py` / `image_intelligence.py` — Specialized AI analysis
 
 > Outras peças vistas em produção (confirmar caminho exato no repo): detector de loop (`huma.loop_detector`, registra acionamentos da safety net do `check_availability`) e resolvedor de datas (`huma.date_resolver`, normaliza datas estruturadas antes do agendamento).
@@ -101,6 +106,8 @@ Deployed on **Railway** via Nixpacks. Config in `railway.toml` and `nixpacks.tom
 - **PT judge**: a qualidade ortográfica do Haiku é garantida por um juiz LLM com regeneração via Sonnet, não por regex/hardcode. Preferir resiliência estrutural a remendos.
 - **Message buffer**: Leads often send multiple short WhatsApp messages in sequence. The buffer waits 8s of silence before combining and processing as one message.
 - **Atribuição de origem é FIRST-TOUCH**: `lead_source/lead_source_detail/lead_source_ref` na Conversation são gravados uma vez (na chegada do lead) e nunca sobrescritos. Contrato importante: `save_conversation` só inclui esses campos no upsert quando `lead_source` está preenchido — incluir `""` apagaria uma origem gravada em paralelo pelo `attribution_service.capture` (background task do webhook). Não "simplificar" isso.
+- **`lead_state` (F4) segue o contrato do `bsuid`**: só entra no upsert de `save_conversation` quando preenchido; se o banco ainda não tem a coluna (`scripts/migration_lead_state.sql`), o upsert é refeito sem o campo com WARNING — o WhatsApp não para antes da migration. Mesma postura pra `ai_usage` (`scripts/migration_ai_usage.sql`): sem tabela, só WARNING.
+- **CTA não é mais obrigatório em toda mensagem (F1, decisão do André 2026-08-27)**: regras 8/15, reforço dinâmico e descrições de `reply`/`reply_parts` são condicionais (pergunta SÓ quando precisa de dado ou decisão; máx 1 por msg). Não reintroduzir "TODA resposta DEVE terminar com pergunta" — era o maior cheiro de robô.
 - **Required env vars**: `ANTHROPIC_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`. Redis and other services are optional (features degrade gracefully).
 - **Tests are unit-only**: Tests mock external services. No integration tests requiring live Supabase/Redis. `conftest.py` sets fake env vars.
 
@@ -115,8 +122,9 @@ These rules are not suggestions. They come from real production incidents in thi
 **`ai.generate_response()` return dict** must always have these exact keys:
 ```
 reply, reply_parts, intent, sentiment, stage_action, confidence,
-lead_facts, actions, micro_objective, emotional_reading, audio_text
+lead_facts, actions, micro_objective, emotional_reading, audio_text, lead_read
 ```
+(`lead_read` — F4, 2026-08-27 — é dict, default `{}`; `format_rule_response` e `_fallback_result` também o incluem.)
 Any caller (`orchestrator.py`, tests, future features) depends on this. Never remove a key. If adding a key, default it to empty/neutral so old callers don't break.
 
 **`_build_reply_tool_compact()` — the `actions` field description is STRUCTURAL, not decorative.** The description tells Claude that each action must have a `type` field plus specific keys. Even if a SPEC says "compress all descriptions to save tokens", **NEVER** strip or shorten the description of the `actions` field. Dropping the `type` instruction silently breaks appointments, payments, and media — Claude returns actions without `type`, and `action.get("type", "")` returns empty, so the action is dropped into `remaining_actions` with no error.
