@@ -126,6 +126,7 @@ async def _run_followup_job() -> None:
     from huma.services import ai_service as ai
     from huma.services import db_service as db
     from huma.services import whatsapp_service as wa
+    from huma.core.ai_schedule import resolve_effective_mode
     from huma.core.orchestrator import _is_silent_hours
 
     stuck = await db.list_stuck_conversations(
@@ -143,6 +144,7 @@ async def _run_followup_job() -> None:
     sent = 0
     sent_ai = 0
     skipped_silent = 0
+    skipped_schedule = 0
     skipped_timing = 0
     skipped_spacing = 0
     optouts = 0
@@ -174,6 +176,16 @@ async def _run_followup_job() -> None:
             # Respeita silent hours — não disparar 3h da manhã
             if _is_silent_hours(client_data):
                 skipped_silent += 1
+                continue
+
+            # Respeita o horário de operação da IA (ai_schedule): em
+            # janela da equipe ("off") ou de aprovação, a IA não puxa
+            # conversa. Fallback "auto" preserva o comportamento de quem
+            # nunca configurou horário (follow-up sempre saiu, mesmo em
+            # clone_mode=approval — não mudar isso aqui).
+            schedule = getattr(client_data, "ai_schedule", {}) or {}
+            if resolve_effective_mode(schedule, "auto") != "auto":
+                skipped_schedule += 1
                 continue
 
             from fastapi.concurrency import run_in_threadpool
@@ -253,7 +265,8 @@ async def _run_followup_job() -> None:
 
     log.info(
         f"followup | sent={sent} (ia={sent_ai}) | timing={skipped_timing} | "
-        f"spacing={skipped_spacing} | silent={skipped_silent} | optout={optouts} | "
+        f"spacing={skipped_spacing} | silent={skipped_silent} | "
+        f"schedule={skipped_schedule} | optout={optouts} | "
         f"errors={errors} | total_stuck={len(stuck)}"
     )
 
@@ -432,6 +445,7 @@ async def _run_nps_job() -> None:
     from huma.services import db_service as db
     from huma.services import whatsapp_service as wa
     from huma.services.scheduling_service import _parse_datetime
+    from huma.core.ai_schedule import resolve_effective_mode
     from huma.core.orchestrator import _is_silent_hours
 
     appts = await db.list_active_appointments(limit=300)
@@ -442,6 +456,7 @@ async def _run_nps_job() -> None:
     now = datetime.utcnow()
     sent = 0
     skipped_silent = 0
+    skipped_schedule = 0
     skipped_dedup = 0
     skipped_out_of_window = 0
     errors = 0
@@ -480,6 +495,14 @@ async def _run_nps_job() -> None:
                 skipped_silent += 1
                 continue
 
+            # Janela da equipe (ai_schedule): IA não puxa conversa de NPS.
+            # A conversa volta a ser elegível no próximo ciclo do job
+            # (janela 24-48h + flag Redis só é marcada após enviar).
+            schedule = getattr(client_data, "ai_schedule", {}) or {}
+            if resolve_effective_mode(schedule, "auto") != "auto":
+                skipped_schedule += 1
+                continue
+
             lead_name = row.get("lead_name_canonical", "")
             service = row.get("active_appointment_service", "")
             msg = _format_nps_message(lead_name, service)
@@ -502,6 +525,7 @@ async def _run_nps_job() -> None:
 
     log.info(
         f"nps | sent={sent} | dedup={skipped_dedup} | silent={skipped_silent} | "
+        f"schedule={skipped_schedule} | "
         f"out_of_window={skipped_out_of_window} | errors={errors} | "
         f"total_active={len(appts)}"
     )

@@ -22,9 +22,10 @@ from datetime import datetime, timezone, timedelta
 from fastapi import BackgroundTasks
 
 from huma.config import SAFE_MODE, HISTORY_MAX_BEFORE_COMPRESS
+from huma.core.ai_schedule import resolve_effective_mode
 from huma.core.funnel import get_stages
 from huma.models.schemas import (
-    CloneMode, Conversation, MessagePayload,
+    Conversation, MessagePayload,
     OnboardingStatus, OutboundStatus,
     PendingApproval, PaymentRequest, SchedulingRequest,
 )
@@ -203,6 +204,23 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         if _is_silent_hours(client_data):
             await wa.send_text(phone, client_data.silent_hours_message, client_id=client_id)
             log.info(f"Silent hours | {phone}")
+            return
+
+        # Horário de operação da IA (ai_schedule): resolve o modo efetivo
+        # deste turno. "off" = janela da equipe humana — a IA fica fora do
+        # caminho (sem resposta automática, sem gasto de token, sem débito
+        # de conversa; quem responde é o dono/equipe direto no WhatsApp).
+        # Schedule vazio/desligado → clone_mode vale 24/7 (comportamento
+        # pré-feature intacto).
+        effective_mode = resolve_effective_mode(
+            getattr(client_data, "ai_schedule", {}) or {},
+            client_data.clone_mode.value,
+        )
+        if effective_mode == "off":
+            log.info(
+                f"AISchedule | {phone} | mode=off | janela da equipe, "
+                f"IA suprimida"
+            )
             return
 
         # Janela 24h
@@ -705,7 +723,9 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         # Custo puro sem benefício. Reativar quando implementar enforcement real.
         # Economia: ~$0.0005/msg × milhares = significativo.
 
-        force_approval = ai_result["confidence"] < 0.5 and client_data.clone_mode == CloneMode.AUTO
+        # effective_mode vem do ai_schedule (janela de horário) com
+        # fallback no clone_mode — resolvido no início do turno.
+        force_approval = ai_result["confidence"] < 0.5 and effective_mode == "auto"
 
         # Atualiza fatos do lead
         existing_facts = set(conv.lead_facts)
@@ -768,7 +788,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             asyncio.create_task(_compress_history_async(client_id, phone))
 
         # Envia ou pede aprovação
-        if client_data.clone_mode == CloneMode.AUTO and not force_approval:
+        if effective_mode == "auto" and not force_approval:
             asyncio.create_task(
                 _send_with_human_delay(
                     phone, reply, reply_parts, actions,

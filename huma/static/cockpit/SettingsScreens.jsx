@@ -180,6 +180,169 @@ const Toggle = ({ checked, onChange, label }) => (
   </label>
 );
 
+// ---------- Horário de operação da IA (ai_schedule) ----------
+// Backend guarda como objeto JSONB validado em huma/core/ai_schedule.py.
+// Dias: 0=Seg ... 6=Dom (convenção weekday() do Python).
+// Modos expostos na tela: 'auto' (HUMA atende) e 'off' (equipe atende).
+// 'approval' existe no backend mas fica fora da UI v1 (sem tela de
+// aprovação ainda) — valor legado é preservado, nunca sobrescrito.
+const SCHED_DAY_LABELS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+
+const schedModeOptions = (current) => {
+  const opts = [
+    { value: 'auto', label: 'HUMA atende sozinha' },
+    { value: 'off',  label: 'Minha equipe atende' },
+  ];
+  if (current === 'approval') opts.push({ value: 'approval', label: 'Aprovação manual (legado)' });
+  return opts;
+};
+
+const AIScheduleCard = ({ settings, patch }) => {
+  const stored = (settings.ai_schedule && typeof settings.ai_schedule === 'object')
+    ? settings.ai_schedule : {};
+  const [sched, setSched] = useStateS(() => ({
+    enabled: !!stored.enabled,
+    default_mode: ['auto', 'approval', 'off'].includes(stored.default_mode) ? stored.default_mode : 'off',
+    windows: Array.isArray(stored.windows) ? stored.windows.map(w => ({
+      days: Array.isArray(w.days) ? w.days.filter(d => Number.isInteger(d) && d >= 0 && d <= 6) : [],
+      start: w.start || '18:00',
+      end: w.end || '08:00',
+      mode: ['auto', 'approval', 'off'].includes(w.mode) ? w.mode : 'auto',
+    })) : [],
+  }));
+
+  const update = (updater) => {
+    setSched(s => {
+      const next = typeof updater === 'function' ? updater(s) : updater;
+      patch('ai_schedule', next);
+      return next;
+    });
+  };
+
+  const toggleEnabled = () => update(s => {
+    const enabled = !s.enabled;
+    // Primeira ativação sem janelas: pré-preenche o caso mais comum —
+    // equipe atende de dia, HUMA assume à noite (todos os dias).
+    if (enabled && s.windows.length === 0) {
+      return {
+        ...s, enabled,
+        default_mode: 'off',
+        windows: [{ days: [0, 1, 2, 3, 4, 5, 6], start: '18:00', end: '08:00', mode: 'auto' }],
+      };
+    }
+    return { ...s, enabled };
+  });
+
+  const patchWindow = (i, key, value) => update(s => ({
+    ...s,
+    windows: s.windows.map((w, j) => j === i ? { ...w, [key]: value } : w),
+  }));
+
+  const toggleDay = (i, day) => update(s => ({
+    ...s,
+    windows: s.windows.map((w, j) => {
+      if (j !== i) return w;
+      const days = w.days.includes(day) ? w.days.filter(d => d !== day) : [...w.days, day].sort();
+      return { ...w, days };
+    }),
+  }));
+
+  const addWindow = () => update(s => ({
+    ...s,
+    windows: [...s.windows, { days: [0, 1, 2, 3, 4], start: '08:00', end: '18:00', mode: 'off' }],
+  }));
+
+  const removeWindow = (i) => update(s => ({
+    ...s,
+    windows: s.windows.filter((_, j) => j !== i),
+  }));
+
+  return (
+    <Card title="Quem atende, quando">
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+        Programe as janelas em que a HUMA atende sozinha e as janelas em que sua equipe assume.
+        Ex.: equipe no horário comercial, HUMA à noite e no fim de semana.
+        Em janela da equipe a HUMA fica em silêncio (também não manda follow-up nem pesquisa) —
+        quem responde é você, direto no WhatsApp.
+      </div>
+
+      <Toggle checked={sched.enabled} onChange={toggleEnabled} label="Programar horários da HUMA"/>
+
+      {!sched.enabled && (
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+          Desligado: a HUMA atende no modo atual, o tempo todo.
+        </div>
+      )}
+
+      {sched.enabled && (
+        <>
+          {sched.windows.map((w, i) => (
+            <div key={i} style={{
+              display: 'flex', flexDirection: 'column', gap: 10,
+              padding: '12px 14px', borderRadius: 10,
+              border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)',
+            }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {SCHED_DAY_LABELS.map((label, day) => (
+                  <button key={day} onClick={() => toggleDay(i, day)} style={{
+                    padding: '5px 10px', borderRadius: 999, cursor: 'pointer',
+                    border: '1px solid ' + (w.days.includes(day) ? 'var(--ink)' : 'var(--paper-edge)'),
+                    background: w.days.includes(day) ? 'var(--ink)' : 'var(--paper-raised)',
+                    color:      w.days.includes(day) ? 'var(--paper)' : 'var(--ink-3)',
+                    fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+                  }}>{label}</button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Input value={w.start} onChange={e => patchWindow(i, 'start', e.target.value)}
+                       style={{ width: 84, padding: '7px 10px', fontSize: 13 }}/>
+                <span style={{ color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>até</span>
+                <Input value={w.end} onChange={e => patchWindow(i, 'end', e.target.value)}
+                       style={{ width: 84, padding: '7px 10px', fontSize: 13 }}/>
+                <div style={{ width: 220 }}>
+                  <Select value={w.mode} onChange={e => patchWindow(i, 'mode', e.target.value)}
+                          options={schedModeOptions(w.mode)}/>
+                </div>
+                <div style={{ flex: 1 }}/>
+                <button onClick={() => removeWindow(i)} title="Remover janela" style={{
+                  border: 'none', background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', padding: 6,
+                }}>
+                  <Icon name="trash" size={15}/>
+                </button>
+              </div>
+              {toHHMM(w.start) !== null && toHHMM(w.end) !== null && toHHMM(w.start) > toHHMM(w.end) && (
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+                  Vira a noite: vale das {w.start} até {w.end} do dia seguinte.
+                </div>
+              )}
+            </div>
+          ))}
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={addWindow}>
+              Adicionar janela
+            </Button>
+            <div style={{ flex: 1 }}/>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>Fora das janelas:</span>
+            <div style={{ width: 220 }}>
+              <Select value={sched.default_mode} onChange={e => update(s => ({ ...s, default_mode: e.target.value }))}
+                      options={schedModeOptions(sched.default_mode)}/>
+            </div>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+};
+
+// 'HH:MM' → minutos (null se inválido) — só pro aviso de janela overnight.
+const toHHMM = (v) => {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v || '');
+  if (!m) return null;
+  const h = parseInt(m[1], 10), min = parseInt(m[2], 10);
+  return (h >= 0 && h <= 23 && min >= 0 && min <= 59) ? h * 60 + min : null;
+};
+
 // ============================================================
 // NEGÓCIO
 // ============================================================
@@ -330,6 +493,8 @@ const NegocioInfo = ({ settings, patch }) => {
           ))}
         </div>
       </Card>
+
+      <AIScheduleCard settings={settings} patch={patch}/>
 
       <Card title="Equipe técnica" action={<Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>}>Adicionar profissional</Button>}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>

@@ -794,6 +794,30 @@ class ClientIdentity(BaseModel):
         default="Oi! Recebi sua mensagem. Te respondo em breve!",
         description="Mensagem automática fora do horário.",
     )
+    ai_schedule: dict = Field(
+        default_factory=dict,
+        description=(
+            "Horário de operação da IA. Vazio = clone_mode vale 24/7. "
+            "Formato: {'enabled': bool, 'default_mode': 'auto'|'approval'|'off', "
+            "'windows': [{'days': [0-6, 0=segunda], 'start': 'HH:MM', "
+            "'end': 'HH:MM', 'mode': 'auto'|'approval'|'off'}]}. "
+            "'off' = equipe humana atende (IA suprimida). Janela com "
+            "start > end cruza a meia-noite. Resolução e validação em "
+            "huma/core/ai_schedule.py."
+        ),
+    )
+
+    @field_validator("ai_schedule")
+    @classmethod
+    def _valida_ai_schedule(cls, v: dict) -> dict:
+        # Import tardio: ai_schedule.py é puro (só stdlib), sem ciclo.
+        from huma.core.ai_schedule import validate_ai_schedule
+
+        erros = validate_ai_schedule(v)
+        if erros:
+            raise ValueError(" ".join(erros))
+        return v
+
     market_analysis: dict = Field(
         default_factory=dict,
         description=(

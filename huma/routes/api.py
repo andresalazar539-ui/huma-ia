@@ -484,6 +484,7 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     "custom_rules", "products_or_services", "faq", "forbidden_words",
     "personality_traits", "use_emojis", "fallback_message",
     "silent_hours_start", "silent_hours_end", "silent_hours_message",
+    "ai_schedule",
     "owner_phone", "report_frequency", "report_hour", "report_day",
     "report_recipients", "report_formats",
     "notify_owner_on_appointment", "notify_owner_on_payment",

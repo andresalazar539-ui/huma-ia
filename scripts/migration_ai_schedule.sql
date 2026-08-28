@@ -1,0 +1,21 @@
+-- ================================================================
+-- Migration: ai_schedule (Horário de operação da IA) — 2026-08-28
+--
+-- Aditiva, idempotente, não-bloqueante (padrão CLAUDE.md §8).
+-- RODAR ANTES DO DEPLOY do commit "feat(schedule): horário de
+-- operação da IA".
+--
+-- ai_schedule: janelas semanais que definem quando a HUMA atende
+--   sozinha (auto), quando sugere pra aprovação (approval) e quando
+--   a equipe humana assume (off). Formato e validação em
+--   huma/core/ai_schedule.py. Default '{}' = feature desligada,
+--   clone_mode vale 24/7 — nenhuma linha existente muda de
+--   comportamento.
+--
+-- Sem esta coluna a LEITURA continua funcionando (get_client ignora
+-- coluna ausente e o Pydantic aplica o default {}), mas o SALVAR da
+-- tela de Ajustes do Cockpit falha (update_client manda a chave
+-- direto pro PostgREST). Rodar a migration antes de usar a tela.
+-- ================================================================
+
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS ai_schedule JSONB DEFAULT '{}'::jsonb;
