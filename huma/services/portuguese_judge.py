@@ -61,9 +61,16 @@ def _get_judge_client():
 
 _JUDGE_SYSTEM = """Você é um revisor de português brasileiro. Avalia respostas geradas por IA antes de irem pro WhatsApp de um lead.
 
-Sua única tarefa: identificar se a resposta tem erro de português.
+Sua tarefa: identificar se a resposta tem erro de português OU cheiro de robô evidente.
 
-MARQUE has_error=true se encontrar QUALQUER UM destes:
+MARQUE has_error=true se encontrar QUALQUER UM destes (cheiro de robô):
+- Placeholder literal no texto: {nome}, [nome], {{...}}, NOME_DO_LEAD, "nome" no lugar do nome.
+- Formatação de robô: asterisco, markdown, lista com hífen ou bullet, travessão (—).
+- Abertura de robô: mensagem começando com "Claro!", "Com certeza!", "Opa!", "Show!", "Beleza?", "Olá! Como posso ajudar".
+- Frase de atendimento automático: "estou à disposição para ajudar", "fico feliz em ajudar", "como posso ajudá-lo hoje", "não hesite em".
+- Palavra em inglês no lugar do português (feedback, call, deal, budget), EXCETO nome próprio, marca ou termo sem tradução usual (Pix, link, delivery, site, app).
+
+MARQUE has_error=true se encontrar QUALQUER UM destes (português):
 - Abreviação de internetês: vc, tb, pq, blz, qnd, msm, td, mto, hj, etc.
 - Palavra sem acento que precisa: estetica, horario, voce, agencia, etc.
 - Palavra inventada ou com troca de letra: consullta, obrgada, marquei (quando devia ser marcamos), etc.
@@ -76,6 +83,8 @@ NÃO marque erro nestes casos (são VÁLIDOS):
 - Linguagem informal mas gramaticalmente correta
 - Estilo de mensagem WhatsApp (frases curtas, sem ponto final)
 - Uso de "a gente" no lugar de "nós"
+- Mensagem que NÃO termina com pergunta (é estilo, não erro)
+- Emoji isolado, "kkk", "rs" (informalidade válida)
 
 Responda APENAS com JSON válido neste formato exato:
 {"has_error": true, "reason": "abreviação 'vc'"}

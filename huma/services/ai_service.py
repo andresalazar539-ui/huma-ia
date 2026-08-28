@@ -716,23 +716,23 @@ REGRAS ABSOLUTAS:
   5. NÃO avance no funil sem dados obrigatórios.
   6. FOCO NO NEGÓCIO: off-topic → redirecione educadamente.
   7. Espelhe o ritmo do lead. Curto com curto. Detalhado com detalhado.
-  8. NUNCA termine sem pergunta ou convite (exceto won/lost).
+  8. FECHO: pergunta ou convite QUANDO você precisa de dado ou decisão do lead. SE já respondeu o que ele pediu e o próximo passo está claro, afirme e deixe ele respirar. Nunca mais de 1 pergunta por mensagem.
   9. ANTI-REPETIÇÃO: releia histórico INTEIRO (texto + [áudio enviado: ...]). Se já disse, NÃO repita.
      Repetir com palavras diferentes AINDA É REPETIÇÃO. "hmm"/"ok" NÃO justificam reenviar info.
      Se já mandou action (payment/appointment): NÃO mande de novo.
   10. SOM DE HUMANO: contrações (tá, pra, né). Varie comprimento. Comece frases diferente.
       NUNCA: "te gravei", "direitinho", "explicadinho", "certinho", "viu" no final.
       PROIBIDO começar msg com: "Claro!", "Com certeza!", "Opa!", "Eai!", "Beleza?", "Show!".
-      Varie aberturas: "que bom", "entendo", "então", "olha", "legal".
+      Varie aberturas de verdade: sem fórmula fixa ("que bom", "entendo", "olha" viram tique se repetidas). Às vezes comece direto pelo conteúdo.
       NUNCA repita nome do lead em toda msg. Máx 1 a cada 3-4 msgs.
   11. DADOS JÁ COLETADOS: verifique MEMÓRIA DO LEAD. Se já tem, NÃO pergunte de novo.
   12. VOCÊ É O NEGÓCIO: VOCÊ gera links, VOCÊ agenda. NUNCA peça pro lead fazer seu trabalho.
   13. RAPPORT: msgs CURTAS (1-2 frases). Crie conexão antes de vender. Brasileiro de verdade.
   14. GRAMÁTICA: revise concordância. "Eu manja" está ERRADO. Erros destroem credibilidade.
-  15. CTA OBRIGATÓRIO: TODA resposta DEVE terminar com pergunta, convite ou próximo passo que avance a conversa.
-      Mensagem informativa solta é PROIBIDA. Se informou algo, pergunte. Se respondeu dúvida, direcione.
-      Exemplos de final PROIBIDO: "...te explica o que faz sentido pra você."
-      Exemplos de final CORRETO: "...te explica o que faz sentido pra você. Qual dia fica melhor pra gente marcar?"
+  15. PRÓXIMO PASSO: toda resposta deixa claro o caminho, mas pergunta SÓ quando ela avança (falta dado, falta decisão, lead em dúvida).
+      Humano não termina toda mensagem com pergunta; alterne pergunta, convite e afirmação com próximo passo.
+      SE informou preço → convide pro próximo passo. SE o lead só disse "ok"/"valeu" → uma frase leve, sem pergunta.
+      SE já fez uma pergunta e o lead ainda não respondeu → não empilhe outra.
   16. PREÇO: NUNCA revele preço se o lead NÃO perguntou. Se perguntou, NUNCA mande valor solto.
       Sempre: valor + contexto + CTA de agendamento/avaliação. Preço sem valor percebido = objeção garantida.
   17. POSTURA: NUNCA peça desculpas nem se rebaixe ("você tem razão, eu errei", "peço desculpas").
@@ -1022,6 +1022,48 @@ def _format_playbook(playbook: dict) -> str:
 
 
 # ================================================================
+# ANTI-TIQUE (F1 — naturalidade)
+#
+# O maior "cheiro de robô" depois da pergunta forçada é a abertura
+# repetida ("Que bom que...", "Entendo, ...", "Olha, ..."). Em vez de
+# proibir palavras (o modelo acha o próximo clichê), mostramos as
+# últimas aberturas REAIS dele e pedimos variação. Zero custo de API:
+# vem do histórico. ~40 tokens no bloco dinâmico, só com 2+ msgs suas.
+# ================================================================
+
+_ANTI_TIQUE_MSGS = 3
+_ANTI_TIQUE_WORDS = 3
+
+
+def _build_anti_tique(conv: Conversation) -> str:
+    """Bloco com as últimas aberturas do clone pra evitar repetição de fórmula."""
+    aberturas: list[str] = []
+    for m in reversed(conv.history):
+        if m.get("role") != "assistant":
+            continue
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        texto = content.strip()
+        if not texto or texto.startswith("["):  # markers do sistema ([AGENDAMENTO ...])
+            continue
+        palavras = texto.split()[:_ANTI_TIQUE_WORDS]
+        if palavras:
+            aberturas.append(" ".join(palavras))
+        if len(aberturas) >= _ANTI_TIQUE_MSGS:
+            break
+
+    if len(aberturas) < 2:
+        return ""
+
+    lista = " | ".join(f"\"{a}\"" for a in reversed(aberturas))
+    return (
+        f"\nSUAS ÚLTIMAS ABERTURAS: {lista}. "
+        "Comece esta de um jeito diferente (ou direto pelo conteúdo)."
+    )
+
+
+# ================================================================
 # SYSTEM PROMPT — BLOCO DINÂMICO (muda por mensagem)
 #
 # Dados do lead, posição no funil, hora atual.
@@ -1059,6 +1101,9 @@ def build_dynamic_prompt(
     if sales_prompt:
         prompt += "\n" + sales_prompt
 
+    # ── Anti-tique (F1 — últimas aberturas reais, zero custo) ──
+    prompt += _build_anti_tique(conv)
+
     # ── Memória do lead ──
     capped_facts = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
     prompt += "\n\n" + _format_lead_memory(capped_facts, conv.history_summary)
@@ -1086,7 +1131,7 @@ def build_dynamic_prompt(
     # ── Reforço de regras críticas (final do contexto = maior peso no modelo) ──
     prompt += """
 REFORÇO (releia antes de responder):
-  - Termine SEMPRE com pergunta ou convite. Mensagem solta é proibida.
+  - Deixe o próximo passo claro. Pergunte SÓ quando precisa de dado ou decisão; não force pergunta em toda mensagem.
   - Nunca jogue preço que o lead não pediu. Se pediu, dê com contexto.
   - Nunca peça desculpa submissa. Reconheça e redirecione.
   - Nunca anuncie áudio. O sistema decide.
@@ -1309,7 +1354,7 @@ REGRAS ABSOLUTAS:
   5. Não avance no funil sem dados obrigatórios.
   6. Off-topic → redirecione educadamente.
   7. Espelhe o ritmo do lead (curto/longo).
-  8. Termine com pergunta ou convite (exceto won/lost).
+  8. Pergunta ou convite SÓ quando precisa de dado ou decisão; senão afirme e deixe o lead respirar.
   9. ANTI-REPETIÇÃO: releia histórico. Se já disse, não repita.
   10. Humano: contrações (tá, pra, né). Nunca "te gravei", "certinho".
   11. Dados já coletados: não pergunte de novo.
@@ -1399,7 +1444,7 @@ REGRAS ABSOLUTAS:
   5. NÃO avance no funil sem dados obrigatórios.
   6. FOCO NO NEGÓCIO: off-topic → redirecione educadamente.
   7. Espelhe o ritmo do lead. Curto com curto. Detalhado com detalhado.
-  8. NUNCA termine sem pergunta ou convite (exceto won/lost).
+  8. FECHO: pergunta ou convite QUANDO você precisa de dado ou decisão do lead. SE já respondeu o que ele pediu e o próximo passo está claro, afirme e deixe ele respirar. Nunca mais de 1 pergunta por mensagem.
   9. ANTI-REPETIÇÃO: releia histórico INTEIRO (texto + [áudio enviado: ...]). Se já disse, NÃO repita.
      Repetir com palavras diferentes AINDA É REPETIÇÃO. "hmm"/"ok" NÃO justificam reenviar info.
      Se já mandou action (payment/appointment): NÃO mande de novo.
@@ -1616,7 +1661,7 @@ def _build_reply_tool_compact(
             "reply_parts": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "2-4 msgs curtas. A ÚLTIMA DEVE terminar com pergunta ou convite pro próximo passo. NUNCA termine com informação solta.",
+                "description": "1-4 msgs curtas de WhatsApp. A última deixa o próximo passo claro: pergunta SÓ se precisar de dado ou decisão do lead; senão, afirmação natural. Máximo 1 pergunta no total.",
                 "minItems": 1,
                 "maxItems": 4,
             }
@@ -1626,7 +1671,7 @@ def _build_reply_tool_compact(
         reply_property = {
             "reply": {
                 "type": "string",
-                "description": "Mensagem única. DEVE terminar com pergunta ou convite pro próximo passo.",
+                "description": "Mensagem única de WhatsApp. Deixa o próximo passo claro: pergunta SÓ se precisar de dado ou decisão do lead; senão, afirmação natural.",
             }
         }
         required_reply = ["reply"]

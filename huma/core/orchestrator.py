@@ -78,6 +78,13 @@ def _select_tier(classification, conv: Conversation, text: str, image_url, clien
     if msg_type in ("objection", "complex"):
         return 3, True
 
+    # F1 (naturalidade): primeira mensagem da conversa = primeira
+    # impressão. O template do Tier 0 ("Oi! Como posso te chamar?")
+    # saiu; quem abre a conversa é o modelo forte, no tom do dono.
+    # Custo: 1 chamada Sonnet por lead novo (~R$0,04 a mais/conversa).
+    if not conv.history:
+        return 3, True
+
     # Modo qualificador (SDR): sempre Sonnet pela coerência.
     if client_data is not None:
         try:
@@ -269,8 +276,10 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         classification = classify_message(unified_text, client_data, conv)
 
         # Tipos que podem ser resolvidos por regra (sem IA, custo zero)
-        # Greeting: saudação simples → "Oi! Como posso te chamar?"
-        # FAQ/preço/horário/localização: dados cadastrados do cliente
+        # FAQ/horário/localização: dados cadastrados do cliente.
+        # F1: greeting e price_query ficam na tabela, mas o classificador
+        # devolve can_resolve_without_llm=False pra eles (primeira
+        # impressão e preço com contexto são do modelo).
         # Confiança mínima: 0.85 pra FAQ/preço, 0.90 pra horário/local, 0.95 pra greeting
         rule_thresholds = {
             "greeting": 0.95,
@@ -923,8 +932,18 @@ async def process_outbound_campaign(client_data, campaign):
 # ================================================================
 
 def _typing_delay(text: str) -> float:
-    """4-15 segundos. Brasileiro real digitando."""
-    return min(4.0 + len(text) * 0.06, 15.0)
+    """
+    4-15 segundos. Brasileiro real digitando.
+
+    F1 (naturalidade): jitter de ±12% — delay exatamente proporcional
+    ao tamanho é um relógio, e relógio é robô. Piso 4s e teto 15s
+    preservados.
+    """
+    import random
+
+    base = 4.0 + len(text) * 0.06
+    jitter = random.uniform(0.88, 1.12)
+    return max(4.0, min(base * jitter, 15.0))
 
 
 async def _compress_history_async(client_id: str, phone: str) -> None:

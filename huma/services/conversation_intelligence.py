@@ -217,10 +217,16 @@ def _check_greeting(text: str, lead_name: str, conv: Conversation) -> Optional[C
                     response = f"Oi {lead_name}! Tudo bem? Como posso te ajudar?"
                 else:
                     response = "Oi! Tudo bem? Como posso te chamar?"
+                # F1 (naturalidade): a saudação é a PRIMEIRA IMPRESSÃO do
+                # lead e o template ("Oi! Tudo bem? Como posso te chamar?")
+                # era a mensagem mais robótica de toda a conversa. A
+                # classificação continua (tier/analytics), mas quem responde
+                # é o modelo, no tom do dono. suggested_response fica só
+                # como fallback de emergência do format_rule_response.
                 return ClassificationResult(
                     msg_type=MessageType.GREETING,
                     confidence=0.95,
-                    can_resolve_without_llm=True,
+                    can_resolve_without_llm=False,
                     suggested_response=response,
                 )
 
@@ -324,10 +330,14 @@ def _check_price_query(text: str, identity: ClientIdentity, lead_name: str) -> O
         if desc:
             response += f" {desc}."
 
+        # F1 (naturalidade): preço solto ("X sai R$Y.") viola a regra 16
+        # do próprio prompt (preço sem contexto = objeção garantida). A IA
+        # responde com valor + contexto + próximo passo. Classificação e
+        # metadata continuam pra tier/analytics.
         return ClassificationResult(
             msg_type=MessageType.PRICE_QUERY,
             confidence=0.85,
-            can_resolve_without_llm=True,
+            can_resolve_without_llm=False,
             suggested_response=response,
             metadata={"product": matched_product},
         )
@@ -343,7 +353,7 @@ def _check_price_query(text: str, identity: ClientIdentity, lead_name: str) -> O
         return ClassificationResult(
             msg_type=MessageType.PRICE_QUERY,
             confidence=0.75,
-            can_resolve_without_llm=True,
+            can_resolve_without_llm=False,  # F1: lista de preços crua vai pra IA contextualizar
             suggested_response=response,
             metadata={"all_products": True},
         )
