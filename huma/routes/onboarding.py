@@ -379,9 +379,12 @@ async def compile_interview(client_id: str, _=Depends(verify_api_key)):
         )
 
     # Análise de mercado em cima da identidade JÁ enriquecida.
+    # F3: passa o texto do site (se houver) pra instanciar o playbook
+    # com fatos reais do negócio. Falha de leitura não bloqueia: segue sem site.
     merged = identity.model_dump(mode="json")
     merged.update(updates)
-    analysis = await analyze_market(merged)
+    source_text = await _fetch_site_text(merged.get("website"))
+    analysis = await analyze_market(merged, source_text=source_text)
     market_status = analysis.get("status", "error")
 
     if market_status == "completed":
@@ -403,6 +406,63 @@ async def compile_interview(client_id: str, _=Depends(verify_api_key)):
         "applied_fields": [k for k in updates.keys() if k != "onboarding_status"],
         "market_analysis_status": market_status,
         "onboarding_status": OnboardingStatus.SANDBOX.value,
+    }
+
+
+# ================================================================
+# POST /onboarding/{client_id}/playbook — reprocessa o playbook (F3)
+#
+# Pra clientes que fizeram onboarding ANTES do cérebro da vertical
+# existir, ou quando o dono atualizou site/produtos. Só regrava
+# market_analysis: tom, palavras proibidas e custom_rules do dono
+# ficam intactos (diferente do /compile, que é a primeira vez).
+# ================================================================
+
+
+async def _fetch_site_text(website: str | None) -> str:
+    """Lê o site/Instagram do negócio pro playbook. "" em qualquer falha."""
+    url = (website or "").strip()
+    if not url:
+        return ""
+    try:
+        return (await interview.fetch_source_text(url)) or ""
+    except Exception as e:  # leitura do site nunca bloqueia o onboarding
+        log.warning(f"Site ilegível pro playbook | url={url} | {type(e).__name__}: {e}")
+        return ""
+
+
+@router.post("/{client_id}/playbook")
+async def rebuild_playbook(client_id: str, _=Depends(verify_api_key)):
+    """
+    Regera análise de mercado + playbook do negócio (cérebro da vertical
+    instanciado no cliente) e grava APENAS market_analysis.
+
+    Endpoint lento (~15-30s, uma chamada de Sonnet).
+    """
+    identity = await _get_identity_or_404(client_id)
+    if not identity.category:
+        raise HTTPException(400, "Defina a categoria do negócio antes de gerar o playbook.")
+
+    data = identity.model_dump(mode="json")
+    source_text = await _fetch_site_text(identity.website)
+    analysis = await analyze_market(data, source_text=source_text)
+    if analysis.get("status") != "completed":
+        raise HTTPException(502, "Não consegui gerar o playbook agora. Tenta de novo em instantes.")
+
+    market = analysis.get("analysis") or {}
+    await db.update_client(client_id, {"market_analysis": market})
+
+    playbook = market.get("playbook") if isinstance(market.get("playbook"), dict) else {}
+    lacunas = playbook.get("lacunas") or []
+    log.info(
+        f"Playbook regerado | client={client_id} | site_chars={len(source_text)} | "
+        f"objecoes={len(playbook.get('objecoes') or [])} | lacunas={len(lacunas)}"
+    )
+    return {
+        "status": "ok",
+        "has_playbook": bool(playbook),
+        "used_site": bool(source_text),
+        "lacunas": lacunas,
     }
 
 

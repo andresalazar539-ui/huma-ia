@@ -755,6 +755,10 @@ REGRAS ABSOLUTAS:
         if vertical_prompt:
             prompt += vertical_prompt
 
+    # ── Playbook do negócio (F3 — vertical instanciada no cliente) ──
+    if identity.market_analysis and isinstance(identity.market_analysis.get("playbook"), dict):
+        prompt += _format_playbook(identity.market_analysis["playbook"])
+
     # ── Market analysis ──
     if identity.market_analysis:
         ma = identity.market_analysis
@@ -933,6 +937,88 @@ def _build_vertical_compressed(category) -> str:
         return ""
     key = category.value if hasattr(category, "value") else str(category)
     return _VERTICAL_COMPRESSED.get(key, "")
+
+
+# ================================================================
+# PLAYBOOK DO NEGÓCIO (F3 — cérebro da vertical instanciado no cliente)
+#
+# Gerado UMA vez no onboarding por analyze_market (Sonnet) a partir do
+# cérebro da vertical + cadastro + texto do site. Vive em
+# identity.market_analysis["playbook"] (dict — sem migration).
+# Entra no bloco ESTÁTICO (cacheado). Listas são capadas pra manter
+# o bloco em ~1.500-2.500 chars mesmo se a IA exagerar.
+# ================================================================
+
+_PLAYBOOK_CAPS = {
+    "diferenciais": 6,
+    "provas_reais": 6,
+    "objecoes": 8,
+    "gatilhos_aplicaveis": 6,
+    "perfis_locais": 4,
+    "lacunas": 6,
+}
+
+
+def _format_playbook(playbook: dict) -> str:
+    """
+    Renderiza o playbook do negócio pro prompt estático.
+
+    Retorna "" se o dict estiver vazio ou sem nenhuma seção útil.
+    Strings são cortadas em 300 chars por item (defesa contra JSON
+    inflado); listas seguem _PLAYBOOK_CAPS.
+    """
+    if not isinstance(playbook, dict) or not playbook:
+        return ""
+
+    def _items(key: str) -> list:
+        raw = playbook.get(key) or []
+        if not isinstance(raw, list):
+            return []
+        return raw[: _PLAYBOOK_CAPS.get(key, 6)]
+
+    def _s(value) -> str:
+        return str(value or "").strip()[:300]
+
+    linhas: list[str] = []
+
+    diferenciais = [_s(d) for d in _items("diferenciais") if _s(d)]
+    if diferenciais:
+        linhas.append("  DIFERENCIAIS (use quando o lead comparar ou hesitar): " + "; ".join(diferenciais) + ".")
+
+    provas = [_s(p) for p in _items("provas_reais") if _s(p)]
+    if provas:
+        linhas.append("  PROVAS REAIS (as únicas que você pode citar): " + "; ".join(provas) + ".")
+
+    objecoes = [o for o in _items("objecoes") if isinstance(o, dict) and _s(o.get("objecao"))]
+    if objecoes:
+        linhas.append("  OBJEÇÕES DESTE NEGÓCIO (adapte, nunca copie literal):")
+        for o in objecoes:
+            linhas.append(f"    \"{_s(o.get('objecao'))}\" → {_s(o.get('resposta_exemplo'))}")
+
+    gatilhos = [g for g in _items("gatilhos_aplicaveis") if isinstance(g, dict) and _s(g.get("gatilho"))]
+    if gatilhos:
+        linhas.append("  GATILHOS COM FATO REAL (só estes):")
+        for g in gatilhos:
+            linhas.append(f"    - {_s(g.get('gatilho'))}: {_s(g.get('fato_real'))}")
+
+    perfis = [_s(p) for p in _items("perfis_locais") if _s(p)]
+    if perfis:
+        linhas.append("  QUEM PROCURA ESTE NEGÓCIO: " + "; ".join(perfis) + ".")
+
+    meta = _s(playbook.get("meta_e_caminho"))
+    if meta:
+        linhas.append(f"  META E CAMINHO: {meta}")
+
+    lacunas = [_s(l) for l in _items("lacunas") if _s(l)]
+    if lacunas:
+        linhas.append(
+            "  LACUNAS (o dono ainda não confirmou; NÃO afirme nada sobre isso, diga que confirma e retorna): "
+            + "; ".join(lacunas) + "."
+        )
+
+    if not linhas:
+        return ""
+    return "\n\nPLAYBOOK DO NEGÓCIO (o cérebro da vertical aplicado a ESTE cliente):\n" + "\n".join(linhas)
 
 
 # ================================================================

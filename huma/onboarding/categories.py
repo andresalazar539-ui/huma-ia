@@ -224,13 +224,44 @@ def get_onboarding_questions(category: BusinessCategory) -> list[dict]:
 #           acolhedora, concorrentes na região, etc.
 # ================================================================
 
-def build_market_analysis_prompt(identity_data: dict) -> str:
+def build_market_analysis_prompt(
+    identity_data: dict,
+    source_text: str = "",
+    vertical_brain: str = "",
+) -> str:
     """
     Gera prompt pra IA analisar o mercado do cliente.
 
     Chamado APÓS onboarding, ANTES de ativar.
     O resultado alimenta o system prompt com contexto profundo.
+
+    F3 (Devorador de Metas): quando a vertical tem cérebro dedicado
+    (huma/verticals) e/ou o site do negócio pôde ser lido, o prompt
+    recebe os dois e pede também um PLAYBOOK instanciado no negócio:
+    objeções respondidas com fatos DESTE cliente, provas reais tiradas
+    do site, gatilhos só com fato confirmado e a lista de LACUNAS
+    (o que ainda precisa ser confirmado com o dono). Sem cérebro e sem
+    site, o prompt é o mesmo de antes (playbook fica genérico).
+
+    Args:
+        identity_data: identidade do cliente (model_dump).
+        source_text: texto extraído do site/Instagram (pode ser "").
+        vertical_brain: bloco renderizado do cérebro da vertical (pode ser "").
     """
+    brain_section = ""
+    if vertical_brain.strip():
+        brain_section = (
+            "\nCONHECIMENTO DE ESPECIALISTA DA VERTICAL (use como base, não repita; instancie no negócio acima):\n"
+            f"{vertical_brain.strip()}\n"
+        )
+
+    site_section = ""
+    if source_text.strip():
+        site_section = (
+            "\nTEXTO DO SITE/INSTAGRAM DO NEGÓCIO (única fonte de fatos além do cadastro; NUNCA invente o que não está aqui):\n"
+            f"{source_text.strip()[:12000]}\n"
+        )
+
     name = identity_data.get("business_name", "")
     desc = identity_data.get("business_description", "")
     category = identity_data.get("category", "")
@@ -267,7 +298,7 @@ FAQ:
 {faq_text or '  Não informado'}
 REGRAS:
 {rules or '  Nenhuma'}
-
+{brain_section}{site_section}
 COM BASE NESSAS INFORMAÇÕES, ANALISE:
 
 1. CONTEXTO DE MERCADO
@@ -328,34 +359,71 @@ Responda em JSON:
             "arguments": ["argumento 1"],
             "conversation_flow": "ordem ideal"
         }}
-    ]
-}}"""
+    ],
+    "playbook": {{
+        "diferenciais": ["o que só ESTE negócio tem, com base no cadastro e no site (máx 6)"],
+        "provas_reais": ["fatos verificáveis do site/cadastro: anos de mercado, certificações, número de clientes, avaliações, garantias (máx 6; vazio se não houver)"],
+        "objecoes": [
+            {{"objecao": "objeção típica desta vertical", "resposta_exemplo": "resposta em 1-2 frases de WhatsApp usando produto, preço ou diferencial REAL deste negócio; sem markdown, sem travessão"}}
+        ],
+        "gatilhos_aplicaveis": [
+            {{"gatilho": "nome do gatilho (prova social, autoridade, escassez real, reciprocidade, ancoragem)", "fato_real": "o fato do negócio que sustenta esse gatilho"}}
+        ],
+        "perfis_locais": ["quem procura ESTE negócio, considerando região e posicionamento (máx 4)"],
+        "meta_e_caminho": "a meta da conversa pra este negócio (agendar / vender / qualificar) e o caminho mínimo em 1-2 frases",
+        "lacunas": ["o que a IA PRECISA saber pra vender melhor e NÃO está no cadastro nem no site, em forma de pergunta curta pro dono (máx 6)"]
+    }}
+}}
+
+REGRAS DO PLAYBOOK:
+- Só use fatos que estão no cadastro ou no texto do site. O que não estiver vira LACUNA, nunca invenção.
+- Cada objeção deve ter resposta ESPECÍFICA deste negócio (nome do produto, valor real, diferencial real), não genérica.
+- Gatilho sem fato real não entra em gatilhos_aplicaveis.
+- Respostas de exemplo em português do Brasil, tom de WhatsApp, sem markdown e sem travessão."""
 
     return prompt
 
 
-async def analyze_market(identity_data: dict) -> dict:
+async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
     """
     Executa análise de mercado via IA.
 
     Chamado APÓS onboarding, ANTES de ativar.
     O resultado é salvo no ClientIdentity e alimenta
     o system prompt com contexto profundo do mercado.
+
+    F3: injeta o cérebro da vertical (se houver) e o texto do site
+    (se fornecido) pra gerar o playbook instanciado no negócio.
+    Uma chamada Sonnet por cliente, uma vez na vida (ou no rebuild).
+
+    Args:
+        identity_data: identidade do cliente (model_dump).
+        source_text: texto do site/Instagram já extraído ("" se indisponível).
     """
     import json
     import anthropic
     from huma.config import ANTHROPIC_API_KEY, AI_MODEL_PRIMARY
     from huma.utils.logger import get_logger
+    from huma.verticals import build_vertical_brain
 
     log = get_logger("onboarding")
 
-    prompt = build_market_analysis_prompt(identity_data)
+    vertical_brain = build_vertical_brain(identity_data.get("category"))
+    prompt = build_market_analysis_prompt(
+        identity_data,
+        source_text=source_text or "",
+        vertical_brain=vertical_brain,
+    )
+    log.info(
+        f"Análise de mercado | {identity_data.get('business_name', '')} | "
+        f"brain={bool(vertical_brain)} | site_chars={len(source_text or '')}"
+    )
 
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
             model=AI_MODEL_PRIMARY,
-            max_tokens=2000,
+            max_tokens=3500,  # F3: JSON cresceu com o playbook (objeções + gatilhos + lacunas)
             messages=[{"role": "user", "content": prompt}],
         )
 
