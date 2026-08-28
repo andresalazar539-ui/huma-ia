@@ -54,8 +54,11 @@ class TestMomentoDeValor:
         assert _momento_de_valor(_conv(merge_lead_state({}, {"sinal_de_compra": True}, ""))) == "sinal_de_compra"
 
     def test_lixo_nao_quebra(self):
-        assert _momento_de_valor(_conv("lixo")) == ""
-        assert _momento_de_valor(_conv({"sinal_de_compra": "sim"})) == ""
+        """lead_state vindo do banco pode ser lixo — a política degrada pra rotina."""
+        conv = _conv()
+        conv.lead_state = "lixo"  # atribuição pós-construção (o banco não valida)
+        assert _momento_de_valor(conv) == ""
+        assert _momento_de_valor(_conv({"sinal_de_compra": "sim"})) == ""  # string, não bool
 
 
 class TestSelectTierPorMomento:
