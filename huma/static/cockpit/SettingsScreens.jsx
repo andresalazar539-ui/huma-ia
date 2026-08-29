@@ -181,166 +181,279 @@ const Toggle = ({ checked, onChange, label }) => (
 );
 
 // ---------- Horário de operação da IA (ai_schedule) ----------
+// Design v2 (Claude Design): uma pergunta, um clique, prévia.
 // Backend guarda como objeto JSONB validado em huma/core/ai_schedule.py.
 // Dias: 0=Seg ... 6=Dom (convenção weekday() do Python).
-// Modos expostos na tela: 'auto' (HUMA atende) e 'off' (equipe atende).
-// 'approval' existe no backend mas fica fora da UI v1 (sem tela de
-// aprovação ainda) — valor legado é preservado, nunca sobrescrito.
-const SCHED_DAY_LABELS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+// Modos na tela: 'auto' (HUMA atende) e 'off' (equipe atende).
+// 'approval' existe no backend mas fica fora da UI (sem tela de
+// aprovação ainda) — valor legado ganha uma opção extra no select.
 
-const schedModeOptions = (current) => {
-  const opts = [
-    { value: 'auto', label: 'HUMA atende sozinha' },
-    { value: 'off',  label: 'Minha equipe atende' },
-  ];
-  if (current === 'approval') opts.push({ value: 'approval', label: 'Aprovação manual (legado)' });
-  return opts;
-};
+(function () {
+  if (document.getElementById('qaq-css')) return;
+  const s = document.createElement('style'); s.id = 'qaq-css';
+  s.textContent = '.qaq-trash{transition:color 120ms ease,background 120ms ease}.qaq-trash:hover{color:var(--danger);background:var(--paper-sunk)}.qaq-chip{transition:all 120ms ease}.qaq-chip:not(.on):hover{border-color:var(--ink-4);color:var(--ink-2)}'
+    + '.qaq-hint{position:relative;display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border-radius:999px;border:1px solid var(--ink-line);color:var(--ink-3);font-family:var(--font-mono);font-size:10px;line-height:1;cursor:help;flex-shrink:0;font-weight:500;letter-spacing:0;text-transform:none}'
+    + '.qaq-hint:hover,.qaq-hint:focus{color:var(--ink);border-color:var(--ink-3);background:var(--paper-sunk);outline:none}'
+    + '.qaq-tip{position:absolute;bottom:calc(100% + 9px);left:50%;transform:translateX(-50%);width:250px;background:var(--night);color:var(--paper);padding:10px 12px;border-radius:10px;font-family:var(--font-sans);font-size:12px;font-weight:400;line-height:1.5;letter-spacing:-0.005em;text-transform:none;opacity:0;pointer-events:none;transition:opacity 140ms ease;z-index:60;box-shadow:0 12px 32px rgba(28,23,20,0.22);text-align:left}'
+    + '.qaq-tip::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:var(--night)}'
+    + '.qaq-tip.r{left:auto;right:-5px;transform:none}.qaq-tip.r::after{left:auto;right:9px;transform:none}'
+    + '.qaq-hint:hover .qaq-tip,.qaq-hint:focus .qaq-tip{opacity:1}'
+    + '.qaq-tip-ex{display:block;margin-top:6px;font-family:var(--font-mono);font-size:10.5px;letter-spacing:0;color:var(--ink-line)}';
+  document.head.appendChild(s);
+})();
 
-const AIScheduleCard = ({ settings, patch }) => {
-  const stored = (settings.ai_schedule && typeof settings.ai_schedule === 'object')
-    ? settings.ai_schedule : {};
-  const [sched, setSched] = useStateS(() => ({
-    enabled: !!stored.enabled,
-    default_mode: ['auto', 'approval', 'off'].includes(stored.default_mode) ? stored.default_mode : 'off',
-    windows: Array.isArray(stored.windows) ? stored.windows.map(w => ({
-      days: Array.isArray(w.days) ? w.days.filter(d => Number.isInteger(d) && d >= 0 && d <= 6) : [],
-      start: w.start || '18:00',
-      end: w.end || '08:00',
-      mode: ['auto', 'approval', 'off'].includes(w.mode) ? w.mode : 'auto',
-    })) : [],
-  }));
+const QaqHint = ({ text, example, align }) => (
+  <span className="qaq-hint" tabIndex={0} aria-label={text}>
+    ?
+    <span className={'qaq-tip' + (align === 'right' ? ' r' : '')}>{text}{example && <span className="qaq-tip-ex">Ex.: {example}</span>}</span>
+  </span>
+);
 
-  const update = (updater) => {
-    setSched(s => {
-      const next = typeof updater === 'function' ? updater(s) : updater;
-      patch('ai_schedule', next);
-      return next;
+const QAQ_DAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+const QAQ_MODES = [{ value: 'auto', label: 'HUMA atende sozinha' }, { value: 'off', label: 'Minha equipe atende' }];
+const qaqModeOptions = (current) => current === 'approval'
+  ? [...QAQ_MODES, { value: 'approval', label: 'Aprovação manual (legado)' }]
+  : QAQ_MODES;
+const qaqMin = (s) => { const m = /^(\d{1,2}):(\d{2})$/.exec(s || ''); if (!m) return null; const v = +m[1] * 60 + +m[2]; return (+m[1] > 24 || +m[2] > 59 || v > 1440) ? null : v; };
+const QAQ_STRIPES = 'repeating-linear-gradient(135deg, var(--ink-line) 0px, var(--ink-line) 2px, var(--paper-raised) 2px, var(--paper-raised) 6px)';
+const qaqFill = (mode) => mode === 'auto' ? 'var(--sage)' : QAQ_STRIPES;
+// horário de atendimento (array de 7 × {on, from, to}, 0=Seg) → janelas da equipe
+const qaqBizWindows = (biz) => (biz || []).map((d, i) => (d && d.on) ? { days: [i], start: d.from, end: d.to, mode: 'off' } : null).filter(Boolean);
+// chave canônica pra comparar janelas — o JSONB do banco reordena as
+// chaves do objeto, então JSON.stringify direto não é confiável.
+const qaqWinKey = (ws) => JSON.stringify((ws || []).map(w => [
+  (w.days || []).slice().sort((a, b) => a - b), w.start || '', w.end || '', w.mode || '',
+]));
+
+const QaqLegend = () => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+    {[{ f: qaqFill('auto'), l: 'HUMA sozinha' }, { f: qaqFill('off'), l: 'Sua equipe' }].map(it => (
+      <span key={it.l} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)' }}>
+        <span style={{ width: 12, height: 12, borderRadius: 3, background: it.f, border: '1px solid var(--paper-edge)' }}></span>{it.l}
+      </span>
+    ))}
+  </div>
+);
+
+// ---------- prévia da semana ----------
+function WeekPreview({ windows, defaultMode }) {
+  const LBL = 36;
+  const segs = Array.from({ length: 7 }, () => []);
+  (windows || []).forEach(w => {
+    const s = qaqMin(w.start), e = qaqMin(w.end);
+    if (s == null || e == null || s === e) return;
+    (w.days || []).forEach(d => {
+      if (s < e) segs[d].push({ s, e, mode: w.mode });
+      else { segs[d].push({ s, e: 1440, mode: w.mode }); segs[(d + 1) % 7].push({ s: 0, e, mode: w.mode }); }
     });
-  };
-
-  const toggleEnabled = () => update(s => {
-    const enabled = !s.enabled;
-    // Primeira ativação sem janelas: pré-preenche o caso mais comum —
-    // equipe atende de dia, HUMA assume à noite (todos os dias).
-    if (enabled && s.windows.length === 0) {
-      return {
-        ...s, enabled,
-        default_mode: 'off',
-        windows: [{ days: [0, 1, 2, 3, 4, 5, 6], start: '18:00', end: '08:00', mode: 'auto' }],
-      };
-    }
-    return { ...s, enabled };
   });
-
-  const patchWindow = (i, key, value) => update(s => ({
-    ...s,
-    windows: s.windows.map((w, j) => j === i ? { ...w, [key]: value } : w),
-  }));
-
-  const toggleDay = (i, day) => update(s => ({
-    ...s,
-    windows: s.windows.map((w, j) => {
-      if (j !== i) return w;
-      const days = w.days.includes(day) ? w.days.filter(d => d !== day) : [...w.days, day].sort();
-      return { ...w, days };
-    }),
-  }));
-
-  const addWindow = () => update(s => ({
-    ...s,
-    windows: [...s.windows, { days: [0, 1, 2, 3, 4], start: '08:00', end: '18:00', mode: 'off' }],
-  }));
-
-  const removeWindow = (i) => update(s => ({
-    ...s,
-    windows: s.windows.filter((_, j) => j !== i),
-  }));
-
   return (
-    <Card title="Quem atende, quando">
-      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-        Programe as janelas em que a HUMA atende sozinha e as janelas em que sua equipe assume.
-        Ex.: equipe no horário comercial, HUMA à noite e no fim de semana.
-        Em janela da equipe a HUMA fica em silêncio (também não manda follow-up nem pesquisa) —
-        quem responde é você, direto no WhatsApp.
-      </div>
-
-      <Toggle checked={sched.enabled} onChange={toggleEnabled} label="Programar horários da HUMA"/>
-
-      {!sched.enabled && (
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
-          Desligado: a HUMA atende no modo atual, o tempo todo.
+    <div style={{ background: 'var(--paper-sunk)', borderRadius: 12, padding: '14px 16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <div className="mono-label">prévia da semana</div>
+          <QaqHint text="Mapa da semana inteira, hora a hora: verde é a HUMA sozinha, listrado é a sua equipe respondendo."/>
         </div>
-      )}
-
-      {sched.enabled && (
-        <>
-          {sched.windows.map((w, i) => (
-            <div key={i} style={{
-              display: 'flex', flexDirection: 'column', gap: 10,
-              padding: '12px 14px', borderRadius: 10,
-              border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)',
-            }}>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {SCHED_DAY_LABELS.map((label, day) => (
-                  <button key={day} onClick={() => toggleDay(i, day)} style={{
-                    padding: '5px 10px', borderRadius: 999, cursor: 'pointer',
-                    border: '1px solid ' + (w.days.includes(day) ? 'var(--ink)' : 'var(--paper-edge)'),
-                    background: w.days.includes(day) ? 'var(--ink)' : 'var(--paper-raised)',
-                    color:      w.days.includes(day) ? 'var(--paper)' : 'var(--ink-3)',
-                    fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
-                  }}>{label}</button>
-                ))}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <Input value={w.start} onChange={e => patchWindow(i, 'start', e.target.value)}
-                       style={{ width: 84, padding: '7px 10px', fontSize: 13 }}/>
-                <span style={{ color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>até</span>
-                <Input value={w.end} onChange={e => patchWindow(i, 'end', e.target.value)}
-                       style={{ width: 84, padding: '7px 10px', fontSize: 13 }}/>
-                <div style={{ width: 220 }}>
-                  <Select value={w.mode} onChange={e => patchWindow(i, 'mode', e.target.value)}
-                          options={schedModeOptions(w.mode)}/>
-                </div>
-                <div style={{ flex: 1 }}/>
-                <button onClick={() => removeWindow(i)} title="Remover janela" style={{
-                  border: 'none', background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', padding: 6,
-                }}>
-                  <Icon name="trash" size={15}/>
-                </button>
-              </div>
-              {toHHMM(w.start) !== null && toHHMM(w.end) !== null && toHHMM(w.start) > toHHMM(w.end) && (
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
-                  Vira a noite: vale das {w.start} até {w.end} do dia seguinte.
-                </div>
-              )}
-            </div>
+        <QaqLegend/>
+      </div>
+      <div style={{ position: 'relative', marginTop: 10 }}>
+        <div style={{ position: 'relative', height: 13, marginLeft: LBL }}>
+          {[0, 6, 12, 18, 24].map(h => (
+            <span key={h} style={{ position: 'absolute', left: (h / 24 * 100) + '%', transform: h === 0 ? 'none' : h === 24 ? 'translateX(-100%)' : 'translateX(-50%)', fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--ink-4)' }}>{String(h).padStart(2, '0') + 'h'}</span>
           ))}
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
-            <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={addWindow}>
-              Adicionar janela
-            </Button>
-            <div style={{ flex: 1 }}/>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>Fora das janelas:</span>
-            <div style={{ width: 220 }}>
-              <Select value={sched.default_mode} onChange={e => update(s => ({ ...s, default_mode: e.target.value }))}
-                      options={schedModeOptions(sched.default_mode)}/>
+        </div>
+        {QAQ_DAYS.map((lbl, d) => (
+          <div key={lbl} style={{ display: 'flex', alignItems: 'center', marginTop: 5 }}>
+            <span style={{ width: LBL, flexShrink: 0, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)' }}>{lbl}</span>
+            <div style={{ flex: 1, position: 'relative', height: 13, borderRadius: 4, overflow: 'hidden', background: qaqFill(defaultMode) }}>
+              {segs[d].map((g, i) => (
+                <div key={i} style={{ position: 'absolute', top: 0, bottom: 0, left: (g.s / 1440 * 100) + '%', width: ((g.e - g.s) / 1440 * 100) + '%', background: qaqFill(g.mode) }}></div>
+              ))}
             </div>
           </div>
-        </>
+        ))}
+        <div style={{ position: 'absolute', left: LBL, right: 0, top: 16, bottom: 0, pointerEvents: 'none' }}>
+          {[25, 50, 75].map(p => <div key={p} style={{ position: 'absolute', left: p + '%', top: 0, bottom: 0, width: 1, background: 'var(--ink-line)', opacity: 0.35 }}></div>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- uma janela do editor ----------
+function QaqWindowRow({ w, onPatch, onRemove }) {
+  const auto = w.mode === 'auto';
+  const s = qaqMin(w.start), e = qaqMin(w.end);
+  const overnight = s != null && e != null && s > e;
+  const toggleDay = (d) => onPatch({ days: w.days.includes(d) ? w.days.filter(x => x !== d) : [...w.days, d].sort((a, b) => a - b) });
+  return (
+    <div style={{ borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, background: auto ? 'var(--sage-tint)' : 'var(--paper-sunk)', border: '1px solid ' + (auto ? 'var(--sage-soft)' : 'var(--paper-edge)') }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ width: 6, height: 6, borderRadius: 999, background: auto ? 'var(--sage)' : 'var(--ink-4)' }}></span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: auto ? 'var(--sage-ink)' : 'var(--ink-3)' }}>{auto ? 'HUMA sozinha' : 'Sua equipe'}</span>
+        <QaqHint text="Uma janela é um período que se repete toda semana, nos dias marcados. Toque nos dias pra ligar e desligar cada um." example="Seg a Sex, 12:00 até 14:00 = horário de almoço."/>
+        <span style={{ flex: 1 }}></span>
+        <button className="qaq-trash" onClick={onRemove} aria-label="Remover janela" style={{ border: 'none', background: 'transparent', color: 'var(--ink-4)', cursor: 'pointer', padding: 6, borderRadius: 8, display: 'flex' }}><Icon name="trash" size={15}/></button>
+      </div>
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {QAQ_DAYS.map((lbl, d) => {
+          const on = w.days.includes(d);
+          return (
+            <button key={lbl} className={'qaq-chip' + (on ? ' on' : '')} onClick={() => toggleDay(d)} style={{ width: 40, padding: '6px 0', textAlign: 'center', borderRadius: 8, fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500, cursor: 'pointer', background: on ? 'var(--ink)' : 'var(--paper-raised)', color: on ? 'var(--paper)' : 'var(--ink-3)', border: '1px solid ' + (on ? 'var(--ink)' : 'var(--paper-edge)') }}>{lbl}</button>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Input value={w.start} onChange={ev => onPatch({ start: ev.target.value })} style={{ width: 92, padding: '7px 10px', fontSize: 13 }}/>
+        <span style={{ color: 'var(--ink-3)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>até</span>
+        <Input value={w.end} onChange={ev => onPatch({ end: ev.target.value })} style={{ width: 92, padding: '7px 10px', fontSize: 13 }}/>
+        <div style={{ flex: 1 }}></div>
+        <QaqHint align="right" text="“HUMA atende sozinha”: a IA responde tudo nesse período. “Minha equipe atende”: a HUMA fica em silêncio e quem responde é você, direto no WhatsApp."/>
+        <div style={{ width: 196 }}>
+          <Select value={w.mode} onChange={ev => onPatch({ mode: ev.target.value })} options={qaqModeOptions(w.mode)}/>
+        </div>
+      </div>
+      {overnight && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+          <Icon name="moon" size={12}/>
+          <span>Vira a noite: vale das {w.start} até {w.end} do dia seguinte.</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- radio-card (mesmo padrão do Tom de voz) ----------
+const QaqOption = ({ selected, onSelect, label, badge, desc }) => (
+  <label style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', padding: '12px 14px', borderRadius: 10, border: '1px solid ' + (selected ? 'var(--ink)' : 'var(--paper-edge)'), background: selected ? 'var(--paper-sunk)' : 'transparent' }}>
+    <input type="radio" checked={selected} onChange={onSelect} style={{ accentColor: 'var(--ink)' }}/>
+    <div style={{ flex: 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{label}</span>
+        {badge && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', padding: '2px 7px', borderRadius: 4, background: 'var(--sage-tint)', color: 'var(--sage-ink)' }}>{badge}</span>}
+      </div>
+      {desc && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.5 }}>{desc}</div>}
+    </div>
+  </label>
+);
+
+// ---------- o card ----------
+// businessHours: array de 7 × { on, from, to } (0=Seg) — vem do grid
+// "Horário de atendimento" logo acima, na mesma tela (estado vivo).
+const AIScheduleCard = ({ settings, patch, businessHours }) => {
+  const stored = (settings.ai_schedule && typeof settings.ai_schedule === 'object')
+    ? settings.ai_schedule : {};
+
+  // Deriva a escolha inicial do que está salvo:
+  //   desligado/vazio → 'always'; janelas iguais às derivadas do
+  //   expediente → 'business'; qualquer outra coisa → 'custom'.
+  const initial = (() => {
+    if (!stored.enabled || !Array.isArray(stored.windows)) return { choice: 'always', custom: null };
+    const dm = ['auto', 'approval', 'off'].includes(stored.default_mode) ? stored.default_mode : 'auto';
+    if (dm === 'auto' && qaqWinKey(stored.windows) === qaqWinKey(qaqBizWindows(businessHours))) {
+      return { choice: 'business', custom: null };
+    }
+    return {
+      choice: 'custom',
+      custom: {
+        default_mode: dm,
+        windows: stored.windows.map(w => ({
+          days: Array.isArray(w.days) ? w.days.filter(d => Number.isInteger(d) && d >= 0 && d <= 6) : [],
+          start: w.start || '18:00',
+          end: w.end || '08:00',
+          mode: ['auto', 'approval', 'off'].includes(w.mode) ? w.mode : 'auto',
+        })),
+      },
+    };
+  })();
+
+  const [choice, setChoice] = useStateS(initial.choice);
+  const [custom, setCustom] = useStateS(initial.custom || { default_mode: 'auto', windows: [] });
+  const mountedRef = React.useRef(false);
+
+  const emit = () => {
+    if (choice === 'always') return { enabled: false, default_mode: 'auto', windows: [] };
+    if (choice === 'business') return { enabled: true, default_mode: 'auto', windows: qaqBizWindows(businessHours) };
+    return { enabled: true, default_mode: custom.default_mode, windows: custom.windows };
+  };
+
+  // Emite via patch() só quando o usuário mexe (nunca no mount, pra não
+  // sujar o dirty tracking do Salvar). No modo 'business', mudanças no
+  // grid de expediente acima também re-emitem — a escala acompanha.
+  const bizKey = choice === 'business' ? qaqWinKey(qaqBizWindows(businessHours)) : '';
+  useEffectS(() => {
+    if (!mountedRef.current) { mountedRef.current = true; return; }
+    patch('ai_schedule', emit());
+  }, [choice, custom, bizKey]);
+
+  const openCustom = () => {
+    setCustom(c => c.windows.length ? c : (choice === 'business'
+      ? { default_mode: 'auto', windows: qaqBizWindows(businessHours) }
+      : { default_mode: 'off', windows: [{ days: [0, 1, 2, 3, 4, 5, 6], start: '18:00', end: '08:00', mode: 'auto' }] }));
+    setChoice('custom');
+  };
+  const patchWin = (i, p) => setCustom(c => ({ ...c, windows: c.windows.map((w, j) => j === i ? { ...w, ...p } : w) }));
+  const rmWin = (i) => setCustom(c => ({ ...c, windows: c.windows.filter((_, j) => j !== i) }));
+  const addWin = () => setCustom(c => ({ ...c, windows: [...c.windows, { days: [0, 1, 2, 3, 4], start: '09:00', end: '18:00', mode: c.default_mode === 'auto' ? 'off' : 'auto' }] }));
+
+  const preview = choice === 'always' ? { windows: [], defaultMode: 'auto' }
+    : choice === 'business' ? { windows: qaqBizWindows(businessHours), defaultMode: 'auto' }
+    : { windows: custom.windows, defaultMode: custom.default_mode };
+
+  return (
+    <Card title="Quem responde o WhatsApp?">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <QaqOption selected={choice === 'always'} onSelect={() => setChoice('always')} label="HUMA o tempo todo" badge="recomendado"
+          desc="Ela atende, agenda e vende 24 horas. Você acompanha tudo pelo Cockpit."/>
+        <QaqOption selected={choice === 'business'} onSelect={() => setChoice('business')} label="Minha equipe no expediente, HUMA no resto"
+          desc="Sua equipe responde enquanto a empresa está aberta (usa o horário de atendimento cadastrado acima). A HUMA assume à noite, no almoço e no fim de semana."/>
+        {choice === 'custom' && (
+          <QaqOption selected={true} onSelect={() => {}} label="Personalizado"
+            desc="Suas janelas, do seu jeito — dia a dia, horário a horário."/>
+        )}
+      </div>
+      {choice !== 'custom' && (
+        <div>
+          <Button variant="plain" size="sm" icon={<Icon name="sliders" size={13}/>} onClick={openCustom}>Personalizar horários</Button>
+        </div>
+      )}
+      {choice === 'custom' && (
+        <React.Fragment>
+          {custom.windows.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {custom.windows.map((w, i) => <QaqWindowRow key={i} w={w} onPatch={p => patchWin(i, p)} onRemove={() => rmWin(i)}/>)}
+            </div>
+          )}
+          {custom.windows.length === 0 && (
+            <div style={{ border: '1.5px dashed var(--paper-edge)', borderRadius: 12, padding: '24px 20px', textAlign: 'center' }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Nenhuma janela programada. Por enquanto, vale o modo abaixo — o tempo todo.</div>
+              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center' }}>
+                <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={addWin}>Adicionar primeira janela</Button>
+              </div>
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            {custom.windows.length > 0 ? <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={addWin}>Adicionar janela</Button> : <span></span>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span className="mono-label">Fora das janelas:</span>
+              <QaqHint align="right" text="O que vale em todos os horários que não caem em nenhuma janela." example="janela só à noite → durante o dia vale este modo."/>
+              <div style={{ width: 196 }}>
+                <Select value={custom.default_mode} onChange={ev => setCustom(c => ({ ...c, default_mode: ev.target.value }))} options={qaqModeOptions(custom.default_mode)}/>
+              </div>
+            </div>
+          </div>
+        </React.Fragment>
+      )}
+      <Divider/>
+      <WeekPreview windows={preview.windows} defaultMode={preview.defaultMode}/>
+      {choice === 'business' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+          <Icon name="link" size={12}/>
+          <span>Se você mudar o horário de atendimento ali em cima, a escala da HUMA acompanha.</span>
+        </div>
       )}
     </Card>
   );
-};
-
-// 'HH:MM' → minutos (null se inválido) — só pro aviso de janela overnight.
-const toHHMM = (v) => {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(v || '');
-  if (!m) return null;
-  const h = parseInt(m[1], 10), min = parseInt(m[2], 10);
-  return (h >= 0 && h <= 23 && min >= 0 && min <= 59) ? h * 60 + min : null;
 };
 
 // ============================================================
@@ -494,7 +607,7 @@ const NegocioInfo = ({ settings, patch }) => {
         </div>
       </Card>
 
-      <AIScheduleCard settings={settings} patch={patch}/>
+      <AIScheduleCard settings={settings} patch={patch} businessHours={order.map(k => days[k])}/>
 
       <Card title="Equipe técnica" action={<Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>}>Adicionar profissional</Button>}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
