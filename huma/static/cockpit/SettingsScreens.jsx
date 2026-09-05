@@ -457,6 +457,141 @@ const AIScheduleCard = ({ settings, patch, businessHours }) => {
 };
 
 // ============================================================
+// Editor de lista (produtos, FAQ, equipe técnica) — sem mock:
+// tudo que aparece vem do settings e volta via patch(); o Salvar
+// do topo persiste (PATCH /settings, whitelist no backend).
+// ============================================================
+const useListEditor = (list, onChange, empty, requiredKey) => {
+  const [editing, setEditing] = useStateS(null);   // índice | 'new' | null
+  const [draft, setDraft] = useStateS(empty);
+  const start = (i) => { setEditing(i); setDraft(i === 'new' ? { ...empty } : { ...empty, ...list[i] }); };
+  const cancel = () => setEditing(null);
+  const save = () => {
+    if (!String(draft[requiredKey] || '').trim()) return;
+    const clean = {};
+    Object.keys(draft).forEach(k => { clean[k] = typeof draft[k] === 'string' ? draft[k].trim() : draft[k]; });
+    onChange(editing === 'new' ? [...list, clean] : list.map((it, i) => (i === editing ? clean : it)));
+    setEditing(null);
+  };
+  const remove = (i) => { onChange(list.filter((_, j) => j !== i)); if (editing === i) setEditing(null); };
+  return { editing, draft, setDraft, start, cancel, save, remove };
+};
+
+const RowEditor = ({ fields, value, onChange, onSave, onCancel, saveLabel }) => (
+  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, padding: 14, background: 'var(--paper-sunk)', borderRadius: 10, border: '1px solid var(--paper-edge)' }}>
+    {fields.map(f => (
+      <Field key={f.key} label={f.label} half={f.half} hint={f.hint}>
+        {f.multiline
+          ? <Textarea rows={2} value={value[f.key] || ''} placeholder={f.placeholder} onChange={e => onChange({ ...value, [f.key]: e.target.value })}/>
+          : <Input value={value[f.key] || ''} placeholder={f.placeholder} onChange={e => onChange({ ...value, [f.key]: e.target.value })}
+                   onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onSave(); } }}/>}
+      </Field>
+    ))}
+    <div style={{ display: 'flex', gap: 8, width: '100%' }}>
+      <Button variant="dark" size="sm" onClick={onSave}>{saveLabel || 'Salvar item'}</Button>
+      <Button variant="ghost" size="sm" onClick={onCancel}>Cancelar</Button>
+    </div>
+  </div>
+);
+
+const RowActions = ({ onEdit, onRemove }) => (
+  <div style={{ display: 'flex', gap: 2, justifyContent: 'flex-end', alignItems: 'center' }}>
+    <Button variant="plain" size="sm" onClick={onEdit}>Editar</Button>
+    <button className="qaq-trash" onClick={onRemove} aria-label="Remover" style={{ border: 'none', background: 'transparent', color: 'var(--ink-4)', cursor: 'pointer', padding: 6, borderRadius: 8, display: 'flex' }}>
+      <Icon name="trash" size={14}/>
+    </button>
+  </div>
+);
+
+const SaveReminder = () => (
+  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+    Clique em Salvar no topo — a HUMA usa a lista nova já na próxima conversa.
+  </div>
+);
+
+// Chips editáveis (vocabulário: use sempre / evite)
+const TermChips = ({ terms, onChange, tint, ink, strike, placeholder }) => {
+  const [val, setVal] = useStateS('');
+  const add = () => {
+    const t = val.trim().replace(/,+$/, '');
+    if (!t) return;
+    if (!terms.some(x => x.toLowerCase() === t.toLowerCase())) onChange([...terms, t]);
+    setVal('');
+  };
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10, minHeight: 28 }}>
+        {terms.map(w => (
+          <span key={w} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 8px 5px 10px', borderRadius: 999,
+            background: tint, color: ink, fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+            textDecoration: strike ? 'line-through' : 'none',
+          }}>
+            {w}
+            <button onClick={() => onChange(terms.filter(x => x !== w))} aria-label={`Remover ${w}`}
+                    style={{ border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0, display: 'flex', opacity: 0.7 }}>
+              <Icon name="x" size={11}/>
+            </button>
+          </span>
+        ))}
+        {terms.length === 0 && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>Nenhum termo ainda.</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <Input value={val} placeholder={placeholder} onChange={e => setVal(e.target.value)}
+               onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(); } }}
+               style={{ padding: '7px 10px', fontSize: 13 }}/>
+        <Button variant="ghost" size="sm" onClick={add}>Adicionar</Button>
+      </div>
+    </div>
+  );
+};
+
+// ---------- Equipe técnica (quem atende) → settings.professionals ----------
+// A IA só cita profissional desta lista (bloco estático do prompt).
+const ProfessionalsCard = ({ settings, patch }) => {
+  const list = Array.isArray(settings.professionals) ? settings.professionals : [];
+  const ed = useListEditor(list, v => patch('professionals', v), { name: '', specialty: '', registry: '' }, 'name');
+  const tones = ['terracotta', 'sage', 'ink'];
+  const fields = [
+    { key: 'name', label: 'Nome', half: true, placeholder: 'Dra. Ana Lima' },
+    { key: 'specialty', label: 'Especialidade / função', half: true, placeholder: 'Dermatologia estética' },
+    { key: 'registry', label: 'Registro profissional (opcional)', placeholder: 'CRM-SP 123.456', hint: 'A HUMA só cita profissionais desta lista — nunca inventa nome ou registro.' },
+  ];
+  return (
+    <Card title="Equipe técnica" action={ed.editing === null
+      ? <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={() => ed.start('new')}>Adicionar profissional</Button>
+      : null}>
+      {list.length === 0 && ed.editing === null && (
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+          Ninguém cadastrado. Se o lead perguntar "quem atende?", a HUMA diz que confirma e retorna — cadastre a equipe pra ela responder na hora.
+        </div>
+      )}
+      {list.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+          {list.map((p, i) => ed.editing === i ? (
+            <div key={i} style={{ padding: '8px 0' }}>
+              <RowEditor fields={fields} value={ed.draft} onChange={ed.setDraft} onSave={ed.save} onCancel={ed.cancel}/>
+            </div>
+          ) : (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 4px', borderTop: i ? '1px solid var(--paper-edge)' : 'none' }}>
+              <Avatar initials={initialsFrom(p.name)} tone={tones[i % 3]} size={36}/>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{p.name}</div>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>{p.specialty || 'Sem especialidade informada'}</div>
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{p.registry || ''}</div>
+              <RowActions onEdit={() => ed.start(i)} onRemove={() => ed.remove(i)}/>
+            </div>
+          ))}
+        </div>
+      )}
+      {ed.editing === 'new' && <RowEditor fields={fields} value={ed.draft} onChange={ed.setDraft} onSave={ed.save} onCancel={ed.cancel}/>}
+      {list.length > 0 && <SaveReminder/>}
+    </Card>
+  );
+};
+
+// ============================================================
 // NEGÓCIO
 // ============================================================
 const NegocioScreen = ({ onNavMain }) => {
@@ -511,7 +646,7 @@ const NegocioScreen = ({ onNavMain }) => {
   else if (tab === 'knowledge') body = settings ? <NegocioKnowledge settings={settings} patch={patch}/> : loading;
   else if (tab === 'kb')    body = <NegocioKB/>;
   else if (tab === 'integ') body = <NegocioIntegShortcut onNavMain={onNavMain}/>;
-  else                      body = <NegocioChannels/>;
+  else                      body = <NegocioChannels onNavMain={onNavMain}/>;
 
   return (
     <SettingsShell
@@ -609,28 +744,7 @@ const NegocioInfo = ({ settings, patch }) => {
 
       <AIScheduleCard settings={settings} patch={patch} businessHours={order.map(k => days[k])}/>
 
-      <Card title="Equipe técnica" action={<Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>}>Adicionar profissional</Button>}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          {[
-            { name: 'Dra. Marina Costa', spec: 'Dermatologia estética', reg: 'CRM-SP 154.782', tone: 'terracotta' },
-            { name: 'Dra. Sofia Ramos',  spec: 'Esteticista facial',    reg: 'CBO 2235-05',    tone: 'sage' },
-            { name: 'Enf. Patrícia Lima', spec: 'Procedimentos injetáveis', reg: 'COREN-SP 389.221', tone: 'ink' },
-          ].map((p, i) => (
-            <div key={i} style={{
-              display: 'flex', alignItems: 'center', gap: 14, padding: '12px 4px',
-              borderTop: i ? '1px solid var(--paper-edge)' : 'none',
-            }}>
-              <Avatar initials={p.name.split(' ').slice(-2).map(n => n[0]).join('')} tone={p.tone} size={36}/>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{p.name}</div>
-                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>{p.spec}</div>
-              </div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{p.reg}</div>
-              <Button variant="plain" size="sm">Editar</Button>
-            </div>
-          ))}
-        </div>
-      </Card>
+      <ProfessionalsCard settings={settings} patch={patch}/>
     </>
   );
 };
@@ -647,7 +761,25 @@ const NegocioKnowledge = ({ settings, patch }) => {
   };
   const [tone, setTone] = useStateS(() => toneIdFrom(settings.tone_of_voice));
   const pickTone = (id) => { setTone(id); patch('tone_of_voice', TONES[id]); };
-  const products = settings.products_or_services || [];
+
+  // Produtos, FAQ e vocabulário: CRUD real (settings → patch → Salvar)
+  const products = Array.isArray(settings.products_or_services) ? settings.products_or_services : [];
+  const faq = Array.isArray(settings.faq) ? settings.faq : [];
+  const prodEd = useListEditor(products, v => patch('products_or_services', v), { name: '', price: '', duration: '', description: '' }, 'name');
+  const faqEd = useListEditor(faq, v => patch('faq', v), { question: '', answer: '' }, 'question');
+  const prodFields = [
+    { key: 'name', label: 'Nome', half: true, placeholder: 'Limpeza de pele' },
+    { key: 'price', label: 'Preço (R$)', half: true, placeholder: '250', hint: 'Vazio = a HUMA não fala valor desse item.' },
+    { key: 'duration', label: 'Duração (opcional)', half: true, placeholder: '45 min' },
+    { key: 'description', label: 'Descrição curta', multiline: true, placeholder: 'O que é, pra quem é, o que inclui.' },
+  ];
+  const faqFields = [
+    { key: 'question', label: 'Pergunta', placeholder: 'Aceita convênio?' },
+    { key: 'answer', label: 'Resposta', multiline: true, placeholder: 'Não trabalhamos com convênio, mas parcelamos em até 6x.' },
+  ];
+  const preferred = Array.isArray(settings.preferred_terms) ? settings.preferred_terms : [];
+  const forbidden = Array.isArray(settings.forbidden_words) ? settings.forbidden_words : [];
+  const grid = '1.6fr 0.6fr 0.8fr 1.8fr 110px';
 
   return (
     <>
@@ -690,17 +822,19 @@ const NegocioKnowledge = ({ settings, patch }) => {
         </Field>
       </Card>
 
-      <Card title="Procedimentos oferecidos" action={<Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>}>Novo</Button>}>
+      <Card title="Produtos e serviços" action={prodEd.editing === null
+        ? <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={() => prodEd.start('new')}>Novo</Button>
+        : null}>
         <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 10, overflow: 'hidden' }}>
           <div style={{
-            display: 'grid', gridTemplateColumns: '1.6fr 0.6fr 0.8fr 1.8fr 60px',
+            display: 'grid', gridTemplateColumns: grid,
             padding: '10px 14px', background: 'var(--paper-sunk)',
             fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
             letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)',
           }}>
             <div>Nome</div><div>Duração</div><div>Preço</div><div>Descrição</div><div></div>
           </div>
-          {products.length === 0 && (
+          {products.length === 0 && prodEd.editing !== 'new' && (
             <div style={{
               padding: '16px 14px', borderTop: '1px solid var(--paper-edge)',
               fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)',
@@ -708,144 +842,320 @@ const NegocioKnowledge = ({ settings, patch }) => {
               Nenhum produto ou serviço cadastrado ainda — a HUMA não fala preço que não conhece.
             </div>
           )}
-          {products.map((p, i) => (
+          {products.map((p, i) => prodEd.editing === i ? (
+            <div key={i} style={{ padding: 10, borderTop: '1px solid var(--paper-edge)' }}>
+              <RowEditor fields={prodFields} value={prodEd.draft} onChange={prodEd.setDraft} onSave={prodEd.save} onCancel={prodEd.cancel}/>
+            </div>
+          ) : (
             <div key={i} style={{
-              display: 'grid', gridTemplateColumns: '1.6fr 0.6fr 0.8fr 1.8fr 60px',
-              padding: '12px 14px', alignItems: 'center',
+              display: 'grid', gridTemplateColumns: grid,
+              padding: '10px 14px', alignItems: 'center',
               borderTop: '1px solid var(--paper-edge)',
               fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)',
             }}>
               <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{p.name || '—'}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>{p.duration || '—'}</div>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>{p.price ? `R$ ${p.price}` : '—'}</div>
-              <div style={{ color: 'var(--ink-3)' }}>{p.description || ''}</div>
-              <div></div>
+              <div style={{ color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.description || ''}</div>
+              <RowActions onEdit={() => prodEd.start(i)} onRemove={() => prodEd.remove(i)}/>
             </div>
           ))}
+          {prodEd.editing === 'new' && (
+            <div style={{ padding: 10, borderTop: '1px solid var(--paper-edge)' }}>
+              <RowEditor fields={prodFields} value={prodEd.draft} onChange={prodEd.setDraft} onSave={prodEd.save} onCancel={prodEd.cancel} saveLabel="Adicionar"/>
+            </div>
+          )}
         </div>
+        {products.length > 0 && <SaveReminder/>}
       </Card>
 
-      <Card title="Perguntas frequentes">
+      <Card title="Perguntas frequentes" action={faqEd.editing === null
+        ? <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={() => faqEd.start('new')}>Nova pergunta</Button>
+        : null}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {(settings.faq || []).length === 0 && (
+          {faq.length === 0 && faqEd.editing !== 'new' && (
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
               Nenhuma pergunta frequente cadastrada — a HUMA responde na hora o que estiver aqui, sem gastar IA.
             </div>
           )}
-          {(settings.faq || []).map((p, i) => (
-            <div key={i} style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)' }}>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{p.question}</div>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 4, lineHeight: 1.5 }}>{p.answer}</div>
+          {faq.map((p, i) => faqEd.editing === i ? (
+            <RowEditor key={i} fields={faqFields} value={faqEd.draft} onChange={faqEd.setDraft} onSave={faqEd.save} onCancel={faqEd.cancel}/>
+          ) : (
+            <div key={i} style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{p.question}</div>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', marginTop: 4, lineHeight: 1.5 }}>{p.answer}</div>
+              </div>
+              <RowActions onEdit={() => faqEd.start(i)} onRemove={() => faqEd.remove(i)}/>
             </div>
           ))}
+          {faqEd.editing === 'new' && (
+            <RowEditor fields={faqFields} value={faqEd.draft} onChange={faqEd.setDraft} onSave={faqEd.save} onCancel={faqEd.cancel} saveLabel="Adicionar"/>
+          )}
         </div>
+        {faq.length > 0 && <SaveReminder/>}
       </Card>
 
       <Card title="Vocabulário">
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+          A HUMA prefere os termos da esquerda e nunca usa os da direita. Digite e aperte Enter pra adicionar.
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
           <div>
             <Eyebrow style={{ color: 'var(--sage-ink)' }}>use sempre</Eyebrow>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-              {['paciente', 'procedimento', 'avaliação', 'retorno', 'Dra. Marina'].map(w => (
-                <span key={w} style={{
-                  padding: '5px 10px', borderRadius: 999,
-                  background: 'var(--sage-tint)', color: 'var(--sage-ink)',
-                  fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
-                }}>{w}</span>
-              ))}
-            </div>
+            <TermChips terms={preferred} onChange={v => patch('preferred_terms', v)} tint="var(--sage-tint)" ink="var(--sage-ink)" placeholder="ex.: paciente"/>
           </div>
           <div>
             <Eyebrow style={{ color: 'var(--ember-ink)' }}>evite</Eyebrow>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-              {['cliente', 'tratamento', 'serviço', 'sessão', 'pacote'].map(w => (
-                <span key={w} style={{
-                  padding: '5px 10px', borderRadius: 999,
-                  background: 'var(--ember-soft)', color: 'var(--ember-ink)',
-                  fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
-                  textDecoration: 'line-through', textDecorationColor: 'rgba(179,58,24,0.4)',
-                }}>{w}</span>
-              ))}
-            </div>
+            <TermChips terms={forbidden} onChange={v => patch('forbidden_words', v)} tint="var(--ember-soft)" ink="var(--ember-ink)" strike placeholder="ex.: cliente"/>
           </div>
         </div>
+        {(preferred.length > 0 || forbidden.length > 0) && <SaveReminder/>}
       </Card>
     </>
   );
 };
 
+// ---------- Base de conhecimento — REAL (upload → resumo 1x → prompt) ----------
+// Backend: routes/business.py + services/knowledge_service.py. O arquivo
+// é lido uma vez, a IA extrai os fatos e só o resumo fica guardado.
 const NegocioKB = () => {
+  const [docs, setDocs] = useStateS(null);
+  const [limits, setLimits] = useStateS({ max_docs: 8, max_file_mb: 10 });
+  const [loadErr, setLoadErr] = useStateS('');
+  const [busy, setBusy] = useStateS('');        // nome do arquivo em processamento
+  const [msg, setMsg] = useStateS(null);        // { kind: 'ok'|'err', text }
+  const [open, setOpen] = useStateS(null);      // id do doc com fatos abertos
+  const [drag, setDrag] = useStateS(false);
+  const fileRef = React.useRef(null);
+
+  const load = async () => {
+    try {
+      const r = await fetchKnowledge();
+      setDocs(r.docs || []);
+      setLimits({ max_docs: r.max_docs || 8, max_file_mb: r.max_file_mb || 10 });
+      setLoadErr('');
+    } catch (e) {
+      setDocs(d => d || []);
+      setLoadErr(e.message);
+    }
+  };
+  useEffectS(() => { load(); }, []);
+
+  const handleFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length || busy) return;
+    setMsg(null);
+    for (const f of files) {
+      setBusy(f.name);
+      try {
+        await uploadKnowledgeDoc(f);
+        setMsg({ kind: 'ok', text: `"${f.name}" processado. A HUMA já sabe o que tem nele.` });
+      } catch (e) {
+        setMsg({ kind: 'err', text: `${f.name}: ${e.message}` });
+        break;
+      }
+    }
+    setBusy('');
+    load();
+  };
+
+  const remove = async (d) => {
+    if (!window.confirm(`Remover "${d.name}"? A HUMA deixa de usar esse conteúdo.`)) return;
+    try { const r = await deleteKnowledgeDoc(d.id); setDocs(r.docs || []); }
+    catch (e) { setMsg({ kind: 'err', text: e.message }); }
+  };
+
+  const full = !!docs && docs.length >= limits.max_docs;
+  const fmtDate = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }); };
+
   return (
     <>
       <Card>
-        <div style={{
-          border: '1.5px dashed var(--paper-edge)', borderRadius: 12,
-          padding: '28px 20px', textAlign: 'center',
-          background: 'var(--paper-sunk)',
-        }}>
-          <div style={{ color: 'var(--ink-3)', display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
-            <Icon name="upload" size={24}/>
+        <div
+          onDragOver={e => { e.preventDefault(); if (!full && !busy) setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={e => { e.preventDefault(); setDrag(false); if (!full && !busy) handleFiles(e.dataTransfer.files); }}
+          onClick={() => { if (!busy && !full && fileRef.current) fileRef.current.click(); }}
+          style={{
+            border: '1.5px dashed ' + (drag ? 'var(--sage)' : 'var(--paper-edge)'), borderRadius: 12,
+            padding: '28px 20px', textAlign: 'center',
+            background: drag ? 'var(--sage-tint)' : 'var(--paper-sunk)',
+            cursor: full || busy ? 'default' : 'pointer', opacity: full ? 0.65 : 1,
+          }}>
+          <div style={{ color: busy ? 'var(--sage-ink)' : 'var(--ink-3)', display: 'flex', justifyContent: 'center', marginBottom: 10 }}>
+            <Icon name={busy ? 'sparkle' : 'upload'} size={24}/>
           </div>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>
-            Arraste arquivos aqui ou clique para selecionar
+            {busy ? `Lendo e resumindo "${busy}"…` : full ? `Limite de ${limits.max_docs} documentos atingido` : 'Arraste arquivos aqui ou clique para selecionar'}
           </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>
-            PDF, DOCX, imagens ou links · até 50MB cada
+            PDF, DOCX, TXT, MD ou CSV · até {limits.max_file_mb}MB cada · máx. {limits.max_docs} documentos
           </div>
-          <Button variant="outline" size="sm" style={{ marginTop: 14 }}>Selecionar arquivos</Button>
+          {!full && !busy && <Button variant="outline" size="sm" style={{ marginTop: 14 }}>Selecionar arquivos</Button>}
+          <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md,.csv" multiple style={{ display: 'none' }}
+                 onChange={e => { handleFiles(e.target.files); e.target.value = ''; }}/>
         </div>
+        {msg && <VoiceMsg kind={msg.kind}>{msg.text}</VoiceMsg>}
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-          HUMA usa esses documentos pra responder dúvidas específicas. Tabela de preços, consentimentos, guias pré-procedimento são bem-vindos.
+          Cada documento é lido UMA vez: a HUMA extrai os fatos úteis (preços, prazos, regras, políticas) e guarda só o resumo.
+          Nas conversas ela responde com base nesses fatos — e, se a dúvida não estiver aqui, diz que vai confirmar em vez de inventar.
         </div>
       </Card>
 
       <Card title="Documentos">
-        <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 10, overflow: 'hidden' }}>
-          {[
-            { n: 'Tabela de preços 2026.pdf',      s: '1.2 MB', d: '14 abr', status: 'done' },
-            { n: 'Termo de consentimento botox.docx', s: '840 KB', d: '08 abr', status: 'done' },
-            { n: 'Guia pré-procedimento microagulhamento.pdf', s: '2.1 MB', d: '03 abr', status: 'done' },
-            { n: 'Protocolo pós-peeling.pdf',       s: '1.8 MB', d: 'hoje', status: 'processing' },
-            { n: 'Tabela de convênios.xlsx',        s: '420 KB', d: 'hoje', status: 'error' },
-          ].map((f, i) => (
-            <div key={i} style={{
-              display: 'flex', alignItems: 'center', gap: 14, padding: '12px 14px',
-              borderTop: i ? '1px solid var(--paper-edge)' : 'none',
-            }}>
-              <div style={{ color: 'var(--ink-3)' }}><Icon name="file" size={18}/></div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.n}</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{f.s} · {f.d}</div>
+        {loadErr && <VoiceMsg kind="err">Não consegui carregar os documentos: {loadErr}</VoiceMsg>}
+        {docs === null && !loadErr && (
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Carregando…</div>
+        )}
+        {docs && docs.length === 0 && (
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+            Nenhum documento ainda. Tabela de preços, políticas de troca ou cancelamento, guias e termos são ótimos pontos de partida.
+          </div>
+        )}
+        {docs && docs.length > 0 && (
+          <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 10, overflow: 'hidden' }}>
+            {docs.map((f, i) => (
+              <div key={f.id} style={{ borderTop: i ? '1px solid var(--paper-edge)' : 'none' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 14px' }}>
+                  <div style={{ color: 'var(--ink-3)' }}><Icon name="file" size={18}/></div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                      {fmtBytes(f.size || 0)} · {f.facts || 0} {f.facts === 1 ? 'fato' : 'fatos'}{f.uploaded_at ? ` · ${fmtDate(f.uploaded_at)}` : ''}
+                    </div>
+                  </div>
+                  <StatusDot status={f.status === 'ready' ? 'connected' : 'error'}/>
+                  <Button variant="plain" size="sm" onClick={() => setOpen(open === f.id ? null : f.id)}>{open === f.id ? 'Ocultar' : 'Ver fatos'}</Button>
+                  <button className="qaq-trash" onClick={() => remove(f)} aria-label="Remover documento"
+                          style={{ border: 'none', background: 'transparent', color: 'var(--ink-4)', cursor: 'pointer', padding: 6, borderRadius: 8, display: 'flex' }}>
+                    <Icon name="trash" size={15}/>
+                  </button>
+                </div>
+                {open === f.id && (
+                  <pre style={{
+                    margin: 0, padding: '10px 14px 14px 46px', whiteSpace: 'pre-wrap',
+                    fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.55, color: 'var(--ink-2)',
+                    background: 'var(--paper-sunk)',
+                  }}>{f.summary || 'Sem resumo.'}</pre>
+                )}
               </div>
-              <StatusDot status={f.status === 'done' ? 'connected' : f.status === 'error' ? 'error' : 'disconnected'}/>
-              <button style={{ border: 'none', background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', padding: 6 }}>
-                <Icon name="trash" size={15}/>
-              </button>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </Card>
     </>
   );
 };
 
-const NegocioIntegShortcut = ({ onNavMain }) => (
-  <Card title="Integrações do negócio">
-    <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-      Integrações, APIs e conectores vivem na seção principal. Você tem <b style={{ color: 'var(--ink)' }}>4 ativas</b> (Google Calendar, WhatsApp Business, ElevenLabs, Supabase) e <b style={{ color: 'var(--ink)' }}>2 disponíveis</b>.
-    </div>
-    <Button variant="dark" size="md" onClick={() => onNavMain && onNavMain('integracoes')} icon={<Icon name="arrow" size={13}/>}>
-      Abrir Integrações
-    </Button>
-  </Card>
-);
+// ---------- Integrações (atalho) — contagem REAL ----------
+const NegocioIntegShortcut = ({ onNavMain }) => {
+  const [rows, setRows] = useStateS(null);
+  useEffectS(() => {
+    (async () => {
+      let c = {};
+      try { c = await fetchIntegrationsStatus(); } catch (e) { /* mostra tudo como desligado */ }
+      let wa = { on: false, sub: 'Não conectado' };
+      try {
+        const m = await whatsappMetaStatus();
+        if (m.connected) wa = { on: true, sub: 'Oficial (Meta)' + (m.display_phone_number ? ' · ' + m.display_phone_number : '') };
+        else {
+          const s = await whatsappStatus();
+          if (s.connected) wa = { on: true, sub: 'Conectado por QR code' };
+        }
+      } catch (e) { /* segue "não conectado" */ }
+      const balcao = (window.getBalcaoUrl && window.getBalcaoUrl()) || '';
+      setRows([
+        { name: 'WhatsApp', ...wa },
+        { name: 'Balcão (chat no site)', on: true, sub: balcao.replace(/^https?:\/\//, '') || 'Link próprio' },
+        { name: 'Google Calendar', on: !!c.google_calendar, sub: c.google_calendar ? 'Agenda ativa' : (c.enable_scheduling ? 'Sem credencial no servidor' : 'Agendamento desligado') },
+        { name: 'Bling ERP', on: !!c.bling_access_token, sub: c.bling_access_token ? 'Estoque e pedidos' : 'Não conectado' },
+        { name: 'CRM', on: !!c.crm_access_token, sub: c.crm_access_token ? (c.crm_provider || 'Conectado') : 'Nenhum conectado' },
+        { name: 'Voz clonada', on: !!c.voice_id, sub: c.voice_id ? (c.enable_audio ? 'Áudios ligados' : 'Áudios desligados') : 'Sem voz' },
+      ]);
+    })();
+  }, []);
+  const active = rows ? rows.filter(r => r.on).length : 0;
+  return (
+    <Card title="Integrações do negócio">
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+        Integrações, APIs e conectores vivem na seção principal.{' '}
+        {rows ? <>Você tem <b style={{ color: 'var(--ink)' }}>{active} {active === 1 ? 'ativa' : 'ativas'}</b> de {rows.length}.</> : 'Verificando…'}
+      </div>
+      {rows && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          {rows.map(r => (
+            <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)' }}>
+              <StatusDot status={r.on ? 'connected' : 'disconnected'}/>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{r.name}</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sub}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <div>
+        <Button variant="dark" size="md" onClick={() => onNavMain && onNavMain('integracoes')} icon={<Icon name="arrow" size={13}/>}>
+          Abrir Integrações
+        </Button>
+      </div>
+    </Card>
+  );
+};
 
-const NegocioChannels = () => {
+// ---------- Canais ativos — REAL (WhatsApp Meta/QR, Balcão, Instagram em breve) ----------
+const NegocioChannels = ({ onNavMain }) => {
+  const [wa, setWa] = useStateS({ state: 'loading' });
+  const [copied, setCopied] = useStateS(false);
+  useEffectS(() => {
+    (async () => {
+      try {
+        const m = await whatsappMetaStatus();
+        if (m.connected) { setWa({ state: 'meta', number: m.display_phone_number || '', name: m.verified_name || '', quality: m.quality_rating || '' }); return; }
+        const s = await whatsappStatus();
+        setWa(s.connected ? { state: 'evolution' } : { state: 'off' });
+      } catch (e) { setWa({ state: 'error' }); }
+    })();
+  }, []);
+
+  const balcao = (window.getBalcaoUrl && window.getBalcaoUrl()) || '';
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(balcao); setCopied(true); setTimeout(() => setCopied(false), 1600); }
+    catch (e) { window.prompt('Copie o link:', balcao); }
+  };
+
+  const waOn = wa.state === 'meta' || wa.state === 'evolution';
+  const waSub = wa.state === 'meta' ? `Oficial (Meta)${wa.number ? ' · ' + wa.number : ''}`
+    : wa.state === 'evolution' ? 'Conectado por QR code (não oficial)'
+    : wa.state === 'loading' ? 'Verificando…'
+    : wa.state === 'error' ? 'Não consegui verificar agora'
+    : 'Nenhum número conectado';
+
   const channels = [
-    { name: 'WhatsApp Business',  sub: 'Canal principal · +55 11 9****-3847', status: 'connected', primary: true,  glyph: 'whatsapp' },
-    { name: 'Instagram Direct',   sub: '@estudiomarina · atendimento de DMs', status: 'disconnected', glyph: 'instagram' },
-    { name: 'Facebook Messenger', sub: 'Página Estúdio Marina',               status: 'disconnected', glyph: 'messenger' },
-    { name: 'Formulário do site', sub: 'Embed no estudiomarina.com.br',       status: 'connected',    glyph: 'site' },
+    {
+      name: 'WhatsApp', sub: waSub, glyph: 'whatsapp', primary: true,
+      status: waOn ? 'connected' : wa.state === 'error' ? 'error' : 'disconnected',
+      extra: wa.state === 'meta' && wa.name ? `Nome verificado: ${wa.name}${wa.quality ? ` · qualidade ${wa.quality}` : ''}` : '',
+      action: waOn
+        ? <Button variant="ghost" size="sm" onClick={() => onNavMain && onNavMain('integracoes')}>Gerenciar</Button>
+        : <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={() => onNavMain && onNavMain('integracoes')}>Conectar</Button>,
+    },
+    {
+      name: 'Balcão — chat no navegador', sub: balcao.replace(/^https?:\/\//, '') || 'Link do seu chat', glyph: 'site', status: 'connected',
+      extra: 'O mesmo clone do WhatsApp. Cole na bio do Instagram ou no site.',
+      action: (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button variant="ghost" size="sm" onClick={copy} disabled={!balcao}>{copied ? 'Copiado ✓' : 'Copiar link'}</Button>
+          <Button variant="plain" size="sm" onClick={() => balcao && window.open(balcao, '_blank')} disabled={!balcao}>Abrir</Button>
+        </div>
+      ),
+    },
+    {
+      name: 'Instagram Direct', sub: 'Ainda não disponível', glyph: 'instagram', status: 'disconnected',
+      extra: 'Em desenvolvimento. Enquanto isso, o Balcão resolve: link na bio → chat com a HUMA.',
+      action: <Button variant="ghost" size="sm" disabled>Em breve</Button>,
+    },
   ];
 
   return (
@@ -858,9 +1168,9 @@ const NegocioChannels = () => {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <ChannelGlyph type={c.glyph}/>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{c.name}</div>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>{c.sub}</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.sub}</div>
             </div>
             <StatusDot status={c.status}/>
           </div>
@@ -873,11 +1183,8 @@ const NegocioChannels = () => {
               background: 'var(--terracotta-tint)', color: 'var(--terracotta-ink)',
             }}>Canal principal</span>
           )}
-          <div>
-            {c.status === 'connected'
-              ? <Button variant="ghost" size="sm">Gerenciar</Button>
-              : <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>}>Conectar</Button>}
-          </div>
+          {c.extra && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>{c.extra}</div>}
+          <div>{c.action}</div>
         </div>
       ))}
     </div>
@@ -903,16 +1210,52 @@ const ChannelGlyph = ({ type }) => {
 // ============================================================
 const PerfilScreen = () => {
   const [tab, setTab] = useStateS('you');
+  // Mesmo padrão do Negócio: settings reais + dirty tracking + PATCH.
+  const [settings, setSettings] = useStateS(null);
+  const [dirty, setDirty] = useStateS({});
+  const [saveLabel, setSaveLabel] = useStateS('Salvar');
+
+  useEffectS(() => {
+    fetchSettings()
+      .then(d => setSettings(d.settings || {}))
+      .catch(() => setSettings({}));
+  }, []);
+
+  const patch = (k, v) => {
+    setSettings(s => ({ ...s, [k]: v }));
+    setDirty(d => ({ ...d, [k]: true }));
+  };
+
+  const doSave = async () => {
+    const payload = {};
+    Object.keys(dirty).forEach(k => { payload[k] = settings[k]; });
+    if (!Object.keys(payload).length) {
+      setSaveLabel('Nada mudou');
+      setTimeout(() => setSaveLabel('Salvar'), 1600);
+      return;
+    }
+    setSaveLabel('Salvando…');
+    try {
+      await saveSettings(payload);
+      setDirty({});
+      setSaveLabel('Salvo ✓');
+    } catch (e) {
+      setSaveLabel('Erro — tente de novo');
+    }
+    setTimeout(() => setSaveLabel('Salvar'), 2200);
+  };
+
   const tabs = [
     { id: 'you',      label: 'Você',         icon: 'user' },
     { id: 'voice',    label: 'Voz clonada',  icon: 'mic' },
     { id: 'security', label: 'Segurança',    icon: 'shield' },
   ];
 
+  const loading = <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)' }}>Carregando…</div>;
   let body;
-  if (tab === 'you')           body = <PerfilYou/>;
+  if (tab === 'you')           body = settings ? <PerfilYou settings={settings} patch={patch}/> : loading;
   else if (tab === 'voice')    body = <PerfilVoice/>;
-  else                         body = <PerfilSecurity/>;
+  else                         body = settings ? <PerfilSecurity settings={settings}/> : loading;
 
   return (
     <SettingsShell
@@ -921,17 +1264,20 @@ const PerfilScreen = () => {
       tabs={tabs}
       activeTab={tab}
       onTabChange={setTab}
-      onSave={null}
+      onSave={tab === 'you' ? doSave : null}
+      saveLabel={saveLabel}
     >
       {body}
     </SettingsShell>
   );
 };
 
-const PerfilYou = () => {
-  const [name, setName] = useStateS('dra-marina');
-  const [notif, setNotif] = useStateS({ email: true, wpp: true, app: true });
-  const [moments, setMoments] = useStateS({ novo: true, canc: true, assumido: true, diario: true, pgto: false });
+// ---------- Você — dados REAIS do dono (owner_name/email/phone + avisos) ----------
+const PerfilYou = ({ settings, patch }) => {
+  const first = (settings.owner_name || '').trim().split(/\s+/)[0] || '';
+  const initials = initialsFrom(settings.owner_name || settings.business_name || '');
+  const flag = (k) => settings[k] !== false;   // default do backend é true
+  const toggle = (k) => patch(k, !flag(k));
   return (
     <>
       <div style={{
@@ -942,7 +1288,7 @@ const PerfilYou = () => {
           fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
           color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640,
         }}>
-          Olá, Marina. Quanto mais natural você deixar essa parte, melhor HUMA entende como te representar.
+          Olá{first ? `, ${first}` : ''}. É pra você que a HUMA manda os avisos — e é em seu nome que ela responde.
         </div>
       </div>
 
@@ -953,62 +1299,47 @@ const PerfilYou = () => {
             background: 'var(--terracotta-tint)', color: 'var(--terracotta-ink)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 26,
-          }}>MC</div>
+          }}>{initials}</div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>Foto de perfil</div>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>PNG ou JPG · até 2MB</div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{settings.owner_name || 'Seu nome'}</div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>As iniciais vêm do seu nome.</div>
           </div>
-          <Button variant="ghost" size="sm">Trocar foto</Button>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
-          <Field label="Nome completo" half><Input defaultValue="Marina Costa"/></Field>
-          <Field label="Email" half><Input defaultValue="marina@estudiomarina.com.br"/></Field>
-          <Field label="Telefone pessoal" half><Input defaultValue="+55 11 9 8765-4321"/></Field>
-          <Field label="Fuso horário" half>
-            <Select value="sp" onChange={() => {}} options={[
-              { value: 'sp', label: 'America/São_Paulo (GMT-3)' },
-              { value: 'nyc', label: 'America/New_York (GMT-5)' },
-            ]}/>
+          <Field label="Nome completo" half>
+            <Input value={settings.owner_name || ''} placeholder="Como você se chama" onChange={e => patch('owner_name', e.target.value)}/>
+          </Field>
+          <Field label="E-mail de login" half hint="É a chave da sua conta. Pra trocar, fale com o suporte HUMA.">
+            <Input value={settings.owner_email || ''} disabled style={{ opacity: 0.7 }}/>
+          </Field>
+          <Field label="Seu WhatsApp (avisos da HUMA)" half hint="Agendamentos, pagamentos e alertas chegam aqui. DDI + DDD, só números.">
+            <Input value={settings.owner_phone || ''} placeholder="5511987654321" onChange={e => patch('owner_phone', e.target.value)}/>
           </Field>
         </div>
-
-        <Field label="Como quer ser chamada">
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {[
-              { id: 'marina',     label: 'Marina' },
-              { id: 'dra-marina', label: 'Dra. Marina' },
-              { id: 'dra-costa',  label: 'Dra. Costa' },
-            ].map(o => (
-              <button key={o.id} onClick={() => setName(o.id)} style={{
-                padding: '8px 14px', borderRadius: 10,
-                border: '1px solid ' + (name === o.id ? 'var(--ink)' : 'var(--paper-edge)'),
-                background: name === o.id ? 'var(--ink)' : 'var(--paper-raised)',
-                color:      name === o.id ? 'var(--paper)' : 'var(--ink-2)',
-                fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
-                cursor: 'pointer',
-              }}>{o.label}</button>
-            ))}
-          </div>
-        </Field>
       </Card>
 
-      <Card title="Notificações">
-        <Eyebrow>canais</Eyebrow>
+      <Card title="Quando a HUMA te avisa">
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+          Os avisos chegam no WhatsApp acima. Desligue o que não quiser receber.
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
-          <Toggle checked={notif.email} onChange={() => setNotif(n => ({ ...n, email: !n.email }))} label="Email"/>
-          <Toggle checked={notif.wpp}   onChange={() => setNotif(n => ({ ...n, wpp:   !n.wpp }))}   label="WhatsApp"/>
-          <Toggle checked={notif.app}   onChange={() => setNotif(n => ({ ...n, app:   !n.app }))}   label="In-app (sininho)"/>
+          <Toggle checked={flag('notify_owner_on_appointment')}  onChange={() => toggle('notify_owner_on_appointment')}  label="Novo agendamento"/>
+          <Toggle checked={flag('notify_owner_on_cancellation')} onChange={() => toggle('notify_owner_on_cancellation')} label="Cancelamento"/>
+          <Toggle checked={flag('notify_owner_on_payment')}      onChange={() => toggle('notify_owner_on_payment')}      label="Pagamento confirmado"/>
+          <Toggle checked={flag('notify_owner_on_stuck_lead')}   onChange={() => toggle('notify_owner_on_stuck_lead')}   label="Lead quente parado (pra você intervir antes de esfriar)"/>
         </div>
         <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
-        <Eyebrow>quando avisar</Eyebrow>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
-          <Toggle checked={moments.novo}     onChange={() => setMoments(m => ({ ...m, novo: !m.novo }))}     label="Novo agendamento"/>
-          <Toggle checked={moments.canc}     onChange={() => setMoments(m => ({ ...m, canc: !m.canc }))}     label="Cancelamento"/>
-          <Toggle checked={moments.assumido} onChange={() => setMoments(m => ({ ...m, assumido: !m.assumido }))} label="Conversa assumida por humano"/>
-          <Toggle checked={moments.diario}   onChange={() => setMoments(m => ({ ...m, diario: !m.diario }))}   label="Resumo diário (08h)"/>
-          <Toggle checked={moments.pgto}     onChange={() => setMoments(m => ({ ...m, pgto: !m.pgto }))}     label="Pagamento pendente"/>
-        </div>
+        <Field label="Relatório de resultados" hint="A HUMA presta contas no seu WhatsApp, na frequência que você quiser.">
+          <Select value={settings.report_frequency || 'weekly'} onChange={e => patch('report_frequency', e.target.value)}
+                  options={[
+                    { value: 'daily',    label: 'Diário (toda manhã, 8h)' },
+                    { value: 'weekly',   label: 'Semanal' },
+                    { value: 'biweekly', label: 'Quinzenal' },
+                    { value: 'monthly',  label: 'Mensal' },
+                    { value: 'off',      label: 'Não enviar' },
+                  ]}/>
+        </Field>
       </Card>
     </>
   );
@@ -1411,66 +1742,106 @@ const PerfilVoice = () => {
   );
 };
 
-const PerfilSecurity = () => (
-  <>
-    <Card title="Senha" action={<Button variant="ghost" size="sm">Alterar senha</Button>}>
-      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
-        Última alteração há 4 meses. Recomendamos trocar a cada 6 meses.
-      </div>
-    </Card>
+// ---------- Segurança — REAL (reset de senha via Supabase Auth + sessão) ----------
+const PerfilSecurity = ({ settings }) => {
+  const email = settings.owner_email || '';
+  const [state, setState] = useStateS('idle');   // idle | sending | sent | error
+  const [err, setErr] = useStateS('');
 
-    <Card title="Autenticação de dois fatores">
-      <Toggle checked={true} onChange={() => {}} label="2FA por aplicativo autenticador"/>
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
-        Configurado com Google Authenticator · 3 códigos de backup disponíveis
-      </div>
-      <Button variant="ghost" size="sm">Gerar novos códigos de backup</Button>
-    </Card>
+  const send = async () => {
+    if (!email || state === 'sending') return;
+    setState('sending'); setErr('');
+    try { await requestPasswordReset(email); setState('sent'); }
+    catch (e) { setErr(e.message); setState('error'); }
+  };
 
-    <Card title="Sessões ativas">
-      <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 10, overflow: 'hidden' }}>
-        {[
-          { dev: 'MacBook Pro · Safari', loc: 'São Paulo, BR', when: 'agora', current: true },
-          { dev: 'iPhone 15 · app HUMA', loc: 'São Paulo, BR', when: 'há 2 horas' },
-          { dev: 'Chrome · Windows',     loc: 'São Paulo, BR', when: 'ontem' },
-        ].map((s, i) => (
-          <div key={i} style={{
-            display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
-            borderTop: i ? '1px solid var(--paper-edge)' : 'none',
-          }}>
-            <div style={{ color: 'var(--ink-3)' }}><Icon name="monitor" size={18}/></div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>
-                {s.dev} {s.current && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--sage-ink)', background: 'var(--sage-tint)', padding: '1px 6px', borderRadius: 4, marginLeft: 6 }}>SESSÃO ATUAL</span>}
-              </div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{s.loc} · {s.when}</div>
-            </div>
-            {!s.current && <Button variant="plain" size="sm">Encerrar</Button>}
-          </div>
-        ))}
-      </div>
-    </Card>
+  const logout = async () => {
+    try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) { /* cookie expira sozinho */ }
+    window.location.href = '/login';
+  };
 
-    <Card title="Últimos acessos">
-      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {[
-          '18 abr 14:02 · Safari/macOS · São Paulo',
-          '18 abr 09:18 · app iOS · São Paulo',
-          '17 abr 20:45 · Safari/macOS · São Paulo',
-          '16 abr 19:02 · Safari/macOS · Campos do Jordão',
-          '15 abr 08:10 · app iOS · São Paulo',
-        ].map((l, i) => <div key={i}>{l}</div>)}
-      </div>
-    </Card>
-  </>
-);
+  return (
+    <>
+      <Card title="Senha" action={
+        <Button variant="ghost" size="sm" onClick={send} disabled={!email || state === 'sending'}>
+          {state === 'sending' ? 'Enviando…' : state === 'sent' ? 'Enviar de novo' : 'Alterar senha'}
+        </Button>
+      }>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+          {!email
+            ? 'Sua conta ainda não tem e-mail de login cadastrado. Fale com o suporte HUMA.'
+            : state === 'sent'
+              ? `Enviamos um link pra ${email}. Abra o e-mail e escolha a nova senha — o link vale por pouco tempo.`
+              : `Você recebe um link por e-mail em ${email} pra definir uma senha nova. A senha atual continua valendo até você trocar.`}
+        </div>
+        {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
+      </Card>
+
+      <Card title="Sessão">
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+          Você está logado como <b style={{ color: 'var(--ink)' }}>{email || 'esta conta'}</b>. Num computador compartilhado, saia ao terminar.
+        </div>
+        <div>
+          <Button variant="ghost" size="sm" icon={<Icon name="logout" size={13}/>} onClick={logout}>Sair desta sessão</Button>
+        </div>
+      </Card>
+    </>
+  );
+};
 
 // ============================================================
-// CONVIDAR EQUIPE — modal
+// CONVIDAR EQUIPE — modal REAL (GET/POST/DELETE /team)
+// O convidado recebe e-mail pra criar a senha e entra com o próprio
+// e-mail neste negócio (login cai em team_members quando não é dono).
 // ============================================================
+const TEAM_ROLES = [
+  { id: 'recepcao', label: 'Recepção',       desc: 'Conversas, agenda e clientes' },
+  { id: 'admin',    label: 'Administrativo', desc: 'Relatórios e faturamento' },
+  { id: 'dono',     label: 'Sócio / dono',   desc: 'Tudo, inclusive ajustes do negócio' },
+];
+const teamRoleLabel = (id) => (TEAM_ROLES.find(r => r.id === id) || { label: 'Equipe' }).label;
+
 const InviteModal = ({ onClose }) => {
   const [email, setEmail] = useStateS('');
+  const [name, setName] = useStateS('');
   const [role, setRole] = useStateS('recepcao');
+  const [team, setTeam] = useStateS(null);
+  const [err, setErr] = useStateS('');
+  const [notice, setNotice] = useStateS('');
+  const [busy, setBusy] = useStateS(false);
+
+  const load = async () => {
+    try { setTeam(await fetchTeam()); setErr(''); }
+    catch (e) { setTeam({ owner: {}, members: [] }); setErr(e.message); }
+  };
+  useEffectS(() => { load(); }, []);
+
+  const invite = async () => {
+    if (!email.trim() || busy) return;
+    setBusy(true); setErr(''); setNotice('');
+    try {
+      const r = await inviteTeamMember({ email, name, role });
+      setNotice(r.email_sent
+        ? `Convite enviado pra ${r.member.email}. A pessoa recebe o e-mail pra criar a senha e entra com ele.`
+        : `${r.member.email} já pode entrar: basta usar "Esqueci minha senha" na tela de login com esse e-mail.`);
+      setEmail(''); setName('');
+      await load();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const remove = async (m) => {
+    if (!window.confirm(`Tirar ${m.email} da equipe? A pessoa deixa de entrar neste negócio.`)) return;
+    setErr('');
+    try { await removeTeamMember(m.email); await load(); }
+    catch (e) { setErr(e.message); }
+  };
+
+  const owner = (team && team.owner) || {};
+  const members = (team && team.members) || [];
+  const fmtSince = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }); };
+  const tones = ['sage', 'ink', 'terracotta'];
+
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 100,
@@ -1490,7 +1861,7 @@ const InviteModal = ({ onClose }) => {
               letterSpacing: '-0.015em', color: 'var(--ink)',
             }}>Convide sua equipe</div>
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-              Cada pessoa tem acesso adequado ao que faz
+              Quem você convidar entra no Cockpit deste negócio com o próprio e-mail.
             </div>
           </div>
           <button onClick={onClose} style={{
@@ -1501,16 +1872,18 @@ const InviteModal = ({ onClose }) => {
         </div>
 
         <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <Field label="Email">
-            <Input placeholder="nome@exemplo.com" value={email} onChange={e => setEmail(e.target.value)}/>
-          </Field>
-          <Field label="Papel">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+            <Field label="E-mail" half>
+              <Input placeholder="nome@exemplo.com" value={email} onChange={e => setEmail(e.target.value)}
+                     onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); invite(); } }}/>
+            </Field>
+            <Field label="Nome (opcional)" half>
+              <Input placeholder="Sofia" value={name} onChange={e => setName(e.target.value)}/>
+            </Field>
+          </div>
+          <Field label="Papel" hint="Por enquanto todo mundo da equipe vê o Cockpit inteiro — o papel serve pra organizar quem é quem.">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {[
-                { id: 'dono',   label: 'Dono',          desc: 'Acesso total · faturamento, integrações, tudo' },
-                { id: 'recepcao', label: 'Recepção',    desc: 'Conversas, agenda e clientes' },
-                { id: 'admin',  label: 'Administrativo', desc: 'Relatórios, faturamento, sem acesso às conversas' },
-              ].map(r => (
+              {TEAM_ROLES.map(r => (
                 <label key={r.id} style={{
                   display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
                   padding: '10px 12px', borderRadius: 10,
@@ -1526,36 +1899,52 @@ const InviteModal = ({ onClose }) => {
               ))}
             </div>
           </Field>
-          <Button variant="dark" size="md">Enviar convite</Button>
+          {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
+          {notice && <VoiceMsg kind="ok">{notice}</VoiceMsg>}
+          <div>
+            <Button variant="dark" size="md" onClick={invite} disabled={busy || !email.trim()}>{busy ? 'Enviando…' : 'Enviar convite'}</Button>
+          </div>
         </div>
 
         <div style={{ borderTop: '1px solid var(--paper-edge)', padding: '18px 24px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>Membros atuais</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>3 pessoas</div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>Quem tem acesso</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
+              {team ? `${members.length + 1} ${members.length + 1 === 1 ? 'pessoa' : 'pessoas'}` : '…'}
+            </div>
           </div>
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 0 }}>
-            {[
-              { n: 'Marina Costa',   role: 'Dono',     since: 'mar/23', tone: 'terracotta', you: true },
-              { n: 'Sofia Ramos',    role: 'Recepção', since: 'ago/24', tone: 'sage' },
-              { n: 'Patrícia Lima',  role: 'Recepção', since: 'jan/25', tone: 'ink' },
-            ].map((m, i) => (
-              <div key={i} style={{
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0' }}>
+              <Avatar initials={initialsFrom(owner.name || owner.email || 'D')} tone="terracotta" size={28}/>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>
+                  {owner.name || owner.email || 'Dono da conta'} <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)' }}>· você</span>
+                </div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', marginTop: 1 }}>Dono{owner.email ? ` · ${owner.email}` : ''}</div>
+              </div>
+            </div>
+            {members.map((m, i) => (
+              <div key={m.email} style={{
                 display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0',
-                borderTop: i ? '1px solid var(--paper-edge)' : 'none',
+                borderTop: '1px solid var(--paper-edge)',
               }}>
-                <Avatar initials={m.n.split(' ').map(n => n[0]).slice(0,2).join('')} tone={m.tone} size={28}/>
+                <Avatar initials={initialsFrom(m.name || m.email)} tone={tones[i % 3]} size={28}/>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>
-                    {m.n} {m.you && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)' }}>· você</span>}
+                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {m.name || m.email}
                   </div>
                   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', marginTop: 1 }}>
-                    {m.role} · desde {m.since}
+                    {teamRoleLabel(m.role)}{m.name ? ` · ${m.email}` : ''}{m.invited_at ? ` · desde ${fmtSince(m.invited_at)}` : ''}
                   </div>
                 </div>
-                {!m.you && <Button variant="plain" size="sm">Remover</Button>}
+                <Button variant="plain" size="sm" onClick={() => remove(m)}>Remover</Button>
               </div>
             ))}
+            {team && members.length === 0 && (
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', padding: '6px 0 0' }}>
+                Só você por enquanto. Convide quem atende com você.
+              </div>
+            )}
           </div>
         </div>
       </div>

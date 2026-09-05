@@ -619,6 +619,67 @@ def _identity_gap_rules(identity: ClientIdentity) -> str:
     )
 
 
+def _build_business_knowledge_prompt(identity: ClientIdentity) -> str:
+    """
+    Conhecimento do negócio cadastrado no Cockpit (Ajustes → Negócio):
+    equipe técnica, vocabulário preferido e base de conhecimento.
+
+    Entra no bloco ESTÁTICO (cacheado) — muda só quando o dono edita.
+    Toda instrução é condicional (SE/QUANDO) e devolve "" quando nada
+    está preenchido, pra não gastar token à toa nem empurrar feature.
+    """
+    parts: list[str] = []
+
+    pros = [
+        p for p in (identity.professionals or [])
+        if isinstance(p, dict) and str(p.get("name") or "").strip()
+    ]
+    if pros:
+        lines = []
+        for p in pros[:20]:
+            extra = " — ".join(
+                x for x in (
+                    str(p.get("specialty") or "").strip(),
+                    str(p.get("registry") or "").strip(),
+                ) if x
+            )
+            lines.append(f"  - {str(p['name']).strip()}" + (f" ({extra})" if extra else ""))
+        parts.append(
+            "QUEM ATENDE (equipe cadastrada pelo dono):\n" + "\n".join(lines) + "\n"
+            "  SE o lead perguntar quem atende, pedir alguém pelo nome ou querer saber a especialidade: use só esta lista.\n"
+            "  NUNCA invente profissional, título ou registro que não esteja aqui."
+        )
+
+    terms = [str(t).strip() for t in (identity.preferred_terms or []) if str(t).strip()]
+    if terms:
+        parts.append(
+            "VOCABULÁRIO DO NEGÓCIO:\n"
+            f"  Prefira estes termos quando couber: {', '.join(terms[:40])}.\n"
+            "  (As palavras proibidas já estão listadas na identidade.)"
+        )
+
+    docs = [
+        d for d in (identity.knowledge_docs or [])
+        if isinstance(d, dict)
+        and str(d.get("summary") or "").strip()
+        and (d.get("status") or "ready") == "ready"
+    ]
+    if docs:
+        blocks = []
+        for d in docs[:8]:
+            name = str(d.get("name") or "documento").strip()
+            summary = str(d.get("summary") or "").strip()
+            body = "\n".join("    " + ln for ln in summary.splitlines() if ln.strip())
+            blocks.append(f"  [{name}]\n{body}")
+        parts.append(
+            "BASE DE CONHECIMENTO (documentos do dono, já resumidos):\n" + "\n".join(blocks) + "\n"
+            "  SE a dúvida do lead for coberta aqui: responda com base nisso, no seu tom, sem citar 'documento', 'arquivo' ou 'base'.\n"
+            "  SE não estiver aqui: NÃO invente — diga que vai confirmar e já retorna."
+        )
+
+    return ("\n" + "\n\n".join(parts) + "\n") if parts else ""
+
+
 def build_static_prompt(identity: ClientIdentity) -> str:
     """
     Bloco estático do system prompt — cacheado entre mensagens.
@@ -662,6 +723,10 @@ FAQ:
 REGRAS CUSTOM:
 {identity.custom_rules or '  Nenhuma.'}
 """
+
+    # ── Conhecimento do negócio vindo do Cockpit (equipe, vocabulário, docs) ──
+    # "" quando nada está cadastrado — não gasta token nem muda o cache.
+    prompt += _build_business_knowledge_prompt(identity)
 
     # ── Tom por vertical ──
     category_str = identity.category.value if identity.category else ""

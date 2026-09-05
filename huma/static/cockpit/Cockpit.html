@@ -358,13 +358,13 @@ function App() {
       />;
       break;
     case 'agenda':      screen = <AgendaFullScreen />; break;
-    case 'clientes':    screen = <ClientesScreen />; break;
+    case 'clientes':    screen = <ClientesScreen onOpen={(phone) => { setActiveId(phone); setRoute('conversas'); }} />; break;
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
     case 'disparos':    screen = <CampaignsScreen client={client} onNav={setRoute} />; break;
     case 'divulgacao':  screen = <LinksScreen />; break;
     case 'integracoes': screen = <IntegrationsScreen client={client} onReloadStatus={reloadIntegrationsStatus} />; break;
-    case 'ajustes':     screen = <AjustesScreen />; break;
+    case 'ajustes':     screen = <AjustesScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} />; break;
     case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
     case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;
     case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} />; break;
@@ -401,7 +401,8 @@ function App() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', background: 'var(--paper)', position: 'relative' }}>
-      <SidebarNav active={route} onNav={setRoute} onInvite={() => setInviteOpen(true)} />
+      <SidebarNav active={route} onNav={setRoute} onInvite={() => setInviteOpen(true)}
+                  client={client} waitingCount={conversations.filter(c => c.status === 'aguardando').length} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {!['planos', 'checkout'].includes(route) && <TrialBanner billing={billing} onGoto={setRoute} />}
         <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0 }}>

@@ -428,6 +428,70 @@ class ClientIdentity(BaseModel):
     working_hours: str = ""
     custom_rules: str = ""
 
+    # ── Negócio de verdade (Cockpit → Ajustes → Negócio, 2026-09-04) ──
+    # Migration: scripts/migration_negocio_real.sql. Sem a coluna, o
+    # default vale (get_client descarta NULL) — só o SALVAR falha.
+    professionals: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Equipe técnica que atende: [{name, specialty, registry}]. "
+            "Entra no bloco estático do prompt SÓ quando preenchida; a IA "
+            "nunca cita profissional fora desta lista."
+        ),
+    )
+    preferred_terms: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Vocabulário 'use sempre' (ex.: paciente, procedimento). "
+            "O 'evite' é forbidden_words."
+        ),
+    )
+    knowledge_docs: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Base de conhecimento v1: [{id, name, size, uploaded_at, status, "
+            "summary, chars}]. O documento é processado UMA vez no upload "
+            "(texto → resumo via IA) e só o resumo entra no prompt estático."
+        ),
+    )
+    team_members: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Equipe com acesso ao Cockpit: [{email, name, role, invited_at, "
+            "status}]. O login por e-mail cai neste cliente quando o e-mail "
+            "está aqui (fallback ao owner_email)."
+        ),
+    )
+
+    @field_validator("professionals", mode="before")
+    @classmethod
+    def _valid_professionals(cls, v: list) -> list:
+        out: list[dict] = []
+        for item in (v if isinstance(v, list) else [])[:20]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()[:80]
+            if not name:
+                continue
+            out.append({
+                "name": name,
+                "specialty": str(item.get("specialty") or "").strip()[:120],
+                "registry": str(item.get("registry") or "").strip()[:60],
+            })
+        return out
+
+    @field_validator("preferred_terms", mode="before")
+    @classmethod
+    def _valid_preferred_terms(cls, v: list) -> list:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in (v if isinstance(v, list) else [])[:40]:
+            term = str(item).strip()[:60]
+            if term and term.lower() not in seen:
+                seen.add(term.lower())
+                out.append(term)
+        return out
+
     # ── Produtos ──
     products_or_services: list[dict] = Field(default_factory=list)
     # v12.x — Fase 2A: catálogo estruturado pra SELL_PHYSICAL.
@@ -620,6 +684,10 @@ class ClientIdentity(BaseModel):
             "E-mail do dono — chave de login do Cockpit (Supabase Auth). "
             "Só e-mails vinculados a um cliente conseguem entrar."
         ),
+    )
+    owner_name: str = Field(
+        default="",
+        description="Nome do dono (Perfil → Você). Só exibição no Cockpit.",
     )
     report_frequency: str = Field(
         default="weekly",

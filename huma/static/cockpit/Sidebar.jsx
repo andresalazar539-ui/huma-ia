@@ -1,8 +1,18 @@
 // Sidebar.jsx — left nav for the cockpit
-const SidebarNav = ({ active, onNav, onInvite }) => {
+// Rótulo curto da categoria (subtítulo do workspace na sidebar)
+const CATEGORY_LABELS = {
+  clinica: 'Clínica', ecommerce: 'E-commerce', imobiliaria: 'Imobiliária', servicos: 'Serviços',
+  educacao: 'Educação', restaurante: 'Restaurante', salao_barbearia: 'Salão / barbearia',
+  advocacia_financeiro: 'Advocacia / financeiro', academia_personal: 'Academia / personal',
+  pet: 'Pet', automotivo: 'Automotivo', outros: 'Negócio',
+};
+
+// client = /api/integrations/status (business_name, category, owner_email...)
+// waitingCount = conversas aguardando você (handoff) — badge real.
+const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
   const items = [
     { id: 'inicio',       label: 'Início',       icon: 'home',     count: null },
-    { id: 'conversas',    label: 'Conversas',    icon: 'message',  count: 3 },
+    { id: 'conversas',    label: 'Conversas',    icon: 'message',  count: waitingCount || null },
     { id: 'agenda',       label: 'Agenda',       icon: 'calendar', count: null },
     { id: 'clientes',     label: 'Clientes',     icon: 'users',    count: null },
     { id: 'voz',          label: 'Voz',          icon: 'mic',      count: null },
@@ -48,7 +58,7 @@ const SidebarNav = ({ active, onNav, onInvite }) => {
       </div>
 
       {/* Workspace switcher */}
-      <WorkspaceSwitcher onNav={onNav} onInvite={onInvite} />
+      <WorkspaceSwitcher onNav={onNav} onInvite={onInvite} client={client} />
 
       {/* Nav */}
       <nav style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -167,7 +177,11 @@ const ThemeToggle = () => {
   );
 };
 
-const WorkspaceSwitcher = ({ onNav, onInvite }) => {
+const WorkspaceSwitcher = ({ onNav, onInvite, client }) => {
+  // Nome e categoria REAIS da conta (nada de mock)
+  const bizName = (client && client.business_name) || 'Seu negócio';
+  const bizSub = (client && (CATEGORY_LABELS[client.category] || client.owner_email)) || 'Conta HUMA';
+  const bizInitials = (typeof initialsFrom === 'function' ? initialsFrom(bizName) : 'HU').slice(0, 2);
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef(null);
   React.useEffect(() => {
@@ -200,10 +214,10 @@ const WorkspaceSwitcher = ({ onNav, onInvite }) => {
         border: '1px solid var(--paper-edge)',
         cursor: 'pointer', textAlign: 'left', width: '100%',
       }}>
-        <Avatar initials="MC" tone="terracotta" size={26} />
+        <Avatar initials={bizInitials} tone="terracotta" size={26} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)', lineHeight: 1.2 }}>Estúdio Marina</div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.2 }}>Jardins · SP</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)', lineHeight: 1.2 }}>{bizName}</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.2 }}>{bizSub}</div>
         </div>
         <div style={{ color: 'var(--ink-3)' }}><Icon name="chevronDown" size={14} /></div>
       </button>
@@ -227,14 +241,13 @@ const WorkspaceSwitcher = ({ onNav, onInvite }) => {
             background: 'var(--paper-sunk)', border: 'none', cursor: 'pointer',
             textAlign: 'left', width: '100%',
           }}>
-            <Avatar initials="MC" tone="terracotta" size={24}/>
+            <Avatar initials={bizInitials} tone="terracotta" size={24}/>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>Estúdio Marina</div>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)' }}>Jardins · SP</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{bizName}</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)' }}>{bizSub}</div>
             </div>
             <span style={{ color: 'var(--sage)' }}><Icon name="check" size={14} stroke={2}/></span>
           </button>
-          <Item icon="plus" label="Adicionar clínica"/>
           <div style={{ height: 1, background: 'var(--paper-edge)', margin: '6px 0' }}/>
 
           {/* BLOCO 2 */}

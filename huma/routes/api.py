@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from huma.config import APP_VERSION, ELEVENLABS_API_KEY, ELEVENLABS_MODEL
+from huma.config import APP_VERSION, ELEVENLABS_API_KEY, ELEVENLABS_MODEL, GOOGLE_CALENDAR_CREDENTIALS
 from huma.core.auth import verify_webhook, verify_api_key, verify_api_key_manual, bearer_scheme
 from huma.core.orchestrator import handle_message, process_outbound_campaign
 from huma.models.schemas import (
@@ -490,6 +490,10 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     "notify_owner_on_appointment", "notify_owner_on_payment",
     "notify_owner_on_cancellation", "notify_owner_on_stuck_lead",
     "max_discount_percent", "max_installments", "accepted_payment_methods",
+    # Negócio de verdade (2026-09-04): equipe técnica, vocabulário, dono.
+    # knowledge_docs e team_members NÃO entram aqui — têm rotas próprias
+    # (routes/business.py) porque envolvem processamento/e-mail.
+    "professionals", "preferred_terms", "owner_name",
 })
 
 
@@ -1436,6 +1440,17 @@ async def integrations_status(
         "whatsapp_provider": (getattr(identity, "whatsapp_provider", "") or "").strip().lower(),
         # Notificações pro dono
         "owner_phone": getattr(identity, "owner_phone", "") or "",
+        # Identidade da conta (sidebar/workspace do Cockpit — nada de mock)
+        "business_name": getattr(identity, "business_name", "") or "",
+        "category": (identity.category.value if getattr(identity, "category", None) else ""),
+        "owner_email": getattr(identity, "owner_email", "") or "",
+        "owner_name": getattr(identity, "owner_name", "") or "",
+        # Evolution (QR) — só marcador, o nome da instância não interessa ao front
+        "evolution_instance": _truthy(getattr(identity, "evolution_instance", "")),
+        # Google Calendar: credencial é global da HUMA (env) — a agenda
+        # está "conectada" quando a credencial existe E o cliente agenda.
+        "google_calendar": bool(GOOGLE_CALENDAR_CREDENTIALS) and bool(getattr(identity, "enable_scheduling", False)),
+        "enable_scheduling": bool(getattr(identity, "enable_scheduling", False)),
     }
 
 

@@ -1,33 +1,9 @@
 // IntegrationsScreen.jsx — grid de integrações conectadas
+// Cards estáticos = integrações que AINDA não têm conector. Sem conta
+// sugerida, sem "últ. sinc" inventada: só o que a integração faria.
+// Google Calendar, RD Station, Bling, Pipedrive, WhatsApp e Balcão são
+// dinâmicos (status real) dentro do IntegrationsScreen.
 const INTEGRATIONS = [
-  {
-    id: 'gcal',
-    name: 'Google Calendar',
-    category: 'Agenda',
-    glyph: { type: 'gcal' },
-    status: 'connected',
-    meta: [
-      ['ÚLT. SINC', 'há 2 minutos'],
-      ['CRIADOS ESTA SEMANA', '14 agendamentos'],
-      ['CONTA', 'marina@estudiomarina.com.br'],
-    ],
-    note: 'Bidirecional · HUMA lê e escreve horários',
-  },
-  {
-    id: 'rdstation',
-    name: 'RD Station',
-    category: 'CRM & Marketing',
-    glyph: { type: 'rdstation' },
-    status: 'connected',
-    meta: [
-      ['CONTA', 'Estúdio Marina'],
-      ['LEADS ESTA SEMANA', '23 novos'],
-      ['ÚLT. SINC', 'há 8 minutos'],
-    ],
-    note: 'HUMA cria e atualiza leads automaticamente',
-  },
-  // Pipedrive vive dinâmico dentro do IntegrationsScreen (espelha padrão do Bling),
-  // pra status real e botão Conectar funcionar via OAuth.
   {
     id: 'hubspot',
     name: 'HubSpot',
@@ -35,8 +11,8 @@ const INTEGRATIONS = [
     glyph: { type: 'hubspot' },
     status: 'disconnected',
     meta: [
-      ['CONTA SUGERIDA', 'Estúdio Marina'],
-      ['REQUER', 'OAuth HubSpot'],
+      ['SINCRONIZA', 'Contatos e negócios'],
+      ['STATUS', 'Em breve'],
     ],
     note: 'Registra contatos e conversas no CRM da HubSpot',
   },
@@ -47,8 +23,8 @@ const INTEGRATIONS = [
     glyph: { type: 'instagram' },
     status: 'disconnected',
     meta: [
-      ['PERFIL SUGERIDO', '@estudiomarina'],
-      ['CUSTO MENSAL', 'Incluso no plano'],
+      ['ATENDE', 'DMs com o mesmo clone'],
+      ['STATUS', 'Em breve'],
     ],
     note: 'HUMA pode atender DMs do Instagram junto com WhatsApp',
   },
@@ -59,7 +35,7 @@ const INTEGRATIONS = [
     glyph: { type: 'doctoralia' },
     status: 'disconnected',
     meta: [
-      ['CONTA SUGERIDA', 'Dra. Marina Costa'],
+      ['SINCRONIZA', 'Agenda e novos pacientes'],
       ['REQUER', 'Token de API Premium'],
     ],
     note: 'Sincroniza agenda e recebe novos pacientes',
@@ -71,8 +47,8 @@ const INTEGRATIONS = [
     glyph: { type: 'nuvemshop' },
     status: 'disconnected',
     meta: [
-      ['LOJA SUGERIDA', 'estudiomarina.lojavirtualnuvem.com.br'],
       ['SINCRONIZA', 'Produtos, pedidos e estoque'],
+      ['STATUS', 'Em breve'],
     ],
     note: 'HUMA consulta produtos e acompanha pedidos da sua loja Nuvemshop',
   },
@@ -83,7 +59,7 @@ const INTEGRATIONS = [
     glyph: { type: 'tray' },
     status: 'disconnected',
     meta: [
-      ['LOJA SUGERIDA', 'estudiomarina.tray.com.br'],
+      ['SINCRONIZA', 'Catálogo e pedidos'],
       ['REQUER', 'Chave e token da API Tray'],
     ],
     note: 'Conecta catálogo e pedidos da Tray às conversas da HUMA',
@@ -183,7 +159,43 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     actions: <BalcaoActions url={balcaoUrl} />,
   };
 
-  const integrations = [balcaoCard, ...INTEGRATIONS, blingCard, pipedriveCard];
+  // Google Calendar: credencial é da HUMA (env) — "conectado" quando o
+  // servidor tem credencial E o cliente agenda (enable_scheduling).
+  const gcalConnected = Boolean(client && client.google_calendar);
+  const gcalCard = {
+    id: 'gcal',
+    name: 'Google Calendar',
+    category: 'Agenda',
+    glyph: { type: 'gcal' },
+    status: gcalConnected ? 'connected' : 'disconnected',
+    meta: gcalConnected
+      ? [['STATUS', 'Agenda ativa'], ['MODO', 'Bidirecional']]
+      : [
+          ['SINCRONIZA', 'Horários livres e ocupados'],
+          ['STATUS', client && client.enable_scheduling ? 'Sem credencial no servidor' : 'Agendamento desligado'],
+        ],
+    note: gcalConnected
+      ? 'HUMA confere a agenda antes de confirmar e cria o evento na hora'
+      : 'Com a agenda ligada, a HUMA só confirma horário que o Google Calendar diz que está livre',
+  };
+
+  // RD Station: conector ainda não existe (Fase E) — nunca aparece "conectado" sem token.
+  const rdConnected = Boolean(client && client.crm_provider === 'rd_station' && client.crm_access_token);
+  const rdCard = {
+    id: 'rdstation',
+    name: 'RD Station',
+    category: 'CRM & Marketing',
+    glyph: { type: 'rdstation' },
+    status: rdConnected ? 'connected' : 'disconnected',
+    meta: rdConnected
+      ? [['STATUS', 'Conectado']]
+      : [['SINCRONIZA', 'Leads e oportunidades'], ['STATUS', 'Em breve']],
+    note: rdConnected
+      ? 'HUMA cria e atualiza leads automaticamente'
+      : 'Em breve: HUMA cria e atualiza leads no RD Station automaticamente',
+  };
+
+  const integrations = [balcaoCard, gcalCard, ...INTEGRATIONS, blingCard, pipedriveCard, rdCard];
   const connectedCount = integrations.filter(i => i.status === 'connected' || i.status === 'active').length;
   const availableCount = integrations.length - connectedCount;
 
@@ -210,8 +222,10 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button variant="ghost" size="sm" icon={<Icon name="search" size={14}/>}>Buscar</Button>
-          <Button variant="outline" size="sm" icon={<Icon name="plus" size={14}/>}>Sugerir integração</Button>
+          <Button variant="outline" size="sm" icon={<Icon name="plus" size={14}/>}
+                  onClick={() => { window.location.href = 'mailto:andre@humaia.com.br?subject=' + encodeURIComponent('Sugestão de integração pra HUMA'); }}>
+            Sugerir integração
+          </Button>
         </div>
       </div>
 
@@ -678,8 +692,11 @@ const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect,
           </>
         ) : error ? (
           <Button variant="primary" size="sm" onClick={onConnect}>Reconectar</Button>
-        ) : (
+        ) : onConnect ? (
           <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={onConnect}>Conectar</Button>
+        ) : (
+          // Sem conector ainda: botão honesto, nada de "Conectar" que não faz nada
+          <Button variant="ghost" size="sm" disabled>Em breve</Button>
         )}
       </div>
     </div>

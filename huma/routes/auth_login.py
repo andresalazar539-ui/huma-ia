@@ -297,6 +297,13 @@ async def _resolve_or_provision_client(email: str, business_name: str = "", ref:
         log.warning(f"Login | e-mail vinculado a 2+ clientes | email=***@{email.split('@')[-1]}")
         raise HTTPException(403, "Este e-mail está vinculado a mais de uma conta. Fale com o suporte.")
 
+    # Membro convidado pelo dono (Cockpit → Convidar equipe): entra no
+    # negócio da equipe em vez de ganhar um negócio novo e vazio.
+    member_of = await db.get_client_by_team_email(email)
+    if member_of:
+        log.info(f"Login | membro da equipe | client={member_of.client_id}")
+        return member_of
+
     referred_by = await _validate_referrer(ref)
     client = await db.create_client_signup(email, business_name, referred_by=referred_by)
     if not client:

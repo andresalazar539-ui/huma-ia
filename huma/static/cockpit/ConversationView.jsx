@@ -145,7 +145,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
             value={draft}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendIt(); }}}
-            placeholder={handoff ? "Você está respondendo como Marina…" : "HUMA está respondendo. Digite para assumir."}
+            placeholder={handoff ? "Você assumiu a conversa — escreva como você mesmo…" : "HUMA está respondendo. Digite para assumir."}
             rows={1}
             style={{
               flex: 1, border: 'none', outline: 'none', resize: 'none',

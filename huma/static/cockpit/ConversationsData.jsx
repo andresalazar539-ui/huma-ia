@@ -668,3 +668,79 @@ async function deleteVoice() {
 }
 
 Object.assign(window, { fetchVoiceStatus, fetchVoiceCatalog, cloneVoice, previewVoice, patchVoice, deleteVoice });
+
+/* ---------------- Negócio de verdade: base de conhecimento, equipe, senha ---------------- */
+// Backend: routes/business.py (+ /auth/forgot). Erros voltam com a
+// mensagem amigável do backend (detail), não "422: {...}".
+async function _readApiError(r) {
+  let detail = '';
+  try {
+    const j = await r.json();
+    detail = typeof j.detail === 'string' ? j.detail : (j.detail ? JSON.stringify(j.detail) : '');
+  } catch (e) { /* corpo não-JSON */ }
+  return new Error(detail || `Erro ${r.status}`);
+}
+
+async function fetchKnowledge() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/knowledge`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function uploadKnowledgeDoc(file) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/knowledge`, {
+    method: 'POST', headers: { ...AUTH_HEADERS }, body: fd,
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function deleteKnowledgeDoc(docId) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/knowledge/${encodeURIComponent(docId)}`, {
+    method: 'DELETE', headers: { ...AUTH_HEADERS },
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function fetchTeam() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function inviteTeamMember({ email, name = '', role = 'equipe' }) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team/invite`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ email, name, role }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function removeTeamMember(email) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team/${encodeURIComponent(email)}`, {
+    method: 'DELETE', headers: { ...AUTH_HEADERS },
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Reset de senha: o Supabase Auth manda o e-mail (template HUMA via Resend).
+async function requestPasswordReset(email) {
+  const r = await fetch('/auth/forgot', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+Object.assign(window, {
+  fetchKnowledge, uploadKnowledgeDoc, deleteKnowledgeDoc,
+  fetchTeam, inviteTeamMember, removeTeamMember, requestPasswordReset,
+});

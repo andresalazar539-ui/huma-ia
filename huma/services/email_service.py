@@ -97,6 +97,42 @@ async def send_email(
         return False
 
 
+async def send_team_invite(
+    to: str,
+    business_name: str,
+    inviter_name: str = "",
+    role_label: str = "Equipe",
+    login_url: str = "https://app.humaia.com.br/login",
+) -> bool:
+    """
+    Convite pra equipe (Cockpit → Convidar equipe). A senha é definida
+    pelo e-mail de auth do Supabase, disparado em separado pela rota;
+    este e-mail explica o contexto e aponta pro login. Nunca levanta.
+    """
+    who = inviter_name.strip() or (business_name.strip() or "O dono do negócio")
+    biz = business_name.strip() or "o negócio"
+    body = f"""
+<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:{_INK_SOFT};margin:0 0 16px 0;">
+  <strong>{who}</strong> te adicionou à equipe de <strong>{biz}</strong> na HUMA como <strong>{role_label}</strong>.
+</p>
+<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:{_INK_SOFT};margin:0 0 16px 0;">
+  Você vai receber (ou já recebeu) um outro e-mail pra definir a sua senha. Depois é só entrar
+  com este mesmo e-mail:
+</p>
+<p style="margin:0 0 20px 0;">
+  <a href="{login_url}" style="display:inline-block;background-color:{_TERRACOTTA};color:#FFFFFF;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:10px;">Entrar no Cockpit</a>
+</p>
+<p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:{_MUTED};margin:0;">
+  Não esperava este convite? Ignore este e-mail — nada acontece sem a sua senha.
+</p>
+"""
+    return await send_email(
+        to=to,
+        subject=f"Você foi convidado pra equipe de {biz} na HUMA",
+        html=_shell("Bem-vindo à equipe", body),
+    )
+
+
 async def send_subscription_welcome(
     to: str,
     business_name: str,

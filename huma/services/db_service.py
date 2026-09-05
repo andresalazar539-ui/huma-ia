@@ -5,6 +5,7 @@
 # Todas as queries usam run_in_threadpool pra não bloquear.
 # ================================================================
 
+import json
 from datetime import datetime
 
 from fastapi.concurrency import run_in_threadpool
@@ -159,6 +160,36 @@ async def get_clients_by_owner_email(email: str) -> list[ClientIdentity]:
             .ilike("owner_email", email).limit(2).execute()
     )
     return [_identity_from_row(row) for row in (resp.data or [])]
+
+
+async def get_client_by_team_email(email: str) -> ClientIdentity | None:
+    """
+    Login de MEMBRO da equipe: acha o cliente cujo team_members contém o
+    e-mail (convite feito no Cockpit → "Convidar equipe").
+
+    Fallback do owner_email — só é consultado quando o e-mail não é dono
+    de nenhum cliente. None se vazio, sem match, ambíguo (2+ negócios) ou
+    se a coluna ainda não existe (scripts/migration_negocio_real.sql).
+    """
+    email = (email or "").strip().lower()
+    if not email or "@" not in email:
+        return None
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("clients").select("*")
+                .contains("team_members", json.dumps([{"email": email}]))
+                .limit(2).execute()
+        )
+    except Exception as e:
+        domain = email.split("@")[-1]
+        log.warning(f"Login | consulta team_members falhou | email=***@{domain} | {type(e).__name__}: {e}")
+        return None
+    rows = resp.data or []
+    if len(rows) != 1:
+        if len(rows) > 1:
+            log.warning(f"Login | e-mail em 2+ equipes | email=***@{email.split('@')[-1]} | matches={len(rows)}")
+        return None
+    return _identity_from_row(rows[0])
 
 
 async def get_client_by_owner_email(email: str) -> ClientIdentity | None:
