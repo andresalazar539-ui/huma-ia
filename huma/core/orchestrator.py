@@ -42,7 +42,8 @@ from huma.services import billing_service as billing
 from huma.services import campaign_shield as shield
 from huma.services import message_buffer as buffer
 from huma.services import loop_detector
-from huma.providers.inventory.bling import BlingAdapter
+from huma.providers.inventory import get_provider_for as _inventory_provider_for
+from huma.services import lead_events
 from huma.utils.logger import get_logger
 from huma.utils.log_masking import mask_email, mask_name
 
@@ -252,6 +253,16 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         ia_limit_reached = not await billing.check_ia_limit(phone, max_ia)
 
         conv = await db.get_conversation(client_id, phone)
+
+        # Instagram Direct (2026-09-05): phone sintético "ig:<igsid>". O motor
+        # é o mesmo; só o canal fica marcado (Cockpit, envio, relatórios).
+        if phone.startswith("ig:"):
+            conv.channel = "instagram"
+
+        # Lead novo de verdade (primeira mensagem da vida): avisa os destinos
+        # que o dono conectou (webhook / planilha / pixel). Fire-and-forget.
+        if not conv.history and not conv.last_message_at:
+            lead_events.fire(client_data, conv, "lead.new")
 
         # ── Fase 3 (QUALIFY): handoff humano em andamento ──
         # Se o humano já assumiu, IA não responde. Registra a msg no
@@ -1747,6 +1758,12 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 ),
                 activity_when=conv.active_appointment_datetime or "",
             )
+            # Webhook / planilha / pixel do cliente (fire-and-forget)
+            lead_events.fire(
+                client_data, conv, "appointment.confirmed",
+                service=_svc, when=conv.active_appointment_datetime or "",
+                summary=(appointment_meta or {}).get("date_time") or "",
+            )
 
         # ============================================================
         # ÁUDIO
@@ -2356,6 +2373,11 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
                 ),
                 activity_when=conv.active_appointment_datetime or "",
             )
+            lead_events.fire(
+                client_data, conv, "appointment.confirmed",
+                service=_svc, when=conv.active_appointment_datetime or "",
+                summary=result.get("date_time", "") or "",
+            )
 
     elif result.get("status") == "conflict":
         await asyncio.sleep(1.0)
@@ -2788,7 +2810,7 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
         log.info(f"check_stock sem query | {phone}")
         return {"executed": False, "status": "empty_query", "product": None}
 
-    adapter = BlingAdapter(identity=client_data)
+    adapter = _inventory_provider_for(client_data)
     result = await adapter.check_stock(query)
     status = result.get("status", "error")
 
@@ -2798,10 +2820,20 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
         price = _format_price_brl(result.get("price_cents", 0))
         qty = result.get("stock_qty", 0)
         available = result.get("available", False)
+        # Loja virtual (Nuvemshop): estoque sem limite informado + link do produto.
+        stock_txt = (
+            "em estoque (sem limite informado)" if result.get("stock_unlimited")
+            else f"em estoque: {qty} unidades"
+        )
+        link = (result.get("url") or "").strip()
+        link_txt = (
+            f" | link de compra: {link} (mande o link quando o lead quiser comprar)"
+            if link else ""
+        )
         if available:
             marker = (
                 f"[ESTOQUE CONSULTADO — produto: {name} (SKU {sku}) | "
-                f"preço: {price} | em estoque: {qty} unidades. "
+                f"preço: {price} | {stock_txt}{link_txt}. "
                 f"Use APENAS esses dados na resposta. "
                 f"NUNCA invente outro preço nem outro número de estoque. "
                 f"Apresente ao lead com clareza e ofereça avançar pra compra.]"
@@ -2829,7 +2861,7 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
         )
     elif status == "no_credentials":
         marker = (
-            "[ESTOQUE INDISPONÍVEL — Bling não conectado nesse cliente. "
+            "[ESTOQUE INDISPONÍVEL — loja/ERP não conectado nesse cliente. "
             "Diga ao lead que vai confirmar a disponibilidade e retorna em "
             "instantes. NÃO confirme estoque por conta própria.]"
         )
@@ -2890,7 +2922,7 @@ async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict
         )
         return {"executed": False, "status": "missing_fields"}
 
-    adapter = BlingAdapter(identity=client_data)
+    adapter = _inventory_provider_for(client_data)
     result = await adapter.calc_shipping(sku, cep, qty=qty)
     status = result.get("status", "error")
 
@@ -2911,13 +2943,15 @@ async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict
         )
     elif status == "no_logistics_configured":
         marker = (
-            "[FRETE INDISPONÍVEL — transportadora não configurada no Bling "
-            "desse cliente. Diga ao lead que vai consultar o frete e retorna "
+            "[FRETE INDISPONÍVEL — o sistema desse cliente não cota frete por "
+            "aqui (loja virtual calcula no carrinho; ERP sem transportadora). "
+            "Se você tem o link do produto, diga que o frete aparece no carrinho "
+            "da loja ao informar o CEP; senão diga que vai consultar e retorna "
             "em instantes. NÃO invente valor.]"
         )
     elif status == "no_credentials":
         marker = (
-            "[FRETE INDISPONÍVEL — Bling não conectado nesse cliente. "
+            "[FRETE INDISPONÍVEL — loja/ERP não conectado nesse cliente. "
             "Diga ao lead que vai consultar e retorna em instantes.]"
         )
     else:
@@ -3079,6 +3113,8 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
         activity_kind="note",
         activity_summary=summary,
     )
+    # Webhook / planilha / pixel do cliente (fire-and-forget)
+    lead_events.fire(client_data, conv, "lead.qualified", summary=summary, extra={"urgency": urgency})
 
     return {
         "executed": True,

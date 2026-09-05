@@ -697,7 +697,79 @@ class ClientIdentity(BaseModel):
         description=(
             "Agenda do Google deste cliente (e-mail da agenda compartilhada "
             "com a conta de serviço da HUMA). Vazio = agenda global legada "
-            "(GOOGLE_CALENDAR_ID). Migration: scripts/migration_google_calendar_per_client.sql."
+            "(GOOGLE_CALENDAR_ID). Migration: scripts/migration_google_calendar_per_client.sql. "
+            "Valor 'oauth:<client_id>' = agenda principal da conta Google que o "
+            "dono conectou com 1 clique (google_oauth_refresh_token)."
+        ),
+    )
+
+    # ── Integrações nativas (2026-09-05) ──
+    # Migration: scripts/migration_integracoes_nativas.sql. Todas com
+    # default vazio: sem a coluna, o default vale (get_client descarta
+    # NULL) e a integração simplesmente aparece "desconectada".
+    google_oauth_refresh_token: str = Field(
+        default="",
+        description=(
+            "Refresh token do Google do dono ('Conectar com Google'). Dá acesso à "
+            "agenda principal e à planilha de leads; vazio = não conectou."
+        ),
+    )
+    google_oauth_email: str = Field(
+        default="", description="E-mail da conta Google conectada (só exibição).",
+    )
+    google_sheet_id: str = Field(
+        default="",
+        description="ID da planilha 'HUMA — Leads' criada no Drive do dono na conexão.",
+    )
+    google_sheet_url: str = Field(default="", description="URL da planilha (só exibição).")
+    webhook_url: str = Field(
+        default="",
+        description=(
+            "URL do dono pra receber eventos de lead (lead.new, lead.qualified, "
+            "appointment.confirmed, payment.approved) — Make, n8n, Zapier, sistema próprio."
+        ),
+    )
+    webhook_secret: str = Field(
+        default="",
+        description="Segredo HMAC-SHA256 do webhook (header X-HUMA-Signature).",
+    )
+    meta_pixel_id: str = Field(
+        default="",
+        description=(
+            "Pixel/Dataset da Meta DO CLIENTE. Com ele a HUMA devolve Lead/Schedule/"
+            "Purchase pra campanha que trouxe o lead (CAPI). Vazio = desligado."
+        ),
+    )
+    meta_capi_token: str = Field(
+        default="",
+        description=(
+            "Token do Gerenciador de Eventos pro pixel do cliente. Vazio = a HUMA "
+            "tenta o meta_access_token da conexão do WhatsApp."
+        ),
+    )
+    instagram_user_id: str = Field(
+        default="", description="ID da conta profissional do Instagram conectada (roteia o webhook).",
+    )
+    instagram_username: str = Field(default="", description="@ da conta (só exibição).")
+    instagram_access_token: str = Field(
+        default="", description="Token de longa duração (60 dias, renovado pelo scheduler).",
+    )
+    instagram_token_expires_at: Optional[datetime] = Field(
+        default=None, description="Quando o token do Instagram expira (UTC).",
+    )
+    nuvemshop_store_id: str = Field(default="", description="ID da loja (user_id do OAuth).")
+    nuvemshop_access_token: str = Field(default="", description="Token da loja (não expira).")
+    nuvemshop_store_url: str = Field(default="", description="URL pública da loja (só exibição).")
+    nuvemshop_store_name: str = Field(default="", description="Nome da loja (só exibição).")
+    asaas_api_key: str = Field(default="", description="Chave de API do Asaas do cliente.")
+    asaas_webhook_token: str = Field(
+        default="", description="Token que o Asaas manda no header asaas-access-token.",
+    )
+    payment_provider: str = Field(
+        default="",
+        description=(
+            "Meio de pagamento que cobra o LEAD deste cliente: '' (Mercado Pago da "
+            "HUMA, legado) | 'asaas' (conta do próprio cliente)."
         ),
     )
     report_frequency: str = Field(

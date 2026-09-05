@@ -109,7 +109,7 @@ class TestProviderStatus:
         statuses = wizard.get_provider_status(identity, Capability.SELL_PHYSICAL)
         connected = {s.label: s.connected for s in statuses}
         assert connected["Mercado Pago"] is True
-        assert connected["Bling (estoque + frete)"] is False
+        assert connected["Loja virtual (Nuvemshop) ou ERP (Bling)"] is False
 
     def test_sell_physical_all_connected(self, monkeypatch):
         import huma.config as cfg

@@ -17,7 +17,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from huma.providers.crm import pipedrive_oauth
+from huma.providers.crm import hubspot_oauth, pipedrive_oauth
 from huma.services import db_service as db
 from huma.utils.logger import get_logger
 
@@ -29,6 +29,7 @@ router = APIRouter(prefix="/oauth/crm", tags=["OAuth CRM"])
 # exchange_code_for_tokens.
 _OAUTH_MODULES = {
     "pipedrive": pipedrive_oauth,
+    "hubspot": hubspot_oauth,
     # "rd_station": rd_station_oauth,  # Fase E
 }
 
@@ -58,6 +59,10 @@ async def _detect_crm_defaults(provider: str, updates: dict) -> dict:
             access_token=updates.get("crm_access_token", ""),
             base_url=updates.get("crm_api_base_url", ""),
         )
+        return await adapter.detect_default_pipeline()
+    if provider == "hubspot":
+        from huma.providers.crm.hubspot import HubSpotAdapter
+        adapter = HubSpotAdapter(access_token=updates.get("crm_access_token", ""))
         return await adapter.detect_default_pipeline()
     return {}
 

@@ -19,7 +19,6 @@ from huma.config import (
     DEFAULT_MEETING_PLATFORM,
     GOOGLE_CALENDAR_CREDENTIALS,
     GOOGLE_CALENDAR_ID,
-    ZOOM_API_KEY,
 )
 from huma.models.schemas import BusinessScheduleConfig, TimeWindow
 from huma.utils.logger import get_logger
@@ -224,6 +223,12 @@ def _credentials_for(calendar_id: str = "", scope: str = "https://www.googleapis
         # Sem argumento de propósito: testes e callers legados mockam
         # _build_google_credentials como lambda sem parâmetros.
         return _build_google_credentials()
+    if cal.startswith(OAUTH_POINTER_PREFIX):
+        # "Conectar com Google" (2026-09-05): a agenda principal da conta
+        # que o dono autorizou. Credencial = refresh token do próprio dono
+        # (google_oauth), não a conta de serviço. calendarId = "primary".
+        creds = _oauth_credentials_for_pointer(cal)
+        return (creds, "primary") if creds else (None, None)
     if not GOOGLE_CALENDAR_CREDENTIALS:
         return None, None
     try:
@@ -242,9 +247,76 @@ def _credentials_for(calendar_id: str = "", scope: str = "https://www.googleapis
         return None, None
 
 
+OAUTH_POINTER_PREFIX = "oauth:"
+
+# Refresh tokens lidos do banco pelo caminho OAuth: {client_id: (expira_em, token)}.
+# Cache curto — o dono pode desconectar e a próxima leitura tem que enxergar.
+_OAUTH_REFRESH_CACHE: dict[str, tuple[float, str]] = {}
+_OAUTH_REFRESH_CACHE_TTL = 300.0
+
+
+def _oauth_refresh_token_for(client_id: str) -> str:
+    """
+    Refresh token do Google do cliente (google_oauth_refresh_token).
+
+    Leitura SÍNCRONA no Supabase (as funções de credencial são síncronas e
+    rodam antes do run_in_threadpool); cacheada por 5 min. "" se não há.
+    """
+    import time as _time
+
+    hit = _OAUTH_REFRESH_CACHE.get(client_id)
+    if hit and hit[0] > _time.monotonic():
+        return hit[1]
+    try:
+        from huma.services.db_service import get_supabase
+
+        resp = (
+            get_supabase().table("clients")
+            .select("google_oauth_refresh_token")
+            .eq("client_id", client_id).limit(1).execute()
+        )
+        token = ((resp.data or [{}])[0].get("google_oauth_refresh_token") or "").strip()
+    except Exception as e:
+        log.error(f"Google OAuth | leitura do refresh token falhou | client={client_id} | {type(e).__name__}: {e}")
+        return ""
+    _OAUTH_REFRESH_CACHE[client_id] = (_time.monotonic() + _OAUTH_REFRESH_CACHE_TTL, token)
+    return token
+
+
+def invalidate_oauth_cache(client_id: str = "") -> None:
+    """Esquece o refresh token cacheado (disconnect / reconexão)."""
+    if client_id:
+        _OAUTH_REFRESH_CACHE.pop(client_id, None)
+    else:
+        _OAUTH_REFRESH_CACHE.clear()
+
+
+def _oauth_credentials_for_pointer(pointer: str):
+    """Credenciais google.oauth2 pro ponteiro 'oauth:<client_id>', ou None."""
+    client_id = pointer[len(OAUTH_POINTER_PREFIX):].strip()
+    if not client_id:
+        return None
+    refresh = _oauth_refresh_token_for(client_id)
+    if not refresh:
+        log.warning(f"Google OAuth | cliente sem refresh token | client={client_id}")
+        return None
+    try:
+        from huma.services import google_oauth
+
+        return google_oauth.credentials_from_refresh_token(
+            refresh, scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+    except Exception as e:
+        log.error(f"Google OAuth | credencial falhou | client={client_id} | {type(e).__name__}: {e}")
+        return None
+
+
 def _target_calendar(calendar_id: str = "") -> str:
-    """calendarId das chamadas: a agenda do cliente, ou 'primary' no legado."""
-    return (calendar_id or "").strip() or "primary"
+    """calendarId das chamadas: a agenda do cliente, ou 'primary' no legado/OAuth."""
+    cal = (calendar_id or "").strip()
+    if not cal or cal.startswith(OAUTH_POINTER_PREFIX):
+        return "primary"
+    return cal
 
 
 def _cal_kwargs(calendar_id: str = "") -> dict:
@@ -270,9 +342,10 @@ async def probe_calendar(calendar_id: str) -> dict:
     Nunca levanta — devolve {ok, detail, user_message, summary}.
     """
     cal = (calendar_id or "").strip()
-    if not cal or "@" not in cal:
+    if not cal or ("@" not in cal and not cal.startswith(OAUTH_POINTER_PREFIX)):
         return {"ok": False, "detail": "invalid_id", "user_message": "Cole o ID da agenda (é um e-mail, ex.: seunome@gmail.com)."}
-    credentials, _ = _credentials_for(cal)
+    credentials, target = _credentials_for(cal)
+    cal = target or cal
     if not credentials:
         return {
             "ok": False, "detail": "no_credentials",
@@ -491,11 +564,6 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
     event_id = event_result.get("event_id", "")
     calendar_ok = event_result.get("calendar_ok", False)
     meeting_url = event_result.get("meeting_url", "")
-
-    # Se plataforma é zoom, cria meeting separado
-    if platform == "zoom":
-        zoom_result = await _create_zoom_meeting(request, parsed_dt)
-        meeting_url = zoom_result.get("meeting_url", "") or meeting_url
 
     date_display = parsed_dt.strftime("%d/%m/%Y às %H:%M")
 
@@ -1043,60 +1111,6 @@ async def _update_google_calendar_event(
     except Exception as e:
         log.error(f"Google Calendar update erro | event_id={event_id} | {type(e).__name__}: {str(e)[:200]}")
         return {"event_id": event_id, "meeting_url": "", "calendar_ok": False}
-
-
-# ================================================================
-# ZOOM
-# ================================================================
-
-
-async def _create_zoom_meeting(request, parsed_dt: datetime) -> dict:
-    """Cria meeting no Zoom via API."""
-    if not ZOOM_API_KEY:
-        log.warning("Zoom não configurado")
-        return {"meeting_url": "", "meeting_id": ""}
-
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(
-                "https://api.zoom.us/v2/users/me/meetings",
-                json={
-                    "topic": f"{request.service} — {request.lead_name}",
-                    "type": 2,
-                    "start_time": parsed_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-                    "duration": 60,
-                    "timezone": "America/Sao_Paulo",
-                    "agenda": (
-                        f"Lead: {request.lead_name}\n"
-                        f"Email: {request.lead_email}\n"
-                        f"Serviço: {request.service}"
-                    ),
-                    "settings": {
-                        "host_video": True,
-                        "participant_video": True,
-                        "join_before_host": True,
-                        "waiting_room": False,
-                    },
-                },
-                headers={
-                    "Authorization": f"Bearer {ZOOM_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        log.info(f"Zoom OK | id={data.get('id', '')} | url={data.get('join_url', '')}")
-        return {
-            "meeting_url": data.get("join_url", ""),
-            "meeting_id": str(data.get("id", "")),
-        }
-
-    except Exception as e:
-        log.error(f"Zoom erro | {type(e).__name__}: {e}")
-        return {"meeting_url": "", "meeting_id": ""}
 
 
 # ================================================================

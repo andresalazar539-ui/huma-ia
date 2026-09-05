@@ -323,6 +323,15 @@ async def create_payment(request) -> dict:
         }
 
     method = request.payment_method or "pix"
+
+    # Meio de pagamento DO CLIENTE (2026-09-05): Asaas conectado no Cockpit
+    # → o link sai da conta dele, e o dinheiro cai lá. Sem isso, Mercado
+    # Pago (caminho legado, token global da HUMA).
+    identity = await _identity_for(request.client_id)
+    if identity is not None and (getattr(identity, "payment_provider", "") or "") == "asaas" \
+            and (getattr(identity, "asaas_api_key", "") or "").strip():
+        return await _create_asaas_link(request, identity, method)
+
     if method == "pix":
         return await _create_pix(request)
     elif method == "boleto":
@@ -330,6 +339,178 @@ async def create_payment(request) -> dict:
     elif method == "credit_card":
         return await _create_card(request)
     return await _create_pix(request)
+
+
+async def _identity_for(client_id: str):
+    """ClientIdentity do dono (pra saber o meio de pagamento). None em falha."""
+    try:
+        from huma.services.db_service import get_client
+        return await get_client(client_id)
+    except Exception as e:
+        log.warning(f"Payment | get_client falhou, usando Mercado Pago | client={client_id} | {type(e).__name__}: {e}")
+        return None
+
+
+# ================================================================
+# ASAAS (conta do cliente) — link de pagamento
+# ================================================================
+
+
+async def _create_asaas_link(req, identity, method: str) -> dict:
+    """
+    Cobra pelo Asaas do cliente via link de pagamento (Pix/boleto/cartão na
+    página do Asaas, sem CPF). Mesmo shape de retorno dos métodos do MP.
+    """
+    from huma.providers.payment import asaas
+
+    ext_ref = _build_external_reference(req.client_id, req.phone)
+    amount = _format_brl(req.amount_cents)
+    link = await asaas.create_payment_link(
+        identity.asaas_api_key,
+        name=(req.description or f"Pagamento {identity.business_name}")[:60],
+        value_cents=req.amount_cents,
+        method=method,
+        external_reference=ext_ref,
+        installments=int(getattr(req, "installments", 1) or 1),
+        description=req.description or "",
+    )
+    if link.get("status") != "ok":
+        log.error(f"Asaas link erro | client={req.client_id} | {link.get('detail', '')}")
+        return {"status": "error", "detail": f"asaas:{link.get('detail', '')}"}
+
+    await _save_payment_record(
+        client_id=req.client_id,
+        phone=req.phone,
+        lead_name=req.lead_name,
+        mp_payment_id=link["link_id"],
+        external_reference=ext_ref,
+        method=method,
+        amount_cents=req.amount_cents,
+        description=req.description,
+        metadata={"provider": "asaas", "link_id": link["link_id"], "checkout_url": link["url"]},
+    )
+
+    inst_msg = ""
+    if method == "credit_card" and int(getattr(req, "installments", 1) or 1) > 1:
+        parcela = int(req.amount_cents / int(req.installments))
+        inst_msg = f" (ou {req.installments}x de {_format_brl(parcela)})"
+    if method == "pix":
+        how = "abre o link, escolhe Pix e paga pelo app do banco."
+    elif method == "boleto":
+        how = "abre o link e gera o boleto ali mesmo."
+    else:
+        how = "abre o link e paga com cartão em menos de 1 minuto."
+    log.info(f"Asaas link criado | id={link['link_id']} | ref={ext_ref} | {amount}")
+    return {
+        "payment_id": link["link_id"],
+        "status": "pending",
+        "method": method,
+        "amount_display": amount,
+        "checkout_url": link["url"],
+        "whatsapp_message": (
+            f"Segue o link de pagamento de {amount}{inst_msg}:\n\n{link['url']}\n\n"
+            f"É só {how} Ambiente seguro do Asaas."
+        ),
+    }
+
+
+async def process_asaas_notification(body: dict, received_token: str) -> dict:
+    """
+    Webhook do Asaas (conta do cliente). Valida o token do cliente dono do
+    externalReference, consulta o status REAL na API e atualiza a tabela
+    payments. Devolve o mesmo shape de process_payment_notification.
+    """
+    import hmac as _hmac
+
+    payment = (body or {}).get("payment") if isinstance(body, dict) else None
+    if not isinstance(payment, dict):
+        return {"processed": False, "reason": "no_payment"}
+    payment_id = str(payment.get("id") or "")
+    ext_ref = str(payment.get("externalReference") or "")
+    link_id = str(payment.get("paymentLink") or "")
+
+    record = None
+    if ext_ref:
+        record = await get_payment_by_external_ref(ext_ref)
+    if record is None and link_id:
+        record = await _get_payment_by_provider_id(link_id)
+    if record is None:
+        return {"processed": False, "reason": "payment_not_found", "external_reference": ext_ref, "status": ""}
+
+    client_id = record.get("client_id", "")
+    identity = await _identity_for(client_id)
+    api_key = (getattr(identity, "asaas_api_key", "") or "").strip() if identity else ""
+    expected = (getattr(identity, "asaas_webhook_token", "") or "").strip() if identity else ""
+    if not api_key or not expected or not _hmac.compare_digest(expected, received_token or ""):
+        log.warning(f"Webhook Asaas REJEITADO | client={client_id} | token_ok=False")
+        return {"processed": False, "reason": "unauthorized", "status": ""}
+
+    from huma.providers.payment import asaas
+
+    real = await asaas.get_payment(api_key, payment_id) if payment_id else {"found": False}
+    if not real.get("found"):
+        log.warning(f"Webhook Asaas | cobrança não encontrada na API | id={payment_id} | client={client_id}")
+        return {"processed": False, "reason": "not_in_asaas", "status": ""}
+
+    status = real.get("status", "pending")
+    paid_at = datetime.utcnow() if status == "approved" else None
+    method = asaas.method_from_billing_type(real.get("status_detail", "")) if False else (
+        {"PIX": "pix", "BOLETO": "boleto", "CREDIT_CARD": "credit_card"}.get(
+            str(real.get("method", "")).upper(), record.get("method", "") or "link",
+        )
+    )
+    try:
+        from huma.services.db_service import get_supabase
+
+        supa = get_supabase()
+        if supa:
+            await run_in_threadpool(
+                lambda: supa.table("payments")
+                .update({
+                    "status": status,
+                    "mp_status_detail": real.get("status_detail", ""),
+                    "paid_at": paid_at.isoformat() if paid_at else None,
+                    "method": method,
+                })
+                .eq("external_reference", record.get("external_reference", ""))
+                .execute()
+            )
+    except Exception as e:
+        log.error(f"Asaas payment update erro | {type(e).__name__}: {e}")
+
+    amount_cents = record.get("amount_cents", 0)
+    log.info(f"Webhook Asaas processando | id={payment_id} | status={status} | ref={ext_ref} | client={client_id}")
+    return {
+        "processed": True,
+        "status": status,
+        "status_detail": real.get("status_detail", ""),
+        "client_id": client_id,
+        "phone": record.get("phone", ""),
+        "lead_name": record.get("lead_name", ""),
+        "method": method,
+        "amount_display": _format_brl(amount_cents),
+        "amount_cents": amount_cents,
+        "mp_payment_id": payment_id,
+        "provider": "asaas",
+    }
+
+
+async def _get_payment_by_provider_id(provider_id: str) -> dict | None:
+    """Registro em payments pelo id do provedor (coluna mp_payment_id, nome legado)."""
+    try:
+        from huma.services.db_service import get_supabase
+
+        supa = get_supabase()
+        if not supa or not provider_id:
+            return None
+        resp = await run_in_threadpool(
+            lambda: supa.table("payments").select("*")
+            .eq("mp_payment_id", str(provider_id)).limit(1).execute()
+        )
+        return resp.data[0] if resp.data else None
+    except Exception as e:
+        log.error(f"Payment lookup by provider id erro | {type(e).__name__}: {e}")
+        return None
 
 
 async def _create_pix(req) -> dict:

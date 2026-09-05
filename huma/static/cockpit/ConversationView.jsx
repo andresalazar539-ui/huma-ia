@@ -15,6 +15,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
 
   // Balcão (canal web): identidade e ações específicas do chat do site.
   const isWeb = conversation.channel === 'web';
+  const isIg = conversation.channel === 'instagram';
   const leadWa = isWeb ? (conversation.lead_whatsapp || '') : '';
   const copyLead = () => {
     if (!navigator.clipboard) { window.prompt('Copie o WhatsApp:', leadWa); return; }
@@ -74,6 +75,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.015em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{conversation.name}</span>
             {isWeb && !mobile && <ChannelChip captured={!!leadWa} />}
+            {isIg && !mobile && <ChannelChip channel="instagram" />}
           </div>
           {leadWa ? (
             <button onClick={copyLead} title="Copiar WhatsApp capturado" style={{

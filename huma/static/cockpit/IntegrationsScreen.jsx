@@ -5,30 +5,6 @@
 // dinâmicos (status real) dentro do IntegrationsScreen.
 const INTEGRATIONS = [
   {
-    id: 'hubspot',
-    name: 'HubSpot',
-    category: 'CRM & Marketing',
-    glyph: { type: 'hubspot' },
-    status: 'disconnected',
-    meta: [
-      ['SINCRONIZA', 'Contatos e negócios'],
-      ['STATUS', 'Em breve'],
-    ],
-    note: 'Registra contatos e conversas no CRM da HubSpot',
-  },
-  {
-    id: 'instagram',
-    name: 'Instagram Direct',
-    category: 'Canal',
-    glyph: { type: 'instagram' },
-    status: 'disconnected',
-    meta: [
-      ['ATENDE', 'DMs com o mesmo clone'],
-      ['STATUS', 'Em breve'],
-    ],
-    note: 'HUMA pode atender DMs do Instagram junto com WhatsApp',
-  },
-  {
     id: 'doctoralia',
     name: 'Doctoralia',
     category: 'Agenda',
@@ -39,18 +15,6 @@ const INTEGRATIONS = [
       ['REQUER', 'Token de API Premium'],
     ],
     note: 'Sincroniza agenda e recebe novos pacientes',
-  },
-  {
-    id: 'nuvemshop',
-    name: 'Nuvemshop',
-    category: 'E-commerce',
-    glyph: { type: 'nuvemshop' },
-    status: 'disconnected',
-    meta: [
-      ['SINCRONIZA', 'Produtos, pedidos e estoque'],
-      ['STATUS', 'Em breve'],
-    ],
-    note: 'HUMA consulta produtos e acompanha pedidos da sua loja Nuvemshop',
   },
   {
     id: 'tray',
@@ -159,41 +123,209 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     actions: <BalcaoActions url={balcaoUrl} />,
   };
 
-  // Google Calendar POR CLIENTE (2026-09-05): o dono compartilha a agenda
-  // dele com a conta de serviço da HUMA e cola o ID (e-mail da agenda).
-  // "Conectado" = servidor com credencial E agenda do cliente gravada.
+  // Google (2026-09-05): "Conectar com Google" = 1 clique → agenda principal
+  // + planilha de leads no Drive do dono (OAuth). O caminho manual
+  // (compartilhar agenda com a conta de serviço) continua como alternativa.
   const [calModal, setCalModal] = React.useState(false);
-  const gcalConnected = Boolean(client && client.google_calendar);
+  const googleOauth = Boolean(client && client.google_oauth);
+  const gcalManual = Boolean(client && client.google_calendar && !String(client.google_calendar_id || '').startsWith('oauth:'));
+  const gcalConnected = googleOauth || gcalManual;
   const gcalServer = !(client && client.google_calendar_server === false);
+  const googleServer = Boolean(client && client.google_oauth_server);
   const disconnectCal = async () => {
     if (!window.confirm('Desconectar sua agenda? A HUMA para de conferir e criar eventos nela.')) return;
-    try { await disconnectCalendar(); if (onReloadStatus) await onReloadStatus(); }
-    catch (e) { window.alert(`Não consegui desconectar: ${(e && e.message) || e}`); }
+    try {
+      if (googleOauth) await disconnectIntegration('google'); else await disconnectCalendar();
+      if (onReloadStatus) await onReloadStatus();
+    } catch (e) { window.alert(`Não consegui desconectar: ${(e && e.message) || e}`); }
+  };
+  const [sheetBusy, setSheetBusy] = React.useState(false);
+  const makeSheet = async () => {
+    setSheetBusy(true);
+    try { const r = await createLeadsSheet(); if (onReloadStatus) await onReloadStatus(); if (r.sheet_url) window.open(r.sheet_url, '_blank'); }
+    catch (e) { window.alert(`Não consegui criar a planilha: ${(e && e.message) || e}`); }
+    setSheetBusy(false);
   };
   const gcalCard = {
     id: 'gcal',
-    name: 'Google Calendar',
-    category: 'Agenda',
+    name: 'Google — Agenda + Planilha',
+    category: 'Agenda & Leads',
     glyph: { type: 'gcal' },
     status: gcalConnected ? 'connected' : 'disconnected',
-    meta: gcalConnected
-      ? [['AGENDA', client.google_calendar_id], ['MODO', 'Bidirecional']]
-      : [
-          ['SINCRONIZA', 'Horários livres e ocupados'],
-          ['COMO', gcalServer ? 'Compartilhe sua agenda com a HUMA' : 'Indisponível no servidor'],
-        ],
-    note: gcalConnected
-      ? 'HUMA confere a sua agenda antes de confirmar e cria o evento na hora, com o tamanho certo do serviço'
-      : (gcalServer
-          ? 'Conecte a sua agenda: a HUMA só confirma horário que o Google Calendar diz que está livre'
-          : 'O servidor ainda não tem a credencial do Google Calendar. Fale com o suporte HUMA.'),
+    meta: googleOauth
+      ? [
+          ['CONTA', client.google_oauth_email || 'conectada'],
+          ['AGENDA', 'Principal · bidirecional'],
+          ['PLANILHA', client.google_sheet_url ? 'HUMA — Leads' : 'Pendente'],
+        ]
+      : gcalManual
+        ? [['AGENDA', client.google_calendar_id], ['MODO', 'Compartilhada']]
+        : [
+            ['AGENDA', 'Confere livre/ocupado e marca'],
+            ['PLANILHA', 'Cada lead vira uma linha'],
+            ['COMO', googleServer ? 'Um clique, login Google' : (gcalServer ? 'Compartilhe sua agenda' : 'Indisponível')],
+          ],
+    note: googleOauth
+      ? 'A HUMA confere sua agenda antes de confirmar, cria o evento na hora e anota cada lead qualificado na sua planilha.'
+      : gcalManual
+        ? 'Agenda compartilhada com a HUMA. Conecte com Google pra ganhar também a planilha de leads.'
+        : 'Conecte sua conta Google: a HUMA só confirma horário que sua agenda diz que está livre, e cada lead cai numa planilha sua.',
+    actions: (
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {!googleOauth && googleServer && (
+          <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>}
+                  onClick={() => { window.location.href = oauthStartUrl('google'); }}>
+            Conectar com Google
+          </Button>
+        )}
+        {googleOauth && client.google_sheet_url && (
+          <Button variant="ghost" size="sm" onClick={() => window.open(client.google_sheet_url, '_blank')}>Abrir planilha</Button>
+        )}
+        {googleOauth && !client.google_sheet_url && (
+          <Button variant="ghost" size="sm" onClick={makeSheet} disabled={sheetBusy}>{sheetBusy ? 'Criando…' : 'Criar planilha'}</Button>
+        )}
+        {!googleOauth && (
+          <Button variant={googleServer ? 'plain' : 'primary'} size="sm" onClick={() => setCalModal(true)} disabled={!gcalServer}>
+            {gcalManual ? 'Trocar agenda' : (googleServer ? 'Outro jeito' : 'Conectar')}
+          </Button>
+        )}
+        {gcalConnected && <Button variant="plain" size="sm" onClick={disconnectCal}>Desconectar</Button>}
+      </div>
+    ),
+  };
+
+  // ── Instagram Direct ──
+  const igConnected = Boolean(client && client.instagram_connected);
+  const igServer = Boolean(client && client.instagram_server);
+  const instagramCard = {
+    id: 'instagram',
+    name: 'Instagram Direct',
+    category: 'Canal',
+    glyph: { type: 'instagram' },
+    status: igConnected ? 'connected' : 'disconnected',
+    meta: igConnected
+      ? [['CONTA', client.instagram_username ? '@' + client.instagram_username : 'conectada'], ['CLONE', 'O mesmo do WhatsApp']]
+      : [['ATENDE', 'DMs com o mesmo clone'], ['COMO', igServer ? 'Login no Instagram · 1 minuto' : 'Indisponível no servidor']],
+    note: igConnected
+      ? 'A HUMA responde as mensagens diretas do seu Instagram com o mesmo clone, funil e memória do WhatsApp.'
+      : (igServer
+          ? 'Conecte sua conta profissional: quem chama no Direct é atendido pela HUMA na hora.'
+          : 'O servidor ainda não tem o app do Instagram configurado. Fale com o suporte HUMA.'),
+    onConnect: igServer ? () => { window.location.href = oauthStartUrl('instagram'); } : undefined,
+    onDisconnect: igConnected ? () => handleDisconnect('instagram') : undefined,
+  };
+
+  // ── Nuvemshop ──
+  const nsConnected = Boolean(client && client.nuvemshop_connected);
+  const nsServer = Boolean(client && client.nuvemshop_server);
+  const nuvemshopCard = {
+    id: 'nuvemshop',
+    name: 'Nuvemshop',
+    category: 'Loja virtual',
+    glyph: { type: 'nuvemshop' },
+    status: nsConnected ? 'connected' : 'disconnected',
+    meta: nsConnected
+      ? [['LOJA', client.nuvemshop_store_name || (client.nuvemshop_store_url || '').replace(/^https?:\/\//, '') || 'conectada'], ['CONSULTA', 'Preço, estoque e link']]
+      : [['CONSULTA', 'Produtos, preço e estoque'], ['COMO', nsServer ? 'Instala o app HUMA na loja' : 'Indisponível no servidor']],
+    note: nsConnected
+      ? 'A HUMA responde com o catálogo real da sua loja e manda o link de compra do produto certo.'
+      : (nsServer
+          ? 'Conecte sua loja: sua vitrine e seu WhatsApp viram a mesma coisa — preço, estoque e link de compra na conversa.'
+          : 'O servidor ainda não tem o app de parceiro da Nuvemshop. Fale com o suporte HUMA.'),
+    onConnect: nsServer ? () => { window.location.href = oauthStartUrl('nuvemshop'); } : undefined,
+    onDisconnect: nsConnected ? () => handleDisconnect('nuvemshop') : undefined,
+  };
+
+  // ── HubSpot (CRM) ──
+  const hsConnected = Boolean(client && client.crm_provider === 'hubspot' && client.crm_access_token);
+  const hsServer = Boolean(client && client.hubspot_server);
+  const hubspotCard = {
+    id: 'hubspot',
+    name: 'HubSpot',
+    category: 'CRM',
+    glyph: { type: 'hubspot' },
+    status: hsConnected ? 'connected' : 'disconnected',
+    meta: hsConnected
+      ? [['STATUS', 'Conectado'], ['PIPELINE', client.crm_pipeline_ready ? 'Configurado' : 'Pendente']]
+      : [['SINCRONIZA', 'Contatos, negócios e notas'], ['COMO', hsServer ? 'Login no HubSpot · 1 minuto' : 'Indisponível no servidor']],
+    note: hsConnected
+      ? 'HUMA cria o contato e o negócio no seu pipeline quando o lead qualifica ou agenda, com o resumo na timeline.'
+      : (hsServer ? 'Conecte seu HubSpot: lead qualificado vira negócio no pipeline, sem digitar nada.' : 'O servidor ainda não tem o app do HubSpot. Fale com o suporte HUMA.'),
+    onConnect: hsServer ? () => { window.location.href = oauthStartUrl('hubspot'); } : undefined,
+    onDisconnect: hsConnected ? () => handleDisconnect('hubspot') : undefined,
+  };
+
+  // ── Webhook de saída (Make / n8n / Zapier / sistema próprio) ──
+  const [webhookModal, setWebhookModal] = React.useState(false);
+  const whConnected = Boolean(client && client.webhook_url);
+  const webhookCard = {
+    id: 'webhook',
+    name: 'Webhook — Make, n8n, Zapier',
+    category: 'Automação',
+    glyph: { type: 'webhook' },
+    status: whConnected ? 'connected' : 'disconnected',
+    meta: whConnected
+      ? [['URL', (client.webhook_url || '').replace(/^https?:\/\//, '').slice(0, 40)], ['EVENTOS', 'Lead, qualificado, agenda, pagamento']]
+      : [['ENVIA', 'Lead novo, qualificado, agendou, pagou'], ['FORMATO', 'JSON assinado']],
+    note: whConnected
+      ? 'Cada evento de lead é enviado pra sua automação em tempo real, assinado com o seu segredo.'
+      : 'Cole a URL da sua automação e receba cada lead da HUMA no seu sistema, planilha ou CRM — sem programar.',
     actions: (
       <div style={{ display: 'flex', gap: 8 }}>
-        <Button variant={gcalConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>}
-                onClick={() => setCalModal(true)} disabled={!gcalServer}>
-          {gcalConnected ? 'Trocar agenda' : 'Conectar'}
+        <Button variant={whConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setWebhookModal(true)}>
+          {whConnected ? 'Configurar' : 'Conectar'}
         </Button>
-        {gcalConnected && <Button variant="plain" size="sm" onClick={disconnectCal}>Desconectar</Button>}
+        {whConnected && <Button variant="plain" size="sm" onClick={() => handleDisconnect('webhook')}>Desconectar</Button>}
+      </div>
+    ),
+  };
+
+  // ── Pixel / anúncios da Meta ──
+  const [pixelModal, setPixelModal] = React.useState(false);
+  const pxConnected = Boolean(client && client.meta_pixel_id);
+  const pixelCard = {
+    id: 'pixel',
+    name: 'Pixel da Meta — seus anúncios',
+    category: 'Anúncios',
+    glyph: { type: 'pixel' },
+    status: pxConnected ? 'connected' : 'disconnected',
+    meta: pxConnected
+      ? [['PIXEL', client.meta_pixel_id], ['DEVOLVE', 'Lead · Agendou · Comprou']]
+      : [['DEVOLVE', 'Lead, agendamento e compra'], ['PRA QUÊ', 'Meta otimiza pra quem fecha']],
+    note: pxConnected
+      ? 'A HUMA avisa a Meta quando o lead do seu anúncio qualifica, agenda ou paga — a campanha aprende a trazer quem compra.'
+      : 'Conecte o Pixel dos seus anúncios: a HUMA devolve pra Meta quem qualificou, agendou e pagou, e a campanha passa a otimizar pra venda.',
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant={pxConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setPixelModal(true)}>
+          {pxConnected ? 'Testar / trocar' : 'Conectar'}
+        </Button>
+        {pxConnected && <Button variant="plain" size="sm" onClick={() => handleDisconnect('pixel')}>Desconectar</Button>}
+      </div>
+    ),
+  };
+
+  // ── Asaas ──
+  const [asaasModal, setAsaasModal] = React.useState(false);
+  const asConnected = Boolean(client && client.asaas_connected && client.payment_provider === 'asaas');
+  const asaasCard = {
+    id: 'asaas',
+    name: 'Asaas',
+    category: 'Pagamentos',
+    glyph: { type: 'asaas' },
+    status: asConnected ? 'connected' : 'disconnected',
+    meta: asConnected
+      ? [['STATUS', 'Cobrando pela sua conta'], ['ACEITA', 'Pix · boleto · cartão']]
+      : [['COBRA', 'Pix, boleto e cartão'], ['ONDE CAI', 'Na sua conta Asaas']],
+    note: asConnected
+      ? 'A HUMA gera o link de pagamento na sua conta Asaas; o dinheiro cai direto lá.'
+      : 'Já usa Asaas? Cole a chave de API: a HUMA passa a cobrar seus leads pela sua conta (o webhook ela mesma configura).',
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant={asConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setAsaasModal(true)}>
+          {asConnected ? 'Trocar chave' : 'Conectar'}
+        </Button>
+        {asConnected && <Button variant="plain" size="sm" onClick={() => handleDisconnect('asaas')}>Desconectar</Button>}
       </div>
     ),
   };
@@ -214,7 +346,10 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       : 'Em breve: HUMA cria e atualiza leads no RD Station automaticamente',
   };
 
-  const integrations = [balcaoCard, gcalCard, ...INTEGRATIONS, blingCard, pipedriveCard, rdCard];
+  const integrations = [
+    instagramCard, balcaoCard, gcalCard, pixelCard, webhookCard,
+    nuvemshopCard, blingCard, asaasCard, hubspotCard, pipedriveCard, rdCard, ...INTEGRATIONS,
+  ];
   const connectedCount = integrations.filter(i => i.status === 'connected' || i.status === 'active').length;
   const availableCount = integrations.length - connectedCount;
 
@@ -263,7 +398,163 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
           onConnected={onReloadStatus}
         />
       )}
+      {webhookModal && <WebhookModal client={client} onClose={() => setWebhookModal(false)} onSaved={onReloadStatus} />}
+      {pixelModal && <PixelModal client={client} onClose={() => setPixelModal(false)} onSaved={onReloadStatus} />}
+      {asaasModal && <AsaasModal client={client} onClose={() => setAsaasModal(false)} onSaved={onReloadStatus} />}
     </div>
+  );
+};
+
+// ── Estilos compartilhados dos modais de integração ──
+const _modalInput = {
+  fontFamily: 'var(--font-sans)', fontSize: 14, padding: '10px 12px', borderRadius: 10, width: '100%', boxSizing: 'border-box',
+  border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)', color: 'var(--ink)', outline: 'none',
+};
+const _modalLabel = (t) => (
+  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>{t}</div>
+);
+const IntegrationModal = ({ title, children, onClose, footer }) => (
+  <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+    <div onClick={e => e.stopPropagation()} style={{ background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 18, padding: 28, width: 'min(540px, 92vw)', display: 'flex', flexDirection: 'column', gap: 14, maxHeight: '90vh', overflow: 'auto' }}>
+      <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, color: 'var(--ink)', letterSpacing: '-0.01em' }}>{title}</div>
+      {children}
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>{footer}</div>
+    </div>
+  </div>
+);
+const ModalMsg = ({ msg }) => msg ? (
+  <div style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)', fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.5, color: msg.kind === 'err' ? 'var(--ember-ink)' : 'var(--sage-ink)' }}>
+    {msg.text}
+  </div>
+) : null;
+const ModalText = ({ children }) => (
+  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>{children}</div>
+);
+
+// Webhook de saída: URL + segredo (copiável) + "Enviar teste".
+const WebhookModal = ({ client, onClose, onSaved }) => {
+  const [url, setUrl] = React.useState((client && client.webhook_url) || '');
+  const [secret, setSecret] = React.useState((client && client.webhook_secret) || '');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const save = async () => {
+    if (busy || !url.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await saveWebhook(url.trim());
+      setSecret(r.secret || '');
+      setMsg({ kind: 'ok', text: 'Salvo. Agora clique em Enviar teste pra ver o evento chegando na sua automação.' });
+      if (onSaved) await onSaved();
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  const test = async () => {
+    if (busy) return;
+    setBusy(true); setMsg(null);
+    try { const r = await testWebhook(); setMsg({ kind: 'ok', text: `Sua URL respondeu HTTP ${r.http}. Evento de teste entregue.` }); }
+    catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(secret); setMsg({ kind: 'ok', text: 'Segredo copiado.' }); }
+    catch (e) { window.prompt('Copie o segredo:', secret); }
+  };
+  return (
+    <IntegrationModal title="Receber cada lead na sua automação" onClose={onClose} footer={
+      <>
+        <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        {secret && <Button variant="ghost" size="sm" onClick={test} disabled={busy}>Enviar teste</Button>}
+        <Button variant="primary" size="sm" onClick={save} disabled={busy || !url.trim()}>{busy ? 'Salvando…' : 'Salvar'}</Button>
+      </>
+    }>
+      <ModalText>
+        No <b>Make</b>, <b>n8n</b> ou <b>Zapier</b>, crie um gatilho do tipo <b>Webhook</b> e cole a URL aqui. A HUMA envia um JSON a cada
+        <b> lead novo</b>, <b>lead qualificado</b>, <b>agendamento confirmado</b> e <b>pagamento aprovado</b>.
+      </ModalText>
+      <div>{_modalLabel('URL do webhook (https)')}<input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://hook.make.com/…" style={_modalInput}/></div>
+      {secret && (
+        <div>
+          {_modalLabel('Segredo (header X-HUMA-Signature)')}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 12px', border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)' }}>
+            <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{secret}</span>
+            <Button variant="ghost" size="sm" onClick={copy}>Copiar</Button>
+          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>Opcional: use pra conferir que o evento veio da HUMA (HMAC-SHA256 de "timestamp.body").</div>
+        </div>
+      )}
+      <ModalMsg msg={msg} />
+    </IntegrationModal>
+  );
+};
+
+// Pixel da Meta: ID do pixel + token (opcional se o WhatsApp oficial estiver conectado).
+const PixelModal = ({ client, onClose, onSaved }) => {
+  const [pixelId, setPixelId] = React.useState((client && client.meta_pixel_id) || '');
+  const [token, setToken] = React.useState('');
+  const [testCode, setTestCode] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const hasWa = Boolean(client && client.meta_access_token);
+  const save = async () => {
+    if (busy || !pixelId.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await savePixel({ pixel_id: pixelId.trim(), token: token.trim(), test_event_code: testCode.trim() });
+      setMsg({ kind: 'ok', text: `Conectado! A Meta recebeu ${r.events_received} evento de teste${r.via === 'whatsapp' ? ' usando a conexão do seu WhatsApp oficial' : ''}.` });
+      if (onSaved) await onSaved();
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  return (
+    <IntegrationModal title="Devolver resultados pros seus anúncios" onClose={onClose} footer={
+      <>
+        <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        <Button variant="primary" size="sm" onClick={save} disabled={busy || !pixelId.trim()}>{busy ? 'Testando…' : 'Testar e conectar'}</Button>
+      </>
+    }>
+      <ModalText>
+        No <b>Gerenciador de Eventos</b> da Meta, abra o seu Pixel e copie o <b>ID</b> (só números).
+        {hasWa
+          ? ' Como seu WhatsApp oficial está conectado, a HUMA tenta usar essa mesma autorização — só cole o token se der erro.'
+          : ' Em Configurações → API de Conversões → Gerar token de acesso, copie o token e cole abaixo.'}
+      </ModalText>
+      <div>{_modalLabel('ID do Pixel')}<input value={pixelId} onChange={e => setPixelId(e.target.value)} placeholder="123456789012345" style={_modalInput}/></div>
+      <div>{_modalLabel(hasWa ? 'Token de acesso (opcional)' : 'Token de acesso')}<input value={token} onChange={e => setToken(e.target.value)} placeholder="EAAG…" type="password" style={_modalInput}/></div>
+      <div>{_modalLabel('Código de teste (opcional, pra ver em Testar eventos)')}<input value={testCode} onChange={e => setTestCode(e.target.value)} placeholder="TEST12345" style={{ ..._modalInput, width: 200 }}/></div>
+      <ModalMsg msg={msg} />
+    </IntegrationModal>
+  );
+};
+
+// Asaas: cola a chave → a HUMA valida e cria o webhook sozinha.
+const AsaasModal = ({ client, onClose, onSaved }) => {
+  const [key, setKey] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const connect = async () => {
+    if (busy || key.trim().length < 20) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await connectAsaas(key.trim());
+      setMsg({ kind: 'ok', text: `Conectado${r.account_name ? ' à conta ' + r.account_name : ''}${r.sandbox ? ' (sandbox)' : ''}. Webhook criado. A HUMA já cobra seus leads pelo Asaas.` });
+      if (onSaved) await onSaved();
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  return (
+    <IntegrationModal title="Cobrar pela sua conta Asaas" onClose={onClose} footer={
+      <>
+        <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        <Button variant="primary" size="sm" onClick={connect} disabled={busy || key.trim().length < 20}>{busy ? 'Validando…' : 'Conectar'}</Button>
+      </>
+    }>
+      <ModalText>
+        No Asaas: <b>Menu do usuário → Integrações → Chave de API → Gerar</b>. Cole a chave abaixo. A HUMA valida, cria o webhook de pagamento sozinha e passa a gerar os links de cobrança na sua conta.
+      </ModalText>
+      <div>{_modalLabel('Chave de API do Asaas')}<input value={key} onChange={e => setKey(e.target.value)} placeholder="$aact_…" type="password" style={_modalInput}
+             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}/></div>
+      <ModalMsg msg={msg} />
+    </IntegrationModal>
   );
 };
 
@@ -953,6 +1244,24 @@ const IntegrationGlyph = ({ type }) => {
           <path d="M6.6 18.5 C4.1 18.5 3 16.6 3 15 C3 13.3 4.3 12 6 11.9 C6.3 9 8.7 6.8 11.7 6.8 C14.3 6.8 16.5 8.6 17.2 11 C19.3 11.1 21 12.8 21 14.9 C21 16.9 19.4 18.5 17.4 18.5 Z"/>
         </svg>
       ));
+    case 'webhook':
+      return wrap('var(--ink)', (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/>
+          <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/>
+        </svg>
+      ));
+    case 'pixel':
+      return wrap('#0866FF', (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 17l6-6 4 4 8-8"/>
+          <path d="M14 7h7v7"/>
+        </svg>
+      ));
+    case 'asaas':
+      return wrap('#0030B9', (
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 18, color: '#FFFFFF', lineHeight: 1 }}>A</span>
+      ));
     case 'tray':
       return wrap('#E6196E', (
         <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 19, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.04em' }}>t</span>
@@ -962,4 +1271,7 @@ const IntegrationGlyph = ({ type }) => {
   }
 };
 
-Object.assign(window, { IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal, BalcaoActions });
+Object.assign(window, {
+  IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal, BalcaoActions,
+  WebhookModal, PixelModal, AsaasModal, IntegrationModal,
+});

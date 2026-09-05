@@ -365,6 +365,26 @@ def _is_web_destination(phone: str, caller: str, client_id: str = "") -> bool:
     return False
 
 
+def _is_instagram_destination(phone: str) -> bool:
+    """Instagram Direct (2026-09-05): phone sintético "ig:<igsid>" sai pela Graph do Instagram."""
+    return (phone or "").startswith("ig:")
+
+
+async def _ig_send(identity, kind: str, phone: str, payload: str, caption: str = "") -> str | None:
+    """
+    Envio pelo Instagram Direct com o token do cliente (instagram_access_token).
+    kind ∈ text|image|audio|video|document. Nunca levanta.
+    """
+    if identity is None or not getattr(identity, "instagram_access_token", ""):
+        log.error(f"Instagram sem conexão | phone={phone} | client={getattr(identity, 'client_id', '?')}")
+        return None
+    from huma.services import instagram_service as ig  # lazy: evita ciclo
+
+    if kind == "text":
+        return await ig.send_text(identity, phone, payload)
+    return await ig.send_media(identity, phone, payload, kind, caption=caption)
+
+
 async def send_text(
     phone: str,
     message: str,
@@ -388,6 +408,8 @@ async def send_text(
     if _is_web_destination(phone, "send_text", client_id):
         return None
     provider, identity = await _resolve_channel(client_id)
+    if _is_instagram_destination(phone):
+        return await _ig_send(identity, "text", phone, message)
     if provider == "meta":
         return await _meta_send_text(identity, phone, message, reply_to)
     if provider == "evolution":
@@ -406,6 +428,8 @@ async def send_audio(
     if _is_web_destination(phone, "send_audio", client_id):
         return None
     provider, identity = await _resolve_channel(client_id)
+    if _is_instagram_destination(phone):
+        return await _ig_send(identity, "audio", phone, audio_url)
     if provider == "meta":
         return await _meta_send_media(identity, phone, audio_url, "audio", reply_to=reply_to)
     if provider == "evolution":
@@ -425,6 +449,8 @@ async def send_image(
     if _is_web_destination(phone, "send_image", client_id):
         return None
     provider, identity = await _resolve_channel(client_id)
+    if _is_instagram_destination(phone):
+        return await _ig_send(identity, "image", phone, image_url, caption)
     if provider == "meta":
         return await _meta_send_media(identity, phone, image_url, "image", caption=caption, reply_to=reply_to)
     if provider == "evolution":
@@ -444,6 +470,8 @@ async def send_video(
     if _is_web_destination(phone, "send_video", client_id):
         return None
     provider, identity = await _resolve_channel(client_id)
+    if _is_instagram_destination(phone):
+        return await _ig_send(identity, "video", phone, video_url, caption)
     if provider == "meta":
         return await _meta_send_media(identity, phone, video_url, "video", caption=caption, reply_to=reply_to)
     if provider == "evolution":
@@ -463,6 +491,8 @@ async def send_document(
     if _is_web_destination(phone, "send_document", client_id):
         return None
     provider, identity = await _resolve_channel(client_id)
+    if _is_instagram_destination(phone):
+        return await _ig_send(identity, "document", phone, doc_url, filename)
     if provider == "meta":
         return await _meta_send_media(identity, phone, doc_url, "document", caption=filename, filename=filename, reply_to=reply_to)
     if provider == "evolution":
@@ -509,6 +539,11 @@ async def send_template(
     if not params:
         params = []
     if _is_web_destination(phone, "send_template", client_id):
+        return None
+    if _is_instagram_destination(phone):
+        # Instagram não tem template: fora da janela de 24h a Meta rejeita
+        # qualquer mensagem — nunca disparamos campanha pra DM.
+        log.warning(f"send_template bloqueado | destino=instagram | phone={phone} | client={client_id}")
         return None
     provider, identity = await _resolve_channel(client_id)
     if provider == "meta":

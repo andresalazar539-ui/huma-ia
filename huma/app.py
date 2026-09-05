@@ -19,9 +19,13 @@ from huma.routes.auth_login import router as auth_login_router
 from huma.routes.business import router as business_router
 from huma.routes.cockpit import router as cockpit_router
 from huma.routes.crm_webhook import router as crm_webhook_router
+from huma.routes.instagram import router as instagram_router
+from huma.routes.integrations import router as integrations_router
 from huma.routes.legal import router as legal_router
 from huma.routes.oauth_bling import router as oauth_bling_router
 from huma.routes.oauth_crm import router as oauth_crm_router
+from huma.routes.oauth_google import router as oauth_google_router
+from huma.routes.oauth_nuvemshop import router as oauth_nuvemshop_router
 from huma.routes.onboarding import router as onboarding_router
 from huma.routes.web_channel import router as web_channel_router
 from huma.routes.whatsapp_connect import router as whatsapp_connect_router
@@ -121,6 +125,10 @@ def create_app() -> FastAPI:
     app.include_router(cockpit_router)
     app.include_router(oauth_bling_router)
     app.include_router(oauth_crm_router)
+    app.include_router(oauth_google_router)
+    app.include_router(oauth_nuvemshop_router)
+    app.include_router(instagram_router)
+    app.include_router(integrations_router)
     app.include_router(crm_webhook_router)
     app.include_router(legal_router)
     app.include_router(whatsapp_connect_router)

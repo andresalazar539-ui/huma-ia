@@ -83,6 +83,7 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
                 <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                   <StatusPill status={c.status} />
                   {c.channel === 'web' && <ChannelChip captured={!!c.lead_whatsapp} />}
+                  {c.channel === 'instagram' && <ChannelChip channel="instagram" />}
                 </div>
               </div>
             </button>
@@ -95,20 +96,40 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
 
 // Chip discreto de origem: conversa veio do Balcão (chat no navegador).
 // O check indica que o visitante já deixou o WhatsApp.
-const ChannelChip = ({ captured }) => (
-  <span title={captured ? 'Veio do chat do site · WhatsApp capturado' : 'Veio do chat do site'} style={{
-    display: 'inline-flex', alignItems: 'center', gap: 4,
-    fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 500,
-    letterSpacing: '0.06em', textTransform: 'uppercase',
-    padding: '2.5px 7px', borderRadius: 999,
-    background: 'var(--sage-tint)', color: 'var(--sage-ink)',
-    whiteSpace: 'nowrap', flexShrink: 0,
-  }}>
-    <Icon name="globe" size={10} stroke={2.2} />
-    Site
-    {captured && <Icon name="check" size={9} stroke={3} />}
-  </span>
-);
+const ChannelChip = ({ captured, channel = 'web' }) => {
+  // Instagram Direct (2026-09-05): mesmo chip, outra cor/rótulo.
+  if (channel === 'instagram') {
+    return (
+      <span title="Veio do Instagram Direct" style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 500,
+        letterSpacing: '0.06em', textTransform: 'uppercase',
+        padding: '2.5px 7px', borderRadius: 999,
+        background: 'rgba(221, 42, 123, 0.12)', color: '#B3225F',
+        whiteSpace: 'nowrap', flexShrink: 0,
+      }}>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+          <rect x="3.5" y="3.5" width="17" height="17" rx="5"/><circle cx="12" cy="12" r="4"/>
+        </svg>
+        Instagram
+      </span>
+    );
+  }
+  return (
+    <span title={captured ? 'Veio do chat do site · WhatsApp capturado' : 'Veio do chat do site'} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 500,
+      letterSpacing: '0.06em', textTransform: 'uppercase',
+      padding: '2.5px 7px', borderRadius: 999,
+      background: 'var(--sage-tint)', color: 'var(--sage-ink)',
+      whiteSpace: 'nowrap', flexShrink: 0,
+    }}>
+      <Icon name="globe" size={10} stroke={2.2} />
+      Site
+      {captured && <Icon name="check" size={9} stroke={3} />}
+    </span>
+  );
+};
 
 const ListMessage = ({ text, action }) => (
   <div style={{

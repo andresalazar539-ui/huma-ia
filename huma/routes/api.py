@@ -1471,7 +1471,47 @@ async def integrations_status(
         "google_calendar_email": _calendar_service_email(),
         "google_calendar_server": bool(GOOGLE_CALENDAR_CREDENTIALS),
         "enable_scheduling": bool(getattr(identity, "enable_scheduling", False)),
+        # ── Integrações nativas (2026-09-05) — só marcadores, nunca segredos ──
+        "google_oauth": _truthy(getattr(identity, "google_oauth_refresh_token", "")),
+        "google_oauth_email": getattr(identity, "google_oauth_email", "") or "",
+        "google_oauth_server": _google_oauth_server(),
+        "google_sheet_url": getattr(identity, "google_sheet_url", "") or "",
+        "webhook_url": getattr(identity, "webhook_url", "") or "",
+        "webhook_secret": getattr(identity, "webhook_secret", "") or "",  # o dono precisa dele pra validar
+        "meta_pixel_id": getattr(identity, "meta_pixel_id", "") or "",
+        "meta_capi_token": _truthy(getattr(identity, "meta_capi_token", "")),
+        "meta_access_token": _truthy(getattr(identity, "meta_access_token", "")),
+        "instagram_connected": _truthy(getattr(identity, "instagram_access_token", "")),
+        "instagram_username": getattr(identity, "instagram_username", "") or "",
+        "instagram_server": _instagram_server(),
+        "nuvemshop_connected": _truthy(getattr(identity, "nuvemshop_access_token", "")),
+        "nuvemshop_store_name": getattr(identity, "nuvemshop_store_name", "") or "",
+        "nuvemshop_store_url": getattr(identity, "nuvemshop_store_url", "") or "",
+        "nuvemshop_server": _nuvemshop_server(),
+        "hubspot_server": _hubspot_server(),
+        "asaas_connected": _truthy(getattr(identity, "asaas_api_key", "")),
+        "payment_provider": getattr(identity, "payment_provider", "") or "",
     }
+
+
+def _google_oauth_server() -> bool:
+    from huma.services import google_oauth
+    return google_oauth.is_configured()
+
+
+def _instagram_server() -> bool:
+    from huma.services import instagram_service
+    return instagram_service.is_configured()
+
+
+def _nuvemshop_server() -> bool:
+    from huma.providers.inventory import nuvemshop_oauth
+    return nuvemshop_oauth.is_configured()
+
+
+def _hubspot_server() -> bool:
+    from huma.providers.crm import hubspot_oauth
+    return hubspot_oauth.is_configured()
 
 
 def _calendar_service_email() -> str:
@@ -1514,7 +1554,7 @@ async def integrations_disconnect(
             "bling_refresh_token": "",
             "bling_token_expires_at": None,
         }
-    elif integration_id == "pipedrive":
+    elif integration_id in ("pipedrive", "hubspot", "rdstation", "rd_station", "crm"):
         updates = {
             "crm_access_token": "",
             "crm_refresh_token": "",
@@ -1526,11 +1566,52 @@ async def integrations_disconnect(
             "crm_owner_id": "",
             "crm_api_token": "",
         }
+    elif integration_id == "google":
+        # Revoga no Google (best-effort) e volta a agenda pro legado.
+        identity = await db.get_client(client_id)
+        refresh = (getattr(identity, "google_oauth_refresh_token", "") or "") if identity else ""
+        if refresh:
+            from huma.services import google_oauth
+            await google_oauth.revoke(refresh)
+        try:
+            from huma.services import scheduling_service as sched
+            sched.invalidate_oauth_cache(client_id)
+        except Exception as e:
+            log.warning(f"Calendar | cache OAuth não invalidado | {type(e).__name__}: {e}")
+        updates = {
+            "google_oauth_refresh_token": "",
+            "google_oauth_email": "",
+            "google_sheet_id": "",
+            "google_sheet_url": "",
+        }
+        cal = (getattr(identity, "google_calendar_id", "") or "") if identity else ""
+        if cal.startswith("oauth:"):
+            updates["google_calendar_id"] = ""
+    elif integration_id == "instagram":
+        updates = {
+            "instagram_user_id": "",
+            "instagram_username": "",
+            "instagram_access_token": "",
+            "instagram_token_expires_at": None,
+        }
+    elif integration_id == "nuvemshop":
+        updates = {
+            "nuvemshop_store_id": "",
+            "nuvemshop_access_token": "",
+            "nuvemshop_store_url": "",
+            "nuvemshop_store_name": "",
+        }
+    elif integration_id == "webhook":
+        updates = {"webhook_url": "", "webhook_secret": ""}
+    elif integration_id == "pixel":
+        updates = {"meta_pixel_id": "", "meta_capi_token": ""}
+    elif integration_id == "asaas":
+        updates = {"asaas_api_key": "", "asaas_webhook_token": "", "payment_provider": ""}
     else:
         raise HTTPException(
             400,
             f"Integração '{integration_id}' não suporta disconnect ainda. "
-            f"Disponíveis: bling, pipedrive.",
+            f"Disponíveis: bling, pipedrive, hubspot, google, instagram, nuvemshop, webhook, pixel, asaas.",
         )
 
     await db.update_client(client_id, updates)
@@ -1576,7 +1657,11 @@ async def crm_status(
         "provider": provider,
         "pipeline_ready": pipeline_ready,
         "account_url": getattr(identity, "crm_api_base_url", "") or "",
-        "connect_url": f"/oauth/crm/pipedrive/start?client_id={client_id}",
+        "connect_url": f"/oauth/crm/{provider or 'pipedrive'}/start?client_id={client_id}",
+        "connect_urls": {
+            "pipedrive": f"/oauth/crm/pipedrive/start?client_id={client_id}",
+            "hubspot": f"/oauth/crm/hubspot/start?client_id={client_id}",
+        },
     }
 
 
@@ -2507,15 +2592,29 @@ async def _process_mp_payment(mp_payment_id: str):
             log.warning(f"MP payment não processado | id={mp_payment_id} | reason={result.get('reason', '?')}")
             return
 
+        await handle_payment_result(result, str(mp_payment_id))
+
+    except Exception as e:
+        log.error(f"_process_mp_payment erro | mp_id={mp_payment_id} | {type(e).__name__}: {e}")
+
+
+async def handle_payment_result(result: dict, payment_id: str) -> None:
+    """
+    Efeitos de uma cobrança processada (Mercado Pago OU Asaas): confirma
+    pro lead, avança o funil pra won, notifica o dono e dispara os
+    eventos de lead (webhook / planilha / pixel). Nunca levanta.
+    """
+    try:
         status = result["status"]
         client_id = result["client_id"]
         phone = result["phone"]
         lead_name = result.get("lead_name", "")
         amount_display = result.get("amount_display", "")
         method = result.get("method", "")
+        mp_payment_id = payment_id
 
         if not client_id or not phone:
-            log.error(f"MP payment sem client_id ou phone | id={mp_payment_id}")
+            log.error(f"Payment sem client_id ou phone | id={mp_payment_id}")
             return
 
         # ── PAGAMENTO APROVADO ──
@@ -2582,6 +2681,7 @@ async def _process_mp_payment(mp_payment_id: str):
                 log.error(f"Erro atualizando funil | {phone} | {e}")
 
             # 3. Notifica dono do negócio (Sprint 5 / item 21 — respeita opt-in)
+            client_data = None
             try:
                 client_data = await db.get_client(client_id)
                 if (
@@ -2605,6 +2705,23 @@ async def _process_mp_payment(mp_payment_id: str):
             except Exception as e:
                 log.error(f"Erro notificando dono | {e}")
 
+            # 4. Webhook / planilha / pixel do cliente (fire-and-forget)
+            try:
+                from huma.services import lead_events
+
+                if client_data is None:
+                    client_data = await db.get_client(client_id)
+                conv_ev = await db.get_conversation(client_id, phone)
+                if client_data:
+                    lead_events.fire(
+                        client_data, conv_ev, "payment.approved",
+                        value_cents=int(result.get("amount_cents") or 0),
+                        method=method, payment_id=mp_payment_id,
+                        service=result.get("description", "") or "",
+                    )
+            except Exception as e:
+                log.error(f"LeadEvents payment falhou | {client_id} | {type(e).__name__}: {e}")
+
         # ── PAGAMENTO REJEITADO ──
         elif status == "rejected":
             log.warning(f"Pagamento rejeitado | mp_id={mp_payment_id} | phone={phone}")
@@ -2621,7 +2738,7 @@ async def _process_mp_payment(mp_payment_id: str):
 
         # ── OUTROS STATUS ──
         else:
-            log.info(f"MP status={status} | mp_id={mp_payment_id} | phone={phone}")
+            log.info(f"Payment status={status} | id={mp_payment_id} | phone={phone}")
 
     except Exception as e:
-        log.error(f"_process_mp_payment erro | mp_id={mp_payment_id} | {type(e).__name__}: {e}")
+        log.error(f"handle_payment_result erro | id={payment_id} | {type(e).__name__}: {e}")

@@ -925,6 +925,15 @@ async def _run_overage_invoice_job() -> None:
     log.info(f"overage_invoice | scheduled={scheduled} | skipped={skipped} | errors={errors} | subs={len(rows)}")
 
 
+async def _run_instagram_token_refresh_job() -> None:
+    """Renova tokens do Instagram perto de vencer (60 dias). Nunca levanta."""
+    try:
+        from huma.services import instagram_service as ig
+        await ig.refresh_expiring_tokens()
+    except Exception as e:
+        log.error(f"sched | instagram_token_refresh | {type(e).__name__}: {e}")
+
+
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     # Controle de gasto — avisos de 80% e degraus de excedente: a cada 1h, lock 30min
     ("spend_alert", _run_spend_alert_job, 3600, 1800),
@@ -942,6 +951,8 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("stuck_hot_lead", _run_stuck_hot_lead_job, 1800, 900),
     # Item 33 — alerta conversa não-respondida: a cada 1h, lock 30min
     ("stuck_conversation_alert", _run_stuck_conversation_alert_job, 3600, 1800),
+    # Instagram Direct — renova tokens de 60 dias que vencem em <10 dias: 1x/dia
+    ("instagram_token_refresh", _run_instagram_token_refresh_job, 86400, 3600),
 ]
 
 

@@ -132,9 +132,10 @@ _CAPABILITY_REQUIREMENTS: dict[Capability, list[dict]] = {
             "global_env_check": "MERCADOPAGO_ACCESS_TOKEN",
         },
         {
-            "provider": "bling",
-            "label": "Bling (estoque + frete)",
-            "check_field": "bling_access_token",  # por cliente — OAuth Fase 2B
+            "provider": "loja_ou_erp",
+            "label": "Loja virtual (Nuvemshop) ou ERP (Bling)",
+            # Qualquer um dos dois conectado libera a capability (2026-09-05).
+            "check_any_field": ["nuvemshop_access_token", "bling_access_token"],
         },
     ],
     Capability.QUALIFY: [
@@ -227,6 +228,14 @@ def _check_provider(req: dict, identity: ClientIdentity) -> ProviderStatus:
                 provider=provider, label=label, connected=False,
                 detail=f"Falta conectar: {label}",
             )
+
+    # Qualquer um de vários campos preenchido satisfaz (loja OU ERP)
+    any_fields = req.get("check_any_field") or []
+    if any_fields and not any((getattr(identity, f, None) or "") for f in any_fields):
+        return ProviderStatus(
+            provider=provider, label=label, connected=False,
+            detail=f"Falta conectar: {label}",
+        )
 
     return ProviderStatus(
         provider=provider, label=label, connected=True, detail="",

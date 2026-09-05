@@ -160,7 +160,7 @@ class TestCheckStockHandler:
 
         marker = conv.history[-1]["content"]
         assert "INDISPONÍVEL" in marker
-        assert "Bling não conectado" in marker
+        assert "não conectado" in marker
 
     def test_error_marker(self, monkeypatch):
         _mock_save_conv(monkeypatch)
@@ -257,7 +257,7 @@ class TestCalcShippingHandler:
 
         marker = conv.history[-1]["content"]
         assert "INDISPONÍVEL" in marker
-        assert "transportadora não configurada" in marker
+        assert "não cota frete" in marker
 
     def test_missing_sku_or_cep_returns_not_executed(self, monkeypatch):
         _mock_save_conv(monkeypatch)
@@ -286,7 +286,7 @@ class TestCalcShippingHandler:
 
         marker = conv.history[-1]["content"]
         assert "INDISPONÍVEL" in marker
-        assert "Bling não conectado" in marker
+        assert "não conectado" in marker
 
     def test_qty_defaults_to_1_when_invalid(self, monkeypatch):
         """qty='abc' ou qty=0 vira 1 silenciosamente — não trava."""

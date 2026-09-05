@@ -209,7 +209,59 @@ TRIAL_TRIGGER = os.getenv("TRIAL_TRIGGER", "activation")
 GOOGLE_CALENDAR_CREDENTIALS = os.getenv("GOOGLE_CALENDAR_CREDENTIALS", "")
 GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "primary")
 DEFAULT_MEETING_PLATFORM = os.getenv("DEFAULT_MEETING_PLATFORM", "google_meet")
-ZOOM_API_KEY = os.getenv("ZOOM_API_KEY", "")
+# (Zoom removido em 2026-09-05: o stub usava uma chave global "users/me",
+# que criaria reuniões na conta da HUMA — nunca na do cliente.)
+
+# ── Google por cliente: "Conectar com Google" (Agenda + Planilha) ──
+# App OAuth da HUMA no Google Cloud (tipo "Aplicativo da Web"). O dono
+# clica, autoriza, e a HUMA passa a usar a agenda principal e uma
+# planilha dele — sem compartilhar agenda à mão. Vazio = botão degrada
+# pro caminho manual (compartilhar agenda com a conta de serviço).
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "")
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
+GOOGLE_OAUTH_REDIRECT_URI = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "")
+GOOGLE_OAUTH_STATE_TTL_SEC = int(os.getenv("GOOGLE_OAUTH_STATE_TTL_SEC", "600"))
+
+# ── Instagram Direct (Instagram API com login do Instagram) ──
+# App Instagram dentro do app Meta da HUMA (produto "Instagram" →
+# "API setup with Instagram login"). O dono faz login com a conta
+# profissional dele; a HUMA recebe as DMs no webhook /webhook/instagram
+# e responde com o mesmo clone. Vazio = card "indisponível".
+INSTAGRAM_APP_ID = os.getenv("INSTAGRAM_APP_ID", "")
+INSTAGRAM_APP_SECRET = os.getenv("INSTAGRAM_APP_SECRET", "")
+INSTAGRAM_REDIRECT_URI = os.getenv("INSTAGRAM_REDIRECT_URI", "")
+INSTAGRAM_GRAPH_BASE_URL = os.getenv("INSTAGRAM_GRAPH_BASE_URL", "https://graph.instagram.com")
+
+# ── Nuvemshop (loja virtual) ──
+# App de parceiro em partners.nuvemshop.com.br. O token por loja não
+# expira; a autorização começa em nuvemshop.com.br/apps/{app_id}/authorize.
+NUVEMSHOP_APP_ID = os.getenv("NUVEMSHOP_APP_ID", "")
+NUVEMSHOP_CLIENT_SECRET = os.getenv("NUVEMSHOP_CLIENT_SECRET", "")
+NUVEMSHOP_API_BASE_URL = os.getenv("NUVEMSHOP_API_BASE_URL", "https://api.tiendanube.com/v1")
+NUVEMSHOP_USER_AGENT = os.getenv("NUVEMSHOP_USER_AGENT", "HUMA IA (contato@humaia.com.br)")
+
+# ── HubSpot (CRM) — mesmo desenho do Pipedrive ──
+HUBSPOT_CLIENT_ID = os.getenv("HUBSPOT_CLIENT_ID", "")
+HUBSPOT_CLIENT_SECRET = os.getenv("HUBSPOT_CLIENT_SECRET", "")
+HUBSPOT_REDIRECT_URI = os.getenv("HUBSPOT_REDIRECT_URI", "")
+HUBSPOT_OAUTH_AUTHORIZE_URL = os.getenv(
+    "HUBSPOT_OAUTH_AUTHORIZE_URL", "https://app.hubspot.com/oauth/authorize",
+)
+HUBSPOT_OAUTH_TOKEN_URL = os.getenv(
+    "HUBSPOT_OAUTH_TOKEN_URL", "https://api.hubapi.com/oauth/v1/token",
+)
+HUBSPOT_SCOPES = os.getenv(
+    "HUBSPOT_SCOPES",
+    "crm.objects.contacts.read crm.objects.contacts.write "
+    "crm.objects.deals.read crm.objects.deals.write crm.schemas.deals.read oauth",
+)
+
+# ── Asaas (2º meio de pagamento, chave por cliente) ──
+# O Asaas não tem OAuth: o dono cola a chave de API e a HUMA valida,
+# cria o webhook sozinha e passa a cobrar por lá. Prefixo "hmlg" na
+# chave = sandbox (URL diferente).
+ASAAS_API_BASE_URL = os.getenv("ASAAS_API_BASE_URL", "https://api.asaas.com/v3")
+ASAAS_SANDBOX_BASE_URL = os.getenv("ASAAS_SANDBOX_BASE_URL", "https://api-sandbox.asaas.com/v3")
 
 # ── Segurança ──
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")

@@ -101,18 +101,20 @@ function mapListItem(item) {
   // Balcão (canal web): phone é sintético ("web:<sid>") — sem o guard,
   // maskPhone extrairia dígitos do hash e renderizaria um telefone FALSO.
   const isWeb = item.channel === 'web' || String(item.phone || '').startsWith('web:');
+  // Instagram Direct: phone é "ig:<id>" — mesmo guard (nunca vira telefone falso).
+  const isIg = item.channel === 'instagram' || String(item.phone || '').startsWith('ig:');
   const webPhoneLabel = item.lead_whatsapp ? maskPhone(item.lead_whatsapp) : 'Chat do site';
   return {
     id: item.phone, // chave estável; usada no GET de detalhe
-    name: item.lead_name || (isWeb ? 'Visitante do site' : maskPhone(item.phone)),
-    initials: isWeb && !item.lead_name ? '🌐' : initialsFrom(item.lead_name),
+    name: item.lead_name || (isWeb ? 'Visitante do site' : isIg ? 'Lead do Instagram' : maskPhone(item.phone)),
+    initials: (isWeb || isIg) && !item.lead_name ? (isIg ? '📷' : '🌐') : initialsFrom(item.lead_name),
     tone: toneFrom(item.phone),
-    phone: isWeb ? webPhoneLabel : maskPhone(item.phone),
+    phone: isWeb ? webPhoneLabel : isIg ? 'Instagram Direct' : maskPhone(item.phone),
     time: formatTime(item.last_message_at),
     preview: item.last_message_preview || '',
     status: deriveStatus(item),
     // brutos, caso precise depois
-    channel: isWeb ? 'web' : (item.channel || 'whatsapp'),
+    channel: isWeb ? 'web' : isIg ? 'instagram' : (item.channel || 'whatsapp'),
     lead_whatsapp: item.lead_whatsapp || '',
     stage: item.stage,
     handoff_status: item.handoff_status,
@@ -151,13 +153,14 @@ function mapDetail(d) {
   // Balcão (canal web): mesmo guard da lista — sem ele, maskPhone
   // renderizaria o hash da sessão como um telefone falso.
   const isWeb = d.channel === 'web' || String(d.phone || '').startsWith('web:');
+  const isIg = d.channel === 'instagram' || String(d.phone || '').startsWith('ig:');
   return {
     id: d.phone,
-    name: d.lead_name || (isWeb ? 'Visitante do site' : maskPhone(d.phone)),
-    initials: isWeb && !d.lead_name ? '🌐' : initialsFrom(d.lead_name),
+    name: d.lead_name || (isWeb ? 'Visitante do site' : isIg ? 'Lead do Instagram' : maskPhone(d.phone)),
+    initials: (isWeb || isIg) && !d.lead_name ? (isIg ? '📷' : '🌐') : initialsFrom(d.lead_name),
     tone: toneFrom(d.phone),
-    phone: isWeb ? (d.lead_whatsapp ? maskPhone(d.lead_whatsapp) : 'Chat do site') : maskPhone(d.phone),
-    channel: isWeb ? 'web' : (d.channel || 'whatsapp'),
+    phone: isWeb ? (d.lead_whatsapp ? maskPhone(d.lead_whatsapp) : 'Chat do site') : isIg ? 'Instagram Direct' : maskPhone(d.phone),
+    channel: isWeb ? 'web' : isIg ? 'instagram' : (d.channel || 'whatsapp'),
     lead_whatsapp: d.lead_whatsapp || '',
     email: d.lead_email || '',
     status: deriveStatus(d),
@@ -836,3 +839,84 @@ async function whatsappMetaConnectManual(payload) {
 }
 
 Object.assign(window, { fetchCalendar, connectCalendar, disconnectCalendar, whatsappMetaConnectManual });
+
+/* ---------------- Integrações nativas (2026-09-05) ---------------- */
+// Webhook de saída (Make / n8n / Zapier / sistema próprio)
+async function fetchWebhook() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/webhook`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+async function saveWebhook(url) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/webhook`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ url }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+async function testWebhook() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/webhook/test`, { method: 'POST', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Pixel / Conversions API do cliente
+async function savePixel({ pixel_id, token = '', test_event_code = '' }) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/pixel`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ pixel_id, token, test_event_code }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+async function testPixel(test_event_code = '') {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/pixel/test`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ pixel_id: '000000', test_event_code }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Planilha de leads (Google já conectado, planilha ainda não)
+async function createLeadsSheet() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/sheet`, { method: 'POST', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Asaas (chave de API do cliente)
+async function connectAsaas(api_key) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/asaas/connect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ api_key }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Instagram Direct
+async function instagramStatus() {
+  const r = await fetch(`/instagram/status?client_id=${encodeURIComponent(CLIENT_ID)}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// URLs de "Conectar" (redirect — o backend cuida do OAuth e volta pro Cockpit)
+function oauthStartUrl(kind) {
+  const cid = encodeURIComponent(CLIENT_ID);
+  return {
+    google: `/oauth/google/start?client_id=${cid}`,
+    instagram: `/oauth/instagram/start?client_id=${cid}`,
+    nuvemshop: `/oauth/nuvemshop/start?client_id=${cid}`,
+    hubspot: `/oauth/crm/hubspot/start?client_id=${cid}`,
+    pipedrive: `/oauth/crm/pipedrive/start?client_id=${cid}`,
+    bling: `/oauth/bling/start?client_id=${cid}`,
+  }[kind] || '#';
+}
+
+Object.assign(window, {
+  fetchWebhook, saveWebhook, testWebhook, savePixel, testPixel, createLeadsSheet,
+  connectAsaas, instagramStatus, oauthStartUrl,
+});

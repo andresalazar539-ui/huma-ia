@@ -16,7 +16,10 @@
 # ================================================================
 
 import base64
-import secrets
+import hashlib
+import hmac
+import json
+import time
 
 from fastapi import APIRouter, Request
 
@@ -56,9 +59,39 @@ def _check_basic_auth(provider: str, auth_header: str) -> bool:
         return False
 
     return (
-        secrets.compare_digest(user, exp_user)
-        and secrets.compare_digest(password, exp_pass)
+        hmac.compare_digest(user, exp_user)
+        and hmac.compare_digest(password, exp_pass)
     )
+
+
+def _check_hubspot_signature(request: Request, raw: bytes) -> bool:
+    """
+    X-HubSpot-Signature-v3 = base64(HMAC-SHA256(client_secret,
+    método + URL completa + corpo + timestamp)). Sem HUBSPOT_CLIENT_SECRET
+    configurado, aceita (dev/sandbox). Rejeita timestamp com mais de 5 min.
+    """
+    from huma.config import HUBSPOT_CLIENT_SECRET, PUBLIC_BASE_URL
+
+    secret = (HUBSPOT_CLIENT_SECRET or "").strip()
+    if not secret:
+        return True
+    signature = request.headers.get("x-hubspot-signature-v3", "")
+    timestamp = request.headers.get("x-hubspot-request-timestamp", "")
+    if not signature or not timestamp:
+        return False
+    try:
+        if abs(time.time() * 1000 - int(timestamp)) > 5 * 60 * 1000:
+            return False
+    except ValueError:
+        return False
+    # A URL assinada é a pública (atrás do proxy o request.url pode ser http).
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    url = f"{base}{request.url.path}" if base else str(request.url)
+    if request.url.query:
+        url += f"?{request.url.query}"
+    msg = request.method.encode() + url.encode() + raw + timestamp.encode()
+    expected = base64.b64encode(hmac.new(secret.encode(), msg, hashlib.sha256).digest()).decode()
+    return hmac.compare_digest(expected, signature)
 
 
 @router.post("/{provider}")
@@ -78,11 +111,17 @@ async def crm_webhook(provider: str, request: Request):
     """
     provider_norm = (provider or "").strip().lower()
 
+    # Corpo CRU primeiro: a assinatura do HubSpot é calculada sobre os bytes.
+    raw = await request.body()
+
     # 1. Auth
     auth_header = request.headers.get("authorization", "")
     if not _check_basic_auth(provider_norm, auth_header):
         log.warning(f"CRM webhook auth inválida | provider={provider_norm}")
         return _json(401, {"ok": False, "detail": "unauthorized"})
+    if provider_norm == "hubspot" and not _check_hubspot_signature(request, raw):
+        log.warning("CRM webhook HubSpot | assinatura inválida")
+        return _json(401, {"ok": False, "detail": "bad_signature"})
 
     parser = get_parser_for(provider_norm)
     if parser is None:
@@ -91,9 +130,12 @@ async def crm_webhook(provider: str, request: Request):
 
     # 2. Parse
     try:
-        payload = await request.json()
-    except Exception:
+        payload = json.loads(raw) if raw else {}
+    except ValueError:
         payload = {}
+    # HubSpot manda uma LISTA de eventos — embrulha pro contrato dict.
+    if isinstance(payload, list):
+        payload = {"events": payload}
     if not isinstance(payload, dict):
         payload = {}
 

@@ -124,6 +124,34 @@ async def get_client_by_waba_id(waba_id: str) -> ClientIdentity | None:
     return _identity_from_row(resp.data[0])
 
 
+async def get_client_by_instagram_user_id(ig_user_id: str) -> ClientIdentity | None:
+    """
+    Roteamento de ENTRADA do Instagram Direct (2026-09-05): o webhook chega
+    com entry.id = ID da conta profissional conectada. Índice parcial
+    idx_clients_instagram_user_id. None se vazio ou não cadastrado.
+    """
+    ig_user_id = (ig_user_id or "").strip()
+    if not ig_user_id:
+        return None
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("*")
+            .eq("instagram_user_id", ig_user_id).limit(1).execute()
+    )
+    if not resp.data:
+        return None
+    return _identity_from_row(resp.data[0])
+
+
+async def list_instagram_clients() -> list[dict]:
+    """Clientes com Instagram conectado (pro job de renovação de token)."""
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients")
+            .select("client_id,instagram_access_token,instagram_token_expires_at")
+            .neq("instagram_access_token", "").execute()
+    )
+    return [r for r in (resp.data or []) if (r.get("instagram_access_token") or "").strip()]
+
+
 async def get_client_by_evolution_instance(instance: str) -> ClientIdentity | None:
     """
     Roteamento de ENTRADA do canal Evolution: descobre o cliente HUMA a
@@ -682,6 +710,7 @@ async def list_stuck_conversations(
             # Canal web (Balcão): phone sintético "web:<sid>" não recebe
             # follow-up de WhatsApp — o job enviaria pra um número inválido.
             .not_.like("phone", "web:%")
+            .not_.like("phone", "ig:%")
             .in_("stage", ["discovery", "offer", "closing"])
             .lt("follow_up_count", max_follow_ups)
             .or_("active_appointment_event_id.is.null,active_appointment_event_id.eq.")
@@ -726,6 +755,7 @@ async def list_hot_stuck_conversations(
             .lte("last_message_at", cutoff_min)
             .gte("last_message_at", cutoff_max)
             .not_.like("phone", "web:%")
+            .not_.like("phone", "ig:%")
             .in_("stage", ["offer", "closing"])
             .or_("active_appointment_event_id.is.null,active_appointment_event_id.eq.")
             .limit(limit)
@@ -765,6 +795,7 @@ async def list_unanswered_conversations(
             .lte("last_message_at", cutoff_min)
             .gte("last_message_at", cutoff_max)
             .not_.like("phone", "web:%")
+            .not_.like("phone", "ig:%")
             .not_.in_("stage", ["won", "lost"])
             .limit(limit)
             .execute()
@@ -805,6 +836,7 @@ async def list_active_appointments(limit: int = 300, client_id: str = "") -> lis
             # sessão web:<sid> não é destino (hoje inalcançável — web não
             # agenda — mas mantém a família de queries consistente).
             .not_.like("phone", "web:%")
+            .not_.like("phone", "ig:%")
             .limit(limit)
         )
         if client_id:

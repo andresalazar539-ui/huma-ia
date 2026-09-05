@@ -59,6 +59,10 @@ def get_provider_for(identity: "ClientIdentity") -> CRMProvider | None:
         from huma.providers.crm.pipedrive import PipedriveAdapter
         return PipedriveAdapter(identity=identity)
 
+    if provider_name == "hubspot":
+        from huma.providers.crm.hubspot import HubSpotAdapter
+        return HubSpotAdapter(identity=identity)
+
     if provider_name == "rd_station":
         try:
             from huma.providers.crm.rd_station import RDStationAdapter
@@ -90,6 +94,9 @@ def get_parser_for(provider_name: str) -> CRMProvider | None:
     if name == "pipedrive":
         from huma.providers.crm.pipedrive import PipedriveAdapter
         return PipedriveAdapter()
+    if name == "hubspot":
+        from huma.providers.crm.hubspot import HubSpotAdapter
+        return HubSpotAdapter()
     if name == "rd_station":
         try:
             from huma.providers.crm.rd_station import RDStationAdapter
