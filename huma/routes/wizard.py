@@ -297,6 +297,8 @@ def _render_wizard_html(client_id: str) -> str:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>HUMA IA — Configuração do clone</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     * {{ box-sizing: border-box; }}
     body {{

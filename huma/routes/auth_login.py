@@ -520,7 +520,12 @@ async def logout() -> JSONResponse:
 # Identidade visual do Cockpit (papel quente + terracota). Os tokens (--paper,
 # --ink, --terracotta...) vêm do CSS oficial do Cockpit, linkado no <head> de
 # cada página via _TOKENS_LINK — fonte única de verdade, não duplicar valores.
-_TOKENS_LINK = '<link rel="stylesheet" href="/static/cockpit/colors_and_type.css">'
+_TOKENS_LINK = (
+    '<link rel="stylesheet" href="/static/cockpit/colors_and_type.css">'
+    '<link rel="icon" href="/favicon.ico" sizes="any">'
+    '<link rel="icon" href="/favicon.svg" type="image/svg+xml">'
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+)
 
 _BRAND_HTML = """<div class="brand">HUMA</div>
     <div class="brand-sub">Cockpit</div>"""
