@@ -178,8 +178,16 @@ const UsoScreen = ({ onGoto }) => {
             {(refCredited > 0 || extraCredited > 0)
               ? 'Créditos de indicação são consumidos primeiro, depois créditos extras, depois o plano base. '
               : ''}
-            Cada conversa é uma janela de 24h com um lead — mensagens dentro da janela não gastam saldo.
+            Uma conversa é uma janela de 24h com um lead e só conta a partir da 2ª resposta da HUMA — pergunta rápida não gasta saldo.
           </div>
+        </section>
+
+        {/* CONTROLE DE GASTO — o dono decide: travado / com limite / liberado */}
+        <section>
+          <SpendControlCard
+            billing={billing}
+            onChanged={() => fetchBillingStatus().then(setBilling).catch(() => {})}
+          />
         </section>
 
         {/* Card de conversão (só quando ainda não assina) */}
@@ -208,6 +216,149 @@ const UsoScreen = ({ onGoto }) => {
           </div>
         </section>
       </div>
+    </div>
+  );
+};
+
+// ---------- Controle de gasto (travado / com limite / liberado) ----------
+// Espelho do "Uso extra" do Claude: o dono escolhe, troca quando quiser,
+// efeito imediato. Garantias escritas na tela. Extrato linha a linha.
+const SpendControlCard = ({ billing, onChanged }) => {
+  const fmt = (v) => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+  const price = billing && billing.overage_price_brl ? billing.overage_price_brl : 1.99;
+  const over = (billing && billing.overage) || { conversations: 0, brl: 0 };
+  const waiting = billing ? (billing.waiting_leads || 0) : 0;
+
+  const [mode, setMode] = useStateU('locked');
+  const [cap, setCap] = useStateU('200');
+  const [saving, setSaving] = useStateU(false);
+  const [note, setNote] = useStateU('');
+  const [ledger, setLedger] = useStateU(null);
+  const [showLedger, setShowLedger] = useStateU(false);
+
+  useEffectU(() => {
+    if (!billing) return;
+    setMode(billing.spend_mode || 'locked');
+    if (billing.spend_cap_brl && Number(billing.spend_cap_brl) > 0) setCap(String(billing.spend_cap_brl));
+  }, [billing && billing.spend_mode, billing && billing.spend_cap_brl]);
+
+  const dirty = billing && (
+    mode !== (billing.spend_mode || 'locked') ||
+    (mode === 'capped' && Number(String(cap).replace(',', '.')) !== Number(billing.spend_cap_brl || 0))
+  );
+
+  const save = async () => {
+    setSaving(true); setNote('');
+    try {
+      const capNum = mode === 'capped' ? Number(String(cap).replace(',', '.')) : 0;
+      await window.updateSpendSettings(mode, capNum);
+      setNote('Salvo. Vale a partir de agora.');
+      onChanged && onChanged();
+    } catch (e) {
+      setNote(e.message || 'Não foi possível salvar.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleLedger = () => {
+    const next = !showLedger;
+    setShowLedger(next);
+    if (next && ledger === null) {
+      window.fetchUsageLedger(30).then(d => setLedger(d.items || [])).catch(() => setLedger([]));
+    }
+  };
+
+  const options = [
+    { id: 'locked', title: 'Travado', desc: 'Só o que já pago. Acabou o plano, leads novos vão pra minha fila e eu respondo.' },
+    { id: 'capped', title: 'Com limite', desc: `A HUMA continua e pode gastar até um valor a mais por mês. ${fmt(price)} por conversa extra.` },
+    { id: 'unlimited', title: 'Liberado', desc: `Nunca pare de atender. Cada conversa extra custa ${fmt(price)} e entra na fatura.` },
+  ];
+
+  const fmtDate = (iso) => {
+    try { const d = new Date(iso); return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
+    catch (e) { return ''; }
+  };
+
+  return (
+    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <Eyebrow>controle de gasto</Eyebrow>
+          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', marginTop: 4 }}>
+            Você decide até onde a HUMA vai
+          </div>
+        </div>
+        {waiting > 0 && (
+          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500, padding: '4px 10px', borderRadius: 999, background: 'var(--ember-soft)', color: 'var(--ember-ink)' }}>
+            {waiting} {waiting === 1 ? 'lead na fila esperando você' : 'leads na fila esperando você'}
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginTop: 14 }}>
+        {options.map(o => {
+          const active = mode === o.id;
+          return (
+            <button key={o.id} type="button" onClick={() => setMode(o.id)} style={{
+              textAlign: 'left', cursor: 'pointer', padding: '12px 14px', borderRadius: 12,
+              border: `1px solid ${active ? 'var(--ink)' : 'var(--paper-edge)'}`,
+              background: active ? 'var(--paper-sunk)' : 'transparent',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 999, border: '2px solid var(--ink)', background: active ? 'var(--ink)' : 'transparent' }}/>
+                <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{o.title}</span>
+              </div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.45 }}>{o.desc}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      {mode === 'capped' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)' }}>Pode gastar até</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: '1px solid var(--paper-edge)', borderRadius: 10, padding: '6px 10px', background: 'var(--paper)' }}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--ink-3)' }}>R$</span>
+            <input value={cap} onChange={e => setCap(e.target.value.replace(/[^\d,\.]/g, ''))} inputMode="decimal"
+              style={{ width: 80, border: 'none', outline: 'none', background: 'transparent', fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--ink)' }}/>
+          </span>
+          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)' }}>a mais por mês, além do plano.</span>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14, flexWrap: 'wrap' }}>
+        <button type="button" onClick={save} disabled={!dirty || saving} style={{
+          cursor: dirty && !saving ? 'pointer' : 'default', padding: '8px 14px', borderRadius: 10, border: 'none',
+          background: dirty ? 'var(--ink)' : 'var(--paper-sunk)', color: dirty ? 'var(--paper)' : 'var(--ink-3)',
+          fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600,
+        }}>{saving ? 'Salvando…' : 'Salvar'}</button>
+        {note && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>{note}</span>}
+        <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>
+          Extra neste ciclo: {over.conversations || 0} {over.conversations === 1 ? 'conversa' : 'conversas'} · {fmt(over.brl)}
+        </span>
+      </div>
+
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.6 }}>
+        Nunca cobramos além do que você autorizou · Nenhuma conversa em andamento é cortada · Nenhum lead some: se a HUMA parar, ele fica na sua fila · Aviso em 80%, em 100% e a cada R$ 100 de extra.
+      </div>
+
+      <button type="button" onClick={toggleLedger} style={{ marginTop: 10, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)', textDecoration: 'underline' }}>
+        {showLedger ? 'Esconder extrato' : 'Ver extrato das conversas contadas'}
+      </button>
+      {showLedger && (
+        <div style={{ marginTop: 8, borderTop: '1px solid var(--paper-edge)' }}>
+          {ledger === null && <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)', padding: '8px 0' }}>Carregando…</div>}
+          {ledger && ledger.length === 0 && <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)', padding: '8px 0' }}>Nenhuma conversa contada ainda.</div>}
+          {ledger && ledger.map((row, i) => (
+            <div key={i} style={{ display: 'flex', gap: 12, padding: '6px 0', borderBottom: '1px solid var(--paper-edge)', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>
+              <span style={{ width: 90, color: 'var(--ink-3)' }}>{fmtDate(row.at)}</span>
+              <span style={{ flex: 1 }}>{row.phone || 'lead'}</span>
+              <span style={{ color: row.overage ? 'var(--ember-ink)' : 'var(--ink-3)' }}>{row.overage ? `extra · ${fmt(row.price_brl)}` : 'plano'}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

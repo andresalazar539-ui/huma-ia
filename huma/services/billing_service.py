@@ -27,7 +27,12 @@ from enum import Enum
 
 from fastapi.concurrency import run_in_threadpool
 
-from huma.config import TRIAL_DAYS
+import base64
+import hashlib
+import hmac
+import time as _time
+
+from huma.config import TRIAL_DAYS, SESSION_SECRET
 from huma.services import redis_service as cache
 from huma.services.db_service import get_supabase
 from huma.utils.logger import get_logger
@@ -293,10 +298,12 @@ async def add_conversations(client_id: str, amount: int, source: str = "compra",
     return new_balance
 
 
-async def debit_conversation(client_id: str) -> bool:
+async def debit_conversation(client_id: str, description: str = "") -> bool:
     """
-    Debita 1 conversa. Chamado quando ABRE nova janela 24h.
-    NÃO chamado a cada mensagem.
+    Debita 1 conversa. Chamado quando a conversa ENGAJA (2ª resposta da
+    HUMA na janela 24h — ver debit_engaged_conversation). NÃO chamado a
+    cada mensagem. `description` (opcional) vai pro razão — o extrato
+    da tela Uso mostra com quem foi a conversa.
 
     Sprint 1 / item 6 — RPC atômica debit_wallet_atomic.
     Função SQL faz UPDATE ... WHERE balance > 0 RETURNING balance,
@@ -333,7 +340,7 @@ async def debit_conversation(client_id: str) -> bool:
         log.warning(f"Sem conversas | {client_id} | saldo=0")
         return False
 
-    await _log_transaction(client_id, "debit", 1, new_balance, "conversa")
+    await _log_transaction(client_id, "debit", 1, new_balance, "conversa", description)
     return True
 
 
@@ -638,3 +645,380 @@ async def _log_transaction(client_id, tx_type, amount, balance_after, source="",
             "created_at": datetime.utcnow().isoformat(),
         }).execute()
     )
+
+
+# ================================================================
+# CONTROLE DE GASTO (2026-09-04)
+#
+# O dono escolhe UM modo, troca quando quiser, efeito imediato:
+#   locked    — "Só o que já pago": esgotou o plano, a HUMA para de
+#               abrir conversa nova; lead novo cai na fila da equipe.
+#   capped    — "Pode gastar até R$ X a mais": excedente automático
+#               até o teto do ciclo, depois vira locked.
+#   unlimited — "Nunca pare de atender": excedente sem teto.
+#
+# Padrão = locked. Ninguém paga excedente sem ter escolhido na tela.
+#
+# Excedente = crédito de 1 conversa (source="excedente") gravado no
+# razão no instante do débito, ao preço OVERAGE_PRICE_BRL. O ciclo
+# começa no último crédito de plano/trial; o fechamento mensal soma
+# os "excedente" do ciclo. Nada aqui muda o caminho de débito atômico.
+#
+# Conversa ENGAJADA: o débito acontece na 2ª resposta da HUMA dentro
+# da janela 24h (orchestrator conta os turnos). Pergunta rápida com
+# uma resposta só não gasta saldo — promessa da tela Uso.
+# ================================================================
+
+SPEND_MODE_LOCKED = "locked"
+SPEND_MODE_CAPPED = "capped"
+SPEND_MODE_UNLIMITED = "unlimited"
+SPEND_MODES = (SPEND_MODE_LOCKED, SPEND_MODE_CAPPED, SPEND_MODE_UNLIMITED)
+
+OVERAGE_PRICE_BRL = 1.99          # por conversa engajada além do plano
+OVERAGE_SOURCE = "excedente"       # source no razão credit_transactions
+SPEND_ALERT_STEP_BRL = 100.0       # aviso ao dono a cada R$100 de excedente
+SPEND_ALERT_PLAN_PCT = 80          # aviso ao dono em 80% do plano
+SPEND_ACTION_TTL_SECONDS = 7 * 86400
+_CYCLE_SOURCES = ("plano_mensal", "trial", "plano")
+
+
+def decide_new_conversation(
+    balance: int,
+    trial_expired: bool,
+    mode: str,
+    cap_brl: float,
+    overage_brl: float,
+    unit_price_brl: float = OVERAGE_PRICE_BRL,
+) -> dict:
+    """
+    Regra pura do gate de conversa nova (sem I/O — testável).
+
+    Returns:
+        {"allowed": bool, "overage_allowed": bool, "reason": str|None}
+        reason ∈ {None, "trial_expired", "plan_locked", "cap_reached"}.
+        overage_allowed = o modo permite MAIS UMA conversa excedente
+        agora (independe do saldo — quem consome saldo primeiro é o
+        débito atômico; o excedente só entra quando o saldo acabou).
+    """
+    if trial_expired:
+        return {"allowed": False, "overage_allowed": False, "reason": "trial_expired"}
+
+    if mode == SPEND_MODE_UNLIMITED:
+        overage_ok = True
+    elif mode == SPEND_MODE_CAPPED:
+        overage_ok = (float(overage_brl) + float(unit_price_brl)) <= float(cap_brl) + 1e-9
+    else:
+        overage_ok = False
+
+    if balance >= 1:
+        return {"allowed": True, "overage_allowed": overage_ok, "reason": None}
+    if overage_ok:
+        return {"allowed": True, "overage_allowed": True, "reason": None}
+    reason = "cap_reached" if mode == SPEND_MODE_CAPPED else "plan_locked"
+    return {"allowed": False, "overage_allowed": False, "reason": reason}
+
+
+async def get_spend_settings(client_id: str) -> dict:
+    """
+    Modo e teto de gasto do cliente. Cache Redis 300s (spend_cfg:{id}).
+
+    FAIL-SAFE pro bolso do dono: qualquer erro (coluna ausente antes da
+    migration, infra) devolve locked/0 — nunca cobra excedente sem ter
+    certeza de que ele autorizou. O saldo do plano continua valendo.
+    """
+    default = {"mode": SPEND_MODE_LOCKED, "cap_brl": 0.0}
+    redis_key = f"spend_cfg:{client_id}"
+    try:
+        cached = await cache.get_json(redis_key)
+        if isinstance(cached, dict) and cached.get("mode") in SPEND_MODES:
+            return {"mode": cached["mode"], "cap_brl": float(cached.get("cap_brl") or 0.0)}
+
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions").select("spend_mode,spend_cap_brl")
+                .eq("client_id", client_id)
+                .order("updated_at", desc=True).limit(1).execute()
+        )
+        row = resp.data[0] if resp.data else {}
+        mode = (row.get("spend_mode") or SPEND_MODE_LOCKED)
+        if mode not in SPEND_MODES:
+            mode = SPEND_MODE_LOCKED
+        result = {"mode": mode, "cap_brl": float(row.get("spend_cap_brl") or 0.0)}
+        await cache.set_json(redis_key, result, ttl=300)
+        return result
+    except Exception as e:
+        log.warning(
+            f"SpendControl | get_spend_settings fail-safe (locked) | client={client_id} | "
+            f"{type(e).__name__}: {str(e)[:120]}"
+        )
+        return default
+
+
+async def set_spend_settings(client_id: str, mode: str, cap_brl: float = 0.0) -> dict:
+    """
+    Grava modo/teto na subscriptions (linha mais recente do cliente) e
+    derruba o cache. Retorna {"status": "ok"|"error", "mode", "cap_brl", "detail"}.
+    """
+    if mode not in SPEND_MODES:
+        return {"status": "error", "detail": "Modo inválido."}
+    cap = round(max(0.0, float(cap_brl or 0.0)), 2)
+    if mode == SPEND_MODE_CAPPED and cap < OVERAGE_PRICE_BRL:
+        return {"status": "error", "detail": f"O limite precisa ser de pelo menos R$ {OVERAGE_PRICE_BRL:.2f}."}
+    if mode != SPEND_MODE_CAPPED:
+        cap = 0.0
+
+    supa = get_supabase()
+    try:
+        existing = await run_in_threadpool(
+            lambda: supa.table("subscriptions").select("id")
+                .eq("client_id", client_id)
+                .order("updated_at", desc=True).limit(1).execute()
+        )
+        if not existing.data:
+            return {"status": "error", "detail": "Nenhuma assinatura encontrada pra este cliente."}
+        row_id = existing.data[0].get("id")
+        await run_in_threadpool(
+            lambda: supa.table("subscriptions").update({
+                "spend_mode": mode,
+                "spend_cap_brl": cap,
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("id", row_id).execute()
+        )
+    except Exception as e:
+        log.error(
+            f"SpendControl | set_spend_settings falhou | client={client_id} | "
+            f"{type(e).__name__}: {str(e)[:160]} | RODE scripts/migration_spend_control.sql"
+        )
+        return {"status": "error", "detail": "Não consegui salvar agora. Tente de novo em instantes."}
+
+    await cache.delete_key(f"spend_cfg:{client_id}")
+    log.info(f"SpendControl | client={client_id} | mode={mode} | cap_brl={cap}")
+    return {"status": "ok", "mode": mode, "cap_brl": cap}
+
+
+async def get_cycle_start(client_id: str) -> datetime:
+    """
+    Início do ciclo de cobrança: o último crédito de plano/trial no razão.
+    Sem crédito de plano (ex.: cliente só com créditos manuais) → dia 1
+    do mês corrente (UTC). Naive UTC, como o resto do módulo.
+    """
+    fallback = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("credit_transactions")
+                .select("created_at,source")
+                .eq("client_id", client_id)
+                .eq("type", "credit")
+                .in_("source", list(_CYCLE_SOURCES))
+                .order("created_at", desc=True).limit(1).execute()
+        )
+        if not resp.data:
+            return fallback
+        raw = resp.data[0].get("created_at") or ""
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except Exception as e:
+        log.warning(f"SpendControl | get_cycle_start fallback | client={client_id} | {type(e).__name__}: {e}")
+        return fallback
+
+
+async def get_cycle_overage(client_id: str) -> dict:
+    """
+    Excedente do ciclo atual: conversas creditadas como "excedente" desde
+    o início do ciclo e o valor em R$ (count × OVERAGE_PRICE_BRL).
+
+    Returns:
+        {"conversations", "brl", "unit_price_brl", "cycle_start"(ISO)}
+    """
+    start = await get_cycle_start(client_id)
+    count = 0
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("credit_transactions")
+                .select("amount")
+                .eq("client_id", client_id)
+                .eq("type", "credit")
+                .eq("source", OVERAGE_SOURCE)
+                .gte("created_at", start.isoformat())
+                .limit(5000).execute()
+        )
+        count = sum(int(r.get("amount") or 0) for r in (resp.data or []))
+    except Exception as e:
+        log.warning(f"SpendControl | get_cycle_overage | client={client_id} | {type(e).__name__}: {e}")
+    return {
+        "conversations": count,
+        "brl": round(count * OVERAGE_PRICE_BRL, 2),
+        "unit_price_brl": OVERAGE_PRICE_BRL,
+        "cycle_start": start.isoformat(),
+    }
+
+
+async def resolve_new_conversation(client_id: str) -> dict:
+    """
+    Gate de conversa nova com controle de gasto. Substitui a leitura
+    crua de check_conversations no orchestrator (que continua existindo
+    pra outros callers, contrato intacto).
+
+    Returns:
+        {"allowed", "overage_allowed", "reason", "balance", "mode", "cap_brl"}
+    """
+    conv_check = await check_conversations(client_id)
+    balance = int(conv_check.get("balance") or 0)
+    trial_expired = conv_check.get("reason") == "trial_expired"
+
+    settings = await get_spend_settings(client_id)
+    overage_brl = 0.0
+    if settings["mode"] == SPEND_MODE_CAPPED:
+        overage_brl = float((await get_cycle_overage(client_id)).get("brl") or 0.0)
+
+    decision = decide_new_conversation(
+        balance, trial_expired, settings["mode"], settings["cap_brl"], overage_brl,
+    )
+    decision["balance"] = balance
+    decision["mode"] = settings["mode"]
+    decision["cap_brl"] = settings["cap_brl"]
+    return decision
+
+
+async def debit_engaged_conversation(client_id: str, phone: str, allow_overage: bool) -> dict:
+    """
+    Débito na 2ª resposta da HUMA (conversa engajada). Tenta o saldo;
+    se acabou e o modo permite, credita 1 excedente e debita em seguida.
+
+    Returns:
+        {"debited": bool, "overage": bool}
+    """
+    desc = f"Conversa com {phone}" if phone else ""
+    if await debit_conversation(client_id, desc):
+        return {"debited": True, "overage": False}
+    if not allow_overage:
+        log.warning(f"SpendControl | engajou sem saldo e sem excedente | client={client_id} | phone={phone}")
+        return {"debited": False, "overage": False}
+
+    await add_conversations(
+        client_id, 1, OVERAGE_SOURCE,
+        f"Excedente R$ {OVERAGE_PRICE_BRL:.2f} | {phone}",
+    )
+    debited = await debit_conversation(client_id, desc)
+    log.info(f"SpendControl | excedente | client={client_id} | phone={phone} | debited={debited}")
+    return {"debited": debited, "overage": True}
+
+
+async def list_conversation_ledger(client_id: str, limit: int = 30) -> list[dict]:
+    """
+    Extrato pra tela Uso: últimos débitos de conversa (data, com quem,
+    se foi excedente). Nunca levanta exceção — lista vazia em erro.
+    """
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("credit_transactions")
+                .select("created_at,type,source,description,amount")
+                .eq("client_id", client_id)
+                .in_("type", ["debit", "credit"])
+                .in_("source", ["conversa", OVERAGE_SOURCE])
+                .order("created_at", desc=True)
+                .limit(max(1, min(int(limit), 200) * 2)).execute()
+        )
+    except Exception as e:
+        log.warning(f"SpendControl | ledger | client={client_id} | {type(e).__name__}: {e}")
+        return []
+
+    # Um excedente gera 2 linhas (crédito "excedente" + débito "conversa"
+    # com o mesmo telefone, segundos de diferença). Mostra o débito e
+    # marca como excedente quando existe crédito correspondente.
+    rows = resp.data or []
+    overage_phones: list[str] = [
+        (r.get("description") or "").split("|")[-1].strip()
+        for r in rows if r.get("source") == OVERAGE_SOURCE
+    ]
+    out: list[dict] = []
+    for r in rows:
+        if r.get("type") != "debit":
+            continue
+        desc = r.get("description") or ""
+        phone = desc.replace("Conversa com", "").strip()
+        is_over = False
+        if phone and phone in overage_phones:
+            overage_phones.remove(phone)
+            is_over = True
+        out.append({
+            "at": r.get("created_at"),
+            "phone": phone,
+            "overage": is_over,
+            "price_brl": OVERAGE_PRICE_BRL if is_over else 0.0,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ── Links assinados dos avisos no WhatsApp ("liberar" sem login) ──
+# Token = base64url("client_id|action|exp|hmac"). Mesmo padrão do token
+# de sessão (auth.py). Ações: unlock_100 (teto = excedente atual + R$100),
+# unlimited, lock. Validade 7 dias.
+
+SPEND_ACTIONS = ("unlock_100", "unlimited", "lock")
+
+
+def make_spend_action_token(client_id: str, action: str, ttl_seconds: int = SPEND_ACTION_TTL_SECONDS) -> str:
+    """Gera token assinado pro link de ação de gasto. Vazio se sem segredo."""
+    if action not in SPEND_ACTIONS or not SESSION_SECRET:
+        return ""
+    exp = int(_time.time()) + int(ttl_seconds)
+    payload = f"{client_id}|{action}|{exp}"
+    sig = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{sig}".encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def verify_spend_action_token(token: str) -> dict | None:
+    """Valida o token. Retorna {"client_id", "action"} ou None (inválido/expirado)."""
+    if not token or not SESSION_SECRET:
+        return None
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        client_id, action, exp_s, sig = raw.split("|")
+    except (ValueError, UnicodeDecodeError, TypeError):
+        return None
+    payload = f"{client_id}|{action}|{exp_s}"
+    expected = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        if int(exp_s) < int(_time.time()):
+            return None
+    except ValueError:
+        return None
+    if action not in SPEND_ACTIONS:
+        return None
+    return {"client_id": client_id, "action": action}
+
+
+async def apply_spend_action(client_id: str, action: str) -> dict:
+    """
+    Executa a ação do link: unlock_100 → capped com teto = excedente
+    atual + R$100; unlimited → sem teto; lock → travado.
+    """
+    if action == "unlimited":
+        return await set_spend_settings(client_id, SPEND_MODE_UNLIMITED)
+    if action == "lock":
+        return await set_spend_settings(client_id, SPEND_MODE_LOCKED)
+    if action == "unlock_100":
+        current = float((await get_cycle_overage(client_id)).get("brl") or 0.0)
+        return await set_spend_settings(client_id, SPEND_MODE_CAPPED, current + SPEND_ALERT_STEP_BRL)
+    return {"status": "error", "detail": "Ação desconhecida."}
+
+
+def spend_action_links(client_id: str, base_url: str) -> dict:
+    """Links prontos pros avisos do WhatsApp. Vazios se sem base_url/segredo."""
+    base = (base_url or "").rstrip("/")
+    out: dict = {}
+    for action in SPEND_ACTIONS:
+        tok = make_spend_action_token(client_id, action)
+        out[action] = f"{base}/billing/spend-action?token={tok}" if (base and tok) else ""
+    return out

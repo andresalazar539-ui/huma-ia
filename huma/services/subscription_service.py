@@ -707,7 +707,26 @@ async def get_billing_status(client_id: str) -> dict:
         if sc else None
     )
 
+    # Controle de gasto (aditivo): modo/teto + excedente do ciclo. Falha
+    # de leitura degrada pro padrão travado, sem derrubar o status.
+    try:
+        spend = await billing.get_spend_settings(client_id)
+        overage = await billing.get_cycle_overage(client_id)
+    except Exception:
+        spend = {"mode": billing.SPEND_MODE_LOCKED, "cap_brl": 0.0}
+        overage = None
+    try:
+        waiting_raw = await cache.get_int(f"spend_waiting:{client_id}")
+        waiting = waiting_raw if waiting_raw > 0 else 0
+    except Exception:
+        waiting = 0
+
     return {
+        "spend_mode": spend["mode"],
+        "spend_cap_brl": spend["cap_brl"],
+        "overage": overage,
+        "overage_price_brl": billing.OVERAGE_PRICE_BRL,
+        "waiting_leads": waiting,
         "plan": plan_value or None,
         "plan_name": plan_name,
         "price_brl": (config or {}).get("price_brl"),

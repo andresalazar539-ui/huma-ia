@@ -227,53 +227,24 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         is_new_conversation = await _is_new_conversation(client_id, phone)
 
         if is_new_conversation:
-            conv_check = await billing.check_conversations(client_id)
-            if not conv_check["has_conversations"]:
+            # Controle de gasto (2026-09-04): o gate lê saldo + modo do
+            # dono (travado / com limite / liberado). O DÉBITO não acontece
+            # mais aqui — só quando a conversa ENGAJA (2ª resposta da HUMA,
+            # ver bloco "conversa engajada" abaixo). Zera o contador de
+            # turnos da janela anterior pra não herdar contagem velha.
+            await cache.delete_key(f"conv_turns:{client_id}:{phone}")
+            decision = await billing.resolve_new_conversation(client_id)
+            if not decision["allowed"]:
                 # FIX contradição em produção: _is_new_conversation já marcou a
                 # janela 24h no Redis ANTES do billing bloquear. Sem desmarcar,
                 # a PRÓXIMA mensagem do lead pula este gate (janela "existe") e
-                # a IA responde normal logo depois de dizer que estava pausada.
-                # Desmarca pra toda mensagem re-passar pelo gate até ter saldo.
+                # a IA responde normal logo depois. Desmarca pra toda mensagem
+                # re-passar pelo gate — quando o dono liberar, a IA volta sozinha.
                 await cache.delete_key(f"conv_window:{client_id}:{phone}")
-
-                # Anti-spam: avisa o lead (e o dono) UMA vez a cada 6h por
-                # telefone — as próximas mensagens ficam em silêncio até o
-                # saldo voltar, em vez de repetir "pausado" a cada msg.
-                # Sprint Billing: reason distingue trial expirado de saldo
-                # zerado — chave e copy do dono mudam, o lead recebe a
-                # mesma mensagem genérica (ele não precisa saber de billing).
-                reason = conv_check.get("reason") or "no_balance"
-                if reason == "trial_expired":
-                    notified_key = f"trial_expired_msg:{client_id}:{phone}"
-                else:
-                    notified_key = f"billing_paused_msg:{client_id}:{phone}"
-                if not await cache.exists(notified_key):
-                    await cache.set_with_ttl(notified_key, "1", ttl=21600)
-                    await wa.send_text(
-                        phone,
-                        "Ops! Estamos com o atendimento pausado no momento. Tente novamente em breve!",
-                        client_id=client_id,
-                    )
-                    if reason == "trial_expired":
-                        from huma.config import TRIAL_DAYS
-                        owner_msg = (
-                            f"⏰ Seu teste grátis de {TRIAL_DAYS} dias terminou! "
-                            f"Assine um plano pra reativar a HUMA: app.humaia.com.br"
-                        )
-                    else:
-                        owner_msg = (
-                            f"⚠️ Conversas esgotadas! {client_data.business_name} "
-                            f"precisa de mais conversas. Compre em app.humaia.com.br"
-                        )
-                    await wa.notify_owner(
-                        client_data.owner_phone or client_data.client_id,
-                        owner_msg,
-                        client_id=client_id,
-                    )
-                log.warning(f"Sem conversas | {client_id} | saldo=0 | reason={reason}")
+                await _handle_blocked_new_conversation(
+                    client_data, phone, unified_text, decision.get("reason") or "plan_locked",
+                )
                 return
-
-            await billing.debit_conversation(client_id)
 
         max_ia = plan_config.get("max_ia_calls_per_conversation", 50)
         # Sprint 2 / item 3 — check_ia_limit virou async (Redis distribuído)
@@ -786,6 +757,21 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         # se atingiu limiar. Não bloqueia o turn atual nem o envio da resposta.
         if len(conv.history) > HISTORY_MAX_BEFORE_COMPRESS:
             asyncio.create_task(_compress_history_async(client_id, phone))
+
+        # Conversa ENGAJADA (controle de gasto, 2026-09-04): a 2ª resposta
+        # da HUMA nesta janela 24h é o que gasta 1 conversa do plano (ou 1
+        # excedente, se o dono liberou). Pergunta rápida com uma resposta
+        # só não gasta — promessa da tela Uso. Contador em Redis com TTL
+        # da janela; zerado quando a janela abre. Nunca quebra o turno.
+        try:
+            turns = await cache.incr_with_ttl(f"conv_turns:{client_id}:{phone}", ttl=86400)
+            if turns == 2:
+                decision = await billing.resolve_new_conversation(client_id)
+                await billing.debit_engaged_conversation(
+                    client_id, phone, decision.get("overage_allowed", False),
+                )
+        except Exception as e:
+            log.warning(f"SpendControl | contagem de turno falhou | {phone} | {type(e).__name__}: {e}")
 
         # Envia ou pede aprovação
         if effective_mode == "auto" and not force_approval:
@@ -3424,6 +3410,86 @@ async def _is_new_conversation(client_id: str, phone: str) -> bool:
 
     await cache.set_with_ttl(key, "1", ttl=86400)
     return True
+
+
+async def _handle_blocked_new_conversation(client_data, phone: str, lead_text: str, reason: str) -> None:
+    """
+    Conversa nova bloqueada pelo controle de gasto (ou trial vencido).
+
+    Promessa da tela Uso: NENHUM lead some. O lead recebe uma ponte curta
+    (uma vez a cada 6h) e a mensagem dele entra no histórico pra aparecer
+    na fila do Cockpit. O dono é avisado (uma vez por hora por cliente)
+    com o tamanho da fila e os links de liberar/travar sem login.
+    Trial vencido mantém o aviso antigo de assinar. Nunca levanta exceção.
+    """
+    from huma.config import PUBLIC_BASE_URL, TRIAL_DAYS
+
+    client_id = client_data.client_id
+    owner_phone = client_data.owner_phone or client_id
+
+    # 1) Mensagem do lead vai pro histórico — é a "fila" que o dono vê.
+    try:
+        conv = await db.get_conversation(client_id, phone)
+        conv.history.append({"role": "user", "content": lead_text})
+        conv.last_message_at = datetime.utcnow()
+        await db.save_conversation(conv)
+    except Exception as e:
+        log.error(f"SpendControl | fila: não salvou msg do lead | {phone} | {type(e).__name__}: {e}")
+
+    # 2) Ponte pro lead, uma vez a cada 6h por telefone. Tom neutro, sem
+    #    gíria, sem falar de cobrança (ele não precisa saber de billing).
+    lead_key = f"billing_paused_msg:{client_id}:{phone}"
+    if not await cache.exists(lead_key):
+        await cache.set_with_ttl(lead_key, "1", ttl=21600)
+        nome = (client_data.business_name or "").strip()
+        ponte = (
+            f"Oi! Recebi sua mensagem. A equipe {nome} já te responde por aqui."
+            if nome else "Oi! Recebi sua mensagem. Já te respondo por aqui."
+        )
+        await wa.send_text(phone, ponte, client_id=client_id)
+
+    # 3) Fila: contador do ciclo (TTL 24h renovado a cada lead).
+    waiting = await cache.incr_with_ttl(f"spend_waiting:{client_id}", ttl=86400)
+    waiting = waiting if waiting > 0 else 1
+
+    # 4) Aviso ao dono, no máximo 1 por hora por cliente.
+    owner_key = f"spend_owner_alert:{client_id}"
+    if await cache.exists(owner_key):
+        log.warning(f"SpendControl | bloqueado | {client_id} | {phone} | reason={reason} | fila={waiting}")
+        return
+    await cache.set_with_ttl(owner_key, "1", ttl=3600)
+
+    if reason == "trial_expired":
+        owner_msg = (
+            f"⏰ Seu teste grátis de {TRIAL_DAYS} dias terminou e {waiting} "
+            f"{'lead está' if waiting == 1 else 'leads estão'} na sua fila esperando resposta. "
+            f"Assine pra HUMA voltar a atender: app.humaia.com.br"
+        )
+    else:
+        links = billing.spend_action_links(client_id, PUBLIC_BASE_URL)
+        motivo = (
+            "Seu limite de gasto extra deste mês foi atingido."
+            if reason == "cap_reached" else "Suas conversas do plano acabaram."
+        )
+        linhas = [
+            f"⚠️ {motivo}",
+            f"{waiting} {'lead novo está' if waiting == 1 else 'leads novos estão'} na sua fila. "
+            f"Responda pelo Cockpit ou pelo WhatsApp — ninguém se perdeu.",
+            "",
+            f"Quer que a HUMA continue? Cada conversa extra custa R$ {billing.OVERAGE_PRICE_BRL:.2f}.",
+        ]
+        if links.get("unlock_100"):
+            linhas.append(f"Liberar até R$ {int(billing.SPEND_ALERT_STEP_BRL)} a mais: {links['unlock_100']}")
+        if links.get("unlimited"):
+            linhas.append(f"Liberar sem limite: {links['unlimited']}")
+        linhas.append("Ou ajuste em Ajustes > Uso no Cockpit.")
+        owner_msg = "\n".join(linhas)
+
+    try:
+        await wa.notify_owner(owner_phone, owner_msg, client_id=client_id)
+    except Exception as e:
+        log.warning(f"SpendControl | notify_owner falhou | {client_id} | {type(e).__name__}: {e}")
+    log.warning(f"SpendControl | bloqueado | {client_id} | {phone} | reason={reason} | fila={waiting}")
 
 
 def _is_silent_hours(client_data) -> bool:

@@ -18,7 +18,7 @@ from fastapi import (
     APIRouter, BackgroundTasks, Cookie, Depends, File,
     HTTPException, Request, UploadFile,
 )
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -913,6 +913,82 @@ async def billing_cancel(client_id: str, _=Depends(verify_api_key)) -> dict:
     if result.get("status") != "ok":
         raise HTTPException(400, result.get("detail", "Não foi possível cancelar."))
     return result
+
+
+# ── Controle de gasto (2026-09-04): modo travado / com limite / liberado ──
+
+class SpendBody(BaseModel):
+    """Modo de gasto do cliente e teto de excedente (R$) quando 'capped'."""
+    mode: str = Field(..., pattern="^(locked|capped|unlimited)$")
+    cap_brl: float = Field(default=0.0, ge=0, le=100000)
+
+
+@router.post("/api/clients/{client_id}/billing/spend", tags=["Billing"])
+async def billing_set_spend(client_id: str, payload: SpendBody, _=Depends(verify_api_key)) -> dict:
+    """
+    Salva o controle de gasto: locked (só o plano), capped (excedente até
+    cap_brl no ciclo) ou unlimited. Efeito imediato no gate de conversa.
+    """
+    from huma.services import billing_service as billing
+    result = await billing.set_spend_settings(client_id, payload.mode, payload.cap_brl)
+    if result.get("status") != "ok":
+        raise HTTPException(400, result.get("detail", "Não foi possível salvar."))
+    return result
+
+
+@router.get("/api/clients/{client_id}/billing/ledger", tags=["Billing"])
+async def billing_ledger(client_id: str, limit: int = 30, _=Depends(verify_api_key)) -> dict:
+    """Extrato das últimas conversas contadas (data, lead, excedente ou plano)."""
+    from huma.services import billing_service as billing
+    rows = await billing.list_conversation_ledger(client_id, limit=max(1, min(limit, 200)))
+    return {"items": rows, "overage_price_brl": billing.OVERAGE_PRICE_BRL}
+
+
+_SPEND_ACTION_HTML = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>HUMA · Controle de gasto</title>
+<style>body{{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f4ef;color:#1d1b16;
+display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}}
+.card{{background:#fff;border:1px solid #e6e1d6;border-radius:16px;padding:28px;max-width:420px;width:100%}}
+h1{{font-size:20px;margin:0 0 8px}}p{{margin:0 0 12px;line-height:1.5;color:#4a463f}}
+a{{color:#1d1b16}}.ok{{color:#2f6b3a}}.err{{color:#a63d2f}}</style></head><body>
+<div class="card"><h1 class="{cls}">{title}</h1><p>{body}</p>
+<p><a href="/cockpit">Abrir o Cockpit</a></p></div></body></html>"""
+
+
+@router.get("/billing/spend-action", response_class=HTMLResponse, include_in_schema=False)
+async def billing_spend_action(token: str = "") -> HTMLResponse:
+    """
+    Link assinado dos avisos no WhatsApp: liberar até +R$100, liberar sem
+    limite ou travar — sem login. Token HMAC com validade de 7 dias
+    (billing_service.make_spend_action_token). Token inválido = nada muda.
+    """
+    from huma.services import billing_service as billing
+
+    data = billing.verify_spend_action_token(token)
+    if not data:
+        html = _SPEND_ACTION_HTML.format(
+            cls="err", title="Link inválido ou vencido",
+            body="Esse link expirou. Ajuste o controle de gasto em Ajustes &gt; Uso no Cockpit.",
+        )
+        return HTMLResponse(html, status_code=400)
+
+    result = await billing.apply_spend_action(data["client_id"], data["action"])
+    if result.get("status") != "ok":
+        html = _SPEND_ACTION_HTML.format(
+            cls="err", title="Não consegui aplicar agora",
+            body=result.get("detail", "Tente de novo em instantes ou ajuste no Cockpit."),
+        )
+        return HTMLResponse(html, status_code=400)
+
+    mode = result.get("mode")
+    if mode == billing.SPEND_MODE_UNLIMITED:
+        title, body = "Liberado sem limite", "A HUMA continua atendendo. Cada conversa extra custa R$ %.2f e entra na sua fatura." % billing.OVERAGE_PRICE_BRL
+    elif mode == billing.SPEND_MODE_CAPPED:
+        title, body = "Liberado até R$ %.0f a mais" % float(result.get("cap_brl") or 0), "A HUMA continua atendendo até esse limite. Você recebe aviso antes de chegar nele."
+    else:
+        title, body = "Travado", "A HUMA só usa o que você já pagou. Leads novos ficam na sua fila."
+    log.info(f"SpendControl | link aplicado | client={data['client_id']} | action={data['action']} | mode={mode}")
+    return HTMLResponse(_SPEND_ACTION_HTML.format(cls="ok", title=title, body=body))
 
 
 class AnalyticsIdsBody(BaseModel):

@@ -453,7 +453,29 @@ async function cancelPlan() {
   return data;
 }
 
-Object.assign(window, { fetchBillingStatus, subscribePlan, subscribeCardPlan, cancelPlan, validateCoupon });
+// Controle de gasto: locked (só o plano) | capped (até cap_brl a mais) | unlimited
+async function updateSpendSettings(mode, cap_brl = 0) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/spend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ mode, cap_brl }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || 'Não foi possível salvar.');
+  return data;
+}
+
+// Extrato das últimas conversas contadas (plano ou excedente)
+async function fetchUsageLedger(limit = 30) {
+  const r = await fetch(
+    `/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/ledger?limit=${encodeURIComponent(limit)}`,
+    { headers: { ...AUTH_HEADERS } },
+  );
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+Object.assign(window, { fetchBillingStatus, subscribePlan, subscribeCardPlan, cancelPlan, validateCoupon, updateSpendSettings, fetchUsageLedger });
 
 /* ---------------- Analytics: IDs do navegador → backend ---------------- */
 // Manda os cookies do GA (_ga/_ga_*) e da Meta (_fbp/_fbc) pro backend.

@@ -740,7 +740,137 @@ async def _run_owner_report_job() -> None:
 # Jobs registrados. Tupla: (nome, fn_async, intervalo_segundos, ttl_lock_segundos)
 # - intervalo_segundos: de quanto em quanto tempo a task acorda
 # - ttl_lock_segundos: lock cluster TTL (deve ser maior que duração esperada do job)
+# ================================================================
+# JOB: avisos de uso / controle de gasto (2026-09-04)
+# ================================================================
+
+async def _run_spend_alert_job() -> None:
+    """
+    Roda 1x/hora. Avisa o dono ANTES de doer:
+      - 80% do plano usado (uma vez por ciclo);
+      - cada degrau de R$100 de excedente (uma vez por degrau por ciclo).
+    O aviso de 100%/fila sai na hora, pelo orchestrator, quando o lead
+    chega. Dedup via Redis spend_alert:{client}:{ciclo}:{nível} (TTL 40d).
+    Respeita silent_hours do cliente. Nunca derruba o loop.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from huma.config import PUBLIC_BASE_URL
+    from huma.services import billing_service as billing
+    from huma.services import db_service as db
+    from huma.services import whatsapp_service as wa
+    from huma.services.db_service import get_supabase
+    from huma.core.orchestrator import _is_silent_hours
+
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions")
+                .select("client_id,included_conversations,status")
+                .in_("status", ["active", "trial"])
+                .limit(2000).execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        log.error(f"spend_alert | subscriptions indisponível | {type(e).__name__}: {e}")
+        return
+
+    sent = 0
+    skipped = 0
+    errors = 0
+    seen: set = set()
+    for row in rows:
+        client_id = row.get("client_id") or ""
+        if not client_id or client_id in seen:
+            continue
+        seen.add(client_id)
+        try:
+            included = int(row.get("included_conversations") or 0)
+            buckets = await billing.get_credit_buckets(client_id)
+            plan_left = int(buckets["plan"]["left"])
+            overage = await billing.get_cycle_overage(client_id)
+            cycle_tag = (overage.get("cycle_start") or "")[:10]
+            settings = await billing.get_spend_settings(client_id)
+
+            alerts: list[tuple[str, str]] = []
+
+            # 80% do plano (só faz sentido enquanto ainda há saldo do plano)
+            if included > 0 and 0 < plan_left <= included:
+                used_pct = int(round((included - plan_left) * 100 / included))
+                if used_pct >= billing.SPEND_ALERT_PLAN_PCT:
+                    alerts.append(("80", f"{used_pct}|{included - plan_left}|{included}"))
+
+            # Degraus de excedente
+            step = int(float(overage.get("brl") or 0.0) // billing.SPEND_ALERT_STEP_BRL)
+            if step >= 1:
+                alerts.append((f"over{step}", f"{overage['conversations']}|{overage['brl']}"))
+
+            if not alerts:
+                continue
+
+            client_data = await db.get_client(client_id)
+            if not client_data or not client_data.owner_phone:
+                skipped += 1
+                continue
+            if _is_silent_hours(client_data):
+                skipped += 1
+                continue
+
+            links = billing.spend_action_links(client_id, PUBLIC_BASE_URL)
+            for level, payload in alerts:
+                key = f"spend_alert:{client_id}:{cycle_tag}:{level}"
+                if await cache.exists(key):
+                    continue
+
+                if level == "80":
+                    pct, used, inc = payload.split("|")
+                    if settings["mode"] == billing.SPEND_MODE_LOCKED:
+                        modo = (
+                            "Seu modo é Travado: quando acabar, leads novos vão pra sua fila "
+                            "e a HUMA para de responder."
+                        )
+                        acao = (
+                            f"Quer que ela continue? Liberar até R$ {int(billing.SPEND_ALERT_STEP_BRL)} a mais: "
+                            f"{links.get('unlock_100', '')}"
+                        ) if links.get("unlock_100") else "Ajuste em Ajustes > Uso no Cockpit."
+                    elif settings["mode"] == billing.SPEND_MODE_CAPPED:
+                        modo = (
+                            f"Seu modo é Com limite (até R$ {settings['cap_brl']:.0f} a mais): "
+                            f"a HUMA continua atendendo, R$ {billing.OVERAGE_PRICE_BRL:.2f} por conversa extra."
+                        )
+                        acao = "Pra mudar, Ajustes > Uso no Cockpit."
+                    else:
+                        modo = (
+                            f"Seu modo é Liberado: a HUMA continua atendendo, "
+                            f"R$ {billing.OVERAGE_PRICE_BRL:.2f} por conversa extra."
+                        )
+                        acao = "Pra mudar, Ajustes > Uso no Cockpit."
+                    msg = (
+                        f"📊 Você usou {used} das {inc} conversas do plano ({pct}%).\n"
+                        f"{modo}\n{acao}"
+                    )
+                else:
+                    conv, brl = payload.split("|")
+                    msg = (
+                        f"📊 Excedente do ciclo: {conv} conversas extras · R$ {float(brl):.2f}.\n"
+                        f"Isso entra na sua próxima fatura. Pra travar agora: "
+                        f"{links.get('lock', '') or 'Ajustes > Uso no Cockpit'}"
+                    )
+
+                await wa.notify_owner(client_data.owner_phone, msg, client_id=client_id)
+                await cache.set_with_ttl(key, "1", ttl=40 * 86400)
+                sent += 1
+                await asyncio.sleep(0.2)
+        except Exception as e:
+            errors += 1
+            log.warning(f"spend_alert | {client_id} | {type(e).__name__}: {e}")
+
+    log.info(f"spend_alert | sent={sent} | skipped={skipped} | errors={errors} | clients={len(seen)}")
+
+
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
+    # Controle de gasto — avisos de 80% e degraus de excedente: a cada 1h, lock 30min
+    ("spend_alert", _run_spend_alert_job, 3600, 1800),
     # Relatório de resultado pro dono: a cada 1h (age só às 8h BRT), lock 30min
     ("owner_report", _run_owner_report_job, 3600, 1800),
     # Item 19 — follow-up: roda a cada 1h, lock vale 30min
