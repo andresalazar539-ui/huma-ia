@@ -159,9 +159,17 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     actions: <BalcaoActions url={balcaoUrl} />,
   };
 
-  // Google Calendar: credencial é da HUMA (env) — "conectado" quando o
-  // servidor tem credencial E o cliente agenda (enable_scheduling).
+  // Google Calendar POR CLIENTE (2026-09-05): o dono compartilha a agenda
+  // dele com a conta de serviço da HUMA e cola o ID (e-mail da agenda).
+  // "Conectado" = servidor com credencial E agenda do cliente gravada.
+  const [calModal, setCalModal] = React.useState(false);
   const gcalConnected = Boolean(client && client.google_calendar);
+  const gcalServer = !(client && client.google_calendar_server === false);
+  const disconnectCal = async () => {
+    if (!window.confirm('Desconectar sua agenda? A HUMA para de conferir e criar eventos nela.')) return;
+    try { await disconnectCalendar(); if (onReloadStatus) await onReloadStatus(); }
+    catch (e) { window.alert(`Não consegui desconectar: ${(e && e.message) || e}`); }
+  };
   const gcalCard = {
     id: 'gcal',
     name: 'Google Calendar',
@@ -169,14 +177,25 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     glyph: { type: 'gcal' },
     status: gcalConnected ? 'connected' : 'disconnected',
     meta: gcalConnected
-      ? [['STATUS', 'Agenda ativa'], ['MODO', 'Bidirecional']]
+      ? [['AGENDA', client.google_calendar_id], ['MODO', 'Bidirecional']]
       : [
           ['SINCRONIZA', 'Horários livres e ocupados'],
-          ['STATUS', client && client.enable_scheduling ? 'Sem credencial no servidor' : 'Agendamento desligado'],
+          ['COMO', gcalServer ? 'Compartilhe sua agenda com a HUMA' : 'Indisponível no servidor'],
         ],
     note: gcalConnected
-      ? 'HUMA confere a agenda antes de confirmar e cria o evento na hora'
-      : 'Com a agenda ligada, a HUMA só confirma horário que o Google Calendar diz que está livre',
+      ? 'HUMA confere a sua agenda antes de confirmar e cria o evento na hora, com o tamanho certo do serviço'
+      : (gcalServer
+          ? 'Conecte a sua agenda: a HUMA só confirma horário que o Google Calendar diz que está livre'
+          : 'O servidor ainda não tem a credencial do Google Calendar. Fale com o suporte HUMA.'),
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant={gcalConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>}
+                onClick={() => setCalModal(true)} disabled={!gcalServer}>
+          {gcalConnected ? 'Trocar agenda' : 'Conectar'}
+        </Button>
+        {gcalConnected && <Button variant="plain" size="sm" onClick={disconnectCal}>Desconectar</Button>}
+      </div>
+    ),
   };
 
   // RD Station: conector ainda não existe (Fase E) — nunca aparece "conectado" sem token.
@@ -236,6 +255,75 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       }}>
         <WhatsAppCard key="whatsapp" />
         {integrations.map(i => <IntegrationCard key={i.id} {...i} />)}
+      </div>
+      {calModal && (
+        <GoogleCalendarModal
+          client={client}
+          onClose={() => setCalModal(false)}
+          onConnected={onReloadStatus}
+        />
+      )}
+    </div>
+  );
+};
+
+// Modal da agenda: e-mail pra compartilhar (copiável) + ID da agenda +
+// "Testar e conectar" (o backend cria e apaga um evento de teste).
+const GoogleCalendarModal = ({ client, onClose, onConnected }) => {
+  const [info, setInfo] = React.useState(null);
+  const [calId, setCalId] = React.useState((client && client.google_calendar_id) || '');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null); // { kind: 'ok' | 'err', text }
+  React.useEffect(() => {
+    fetchCalendar().then(setInfo).catch(e => setMsg({ kind: 'err', text: e.message }));
+  }, []);
+  const email = (info && info.service_account_email) || (client && client.google_calendar_email) || '';
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(email); setMsg({ kind: 'ok', text: 'E-mail copiado. Agora cole no compartilhamento da agenda.' }); }
+    catch (e) { window.prompt('Copie o e-mail:', email); }
+  };
+  const connect = async () => {
+    const id = calId.trim();
+    if (!id || busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await connectCalendar(id);
+      setMsg({ kind: 'ok', text: `Conectado! Agenda "${r.summary || id}". Criei e apaguei um evento de teste pra ter certeza.` });
+      if (onConnected) await onConnected();
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  const color = msg ? (msg.kind === 'err' ? 'var(--ember-ink)' : 'var(--sage-ink)') : 'var(--ink-2)';
+  const inputStyle = {
+    fontFamily: 'var(--font-sans)', fontSize: 14, padding: '10px 12px', borderRadius: 10, width: '100%', boxSizing: 'border-box',
+    border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)', color: 'var(--ink)', outline: 'none',
+  };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 18, padding: 28, width: 'min(520px, 92vw)', display: 'flex', flexDirection: 'column', gap: 16, maxHeight: '90vh', overflow: 'auto' }}>
+        <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, color: 'var(--ink)', letterSpacing: '-0.01em' }}>Conectar sua agenda do Google</div>
+        <ol style={{ margin: 0, paddingLeft: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.65 }}>
+          <li>Abra o <b>Google Agenda</b> no computador → engrenagem → <b>Configurações</b> → clique na sua agenda.</li>
+          <li>Em <b>Compartilhar com pessoas específicas</b>, adicione este e-mail com a permissão <b>"Fazer alterações em eventos"</b>:</li>
+        </ol>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 12px', border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)' }}>
+          <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email || (info ? 'Servidor sem credencial do Google' : 'Carregando…')}</span>
+          <Button variant="ghost" size="sm" onClick={copy} disabled={!email}>Copiar</Button>
+        </div>
+        <ol start={3} style={{ margin: 0, paddingLeft: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.65 }}>
+          <li>Na mesma tela, em <b>Integrar agenda</b>, copie o <b>ID da agenda</b> (na agenda principal é o seu e-mail do Google) e cole aqui:</li>
+        </ol>
+        <input value={calId} onChange={e => setCalId(e.target.value)} placeholder="seunome@gmail.com" style={inputStyle}
+               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}/>
+        {msg && (
+          <div style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)', fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.5, color }}>
+            {msg.text}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Button variant="ghost" size="sm" onClick={onClose}>{msg && msg.kind === 'ok' ? 'Concluir' : 'Fechar'}</Button>
+          <Button variant="primary" size="sm" onClick={connect} disabled={busy || !calId.trim() || !email}>{busy ? 'Testando a agenda…' : 'Testar e conectar'}</Button>
+        </div>
       </div>
     </div>
   );
@@ -486,11 +574,20 @@ const WhatsAppCard = () => {
             <Button variant="ghost" size="sm" onClick={openConnect} disabled={state === 'loading'}>
               Via QR code
             </Button>
+            <Button variant="plain" size="sm" onClick={() => setModal('manual')} disabled={state === 'loading'}>
+              Já uso a API oficial
+            </Button>
           </>
         )}
       </div>
 
       {modal === 'qr' && <WhatsAppQRModal qr={qr} busy={busy} onClose={() => setModal(null)} />}
+      {modal === 'manual' && (
+        <WhatsAppManualModal
+          onClose={() => setModal(null)}
+          onConnected={async () => { window.humaTrack?.('whatsapp_connected', { channel: 'meta' }); await refresh(); }}
+        />
+      )}
       {modal === 'meta' && (
         <WhatsAppMetaModal
           msg={metaMsg}
@@ -551,6 +648,64 @@ const WhatsAppMetaModal = ({ msg, onRetry, onReopen, onClose }) => {
             <Button variant="primary" size="sm" onClick={onReopen}>Reabrir conexão</Button>
           )}
           <Button variant="ghost" size="sm" onClick={onClose}>{kind === 'success' ? 'Concluir' : 'Fechar'}</Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Modal do caminho manual: número que JÁ existe na Cloud API (piloto
+// assistido, cliente vindo de outro provedor). Cola WABA ID + Phone Number
+// ID + token permanente; o backend valida, registra e assina os webhooks.
+const WhatsAppManualModal = ({ onClose, onConnected }) => {
+  const [form, setForm] = React.useState({ waba_id: '', phone_number_id: '', access_token: '', pin: '' });
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null); // { kind: 'ok' | 'err', text }
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }));
+  const ready = form.waba_id.trim() && form.phone_number_id.trim() && form.access_token.trim().length >= 20;
+  const submit = async () => {
+    if (!ready || busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await whatsappMetaConnectManual({
+        waba_id: form.waba_id.trim(), phone_number_id: form.phone_number_id.trim(),
+        access_token: form.access_token.trim(), pin: form.pin.trim(),
+      });
+      if (r.connected) {
+        setMsg({ kind: 'ok', text: `Conectado! ${r.display_phone_number || ''} ${r.verified_name ? '· ' + r.verified_name : ''}`.trim() + ' A HUMA já atende nesse número.' });
+        if (onConnected) await onConnected();
+      } else {
+        setMsg({ kind: 'err', text: r.user_message || 'A Meta recusou a conexão.' });
+      }
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  const inputStyle = {
+    fontFamily: 'var(--font-sans)', fontSize: 14, padding: '10px 12px', borderRadius: 10, width: '100%', boxSizing: 'border-box',
+    border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)', color: 'var(--ink)', outline: 'none',
+  };
+  const label = (t) => <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>{t}</div>;
+  const color = msg ? (msg.kind === 'err' ? 'var(--ember-ink)' : 'var(--sage-ink)') : 'var(--ink-2)';
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 18, padding: 28, width: 'min(520px, 92vw)', display: 'flex', flexDirection: 'column', gap: 14, maxHeight: '90vh', overflow: 'auto' }}>
+        <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, color: 'var(--ink)', letterSpacing: '-0.01em' }}>Conectar um número que já está na API oficial</div>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+          No <b>Meta Business</b> → WhatsApp → <b>Configuração da API</b>: copie o <b>ID da conta do WhatsApp Business</b> e o <b>ID do número de telefone</b>.
+          Em <b>Usuários do sistema</b>, gere um token <b>permanente</b> com as permissões <i>whatsapp_business_messaging</i> e <i>whatsapp_business_management</i>.
+        </div>
+        <div>{label('ID da conta do WhatsApp Business (WABA)')}<input value={form.waba_id} onChange={set('waba_id')} placeholder="1234567890123456" style={inputStyle}/></div>
+        <div>{label('ID do número de telefone')}<input value={form.phone_number_id} onChange={set('phone_number_id')} placeholder="1234567890123456" style={inputStyle}/></div>
+        <div>{label('Token permanente')}<input value={form.access_token} onChange={set('access_token')} placeholder="EAAG…" type="password" style={inputStyle}/></div>
+        <div>{label('PIN de verificação em duas etapas (só se o número já tinha um)')}<input value={form.pin} onChange={set('pin')} placeholder="opcional" maxLength={6} style={{ ...inputStyle, width: 160 }}/></div>
+        {msg && (
+          <div style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)', fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.5, color }}>
+            {msg.text}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <Button variant="ghost" size="sm" onClick={onClose}>{msg && msg.kind === 'ok' ? 'Concluir' : 'Fechar'}</Button>
+          <Button variant="primary" size="sm" onClick={submit} disabled={busy || !ready}>{busy ? 'Validando com a Meta…' : 'Conectar'}</Button>
         </div>
       </div>
     </div>

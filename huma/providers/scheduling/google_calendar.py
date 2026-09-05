@@ -35,8 +35,8 @@ class GoogleCalendarProvider(SchedulingProvider):
             request, existing_event_id=existing_event_id,
         )
 
-    async def cancel_appointment(self, event_id: str) -> dict:
-        return await scheduling_service.cancel_appointment(event_id)
+    async def cancel_appointment(self, event_id: str, calendar_id: str = "") -> dict:
+        return await scheduling_service.cancel_appointment(event_id, calendar_id=calendar_id)
 
     async def find_next_available_slots(
         self,
@@ -45,6 +45,7 @@ class GoogleCalendarProvider(SchedulingProvider):
         urgency: str = "normal",
         schedule_config: Any = None,
         exclude_weekdays: set[int] | None = None,
+        calendar_id: str = "",
     ) -> dict:
         return await scheduling_service.find_next_available_slots(
             slots_to_find=slots_to_find,
@@ -52,6 +53,7 @@ class GoogleCalendarProvider(SchedulingProvider):
             urgency=urgency,
             schedule_config=schedule_config,
             exclude_weekdays=exclude_weekdays,
+            calendar_id=calendar_id,
         )
 
     async def check_specific_slot(
@@ -59,9 +61,11 @@ class GoogleCalendarProvider(SchedulingProvider):
         requested_datetime: str,
         duration_minutes: int = 60,
         schedule_config: Any = None,
+        calendar_id: str = "",
     ) -> dict:
         return await scheduling_service.check_specific_slot(
             requested_datetime=requested_datetime,
             duration_minutes=duration_minutes,
             schedule_config=schedule_config,
+            calendar_id=calendar_id,
         )

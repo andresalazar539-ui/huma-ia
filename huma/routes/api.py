@@ -1463,11 +1463,25 @@ async def integrations_status(
         "owner_name": getattr(identity, "owner_name", "") or "",
         # Evolution (QR) — só marcador, o nome da instância não interessa ao front
         "evolution_instance": _truthy(getattr(identity, "evolution_instance", "")),
-        # Google Calendar: credencial é global da HUMA (env) — a agenda
-        # está "conectada" quando a credencial existe E o cliente agenda.
-        "google_calendar": bool(GOOGLE_CALENDAR_CREDENTIALS) and bool(getattr(identity, "enable_scheduling", False)),
+        # Google Calendar POR CLIENTE (2026-09-05): "conectada" quando o
+        # servidor tem a credencial E o cliente colou a própria agenda.
+        # Sem google_calendar_id o motor ainda usa a agenda global legada.
+        "google_calendar": bool(GOOGLE_CALENDAR_CREDENTIALS) and bool(getattr(identity, "google_calendar_id", "")),
+        "google_calendar_id": getattr(identity, "google_calendar_id", "") or "",
+        "google_calendar_email": _calendar_service_email(),
+        "google_calendar_server": bool(GOOGLE_CALENDAR_CREDENTIALS),
         "enable_scheduling": bool(getattr(identity, "enable_scheduling", False)),
     }
+
+
+def _calendar_service_email() -> str:
+    """E-mail da conta de serviço do Google (o cliente compartilha a agenda com ele)."""
+    try:
+        from huma.services import scheduling_service as sched
+        return sched.service_account_email()
+    except Exception as e:
+        log.warning(f"Calendar | e-mail da conta de serviço indisponível | {type(e).__name__}: {e}")
+        return ""
 
 
 @router.post("/api/integrations/{integration_id}/disconnect", tags=["Cockpit"])

@@ -366,6 +366,9 @@ class SchedulingRequest(BaseModel):
     location: str = ""  # Endereço presencial (clínica, salão, etc). Vai pro Google Calendar.
     lead_context: str = ""  # Resumo do que o lead quer / dor / perfil. Vai pra descrição do evento.
     schedule_config: Optional[BusinessScheduleConfig] = None  # v12 (fix 7.6) — passa config do dono pra validação
+    # Agenda do Google DESTE cliente (e-mail da agenda compartilhada com a
+    # conta de serviço da HUMA). Vazio = legado (delegation + GOOGLE_CALENDAR_ID).
+    calendar_id: str = ""
 
 
 # ================================================================
@@ -688,6 +691,14 @@ class ClientIdentity(BaseModel):
     owner_name: str = Field(
         default="",
         description="Nome do dono (Perfil → Você). Só exibição no Cockpit.",
+    )
+    google_calendar_id: str = Field(
+        default="",
+        description=(
+            "Agenda do Google deste cliente (e-mail da agenda compartilhada "
+            "com a conta de serviço da HUMA). Vazio = agenda global legada "
+            "(GOOGLE_CALENDAR_ID). Migration: scripts/migration_google_calendar_per_client.sql."
+        ),
     )
     report_frequency: str = Field(
         default="weekly",

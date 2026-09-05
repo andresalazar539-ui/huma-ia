@@ -235,6 +235,64 @@ async def team_remove(client_id: str, email: str, client=Depends(verify_api_key)
 
 
 # ────────────────────────────────────────────────────────────────
+# Google Calendar por cliente (Integrações → Google Calendar)
+# ────────────────────────────────────────────────────────────────
+
+
+class CalendarConnectBody(BaseModel):
+    calendar_id: str = Field(..., min_length=3, max_length=254)
+
+
+def _calendar_payload(client) -> dict:
+    from huma.config import GOOGLE_CALENDAR_CREDENTIALS
+    from huma.services import scheduling_service as sched
+
+    return {
+        "status": "ok",
+        "server_ready": bool(GOOGLE_CALENDAR_CREDENTIALS),
+        "service_account_email": sched.service_account_email(),
+        "calendar_id": client.google_calendar_id or "",
+        "connected": bool(GOOGLE_CALENDAR_CREDENTIALS) and bool(client.google_calendar_id),
+        "enable_scheduling": bool(client.enable_scheduling),
+    }
+
+
+@router.get("/api/clients/{client_id}/calendar")
+async def calendar_get(client_id: str, client=Depends(verify_api_key)) -> dict:
+    """Estado da agenda do Google deste cliente + e-mail pra compartilhar."""
+    return _calendar_payload(client)
+
+
+@router.post("/api/clients/{client_id}/calendar/connect")
+async def calendar_connect(client_id: str, body: CalendarConnectBody, client=Depends(verify_api_key)) -> dict:
+    """
+    Testa a agenda DE VERDADE (lê, cria e apaga um evento de teste) e,
+    se a HUMA consegue escrever nela, grava google_calendar_id.
+    Erro devolve instrução de como compartilhar — nada é gravado.
+    """
+    from huma.services import scheduling_service as sched
+
+    calendar_id = body.calendar_id.strip().lower()
+    probe = await sched.probe_calendar(calendar_id)
+    if not probe.get("ok"):
+        raise HTTPException(400, probe.get("user_message") or "Não consegui acessar essa agenda.")
+    await _persist(client_id, {"google_calendar_id": calendar_id})
+    log.info(f"Calendar | conectada | client={client_id} | cal={calendar_id} | summary={probe.get('summary', '')!r}")
+    updated = client.model_copy(update={"google_calendar_id": calendar_id})
+    out = _calendar_payload(updated)
+    out["summary"] = probe.get("summary", "")
+    return out
+
+
+@router.delete("/api/clients/{client_id}/calendar")
+async def calendar_disconnect(client_id: str, client=Depends(verify_api_key)) -> dict:
+    """Desconecta a agenda do cliente (volta pro comportamento legado)."""
+    await _persist(client_id, {"google_calendar_id": ""})
+    log.info(f"Calendar | desconectada | client={client_id}")
+    return _calendar_payload(client.model_copy(update={"google_calendar_id": ""}))
+
+
+# ────────────────────────────────────────────────────────────────
 # Perguntas sem resposta → FAQ
 # ────────────────────────────────────────────────────────────────
 

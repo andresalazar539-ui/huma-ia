@@ -2244,6 +2244,8 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         meeting_platform=platform,
         location=address,
         lead_context=_build_lead_context(conv),
+        # Agenda do Google DESTE cliente (vazio = agenda global legada)
+        calendar_id=(getattr(client_data, "google_calendar_id", "") or ""),
         # v12 / fix 7.6 + duração do serviço cadastrada no Cockpit (2026-09-05)
         schedule_config=config_for_service(
             client_data.business_schedule, client_data.products_or_services, action.get("service", "")
@@ -2311,6 +2313,8 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
         meeting_platform=platform,
         location=address,
         lead_context=_build_lead_context(conv),
+        # Agenda do Google DESTE cliente (vazio = agenda global legada)
+        calendar_id=(getattr(client_data, "google_calendar_id", "") or ""),
         # v12 / fix 7.6 + duração do serviço cadastrada no Cockpit (2026-09-05)
         schedule_config=config_for_service(
             client_data.business_schedule, client_data.products_or_services, action.get("service", "")
@@ -2476,8 +2480,10 @@ async def _handle_cancel_appointment_action(phone, action, client_data, conv):
         f"attempts={prev_attempts}"
     )
 
-    # Chama delete real no Google Calendar
-    result = await sched.cancel_appointment(event_id)
+    # Chama delete real no Google Calendar (na agenda deste cliente)
+    result = await sched.cancel_appointment(
+        event_id, calendar_id=(getattr(client_data, "google_calendar_id", "") or ""),
+    )
 
     if result.get("status") != "confirmed":
         # Falha do Calendar — NÃO limpa estado, permite retry
@@ -2595,6 +2601,7 @@ async def _handle_specific_slot_check(phone, requested_datetime, client_data, co
     """
     specific = await sched.check_specific_slot(
         requested_datetime, schedule_config=client_data.business_schedule,
+        calendar_id=(getattr(client_data, "google_calendar_id", "") or ""),
     )
     sp_status = specific.get("status")
 
@@ -2667,6 +2674,7 @@ async def _handle_generic_availability(phone, action, client_data, conv):
         urgency=urgency,
         schedule_config=client_data.business_schedule,
         exclude_weekdays=exclude_weekdays,
+        calendar_id=(getattr(client_data, "google_calendar_id", "") or ""),
     )
 
     status = result.get("status", "error")

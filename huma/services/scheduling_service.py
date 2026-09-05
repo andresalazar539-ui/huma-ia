@@ -207,6 +207,115 @@ def _build_google_credentials(scope: str = "https://www.googleapis.com/auth/cale
         return None, None
 
 
+def _credentials_for(calendar_id: str = "", scope: str = "https://www.googleapis.com/auth/calendar"):
+    """
+    Credenciais pra agenda de UM cliente (2026-09-05).
+
+    calendar_id vazio → caminho legado (_build_google_credentials, com
+    domain-wide delegation e calendarId "primary" do GOOGLE_CALENDAR_ID).
+    calendar_id preenchido → a conta de serviço acessa DIRETO a agenda
+    que o cliente compartilhou com ela (sem impersonar ninguém); o
+    calendarId usado nas chamadas é o próprio id.
+
+    Retorna (credentials, calendar_id) ou (None, None).
+    """
+    cal = (calendar_id or "").strip()
+    if not cal:
+        # Sem argumento de propósito: testes e callers legados mockam
+        # _build_google_credentials como lambda sem parâmetros.
+        return _build_google_credentials()
+    if not GOOGLE_CALENDAR_CREDENTIALS:
+        return None, None
+    try:
+        creds_data = json.loads(GOOGLE_CALENDAR_CREDENTIALS)
+        from google.oauth2 import service_account
+
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_data, scopes=[scope],
+        )
+        return credentials, cal
+    except (json.JSONDecodeError, ValueError) as e:
+        log.error(f"Google Calendar — credencial inválida | {type(e).__name__}: {e}")
+        return None, None
+    except Exception as e:
+        log.error(f"Google Auth erro (por cliente) | {type(e).__name__}: {e}")
+        return None, None
+
+
+def _target_calendar(calendar_id: str = "") -> str:
+    """calendarId das chamadas: a agenda do cliente, ou 'primary' no legado."""
+    return (calendar_id or "").strip() or "primary"
+
+
+def _cal_kwargs(calendar_id: str = "") -> dict:
+    """{'calendar_id': x} só quando preenchido — chamadas legadas ficam idênticas."""
+    cal = (calendar_id or "").strip()
+    return {"calendar_id": cal} if cal else {}
+
+
+def service_account_email() -> str:
+    """E-mail da conta de serviço (o cliente compartilha a agenda com ele). '' sem credencial."""
+    if not GOOGLE_CALENDAR_CREDENTIALS:
+        return ""
+    try:
+        return str(json.loads(GOOGLE_CALENDAR_CREDENTIALS).get("client_email") or "")
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        return ""
+
+
+async def probe_calendar(calendar_id: str) -> dict:
+    """
+    Testa de verdade o acesso da HUMA a uma agenda: lê a agenda, cria um
+    evento de 1 minuto "Teste de conexão HUMA" e apaga em seguida.
+    Nunca levanta — devolve {ok, detail, user_message, summary}.
+    """
+    cal = (calendar_id or "").strip()
+    if not cal or "@" not in cal:
+        return {"ok": False, "detail": "invalid_id", "user_message": "Cole o ID da agenda (é um e-mail, ex.: seunome@gmail.com)."}
+    credentials, _ = _credentials_for(cal)
+    if not credentials:
+        return {
+            "ok": False, "detail": "no_credentials",
+            "user_message": "O servidor da HUMA ainda não tem a credencial do Google Calendar. Fale com o suporte.",
+        }
+    sa_email = service_account_email()
+
+    def _probe() -> dict:
+        from googleapiclient.discovery import build
+
+        svc = build("calendar", "v3", credentials=credentials)
+        info = svc.calendars().get(calendarId=cal).execute()
+        start = datetime.utcnow() + timedelta(days=30)
+        event = {
+            "summary": "Teste de conexão HUMA (pode ignorar)",
+            "start": {"dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": "UTC"},
+            "end": {"dateTime": (start + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": "UTC"},
+        }
+        created = svc.events().insert(calendarId=cal, body=event).execute()
+        try:
+            svc.events().delete(calendarId=cal, eventId=created.get("id", "")).execute()
+        except Exception as e:  # evento de teste ficou pra trás: não invalida a conexão
+            log.warning(f"Calendar probe | não apagou evento de teste | cal={cal} | {type(e).__name__}")
+        return {"summary": info.get("summary", "")}
+
+    try:
+        result = await run_in_threadpool(_probe)
+        log.info(f"Calendar probe OK | cal={cal} | summary={result.get('summary', '')!r}")
+        return {"ok": True, "detail": "ok", "user_message": "", "summary": result.get("summary", "")}
+    except Exception as e:
+        err = str(e)[:300]
+        log.warning(f"Calendar probe falhou | cal={cal} | {type(e).__name__}: {err[:120]}")
+        share_hint = (
+            f"Compartilhe a agenda com {sa_email} com a permissão \"Fazer alterações em eventos\" e tente de novo."
+            if sa_email else "Compartilhe a agenda com a conta de serviço da HUMA e tente de novo."
+        )
+        if "404" in err or "notFound" in err or "Not Found" in err:
+            return {"ok": False, "detail": "not_found", "user_message": f"Não encontrei essa agenda. Confira o ID. {share_hint}"}
+        if "403" in err or "forbidden" in err.lower() or "writer access" in err.lower():
+            return {"ok": False, "detail": "forbidden", "user_message": f"A HUMA vê a agenda mas não pode criar eventos. {share_hint}"}
+        return {"ok": False, "detail": type(e).__name__, "user_message": f"Não consegui acessar a agenda agora. {share_hint}"}
+
+
 # ================================================================
 # ENTRY POINT
 # ================================================================
@@ -296,8 +405,10 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
         }
 
     # ── Verifica disponibilidade ANTES de criar ──
+    # calendar_id só vai quando preenchido: mocks legados têm assinatura fixa.
     availability = await _check_availability(
         parsed_dt, effective_duration, schedule_config=schedule_config,
+        **_cal_kwargs(getattr(request, "calendar_id", "") or ""),
     )
 
     # v12 / fix 2A: se o único conflito é o PRÓPRIO evento do lead
@@ -444,21 +555,24 @@ async def _check_availability(
     dt: datetime,
     duration_minutes: int = 60,
     schedule_config: BusinessScheduleConfig | None = None,
+    calendar_id: str = "",
 ) -> dict:
     """
     Verifica se o horário está livre na agenda do dono.
 
     Consulta freebusy API — mais eficiente que listar eventos.
     Se conflito, busca até 3 horários alternativos.
+    calendar_id: agenda do cliente (vazio = legado).
 
     Returns:
         {"available": True}
         {"available": False, "conflicting_event": "...", "suggestions": [...]}
     """
-    credentials, owner_email = _build_google_credentials()
+    credentials, owner_email = _credentials_for(calendar_id)
     if not credentials:
         # Sem Calendar configurado → assume disponível
         return {"available": True}
+    cal_id = _target_calendar(calendar_id)
 
     try:
 
@@ -474,10 +588,10 @@ async def _check_availability(
                 "timeMin": dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
                 "timeMax": end_dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
                 "timeZone": "America/Sao_Paulo",
-                "items": [{"id": "primary"}],
+                "items": [{"id": cal_id}],
             }
             fb = svc.freebusy().query(body=body).execute()
-            busy = fb.get("calendars", {}).get("primary", {}).get("busy", [])
+            busy = fb.get("calendars", {}).get(cal_id, {}).get("busy", [])
 
             if not busy:
                 return {"available": True, "events": []}
@@ -486,7 +600,7 @@ async def _check_availability(
             events = (
                 svc.events()
                 .list(
-                    calendarId="primary",
+                    calendarId=cal_id,
                     timeMin=dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
                     timeMax=end_dt.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
                     singleEvents=True,
@@ -522,6 +636,7 @@ async def _check_availability(
         suggestions = await _find_available_slots(
             dt, duration_minutes, slots_to_find=6,
             credentials=credentials, schedule_config=schedule_config,
+            **_cal_kwargs(calendar_id),
         )
 
         return {
@@ -544,6 +659,7 @@ async def _find_available_slots(
     credentials=None,
     schedule_config: BusinessScheduleConfig | None = None,
     exclude_weekdays: set[int] | None = None,
+    calendar_id: str = "",
 ) -> list[datetime]:
     """
     Encontra horários disponíveis próximos ao original.
@@ -569,9 +685,10 @@ async def _find_available_slots(
     pra evitar erro de authorization com scope diferente.
     """
     if not credentials:
-        credentials, _ = _build_google_credentials()
+        credentials, _ = _credentials_for(calendar_id)
     if not credentials:
         return []
+    cal_id = _target_calendar(calendar_id)
 
     effective_duration = duration_minutes
     if schedule_config and schedule_config.appointment_duration_minutes:
@@ -608,10 +725,10 @@ async def _find_available_slots(
                     "timeMin": ds.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
                     "timeMax": de.strftime("%Y-%m-%dT%H:%M:%S-03:00"),
                     "timeZone": "America/Sao_Paulo",
-                    "items": [{"id": "primary"}],
+                    "items": [{"id": cal_id}],
                 }
                 fb = svc.freebusy().query(body=body).execute()
-                return fb.get("calendars", {}).get("primary", {}).get("busy", [])
+                return fb.get("calendars", {}).get(cal_id, {}).get("busy", [])
 
             busy_ranges = await run_in_threadpool(_query_day)
 
@@ -718,10 +835,12 @@ async def _create_google_calendar_event(
     Cria evento no Google Calendar via domain-wide delegation.
     Inclui Google Meet automático e lembretes.
     """
-    credentials, owner_email = _build_google_credentials()
+    calendar_id = getattr(request, "calendar_id", "") or ""
+    credentials, owner_email = _credentials_for(calendar_id)
     if not credentials:
         log.warning("Google Calendar não configurado")
         return {"event_id": "", "meeting_url": "", "calendar_ok": False}
+    cal_id = _target_calendar(calendar_id)
 
     try:
 
@@ -797,7 +916,7 @@ async def _create_google_calendar_event(
 
             # conferenceDataVersion só quando tem conferenceData
             insert_kwargs = {
-                "calendarId": "primary",
+                "calendarId": cal_id,
                 "body": event,
                 "sendUpdates": "all",
             }
@@ -839,10 +958,12 @@ async def _update_google_calendar_event(
       {calendar_ok: True, event_id, meeting_url} se OK
       {calendar_ok: False, ...} se evento não existe ou update falhou.
     """
-    credentials, owner_email = _build_google_credentials()
+    calendar_id = getattr(request, "calendar_id", "") or ""
+    credentials, owner_email = _credentials_for(calendar_id)
     if not credentials:
         log.warning("Google Calendar não configurado (update)")
         return {"event_id": event_id, "meeting_url": "", "calendar_ok": False}
+    cal_id = _target_calendar(calendar_id)
 
     try:
         def _patch():
@@ -897,7 +1018,7 @@ async def _update_google_calendar_event(
                 patch_body["location"] = request.location
 
             return svc.events().patch(
-                calendarId="primary",
+                calendarId=cal_id,
                 eventId=event_id,
                 body=patch_body,
                 sendUpdates="all",
@@ -1017,7 +1138,7 @@ def _parse_datetime(dt_str: str) -> datetime | None:
 # ================================================================
 
 
-async def _delete_google_calendar_event(event_id: str) -> dict:
+async def _delete_google_calendar_event(event_id: str, calendar_id: str = "") -> dict:
     """
     Deleta evento no Google Calendar via events().delete().
     Envia notificação aos participantes (sendUpdates=all) cancelando o convite.
@@ -1036,10 +1157,11 @@ async def _delete_google_calendar_event(event_id: str) -> dict:
     if not event_id:
         return {"ok": False, "detail": "empty_event_id"}
 
-    credentials, owner_email = _build_google_credentials()
+    credentials, owner_email = _credentials_for(calendar_id)
     if not credentials:
         log.warning("Google Calendar não configurado (delete)")
         return {"ok": False, "detail": "no_credentials"}
+    cal_id = _target_calendar(calendar_id)
 
     try:
         def _delete():
@@ -1047,7 +1169,7 @@ async def _delete_google_calendar_event(event_id: str) -> dict:
 
             svc = build("calendar", "v3", credentials=credentials)
             return svc.events().delete(
-                calendarId="primary",
+                calendarId=cal_id,
                 eventId=event_id,
                 sendUpdates="all",
             ).execute()
@@ -1067,12 +1189,13 @@ async def _delete_google_calendar_event(event_id: str) -> dict:
         return {"ok": False, "detail": f"{err_type}: {err_str[:100]}"}
 
 
-async def cancel_appointment(event_id: str) -> dict:
+async def cancel_appointment(event_id: str, calendar_id: str = "") -> dict:
     """
     Entry point pra cancelamento. Delega ao delete do Calendar.
 
     Args:
         event_id: ID do evento no Google Calendar.
+        calendar_id: agenda do cliente (vazio = legado).
 
     Returns:
         {status: "confirmed" | "error", detail: str}
@@ -1082,7 +1205,7 @@ async def cancel_appointment(event_id: str) -> dict:
     if not event_id:
         return {"status": "error", "detail": "empty_event_id"}
 
-    result = await _delete_google_calendar_event(event_id)
+    result = await _delete_google_calendar_event(event_id, calendar_id=calendar_id)
 
     if result.get("ok"):
         return {"status": "confirmed", "detail": result.get("detail", "")}
@@ -1101,9 +1224,11 @@ async def find_next_available_slots(
     urgency: str = "normal",
     schedule_config: BusinessScheduleConfig | None = None,
     exclude_weekdays: set[int] | None = None,
+    calendar_id: str = "",
 ) -> dict:
     """
     Busca os próximos N horários livres no Google Calendar, ordenados cronologicamente.
+    calendar_id: agenda do cliente (vazio = legado).
 
     Usada pela action check_availability quando o lead pergunta disponibilidade
     sem sugerir horário específico ("tem vaga amanhã?", "quando tem livre?",
@@ -1128,7 +1253,7 @@ async def find_next_available_slots(
 
     Reutiliza _find_available_slots que já existe no módulo.
     """
-    credentials, owner_email = _build_google_credentials()
+    credentials, owner_email = _credentials_for(calendar_id)
     if not credentials:
         log.warning("check_availability: Google Calendar não configurado")
         return {"status": "no_credentials", "slots": [], "count": 0}
@@ -1147,6 +1272,7 @@ async def find_next_available_slots(
             credentials=credentials,
             schedule_config=schedule_config,
             exclude_weekdays=exclude_weekdays,
+            **_cal_kwargs(calendar_id),
         )
 
         if not slots:
@@ -1201,6 +1327,7 @@ async def check_specific_slot(
     requested_datetime: str,
     duration_minutes: int = 60,
     schedule_config: BusinessScheduleConfig | None = None,
+    calendar_id: str = "",
 ) -> dict:
     """
     Verifica a disponibilidade de UM horário específico pedido pelo lead (read-only).
@@ -1237,7 +1364,7 @@ async def check_specific_slot(
         log.info(f"check_specific_slot | datetime não parseável | raw={raw[:40]}")
         return {"status": "unparseable", "requested": raw}
 
-    credentials, _ = _build_google_credentials()
+    credentials, _ = _credentials_for(calendar_id)
     if not credentials:
         log.warning("check_specific_slot | Google Calendar não configurado")
         return {"status": "no_credentials"}
@@ -1253,6 +1380,7 @@ async def check_specific_slot(
         alternatives = await _find_available_slots(
             dt, effective_duration, slots_to_find=6,
             credentials=credentials, schedule_config=schedule_config,
+            **_cal_kwargs(calendar_id),
         )
         log.info(f"check_specific_slot | fora do horário | {requested_fmt} | reason={reason}")
         return {
@@ -1265,6 +1393,7 @@ async def check_specific_slot(
     try:
         availability = await _check_availability(
             dt, effective_duration, schedule_config=schedule_config,
+            **_cal_kwargs(calendar_id),
         )
     except Exception as e:
         log.error(f"check_specific_slot | erro | {type(e).__name__}: {str(e)[:120]}")

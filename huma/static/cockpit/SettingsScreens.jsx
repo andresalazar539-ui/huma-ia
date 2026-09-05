@@ -1563,7 +1563,7 @@ const NegocioIntegShortcut = ({ onNavMain }) => {
       setRows([
         { name: 'WhatsApp', ...wa },
         { name: 'Balcão (chat no site)', on: true, sub: balcao.replace(/^https?:\/\//, '') || 'Link próprio' },
-        { name: 'Google Calendar', on: !!c.google_calendar, sub: c.google_calendar ? 'Agenda ativa' : (c.enable_scheduling ? 'Sem credencial no servidor' : 'Agendamento desligado') },
+        { name: 'Google Calendar', on: !!c.google_calendar, sub: c.google_calendar ? (c.google_calendar_id || 'Sua agenda conectada') : 'Conecte sua agenda em Integrações' },
         { name: 'Bling ERP', on: !!c.bling_access_token, sub: c.bling_access_token ? 'Estoque e pedidos' : 'Não conectado' },
         { name: 'CRM', on: !!c.crm_access_token, sub: c.crm_access_token ? (c.crm_provider || 'Conectado') : 'Nenhum conectado' },
         { name: 'Voz clonada', on: !!c.voice_id, sub: c.voice_id ? (c.enable_audio ? 'Áudios ligados' : 'Áudios desligados') : 'Sem voz' },

@@ -800,3 +800,39 @@ async function rebuildPlaybook() {
 }
 
 Object.assign(window, { fetchGaps, answerGap, dismissGap, fetchPlaybook, patchPlaybook, answerLacuna, rebuildPlaybook });
+
+/* ---------------- Google Calendar por cliente + WhatsApp oficial manual ---------------- */
+async function fetchCalendar() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/calendar`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Testa a agenda de verdade (cria e apaga um evento de teste) e grava se der certo.
+async function connectCalendar(calendarId) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/calendar/connect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ calendar_id: calendarId }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function disconnectCalendar() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/calendar`, { method: 'DELETE', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Número que já existe na Cloud API (piloto assistido / cliente com BSP):
+// valida o token, registra, assina webhooks e ativa o canal oficial.
+async function whatsappMetaConnectManual(payload) {
+  const r = await fetch(`/whatsapp/meta/connect-manual?client_id=${encodeURIComponent(CLIENT_ID)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(payload || {}),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+Object.assign(window, { fetchCalendar, connectCalendar, disconnectCalendar, whatsappMetaConnectManual });

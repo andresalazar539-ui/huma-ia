@@ -159,6 +159,81 @@ async def meta_connect(
     }
 
 
+class MetaManualPayload(BaseModel):
+    """Credenciais de um número que JÁ existe na Cloud API (piloto / cliente com BSP)."""
+
+    waba_id: str = Field(..., min_length=5, max_length=40)
+    phone_number_id: str = Field(..., min_length=5, max_length=40)
+    access_token: str = Field(..., min_length=20, max_length=600)
+    pin: str = Field(default="", max_length=6)
+
+
+@router.post("/whatsapp/meta/connect-manual", tags=["WhatsApp Oficial"])
+async def meta_connect_manual(
+    client_id: str,
+    payload: MetaManualPayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
+) -> dict:
+    """
+    Conexão oficial SEM Embedded Signup (2026-09-05): o dono (ou o
+    suporte, no piloto assistido) cola WABA ID, Phone Number ID e um
+    token permanente de usuário do sistema. Mesmos 3 passos do connect:
+    valida o token lendo o número → registra → assina webhooks → provider
+    vira 'meta'. Não depende de META_ES_CONFIG_ID; o webhook do app
+    (META_APP_SECRET) continua obrigatório pra receber mensagens.
+    """
+    await verify_api_key_manual(client_id, creds, huma_session)
+
+    waba_id = payload.waba_id.strip()
+    phone_number_id = payload.phone_number_id.strip()
+    access_token = payload.access_token.strip()
+
+    # Passo 0: o token enxerga esse número? (valida credencial sem gravar nada)
+    info = await mo.fetch_phone_info(phone_number_id, access_token)
+    if info.get("status") != "ok":
+        return {
+            "status": "error", "step": "validate", "connected": False, "retryable": False,
+            "user_message": info.get("user_message") or "A Meta não reconheceu esse token pra esse número. Confira o Phone Number ID e gere o token de novo.",
+        }
+
+    # Credenciais válidas: grava já (retry sem recolar tudo)
+    await db.update_client(
+        client_id,
+        {"meta_access_token": access_token, "waba_id": waba_id, "phone_number_id": phone_number_id},
+    )
+
+    pin = payload.pin.strip() or mo.derive_pin(client_id)
+    registered = await mo.register_phone(phone_number_id, access_token, pin)
+    if registered["status"] != "ok":
+        return {
+            "status": "error", "step": "register", "connected": False, "retryable": True,
+            "user_message": registered["user_message"],
+        }
+
+    subscribed = await mo.subscribe_waba(waba_id, access_token)
+    if subscribed["status"] != "ok":
+        return {
+            "status": "error", "step": "subscribe", "connected": False, "retryable": True,
+            "user_message": subscribed["user_message"],
+        }
+
+    await db.update_client(client_id, {"whatsapp_provider": "meta"})
+    log.info(
+        f"WhatsApp oficial conectado (manual) | client={client_id} | waba={waba_id} | "
+        f"pnid={phone_number_id} | quality={info.get('quality_rating', '')}"
+    )
+    return {
+        "status": "ok",
+        "connected": True,
+        "waba_id": waba_id,
+        "phone_number_id": phone_number_id,
+        "verified_name": info.get("verified_name", ""),
+        "display_phone_number": info.get("display_phone_number", ""),
+        "quality_rating": info.get("quality_rating", ""),
+    }
+
+
 @router.get("/whatsapp/meta/status", tags=["WhatsApp Oficial"])
 async def meta_status(
     client_id: str,
