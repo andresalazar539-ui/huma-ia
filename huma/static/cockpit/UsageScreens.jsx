@@ -338,6 +338,12 @@ const SpendControlCard = ({ billing, onChanged }) => {
           Extra neste ciclo: {over.conversations || 0} {over.conversations === 1 ? 'conversa' : 'conversas'} · {fmt(over.brl)}
         </span>
       </div>
+      {billing && Number(billing.overage_pending_brl) > 0 && (
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ember-ink)', marginTop: 8 }}>
+          Já programado na próxima fatura: {fmt(billing.overage_pending_brl)} de conversas extras
+          {billing.next_charge_brl ? ` · total da cobrança ${fmt(billing.next_charge_brl)}` : ''}
+        </div>
+      )}
 
       <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.6 }}>
         Nunca cobramos além do que você autorizou · Nenhuma conversa em andamento é cortada · Nenhum lead some: se a HUMA parar, ele fica na sua fila · Aviso em 80%, em 100% e a cada R$ 100 de extra.
@@ -878,8 +884,8 @@ const CreditosScreen = ({ onBack }) => {
   // Pacotes REAIS do backend (billing.extra_packs — fonte única de verdade).
   const fmtBrl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
   const [packs, setPacks] = useStateU([
-    { id: 'pack_200', size: '+200', amount: 200, price: fmtBrl(39.90), priceNum: 39.90 },
-    { id: 'pack_500', size: '+500', amount: 500, price: fmtBrl(79.90), priceNum: 79.90, highlight: 'Melhor valor' },
+    { id: 'pack_200', size: '+200', amount: 200, price: fmtBrl(349.00), priceNum: 349.00 },
+    { id: 'pack_500', size: '+500', amount: 500, price: fmtBrl(797.00), priceNum: 797.00, highlight: 'Melhor valor' },
   ]);
   const [selected, setSelected] = useStateU(0);
   const [billing, setBilling] = useStateU(null);
@@ -1426,29 +1432,21 @@ const CreditosScreen = ({ onBack }) => {
 // IDs espelham o Plan enum do backend (billing_service.PLAN_CONFIG) —
 // o botão manda esse id pro POST /billing/subscribe. Preços/franquias
 // PRECISAM bater com o PLAN_CONFIG (fonte da verdade da cobrança).
+// Produto único (decisão 2026-09-04): "a partir de R$ 397 e cresce com o
+// uso". O id 'start' é o que o backend conhece (Plan.START = produto HUMA).
 const HUMA_PLANS = [
   {
-    id: 'start', name: 'Start', price: 'R$ 347,70', priceNum: 347.70,
-    features: [
-      'Clone de vendas no WhatsApp 24/7',
-      'Agendamento automático (Google Agenda)',
-      'Cobrança dos seus clientes (Pix, boleto, cartão)',
-      'Follow-up automático de leads parados',
-      'Cockpit completo (conversas, agenda, relatórios)',
-    ],
-    limit: '500 conversas/mês',
-  },
-  {
-    id: 'on', name: 'ON', price: 'R$ 547,70', priceNum: 547.70,
+    id: 'start', name: 'HUMA', price: 'R$ 397,00', priceNum: 397.00,
     popular: true,
     features: [
-      'Tudo do Start',
-      'Voz clonada — sua IA manda áudios com a SUA voz',
-      'Campanhas outbound (reativação de leads)',
-      'Integração com CRM (Pipedrive)',
-      'Suporte prioritário',
+      'Sua sócia de vendas no WhatsApp 24/7, com funil de verdade',
+      'WhatsApp oficial incluso — sem conta na Meta, sem fatura em dólar',
+      'Agenda verificada no Google Agenda (nunca marca em cima)',
+      'Pix, boleto e cartão na conversa — o dinheiro cai na sua conta',
+      'Follow-up automático, voz clonada, campanhas e CRM',
+      'Cockpit completo: conversas, agenda, relatórios, placar',
     ],
-    limit: '1.500 conversas/mês',
+    limit: '150 conversas engajadas/mês · depois R$ 1,99 por conversa, só se você liberar',
   },
 ];
 
@@ -1606,8 +1604,8 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
       </div>
 
       <div style={{
-        padding: '28px 32px 48px', maxWidth: 1100,
-        display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 16,
+        padding: '28px 32px 48px', maxWidth: plans.length > 1 ? 1100 : 600,
+        display: 'grid', gridTemplateColumns: plans.length > 1 ? 'repeat(2, 1fr)' : '1fr', gap: 16,
       }}>
         {plans.map(p => (
           <div key={p.id} style={{

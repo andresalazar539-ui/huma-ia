@@ -8,17 +8,22 @@
 #   - HUMA = inteligência pura (assinatura)
 #   - Margem mínima 50% no pior cenário
 #
-# Planos (definidos pelo André em 2026-07-04, meta de margem >= 80%):
-#   Start  R$ 347,70 → 500 conversas
-#   ON     R$ 547,70 → 1.500 conversas + voz clonada + outbound + CRM
+# Modelo de preço (decisão do André 2026-09-04 — SEM planos):
+#   "A partir de R$ 397/mês e cresce com o uso."
+#   HUMA   R$ 397,00 → 150 conversas ENGAJADAS, tudo incluso (voz,
+#          outbound, CRM, WhatsApp oficial). Excedente automático a
+#          OVERAGE_PRICE_BRL por conversa, conforme o modo de gasto
+#          escolhido pelo dono (travado / com limite / liberado).
+#   O enum Plan mantém START (= produto HUMA) e ON (legado, mesma
+#   config) só pra compatibilidade de assinaturas/ext_ref antigos.
 #
-# Pacotes extras:
-#   200 conversas → R$ 39,90
-#   500 conversas → R$ 79,90
+# Pacotes pré-pagos (desconto sobre o excedente, opcionais):
+#   200 conversas → R$ 349,00 (R$ 1,745/conversa)
+#   500 conversas → R$ 797,00 (R$ 1,594/conversa)
 #
-# Clone extra: R$ 49,90/mês (número adicional, sem conversas extras)
+# Clone extra: R$ 97,00/mês (número adicional, sem conversas extras)
 # Multi-número: conversas compartilhadas no pool único
-# Limite: 30 chamadas IA por conversa (janela 24h)
+# Limite: 50 chamadas IA por conversa (janela 24h)
 # ================================================================
 
 import json
@@ -49,45 +54,37 @@ class Plan(str, Enum):
     ON = "on"
 
 
+_HUMA_PRODUCT = {
+    "name": "HUMA",
+    "price_brl": 397.00,
+    "included_conversations": 150,
+    "max_ia_calls_per_conversation": 50,
+    "audio_enabled": True,
+    "multi_clone": False,
+    "max_numbers": 1,
+    "regional_voices": True,
+    "max_products": -1,
+    "outbound_templates": True,
+    "priority_support": True,
+    "crm_integration": True,
+    "api_access": False,
+}
+
 PLAN_CONFIG = {
-    Plan.START: {
-        "name": "Start",
-        "price_brl": 347.70,
-        "included_conversations": 500,
-        "max_ia_calls_per_conversation": 50,
-        "audio_enabled": False,
-        "multi_clone": False,
-        "max_numbers": 1,
-        "regional_voices": False,
-        "max_products": 50,
-        "outbound_templates": False,
-        "priority_support": False,
-        "crm_integration": False,
-        "api_access": False,
-    },
-    Plan.ON: {
-        "name": "ON",
-        "price_brl": 547.70,
-        "included_conversations": 1500,
-        "max_ia_calls_per_conversation": 50,
-        "audio_enabled": True,
-        "multi_clone": False,
-        "max_numbers": 1,
-        "regional_voices": True,
-        "max_products": -1,
-        "outbound_templates": True,
-        "priority_support": True,
-        "crm_integration": True,
-        "api_access": False,
-    },
+    # Produto único. "start" é o id que o Cockpit manda e que vai no
+    # external_reference do Mercado Pago.
+    Plan.START: dict(_HUMA_PRODUCT),
+    # Legado: assinaturas criadas como "on" antes de 2026-09-04 recebem
+    # exatamente o mesmo produto. Não exibido na tela de planos.
+    Plan.ON: dict(_HUMA_PRODUCT, name="HUMA (legado ON)"),
 }
 
 EXTRA_PACKS = {
-    "pack_200": {"conversations": 200, "price_brl": 39.90},
-    "pack_500": {"conversations": 500, "price_brl": 79.90},
+    "pack_200": {"conversations": 200, "price_brl": 349.00},
+    "pack_500": {"conversations": 500, "price_brl": 797.00},
 }
 
-EXTRA_CLONE_PRICE_BRL = 49.90
+EXTRA_CLONE_PRICE_BRL = 97.00
 
 
 # ================================================================
@@ -854,6 +851,52 @@ async def get_cycle_overage(client_id: str) -> dict:
         "brl": round(count * OVERAGE_PRICE_BRL, 2),
         "unit_price_brl": OVERAGE_PRICE_BRL,
         "cycle_start": start.isoformat(),
+    }
+
+
+async def get_unbilled_overage(client_id: str, billed_until_iso: str = "") -> dict:
+    """
+    Excedente ainda NÃO programado em fatura: conversas "excedente" desde
+    `billed_until_iso` (última foto tirada pro fechamento) ou, sem foto,
+    desde o início do ciclo. Devolve também `until` (agora, ISO) — quem
+    programa a cobrança grava esse instante como novo billed_until.
+
+    Returns:
+        {"conversations", "brl", "since"(ISO), "until"(ISO)}
+    """
+    since_dt: datetime | None = None
+    if billed_until_iso:
+        try:
+            since_dt = datetime.fromisoformat(billed_until_iso.replace("Z", "+00:00"))
+            if since_dt.tzinfo is not None:
+                since_dt = since_dt.astimezone(timezone.utc).replace(tzinfo=None)
+        except (ValueError, TypeError):
+            since_dt = None
+    if since_dt is None:
+        since_dt = await get_cycle_start(client_id)
+    until_dt = datetime.utcnow()
+
+    count = 0
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("credit_transactions")
+                .select("amount")
+                .eq("client_id", client_id)
+                .eq("type", "credit")
+                .eq("source", OVERAGE_SOURCE)
+                .gte("created_at", since_dt.isoformat())
+                .lt("created_at", until_dt.isoformat())
+                .limit(5000).execute()
+        )
+        count = sum(int(r.get("amount") or 0) for r in (resp.data or []))
+    except Exception as e:
+        log.warning(f"SpendControl | get_unbilled_overage | client={client_id} | {type(e).__name__}: {e}")
+    return {
+        "conversations": count,
+        "brl": round(count * OVERAGE_PRICE_BRL, 2),
+        "since": since_dt.isoformat(),
+        "until": until_dt.isoformat(),
     }
 
 

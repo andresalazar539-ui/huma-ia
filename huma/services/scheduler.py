@@ -868,9 +868,68 @@ async def _run_spend_alert_job() -> None:
     log.info(f"spend_alert | sent={sent} | skipped={skipped} | errors={errors} | clients={len(seen)}")
 
 
+# ================================================================
+# JOB: excedente na fatura (2026-09-04)
+# ================================================================
+
+async def _run_overage_invoice_job() -> None:
+    """
+    Roda a cada 6h. Pra cada assinatura ativa com preapproval no MP,
+    programa o excedente não faturado na próxima cobrança quando a
+    renovação está a até OVERAGE_LEAD_DAYS (subscription_service).
+    Idempotente: overage_pending_brl > 0 = já programado, pula.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from huma.services import subscription_service as subs
+    from huma.services.db_service import get_supabase
+
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions")
+                .select("client_id,payment_provider_id,overage_pending_brl")
+                .eq("status", "active")
+                .limit(2000).execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        log.error(f"overage_invoice | subscriptions indisponível | {type(e).__name__}: {e}")
+        return
+
+    scheduled = 0
+    skipped = 0
+    errors = 0
+    for row in rows:
+        client_id = row.get("client_id") or ""
+        pre = (row.get("payment_provider_id") or "").strip()
+        if not client_id or not pre or pre.startswith("coupon:"):
+            skipped += 1
+            continue
+        if float(row.get("overage_pending_brl") or 0.0) > 0:
+            skipped += 1
+            continue
+        try:
+            result = await subs.schedule_overage_charge(client_id)
+            if result.get("status") == "scheduled":
+                scheduled += 1
+            elif result.get("status") == "error":
+                errors += 1
+            else:
+                skipped += 1
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            errors += 1
+            log.warning(f"overage_invoice | {client_id} | {type(e).__name__}: {e}")
+
+    log.info(f"overage_invoice | scheduled={scheduled} | skipped={skipped} | errors={errors} | subs={len(rows)}")
+
+
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     # Controle de gasto — avisos de 80% e degraus de excedente: a cada 1h, lock 30min
     ("spend_alert", _run_spend_alert_job, 3600, 1800),
+    # Excedente na fatura — programa na renovação: a cada 6h, lock 30min
+    ("overage_invoice", _run_overage_invoice_job, 21600, 1800),
     # Relatório de resultado pro dono: a cada 1h (age só às 8h BRT), lock 30min
     ("owner_report", _run_owner_report_job, 3600, 1800),
     # Item 19 — follow-up: roda a cada 1h, lock vale 30min

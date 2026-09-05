@@ -22,6 +22,7 @@ import pytest
 
 from huma.services import billing_service as billing
 from huma.services import subscription_service as subs
+from huma.services.billing_service import PLAN_CONFIG, Plan
 
 
 # ================================================================
@@ -403,7 +404,8 @@ class TestBillingStatusTrial:
         }]}, balance=800)
         out = asyncio.run(subs.get_billing_status("cli_x"))
         assert out["plan"] == "on"
-        assert out["plan_name"] == "ON"
+        # Produto único (2026-09-04): "on" é legado e recebe o produto HUMA
+        assert out["plan_name"] == PLAN_CONFIG[Plan.ON]["name"]
         assert out["subscription_status"] == "active"
         assert out["balance"] == 800
         assert out["trial"] is False
@@ -526,7 +528,10 @@ class TestWelcomeEmail:
         monkeypatch.setattr(email_service, "send_subscription_welcome", fake_send)
 
         asyncio.run(subs._send_subscription_welcome_bg("cli_x", "on"))
-        assert sent == [("dono@negocio.com", "messi", "ON", 1500)]
+        assert sent == [(
+            "dono@negocio.com", "messi",
+            PLAN_CONFIG[Plan.ON]["name"], PLAN_CONFIG[Plan.ON]["included_conversations"],
+        )]
 
     def test_bg_nunca_levanta(self, monkeypatch):
         def boom():
@@ -558,7 +563,8 @@ class TestWelcomeEmail:
         assert len(sent_wa) == 1
         phone, message, cid = sent_wa[0]
         assert phone == "5511999999999"
-        assert "ON" in message and "1.500" in message
+        assert PLAN_CONFIG[Plan.ON]["name"] in message
+        assert str(PLAN_CONFIG[Plan.ON]["included_conversations"]) in message
         assert cid == "cli_x"
 
     def test_bg_sem_owner_phone_nao_manda_zap(self, monkeypatch):

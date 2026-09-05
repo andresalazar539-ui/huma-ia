@@ -23,7 +23,7 @@
 # ================================================================
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -721,12 +721,18 @@ async def get_billing_status(client_id: str) -> dict:
     except Exception:
         waiting = 0
 
+    overage_pending = float((sub or {}).get("overage_pending_brl") or 0.0)
+    overage_base = float((sub or {}).get("overage_base_amount_brl") or 0.0)
+
     return {
         "spend_mode": spend["mode"],
         "spend_cap_brl": spend["cap_brl"],
         "overage": overage,
         "overage_price_brl": billing.OVERAGE_PRICE_BRL,
         "waiting_leads": waiting,
+        # Excedente já programado na próxima cobrança (0 = nada ainda)
+        "overage_pending_brl": overage_pending,
+        "next_charge_brl": round(overage_base + overage_pending, 2) if overage_pending > 0 else None,
         "plan": plan_value or None,
         "plan_name": plan_name,
         "price_brl": (config or {}).get("price_brl"),
@@ -970,6 +976,8 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         f"RENOVAÇÃO PAGA | client={client_id} | plan={plan_value} | "
         f"+{config['included_conversations']} conversas | apid={authorized_payment_id}"
     )
+    # Excedente programado nesta fatura: volta o preapproval ao valor base.
+    asyncio.create_task(settle_overage_after_charge(client_id))
 
 
 async def _recently_credited(client_id: str, days: int = 20) -> bool:
@@ -1446,6 +1454,8 @@ async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_s
             f"RENOVAÇÃO PAGA (topic payment) | client={client_id} | plan={plan_value} | "
             f"+{config['included_conversations']} conversas | payid={mp_payment_id}"
         )
+        # Excedente programado nesta fatura: volta o preapproval ao valor base.
+        asyncio.create_task(settle_overage_after_charge(client_id))
     except Exception as e:
         log.critical(f"Erro creditando cobrança | payid={mp_payment_id} | {type(e).__name__}: {e}")
 
@@ -1598,3 +1608,208 @@ async def _set_subscription_status(client_id: str, status: str) -> None:
     )
     await cache.delete_key(f"sub_gate:{client_id}")
     await cache.delete_key(f"plan_cache:{client_id}")
+
+
+# ================================================================
+# EXCEDENTE NA FATURA (2026-09-04)
+#
+# O excedente (conversas além do plano, modo com limite/liberado) é
+# cobrado JUNTO com a renovação: até OVERAGE_LEAD_DAYS antes da próxima
+# cobrança do preapproval, o job overage_invoice tira uma foto do
+# excedente ainda não faturado e sobe o transaction_amount do
+# preapproval no MP (base + excedente). Quando a renovação é paga, o
+# webhook chama settle_overage_after_charge e o valor volta ao base.
+#
+# Nunca cobra duas vezes: overage_billed_until marca até onde o razão
+# já foi faturado; conversas depois da foto entram na fatura seguinte.
+# Sem preapproval real (cortesia coupon:*, trial) não há o que somar.
+# Nenhuma função aqui levanta exceção.
+# ================================================================
+
+OVERAGE_LEAD_DAYS = 3
+
+
+async def _mp_put(path: str, body: dict) -> Optional[dict]:
+    """PUT na API do MP. Retorna dict ou None (erro logado)."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.put(f"{MP_BASE}{path}", headers=_headers(), json=body)
+        if resp.status_code in (200, 201):
+            return resp.json()
+        log.error(f"MP PUT {path} | status={resp.status_code} | {resp.text[:200]}")
+        return None
+    except httpx.TimeoutException:
+        log.error(f"Timeout | service=mercadopago | op=PUT {path}")
+        return None
+    except httpx.HTTPError as e:
+        log.error(f"HTTP erro | service=mercadopago | op=PUT {path} | {type(e).__name__}: {e}")
+        return None
+
+
+def _parse_mp_datetime(raw: str) -> Optional[datetime]:
+    """'2026-10-04T10:00:00.000-04:00' → naive UTC. None se vazio/inválido."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+async def schedule_overage_charge(client_id: str, lead_days: int = OVERAGE_LEAD_DAYS) -> dict:
+    """
+    Programa o excedente não faturado na próxima cobrança do preapproval.
+
+    Returns:
+        {"status": "scheduled"|"skipped"|"error", "detail", "brl", "conversations"}
+    """
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions")
+                .select("id,status,payment_provider_id,overage_pending_brl,overage_billed_until,price_brl")
+                .eq("client_id", client_id)
+                .order("updated_at", desc=True).limit(1).execute()
+        )
+    except Exception as e:
+        log.warning(
+            f"Excedente | leitura falhou | client={client_id} | {type(e).__name__}: {str(e)[:120]} | "
+            f"RODE scripts/migration_overage_billing.sql"
+        )
+        return {"status": "error", "detail": "subscriptions indisponível"}
+
+    sub = resp.data[0] if resp.data else None
+    if not sub or sub.get("status") != "active":
+        return {"status": "skipped", "detail": "sem assinatura ativa"}
+    preapproval_id = (sub.get("payment_provider_id") or "").strip()
+    if not preapproval_id or preapproval_id.startswith("coupon:"):
+        return {"status": "skipped", "detail": "sem preapproval no MP"}
+    if float(sub.get("overage_pending_brl") or 0.0) > 0:
+        return {"status": "skipped", "detail": "já programado nesta fatura"}
+
+    pre = await _mp_get(f"/preapproval/{preapproval_id}")
+    if not pre:
+        return {"status": "error", "detail": "preapproval indisponível no MP"}
+    if (pre.get("status") or "") != "authorized":
+        return {"status": "skipped", "detail": f"preapproval {pre.get('status')}"}
+
+    next_dt = _parse_mp_datetime(pre.get("next_payment_date") or "")
+    if not next_dt:
+        return {"status": "skipped", "detail": "sem next_payment_date"}
+    if next_dt - datetime.utcnow() > timedelta(days=lead_days):
+        return {"status": "skipped", "detail": "renovação ainda longe"}
+
+    unbilled = await billing.get_unbilled_overage(client_id, sub.get("overage_billed_until") or "")
+    brl = float(unbilled.get("brl") or 0.0)
+    if brl < billing.OVERAGE_PRICE_BRL:
+        return {"status": "skipped", "detail": "sem excedente", "brl": 0.0, "conversations": 0}
+
+    auto = pre.get("auto_recurring") or {}
+    base = float(auto.get("transaction_amount") or sub.get("price_brl") or 0.0)
+    if base <= 0:
+        return {"status": "error", "detail": "valor base do preapproval desconhecido"}
+    new_amount = round(base + brl, 2)
+
+    updated = await _mp_put(f"/preapproval/{preapproval_id}", {
+        "auto_recurring": {"transaction_amount": new_amount, "currency_id": "BRL"},
+    })
+    if not updated:
+        return {"status": "error", "detail": "MP recusou o novo valor"}
+
+    try:
+        await run_in_threadpool(
+            lambda: supa.table("subscriptions").update({
+                "overage_pending_brl": brl,
+                "overage_base_amount_brl": base,
+                "overage_billed_until": unbilled["until"],
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("id", sub.get("id")).execute()
+        )
+    except Exception as e:
+        # MP já está com o valor novo — reverte pra não cobrar sem registro.
+        log.error(f"Excedente | gravar foto falhou, revertendo MP | client={client_id} | {type(e).__name__}: {e}")
+        await _mp_put(f"/preapproval/{preapproval_id}", {
+            "auto_recurring": {"transaction_amount": base, "currency_id": "BRL"},
+        })
+        return {"status": "error", "detail": "não consegui registrar a foto"}
+
+    # Registro no razão (amount 0): auditoria do que foi programado.
+    await billing.add_conversations(
+        client_id, 0, source="excedente_faturado",
+        description=(
+            f"R$ {brl:.2f} ({unbilled['conversations']} conversas extras) programado na "
+            f"renovação de {next_dt.strftime('%d/%m')} | pre={preapproval_id}"
+        ),
+    )
+
+    # Aviso ao dono ANTES da cobrança — sem surpresa na fatura.
+    try:
+        from huma.services import db_service as db
+        from huma.services import whatsapp_service as wa
+        client = await db.get_client(client_id)
+        if client and client.owner_phone:
+            await wa.notify_owner(
+                client.owner_phone,
+                (
+                    f"🧾 Sua próxima fatura HUMA (dia {next_dt.strftime('%d/%m')}): "
+                    f"R$ {base:.2f} do plano + R$ {brl:.2f} de {unbilled['conversations']} "
+                    f"conversas extras = R$ {new_amount:.2f}. "
+                    f"Extrato em Ajustes > Uso no Cockpit."
+                ),
+                client_id=client_id,
+            )
+    except Exception as e:
+        log.warning(f"Excedente | aviso ao dono falhou | client={client_id} | {type(e).__name__}: {e}")
+
+    log.info(
+        f"EXCEDENTE PROGRAMADO | client={client_id} | pre={preapproval_id} | "
+        f"base={base:.2f} | extra={brl:.2f} | total={new_amount:.2f} | renovacao={next_dt.date()}"
+    )
+    return {"status": "scheduled", "brl": brl, "conversations": unbilled["conversations"], "total": new_amount}
+
+
+async def settle_overage_after_charge(client_id: str) -> None:
+    """
+    Chamado após uma renovação PAGA: se havia excedente programado,
+    devolve o preapproval ao valor base e zera o pendente. Idempotente.
+    """
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions")
+                .select("id,payment_provider_id,overage_pending_brl,overage_base_amount_brl")
+                .eq("client_id", client_id)
+                .order("updated_at", desc=True).limit(1).execute()
+        )
+        sub = resp.data[0] if resp.data else None
+        if not sub:
+            return
+        pending = float(sub.get("overage_pending_brl") or 0.0)
+        if pending <= 0:
+            return
+        base = float(sub.get("overage_base_amount_brl") or 0.0)
+        preapproval_id = (sub.get("payment_provider_id") or "").strip()
+        if base > 0 and preapproval_id and not preapproval_id.startswith("coupon:"):
+            restored = await _mp_put(f"/preapproval/{preapproval_id}", {
+                "auto_recurring": {"transaction_amount": base, "currency_id": "BRL"},
+            })
+            if not restored:
+                # Mantém pendente pra próxima renovação tentar restaurar de novo.
+                log.error(f"Excedente | restaurar base falhou | client={client_id} | pre={preapproval_id}")
+                return
+        await run_in_threadpool(
+            lambda: supa.table("subscriptions").update({
+                "overage_pending_brl": 0,
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("id", sub.get("id")).execute()
+        )
+        await billing.add_conversations(
+            client_id, 0, source="excedente_cobrado",
+            description=f"R$ {pending:.2f} de excedente cobrado na renovação | pre={preapproval_id}",
+        )
+        log.info(f"EXCEDENTE COBRADO | client={client_id} | pre={preapproval_id} | R$ {pending:.2f} | base restaurada={base:.2f}")
+    except Exception as e:
+        log.error(f"Excedente | settle falhou | client={client_id} | {type(e).__name__}: {str(e)[:160]}")

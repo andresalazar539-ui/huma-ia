@@ -644,7 +644,7 @@ class TestSubscribeCard:
         assert out["status"] == "ok"
         assert out["subscription_status"] == "active"
         assert effects["upserts"] == [("cli_x", "start", "pre_c1", "active")]
-        assert effects["credits"] == [("cli_x", 500, "mp_primeira_cobranca")]
+        assert effects["credits"] == [("cli_x", PLAN_CONFIG[Plan.START]["included_conversations"], "mp_primeira_cobranca")]
         body = http.last_body
         assert body["card_token_id"] == "tok_cartao_123"
         assert body["status"] == "authorized"
