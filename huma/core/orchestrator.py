@@ -29,6 +29,7 @@ from huma.models.schemas import (
     OnboardingStatus, OutboundStatus,
     PendingApproval, PaymentRequest, SchedulingRequest,
 )
+from huma.core.service_duration import config_for_service
 from huma.services import redis_service as cache
 from huma.services import db_service as db
 from huma.services import ai_service as ai
@@ -688,6 +689,16 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         reply = ai_result["reply"]
         reply_parts = ai_result["reply_parts"]
         actions = ai_result.get("actions", [])
+
+        # Perguntas sem resposta (Cockpit → Negócio): quando a HUMA "vai
+        # confirmar", a dúvida do lead vira item pro dono responder e virar
+        # FAQ. Detecção por regex (zero IA), gravação fire-and-forget.
+        try:
+            from huma.services import knowledge_gaps_service as gaps
+            if gaps.looks_like_gap(reply, ai_result.get("intent", ""), actions):
+                asyncio.create_task(gaps.record_gap(client_id, phone, unified_text, reply))
+        except Exception as e:
+            log.warning(f"KnowledgeGap | detecção falhou | phone={phone} | {type(e).__name__}: {e}")
 
         # Anti-alucinação v10.1: validate_response DESLIGADA.
         # Antes: chamava Haiku (~500 tokens) por msg, sempre retornava safe.
@@ -2233,7 +2244,10 @@ async def _preflight_appointment(phone, action, client_data, conv=None) -> dict:
         meeting_platform=platform,
         location=address,
         lead_context=_build_lead_context(conv),
-        schedule_config=client_data.business_schedule,  # v12 / fix 7.6
+        # v12 / fix 7.6 + duração do serviço cadastrada no Cockpit (2026-09-05)
+        schedule_config=config_for_service(
+            client_data.business_schedule, client_data.products_or_services, action.get("service", "")
+        ),
     )
 
     # v12 (fix 8) — salva dados estáveis assim que Claude digita (antes do pre-flight)
@@ -2297,7 +2311,10 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
         meeting_platform=platform,
         location=address,
         lead_context=_build_lead_context(conv),
-        schedule_config=client_data.business_schedule,  # v12 / fix 7.6
+        # v12 / fix 7.6 + duração do serviço cadastrada no Cockpit (2026-09-05)
+        schedule_config=config_for_service(
+            client_data.business_schedule, client_data.products_or_services, action.get("service", "")
+        ),
     )
 
     # v12 (fix 8) — salva dados estáveis assim que Claude digita (antes do pre-flight)

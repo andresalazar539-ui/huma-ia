@@ -494,6 +494,11 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     # knowledge_docs e team_members NÃO entram aqui — têm rotas próprias
     # (routes/business.py) porque envolvem processamento/e-mail.
     "professionals", "preferred_terms", "owner_name",
+    # Missão, personalidade e identidade (2026-09-05): tudo que o
+    # onboarding coleta passa a ser editável. `capabilities` sincroniza
+    # as flags legadas enable_scheduling/enable_payments no PATCH.
+    "category", "website", "competitors", "capabilities",
+    "lead_collection_fields", "collect_before_offer",
 })
 
 
@@ -562,8 +567,12 @@ async def get_settings(client_id: str, _=Depends(verify_api_key)) -> dict:
     client = await db.get_client(client_id)
     if not client:
         raise HTTPException(404, "Cliente não encontrado")
-    data = client.model_dump()
-    return {"settings": {k: data.get(k) for k in SETTINGS_EDITABLE_FIELDS}}
+    data = client.model_dump(mode="json")
+    settings = {k: data.get(k) for k in SETTINGS_EDITABLE_FIELDS}
+    # Capabilities efetivas (None no banco = derivadas das flags legadas):
+    # a tela de Missão mostra o que VALE hoje, não o campo cru.
+    settings["capabilities_resolved"] = sorted(c.value for c in client.capabilities_resolved)
+    return {"settings": settings}
 
 
 @router.patch("/api/clients/{client_id}/settings", tags=["Cockpit"])
@@ -597,7 +606,14 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
         raise HTTPException(422, f"Valor inválido em '{campo}'.")
 
     # Persiste SÓ o que mudou (valores já normalizados pelo model)
-    persisted = {k: validated.model_dump()[k] for k in accepted}
+    dumped = validated.model_dump(mode="json")
+    persisted = {k: dumped[k] for k in accepted}
+    # Missão do clone: capabilities explícitas mandam nas flags legadas
+    # que partes do código (status da agenda, jobs) ainda leem.
+    if "capabilities" in accepted:
+        caps = set(dumped.get("capabilities") or [])
+        persisted["enable_scheduling"] = "schedule" in caps
+        persisted["enable_payments"] = bool(caps & {"sell_digital", "sell_physical"})
     await db.update_client(client_id, persisted)
     log.info(f"Settings salvos | client={client_id} | fields={sorted(accepted.keys())}")
     return {"status": "ok", "updated": sorted(accepted.keys()), "ignored": ignored}

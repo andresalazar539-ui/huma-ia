@@ -32,7 +32,7 @@ function parseWorkingHours(str) {
 // ============================================================
 // Shared shell — sidebar interna + header + content
 // ============================================================
-const SettingsShell = ({ eyebrow, title, subtitle, tabs, activeTab, onTabChange, onSave, saveLabel, children }) => {
+const SettingsShell = ({ eyebrow, title, subtitle, tabs, activeTab, onTabChange, onSave, saveLabel, extra, children }) => {
   return (
     <div style={{ flex: 1, display: 'flex', minWidth: 0, background: 'var(--paper)' }}>
       {/* Sidebar interna */}
@@ -62,6 +62,12 @@ const SettingsShell = ({ eyebrow, title, subtitle, tabs, activeTab, onTabChange,
             }}>
               <Icon name={t.icon} size={15}/>
               <span style={{ flex: 1 }}>{t.label}</span>
+              {t.badge > 0 && (
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, padding: '1px 7px', borderRadius: 999,
+                  background: 'var(--ember-soft)', color: 'var(--ember-ink)',
+                }}>{t.badge}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -84,7 +90,10 @@ const SettingsShell = ({ eyebrow, title, subtitle, tabs, activeTab, onTabChange,
               </div>
             )}
           </div>
-          {onSave && <Button variant="dark" size="md" onClick={onSave}>{saveLabel || 'Salvar'}</Button>}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {extra}
+            {onSave && <Button variant="dark" size="md" onClick={onSave}>{saveLabel || 'Salvar'}</Button>}
+          </div>
         </div>
         <div style={{ flex: 1, overflow: 'auto', padding: '24px 32px 48px' }}>
           <div style={{ maxWidth: 900, display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -632,10 +641,25 @@ const NegocioScreen = ({ onNavMain }) => {
     setTimeout(() => setSaveLabel('Salvar'), 2200);
   };
 
+  // Perguntas sem resposta: badge na aba (contagem real)
+  const [gapCount, setGapCount] = useStateS(0);
+  const refreshGaps = () => fetchGaps('open').then(r => setGapCount(r.open_count || 0)).catch(() => {});
+  useEffectS(() => { refreshGaps(); }, []);
+
+  // Quando outra aba grava FAQ no servidor (lacuna/pergunta respondida),
+  // recarrega os settings — só se não houver edição pendente aqui.
+  const reloadSettings = () => {
+    if (Object.keys(dirty).length) return;
+    fetchSettings().then(d => setSettings(d.settings || {})).catch(() => {});
+  };
+
   const tabs = [
     { id: 'info',       label: 'Informações do negócio', icon: 'building' },
     { id: 'knowledge',  label: 'HUMA entende seu negócio', icon: 'sparkle' },
+    { id: 'vende',      label: 'Como a HUMA vende', icon: 'chart' },
+    { id: 'missao',     label: 'Missão da HUMA', icon: 'check' },
     { id: 'kb',         label: 'Base de conhecimento', icon: 'file' },
+    { id: 'gaps',       label: 'Perguntas sem resposta', icon: 'alert', badge: gapCount },
     { id: 'integ',      label: 'Integrações', icon: 'plug' },
     { id: 'channels',   label: 'Canais ativos', icon: 'message' },
   ];
@@ -644,9 +668,19 @@ const NegocioScreen = ({ onNavMain }) => {
   let body;
   if (tab === 'info')       body = settings ? <NegocioInfo settings={settings} patch={patch}/> : loading;
   else if (tab === 'knowledge') body = settings ? <NegocioKnowledge settings={settings} patch={patch}/> : loading;
+  else if (tab === 'vende') body = settings ? <NegocioVende settings={settings} reloadSettings={reloadSettings}/> : loading;
+  else if (tab === 'missao') body = settings ? <NegocioMissao settings={settings} patch={patch}/> : loading;
   else if (tab === 'kb')    body = <NegocioKB/>;
+  else if (tab === 'gaps')  body = <NegocioGaps onChanged={() => { refreshGaps(); reloadSettings(); }}/>;
   else if (tab === 'integ') body = <NegocioIntegShortcut onNavMain={onNavMain}/>;
   else                      body = <NegocioChannels onNavMain={onNavMain}/>;
+
+  // "Testar a HUMA": abre o Balcão (mesmo clone, canal próprio) — muda o
+  // tom, testa em 10 segundos, sem gastar WhatsApp.
+  const balcao = (window.getBalcaoUrl && window.getBalcaoUrl()) || '';
+  const testBtn = balcao
+    ? <Button variant="ghost" size="md" icon={<Icon name="message" size={13}/>} onClick={() => window.open(balcao, '_blank')}>Testar a HUMA</Button>
+    : null;
 
   return (
     <SettingsShell
@@ -655,8 +689,9 @@ const NegocioScreen = ({ onNavMain }) => {
       tabs={tabs}
       activeTab={tab}
       onTabChange={setTab}
-      onSave={tab === 'info' || tab === 'knowledge' ? doSave : null}
+      onSave={['info', 'knowledge', 'missao'].includes(tab) ? doSave : null}
       saveLabel={saveLabel}
+      extra={testBtn}
     >
       {body}
     </SettingsShell>
@@ -695,6 +730,12 @@ const NegocioInfo = ({ settings, patch }) => {
           </Field>
           <Field label="O que seu negócio faz" hint="A HUMA usa isso pra se apresentar e responder certo.">
             <Textarea rows={2} value={settings.business_description || ''} onChange={e => patch('business_description', e.target.value)}/>
+          </Field>
+          <Field label="Tipo de negócio" half hint="Escolhe o 'cérebro' da vertical. Mudou? Regere o playbook em Como a HUMA vende.">
+            <Select value={settings.category || 'outros'} onChange={e => patch('category', e.target.value)} options={NEG_CATEGORIES}/>
+          </Field>
+          <Field label="Site (opcional)" half hint="A HUMA lê o site pra montar o playbook e as provas reais.">
+            <Input value={settings.website || ''} placeholder="https://seusite.com.br" onChange={e => patch('website', e.target.value)}/>
           </Field>
           <Field label="WhatsApp do dono (avisos da HUMA)" half hint="Agendamentos, pagamentos e alertas chegam aqui.">
             <Input value={settings.owner_phone || ''} onChange={e => patch('owner_phone', e.target.value)} placeholder="5511987654321"/>
@@ -744,6 +785,26 @@ const NegocioInfo = ({ settings, patch }) => {
 
       <AIScheduleCard settings={settings} patch={patch} businessHours={order.map(k => days[k])}/>
 
+      <Card title="Silêncio pro lead (não incomodar)">
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+          Entre esses horários a HUMA não conversa: manda a mensagem abaixo e retoma quando o silêncio acaba. Deixe vazio pra responder sempre.
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+          <Field label="Começa às" half>
+            <Input value={settings.silent_hours_start || ''} placeholder="22:00" onChange={e => patch('silent_hours_start', e.target.value)}/>
+          </Field>
+          <Field label="Termina às" half>
+            <Input value={settings.silent_hours_end || ''} placeholder="07:00" onChange={e => patch('silent_hours_end', e.target.value)}/>
+          </Field>
+          <Field label="Mensagem automática nesse período">
+            <Input value={settings.silent_hours_message || ''} placeholder="Oi! Recebi sua mensagem. Te respondo em breve!" onChange={e => patch('silent_hours_message', e.target.value)}/>
+          </Field>
+          <Field label="Quando ela não sabe a resposta" hint="Frase que a HUMA usa na dúvida. Cada vez que usa, a pergunta cai em Perguntas sem resposta pra você responder.">
+            <Input value={settings.fallback_message || ''} placeholder="Vou confirmar essa informação e já te retorno, ok?" onChange={e => patch('fallback_message', e.target.value)}/>
+          </Field>
+        </div>
+      </Card>
+
       <ProfessionalsCard settings={settings} patch={patch}/>
     </>
   );
@@ -779,6 +840,8 @@ const NegocioKnowledge = ({ settings, patch }) => {
   ];
   const preferred = Array.isArray(settings.preferred_terms) ? settings.preferred_terms : [];
   const forbidden = Array.isArray(settings.forbidden_words) ? settings.forbidden_words : [];
+  const traits = Array.isArray(settings.personality_traits) ? settings.personality_traits : [];
+  const competitors = Array.isArray(settings.competitors) ? settings.competitors : [];
   const grid = '1.6fr 0.6fr 0.8fr 1.8fr 110px';
 
   return (
@@ -820,6 +883,19 @@ const NegocioKnowledge = ({ settings, patch }) => {
         <Field label="Observações específicas" hint="Regras que a HUMA segue à risca. Ex: nunca fale valores antes da avaliação.">
           <Textarea rows={3} value={settings.custom_rules || ''} onChange={e => patch('custom_rules', e.target.value)}/>
         </Field>
+      </Card>
+
+      <Card title="Personalidade">
+        <Toggle checked={!!settings.use_emojis} onChange={() => patch('use_emojis', !settings.use_emojis)} label="Pode usar emoji (no máximo 1, e só se o lead usar primeiro)"/>
+        <div>
+          <Eyebrow>traços de personalidade</Eyebrow>
+          <TermChips terms={traits} onChange={v => patch('personality_traits', v)} tint="var(--paper-sunk)" ink="var(--ink-2)" placeholder="ex.: acolhedora, direta, bem-humorada"/>
+        </div>
+        <div>
+          <Eyebrow style={{ color: 'var(--ember-ink)' }}>concorrentes (ela nunca cita)</Eyebrow>
+          <TermChips terms={competitors} onChange={v => patch('competitors', v)} tint="var(--ember-soft)" ink="var(--ember-ink)" placeholder="ex.: Clínica X"/>
+        </div>
+        {(traits.length > 0 || competitors.length > 0) && <SaveReminder/>}
       </Card>
 
       <Card title="Produtos e serviços" action={prodEd.editing === null
@@ -912,6 +988,425 @@ const NegocioKnowledge = ({ settings, patch }) => {
         </div>
         {(preferred.length > 0 || forbidden.length > 0) && <SaveReminder/>}
       </Card>
+    </>
+  );
+};
+
+// ---------- Missão da HUMA — capabilities + coleta + autonomia comercial ----------
+// Backend: PATCH /settings (capabilities sincroniza enable_scheduling/
+// enable_payments). SELL_PHYSICAL só com Bling conectado.
+const NEG_CATEGORIES = [
+  { value: 'clinica', label: 'Clínica / saúde / estética' },
+  { value: 'salao_barbearia', label: 'Salão / barbearia' },
+  { value: 'academia_personal', label: 'Academia / personal' },
+  { value: 'pet', label: 'Pet' },
+  { value: 'automotivo', label: 'Automotivo' },
+  { value: 'ecommerce', label: 'E-commerce' },
+  { value: 'restaurante', label: 'Restaurante' },
+  { value: 'educacao', label: 'Educação / cursos' },
+  { value: 'imobiliaria', label: 'Imobiliária' },
+  { value: 'advocacia_financeiro', label: 'Advocacia / financeiro' },
+  { value: 'servicos', label: 'Serviços' },
+  { value: 'outros', label: 'Outro tipo de negócio' },
+];
+
+const NEG_CAPS = [
+  { id: 'schedule', label: 'Agendar', desc: 'Consulta a agenda de verdade e marca o horário (Google Calendar). Nunca confirma horário que não checou.', needs: 'gcal' },
+  { id: 'sell_digital', label: 'Vender e cobrar', desc: 'Serviço, consulta paga, curso, assinatura. Pix, boleto ou cartão pelo Mercado Pago, na conversa.' },
+  { id: 'sell_physical', label: 'Vender produto físico', desc: 'Estoque, frete e pedido. Precisa do Bling conectado em Integrações.', needs: 'bling' },
+  { id: 'qualify', label: 'Qualificar e passar pra você', desc: 'Coleta os dados, entende o momento do lead e entrega pronto (no seu CRM ou no seu WhatsApp).' },
+  { id: 'support', label: 'Atender dúvidas', desc: 'Responde pela FAQ e pela base de conhecimento, sem forçar fechamento.' },
+];
+const NEG_LEAD_FIELD_SUGGESTIONS = ['nome', 'email', 'telefone', 'empresa', 'cpf', 'endereço', 'cidade'];
+
+const NegocioMissao = ({ settings, patch }) => {
+  const [integ, setInteg] = useStateS(null);
+  useEffectS(() => { fetchIntegrationsStatus().then(setInteg).catch(() => setInteg({})); }, []);
+
+  const caps = Array.isArray(settings.capabilities) ? settings.capabilities : (settings.capabilities_resolved || []);
+  const toggleCap = (id) => patch('capabilities', caps.includes(id) ? caps.filter(c => c !== id) : [...caps, id]);
+  const blingOn = !!(integ && integ.bling_access_token);
+  const gcalOn = !!(integ && integ.google_calendar);
+  const fields = Array.isArray(settings.lead_collection_fields) ? settings.lead_collection_fields : [];
+  const methods = Array.isArray(settings.accepted_payment_methods) ? settings.accepted_payment_methods : [];
+  const toggleMethod = (m) => patch('accepted_payment_methods', methods.includes(m) ? methods.filter(x => x !== m) : [...methods, m]);
+  const sells = caps.includes('sell_digital') || caps.includes('sell_physical');
+  const num = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || 0));
+
+  return (
+    <>
+      <div style={{ padding: 20, border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)' }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
+          O que a HUMA faz por {settings.business_name || 'seu negócio'}. Cada item ligado muda o funil, as ferramentas e as regras que ela segue na conversa.
+        </div>
+      </div>
+
+      <Card title="O que a HUMA pode fazer">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {NEG_CAPS.map(c => {
+            const on = caps.includes(c.id);
+            const blocked = c.needs === 'bling' && !blingOn && !on;
+            const warn = c.needs === 'bling' && !blingOn ? 'Conecte o Bling em Integrações pra ligar.'
+              : (c.needs === 'gcal' && on && integ && !gcalOn ? 'A agenda ainda não tem credencial no servidor: a HUMA vai pedir pra confirmar com você.' : '');
+            return (
+              <label key={c.id} style={{
+                display: 'flex', alignItems: 'flex-start', gap: 12, cursor: blocked ? 'not-allowed' : 'pointer',
+                padding: '12px 14px', borderRadius: 10, opacity: blocked ? 0.55 : 1,
+                border: '1px solid ' + (on ? 'var(--ink)' : 'var(--paper-edge)'),
+                background: on ? 'var(--paper-sunk)' : 'transparent',
+              }}>
+                <input type="checkbox" checked={on} disabled={blocked} onChange={() => toggleCap(c.id)} style={{ accentColor: 'var(--ink)', marginTop: 3 }}/>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{c.label}</div>
+                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.5 }}>{c.desc}</div>
+                  {warn && <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ember-ink)', marginTop: 4 }}>{warn}</div>}
+                </div>
+              </label>
+            );
+          })}
+        </div>
+        {caps.length === 0 && (
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
+            Nada ligado: a HUMA só conversa e responde dúvidas, sem agendar nem cobrar.
+          </div>
+        )}
+        <SaveReminder/>
+      </Card>
+
+      <Card title="Dados que a HUMA coleta do lead">
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+          Ela pergunta só o que estiver aqui, uma coisa por vez, e nunca repete o que o lead já disse. Vazio = não pede dado nenhum.
+        </div>
+        <TermChips terms={fields} onChange={v => patch('lead_collection_fields', v)} tint="var(--sage-tint)" ink="var(--sage-ink)" placeholder="ex.: nome"/>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>sugestões</span>
+          {NEG_LEAD_FIELD_SUGGESTIONS.filter(s => !fields.some(f => f.toLowerCase() === s)).map(s => (
+            <button key={s} onClick={() => patch('lead_collection_fields', [...fields, s])} style={{
+              padding: '4px 10px', borderRadius: 999, border: '1px dashed var(--paper-edge)', background: 'transparent',
+              color: 'var(--ink-2)', fontFamily: 'var(--font-sans)', fontSize: 12, cursor: 'pointer',
+            }}>+ {s}</button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <QaqOption selected={settings.collect_before_offer !== false} onSelect={() => patch('collect_before_offer', true)} label="Coleta antes de falar de preço" desc="Bom pra quem precisa qualificar antes de abrir valores."/>
+          <QaqOption selected={settings.collect_before_offer === false} onSelect={() => patch('collect_before_offer', false)} label="Coleta quando for natural na conversa" badge="recomendado" desc="Menos robô: a HUMA pede o dado na hora certa, sem travar o papo."/>
+        </div>
+      </Card>
+
+      <Card title="Autonomia comercial">
+        {!sells && (
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
+            Vale quando "Vender e cobrar" ou "Vender produto físico" está ligado acima.
+          </div>
+        )}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, opacity: sells ? 1 : 0.6 }}>
+          <Field label="Desconto máximo (%)" half hint="0 = a HUMA nunca dá desconto. Ela só oferece se o lead pedir.">
+            <Input type="number" min={0} max={90} value={settings.max_discount_percent ?? 0} onChange={e => patch('max_discount_percent', num(e.target.value, 0, 90))}/>
+          </Field>
+          <Field label="Parcelas no cartão (máx.)" half>
+            <Input type="number" min={1} max={24} value={settings.max_installments ?? 10} onChange={e => patch('max_installments', num(e.target.value, 1, 24))}/>
+          </Field>
+        </div>
+        <div>
+          <Eyebrow>formas de pagamento que ela oferece</Eyebrow>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10, opacity: sells ? 1 : 0.6 }}>
+            <Toggle checked={methods.includes('pix')} onChange={() => toggleMethod('pix')} label="Pix (QR code na conversa)"/>
+            <Toggle checked={methods.includes('boleto')} onChange={() => toggleMethod('boleto')} label="Boleto (ela pede o CPF antes)"/>
+            <Toggle checked={methods.includes('credit_card')} onChange={() => toggleMethod('credit_card')} label="Cartão de crédito (link seguro)"/>
+          </div>
+        </div>
+        <SaveReminder/>
+      </Card>
+    </>
+  );
+};
+
+// ---------- Como a HUMA vende — playbook visível, editável, lacunas respondíveis ----------
+// Backend: GET/PATCH /playbook, POST /playbook/lacuna (vira FAQ) e
+// POST /onboarding/{id}/playbook (regera com Sonnet, ~30s).
+const PairListEditor = ({ items, onChange, aKey, bKey, aLabel, bLabel, addLabel }) => {
+  const upd = (i, k, v) => onChange(items.map((it, j) => (j === i ? { ...it, [k]: v } : it)));
+  const rm = (i) => onChange(items.filter((_, j) => j !== i));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {items.map((it, i) => (
+        <div key={i} style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Input value={it[aKey] || ''} placeholder={aLabel} onChange={e => upd(i, aKey, e.target.value)} style={{ fontWeight: 500 }}/>
+            <button className="qaq-trash" onClick={() => rm(i)} aria-label="Remover" style={{ border: 'none', background: 'transparent', color: 'var(--ink-4)', cursor: 'pointer', padding: 6, borderRadius: 8, display: 'flex', flexShrink: 0 }}>
+              <Icon name="trash" size={14}/>
+            </button>
+          </div>
+          <Textarea rows={2} value={it[bKey] || ''} placeholder={bLabel} onChange={e => upd(i, bKey, e.target.value)}/>
+        </div>
+      ))}
+      <div>
+        <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={() => onChange([...items, { [aKey]: '', [bKey]: '' }])}>{addLabel}</Button>
+      </div>
+    </div>
+  );
+};
+
+const NegocioVende = ({ settings, reloadSettings }) => {
+  const [pb, setPb] = useStateS(null);
+  const [err, setErr] = useStateS('');
+  const [notice, setNotice] = useStateS('');
+  const [busy, setBusy] = useStateS('');
+  const [dirty, setDirty] = useStateS(false);
+  const [answers, setAnswers] = useStateS({});
+
+  const load = async () => {
+    try { setPb(await fetchPlaybook()); setErr(''); }
+    catch (e) { setErr(e.message); setPb({ has_playbook: false, playbook: {}, market: {} }); }
+  };
+  useEffectS(() => { load(); }, []);
+
+  const p = (pb && pb.playbook) || {};
+  const list = (k) => (Array.isArray(p[k]) ? p[k] : []);
+  const setP = (k, v) => { setPb(x => ({ ...x, playbook: { ...(x.playbook || {}), [k]: v } })); setDirty(true); setNotice(''); };
+
+  const save = async () => {
+    if (busy) return;
+    setBusy('save'); setErr(''); setNotice('');
+    try {
+      const r = await patchPlaybook({
+        diferenciais: list('diferenciais'), provas_reais: list('provas_reais'),
+        objecoes: list('objecoes'), gatilhos_aplicaveis: list('gatilhos_aplicaveis'),
+        perfis_locais: list('perfis_locais'), meta_e_caminho: p.meta_e_caminho || '',
+      });
+      setPb(r); setDirty(false);
+      setNotice('Playbook salvo. A HUMA já usa isso na próxima conversa.');
+    } catch (e) { setErr(e.message); }
+    setBusy('');
+  };
+
+  const rebuild = async () => {
+    if (busy) return;
+    if (!window.confirm('Regerar o playbook? A HUMA lê o cadastro e o site de novo e reescreve tudo (edições manuais são substituídas). Leva uns 30 segundos.')) return;
+    setBusy('rebuild'); setErr(''); setNotice('');
+    try { await rebuildPlaybook(); await load(); setDirty(false); setNotice('Playbook regerado a partir do cadastro' + (pb && pb.website ? ' e do site.' : '.')); }
+    catch (e) { setErr(e.message); }
+    setBusy('');
+  };
+
+  const answerLac = async (lac) => {
+    const a = (answers[lac] || '').trim();
+    if (!a || busy) return;
+    setBusy('lac:' + lac); setErr(''); setNotice('');
+    try {
+      const r = await answerLacuna(lac, a);
+      setPb(x => ({ ...x, playbook: { ...(x.playbook || {}), lacunas: r.lacunas || [] } }));
+      setAnswers(s => { const n = { ...s }; delete n[lac]; return n; });
+      setNotice('Resposta salva na FAQ. A HUMA já responde isso na hora.');
+      reloadSettings && reloadSettings();
+    } catch (e) { setErr(e.message); }
+    setBusy('');
+  };
+
+  if (!pb) return <Card><div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Carregando o playbook…</div></Card>;
+
+  const market = pb.market || {};
+  const lacunas = list('lacunas');
+  const hasMarket = !!(market.market_context || market.target_audience || market.sales_strategy);
+
+  return (
+    <>
+      <div style={{ padding: 20, border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
+          {pb.has_playbook
+            ? <>É assim que a HUMA vende pra {settings.business_name || 'seu negócio'}: montado a partir do cadastro{pb.website ? ' e do site' : ''}. Tudo aqui é seu — edite à vontade.</>
+            : <>A HUMA ainda não tem um playbook pra {settings.business_name || 'seu negócio'}. Preencha o tipo de negócio e a descrição em Informações e clique em Gerar.</>}
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <Button variant="dark" size="md" icon={<Icon name="sparkle" size={13}/>} onClick={rebuild} disabled={!!busy}>
+            {busy === 'rebuild' ? 'Lendo cadastro e site… (até 30s)' : (pb.has_playbook ? 'Regerar playbook' : 'Gerar playbook')}
+          </Button>
+          {pb.has_playbook && (
+            <Button variant={dirty ? 'primary' : 'ghost'} size="md" onClick={save} disabled={!dirty || !!busy}>
+              {busy === 'save' ? 'Salvando…' : 'Salvar edições'}
+            </Button>
+          )}
+          {!pb.category && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ember-ink)' }}>Defina o tipo de negócio em Informações antes de gerar.</span>}
+        </div>
+        {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
+        {notice && <VoiceMsg kind="ok">{notice}</VoiceMsg>}
+      </div>
+
+      {lacunas.length > 0 && (
+        <Card title="O que a HUMA precisa saber pra vender melhor">
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+            Perguntas que ficaram sem resposta no cadastro e no site. Responda uma vez: vira FAQ e a HUMA passa a usar na hora.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {lacunas.map(lac => (
+              <div key={lac} style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--sage-tint)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{lac}</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Input value={answers[lac] || ''} placeholder="Sua resposta, do jeito que a HUMA deve falar" onChange={e => setAnswers(s => ({ ...s, [lac]: e.target.value }))}
+                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); answerLac(lac); } }}/>
+                  <Button variant="dark" size="sm" onClick={() => answerLac(lac)} disabled={!(answers[lac] || '').trim() || !!busy}>
+                    {busy === 'lac:' + lac ? 'Salvando…' : 'Responder'}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {pb.has_playbook && (
+        <>
+          <Card title="Meta e caminho">
+            <Field label="A meta da conversa e o caminho mínimo até ela" hint="Ex.: agendar avaliação; caminho: entender a queixa → mostrar diferencial → oferecer 2 horários.">
+              <Textarea rows={2} value={p.meta_e_caminho || ''} onChange={e => setP('meta_e_caminho', e.target.value)}/>
+            </Field>
+          </Card>
+
+          <Card title="Diferenciais e provas reais">
+            <div>
+              <Eyebrow style={{ color: 'var(--sage-ink)' }}>diferenciais (usa quando o lead compara ou hesita)</Eyebrow>
+              <TermChips terms={list('diferenciais')} onChange={v => setP('diferenciais', v)} tint="var(--sage-tint)" ink="var(--sage-ink)" placeholder="ex.: atendimento pela titular"/>
+            </div>
+            <div>
+              <Eyebrow>provas reais (as únicas que ela pode citar)</Eyebrow>
+              <TermChips terms={list('provas_reais')} onChange={v => setP('provas_reais', v)} tint="var(--paper-sunk)" ink="var(--ink-2)" placeholder="ex.: 12 anos de mercado, 4,9 no Google"/>
+            </div>
+          </Card>
+
+          <Card title="Objeções e como ela responde">
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+              A HUMA adapta, nunca copia literal. Escreva como você responderia no WhatsApp.
+            </div>
+            <PairListEditor items={list('objecoes')} onChange={v => setP('objecoes', v)} aKey="objecao" bKey="resposta_exemplo" aLabel="Objeção (ex.: tá caro)" bLabel="Como responder (1-2 frases)" addLabel="Adicionar objeção"/>
+          </Card>
+
+          <Card title="Gatilhos com fato real">
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+              Gatilho sem fato real não entra: prova social, autoridade, escassez de verdade, garantia.
+            </div>
+            <PairListEditor items={list('gatilhos_aplicaveis')} onChange={v => setP('gatilhos_aplicaveis', v)} aKey="gatilho" bKey="fato_real" aLabel="Gatilho (ex.: autoridade)" bLabel="O fato que sustenta (ex.: CRM ativo há 12 anos)" addLabel="Adicionar gatilho"/>
+          </Card>
+
+          <Card title="Quem procura este negócio">
+            <TermChips terms={list('perfis_locais')} onChange={v => setP('perfis_locais', v)} tint="var(--paper-sunk)" ink="var(--ink-2)" placeholder="ex.: mulheres 30-50 da região"/>
+          </Card>
+
+          {hasMarket && (
+            <Card title="Leitura de mercado">
+              {market.market_context && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>{market.market_context}</div>}
+              {market.target_audience && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}><b>Público:</b> {market.target_audience}</div>}
+              {market.sales_strategy && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}><b>Estratégia:</b> {market.sales_strategy}</div>}
+              {(market.top_arguments || []).length > 0 && <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>Argumentos: {market.top_arguments.join(' · ')}</div>}
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>Gerado pela IA no onboarding. Muda quando você regera o playbook.</div>
+            </Card>
+          )}
+          {dirty && <SaveReminder/>}
+        </>
+      )}
+    </>
+  );
+};
+
+// ---------- Perguntas sem resposta — inbox do dono (vira FAQ com 1 clique) ----------
+const NegocioGaps = ({ onChanged }) => {
+  const [view, setView] = useStateS('open');
+  const [items, setItems] = useStateS(null);
+  const [err, setErr] = useStateS('');
+  const [notice, setNotice] = useStateS('');
+  const [drafts, setDrafts] = useStateS({});
+  const [busy, setBusy] = useStateS(null);
+
+  const load = async (v) => {
+    try { const r = await fetchGaps(v); setItems(r.items || []); setErr(''); }
+    catch (e) { setItems([]); setErr(e.message); }
+  };
+  useEffectS(() => { setItems(null); load(view); }, [view]);
+
+  const answer = async (g) => {
+    const a = (drafts[g.id] || '').trim();
+    if (!a || busy) return;
+    setBusy(g.id); setErr(''); setNotice('');
+    try {
+      const r = await answerGap(g.id, a);
+      setNotice(`Virou FAQ: "${r.question}". A HUMA responde isso na hora a partir de agora.`);
+      setDrafts(d => { const n = { ...d }; delete n[g.id]; return n; });
+      await load(view);
+      onChanged && onChanged();
+    } catch (e) { setErr(e.message); }
+    setBusy(null);
+  };
+
+  const dismiss = async (g) => {
+    if (busy) return;
+    setBusy(g.id); setErr('');
+    try { await dismissGap(g.id); await load(view); onChanged && onChanged(); }
+    catch (e) { setErr(e.message); }
+    setBusy(null);
+  };
+
+  const fmtWhen = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }); };
+  const views = [{ id: 'open', label: 'Abertas' }, { id: 'answered', label: 'Respondidas' }, { id: 'dismissed', label: 'Descartadas' }];
+
+  return (
+    <>
+      <div style={{ padding: 20, border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)' }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
+          Toda vez que a HUMA diz "vou confirmar e te retorno", a dúvida do lead cai aqui. Responda uma vez: vira FAQ e, da próxima, ela responde na hora.
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6 }}>
+        {views.map(v => (
+          <button key={v.id} onClick={() => setView(v.id)} style={{
+            padding: '7px 12px', borderRadius: 999, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+            border: '1px solid ' + (view === v.id ? 'var(--ink)' : 'var(--paper-edge)'),
+            background: view === v.id ? 'var(--ink)' : 'var(--paper-raised)', color: view === v.id ? 'var(--paper)' : 'var(--ink-2)',
+          }}>{v.label}</button>
+        ))}
+      </div>
+
+      {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
+      {notice && <VoiceMsg kind="ok">{notice}</VoiceMsg>}
+
+      {items === null && <Card><div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Carregando…</div></Card>}
+      {items && items.length === 0 && (
+        <Card>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+            {view === 'open' ? 'Nenhuma pergunta em aberto. Quando a HUMA não souber algo, aparece aqui.' : 'Nada por aqui ainda.'}
+          </div>
+        </Card>
+      )}
+      {items && items.map(g => (
+        <Card key={g.id}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: 500, color: 'var(--ink)', lineHeight: 1.4 }}>“{g.question}”</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                {g.hits > 1 ? `perguntado ${g.hits}×` : 'perguntado 1×'}{g.phone ? ` · ${maskPhone(g.phone)}` : ''}{g.created_at ? ` · ${fmtWhen(g.created_at)}` : ''}
+              </div>
+            </div>
+            {g.hits > 1 && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, padding: '2px 7px', borderRadius: 4, background: 'var(--ember-soft)', color: 'var(--ember-ink)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>recorrente</span>}
+          </div>
+          {g.reply && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, padding: '8px 12px', background: 'var(--paper-sunk)', borderRadius: 8 }}>
+              HUMA respondeu: “{g.reply}”
+            </div>
+          )}
+          {view === 'open' ? (
+            <>
+              <Textarea rows={2} value={drafts[g.id] || ''} placeholder="Sua resposta, do jeito que a HUMA deve falar pro lead" onChange={e => setDrafts(d => ({ ...d, [g.id]: e.target.value }))}/>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Button variant="dark" size="sm" onClick={() => answer(g)} disabled={!(drafts[g.id] || '').trim() || busy === g.id}>
+                  {busy === g.id ? 'Salvando…' : 'Responder e virar FAQ'}
+                </Button>
+                <Button variant="plain" size="sm" onClick={() => dismiss(g)} disabled={busy === g.id}>Descartar</Button>
+              </div>
+            </>
+          ) : (
+            g.answer && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}><b>Sua resposta:</b> {g.answer}</div>
+          )}
+        </Card>
+      ))}
     </>
   );
 };

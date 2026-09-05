@@ -744,3 +744,59 @@ Object.assign(window, {
   fetchKnowledge, uploadKnowledgeDoc, deleteKnowledgeDoc,
   fetchTeam, inviteTeamMember, removeTeamMember, requestPasswordReset,
 });
+
+/* ---------------- Perguntas sem resposta + Playbook (Como a HUMA vende) ---------------- */
+async function fetchGaps(status = 'open') {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/gaps?status=${encodeURIComponent(status)}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function answerGap(gapId, answer) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/gaps/${encodeURIComponent(gapId)}/answer`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify({ answer }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function dismissGap(gapId) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/gaps/${encodeURIComponent(gapId)}/dismiss`, {
+    method: 'POST', headers: { ...AUTH_HEADERS },
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function fetchPlaybook() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/playbook`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function patchPlaybook(partial) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/playbook`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify(partial),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function answerLacuna(lacuna, answer) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/playbook/lacuna`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify({ lacuna, answer }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Regera análise de mercado + playbook (uma chamada de Sonnet, ~15-30s).
+async function rebuildPlaybook() {
+  const r = await fetch(`/onboarding/${encodeURIComponent(CLIENT_ID)}/playbook`, {
+    method: 'POST', headers: { ...AUTH_HEADERS },
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+Object.assign(window, { fetchGaps, answerGap, dismissGap, fetchPlaybook, patchPlaybook, answerLacuna, rebuildPlaybook });
