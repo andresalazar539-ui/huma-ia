@@ -14,6 +14,8 @@
 # entra na Fase B; RD Station na Fase E (só adicionar a linha).
 # ================================================================
 
+import html
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -217,73 +219,18 @@ async def callback(
 
 
 def _html_success(business_name: str, provider: str) -> HTMLResponse:
-    """Página de sucesso pós-OAuth."""
-    body = f"""<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <title>HUMA IA — {provider.capitalize()} conectado</title>
-  <style>
-    body {{
-      font-family: -apple-system, system-ui, sans-serif;
-      background: #0f172a; color: #e2e8f0;
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; margin: 0;
-    }}
-    .card {{
-      background: #1e293b; border-radius: 12px; padding: 48px;
-      max-width: 480px; text-align: center;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-    }}
-    .check {{ font-size: 56px; color: #22c55e; margin-bottom: 16px; }}
-    h1 {{ font-size: 22px; margin: 0 0 12px; }}
-    p  {{ color: #94a3b8; line-height: 1.5; margin: 8px 0; }}
-    .biz {{ color: #e2e8f0; font-weight: 600; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="check">✓</div>
-    <h1>{provider.capitalize()} conectado com sucesso</h1>
-    <p>O clone de <span class="biz">{business_name}</span> agora envia os
-       leads qualificados direto pro seu CRM.</p>
-    <p>Pode fechar essa aba e voltar pro dashboard.</p>
-  </div>
-</body>
-</html>"""
-    return HTMLResponse(content=body, status_code=200)
+    """Página de sucesso pós-OAuth (identidade do Cockpit, volta sozinha)."""
+    from huma.routes._oauth_pages import html_success
+
+    nome = {"pipedrive": "Pipedrive", "hubspot": "HubSpot"}.get(provider, provider.capitalize())
+    return html_success(
+        f"{nome} conectado",
+        f"O clone de <b>{html.escape(business_name)}</b> agora envia os leads qualificados direto pro seu CRM.",
+    )
 
 
 def _html_error(title: str, detail: str) -> HTMLResponse:
-    """Página de erro pós-OAuth."""
-    body = f"""<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <title>HUMA IA — Erro ao conectar CRM</title>
-  <style>
-    body {{
-      font-family: -apple-system, system-ui, sans-serif;
-      background: #0f172a; color: #e2e8f0;
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; margin: 0;
-    }}
-    .card {{
-      background: #1e293b; border-radius: 12px; padding: 48px;
-      max-width: 480px; text-align: center;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-    }}
-    .x {{ font-size: 56px; color: #ef4444; margin-bottom: 16px; }}
-    h1 {{ font-size: 20px; margin: 0 0 12px; }}
-    p  {{ color: #94a3b8; line-height: 1.5; margin: 8px 0; font-size: 14px; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="x">✕</div>
-    <h1>{title}</h1>
-    <p>{detail}</p>
-  </div>
-</body>
-</html>"""
-    return HTMLResponse(content=body, status_code=400)
+    """Página de erro pós-OAuth (identidade do Cockpit)."""
+    from huma.routes._oauth_pages import html_error
+
+    return html_error(title, detail)
