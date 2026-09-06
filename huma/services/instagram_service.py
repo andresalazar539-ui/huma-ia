@@ -327,7 +327,13 @@ def parse_webhook(body: dict) -> list[dict]:
         if not isinstance(entry, dict):
             continue
         ig_user_id = str(entry.get("id") or "")
-        for ev in entry.get("messaging") or []:
+        # Dois formatos: "messaging" (Messenger-style) e "changes" com
+        # field=messages (o botão Testar do painel e algumas entregas).
+        events = list(entry.get("messaging") or [])
+        for ch in entry.get("changes") or []:
+            if isinstance(ch, dict) and (ch.get("field") or "") == "messages" and isinstance(ch.get("value"), dict):
+                events.append(ch["value"])
+        for ev in events:
             if not isinstance(ev, dict):
                 continue
             sender = str((ev.get("sender") or {}).get("id") or "")

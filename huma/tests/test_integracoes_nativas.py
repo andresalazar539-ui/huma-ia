@@ -877,3 +877,16 @@ class TestZoomRemovido:
         from huma.services import scheduling_service as sched
         assert not hasattr(cfg, "ZOOM_API_KEY")
         assert not hasattr(sched, "_create_zoom_meeting")
+
+
+class TestInstagramChangesFormat:
+    def test_parse_formato_changes_do_painel(self):
+        from huma.services import instagram_service as ig
+        body = {"object": "instagram", "entry": [{"id": "0", "time": 1, "changes": [{
+            "field": "messages",
+            "value": {"sender": {"id": "12334"}, "recipient": {"id": "23245"}, "timestamp": "1527459824",
+                      "message": {"mid": "random_mid", "text": "random_text"}},
+        }]}]}
+        out = ig.parse_webhook(body)
+        assert len(out) == 1 and out[0]["sender_id"] == "12334" and out[0]["text"] == "random_text"
+        assert out[0]["ig_user_id"] == "0"

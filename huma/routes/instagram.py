@@ -157,6 +157,11 @@ async def instagram_webhook(request: Request, bg: BackgroundTasks):
         return {"status": "ignored", "reason": "bad_json"}
 
     messages = ig.parse_webhook(body)
+    entries = body.get("entry") if isinstance(body, dict) else None
+    log.info(
+        f"Webhook Instagram recebido | object={body.get('object') if isinstance(body, dict) else '?'} | "
+        f"entries={len(entries) if isinstance(entries, list) else 0} | mensagens={len(messages)}"
+    )
     if not messages:
         return {"status": "ignored", "reason": "no_message"}
 
