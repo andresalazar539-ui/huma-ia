@@ -1665,7 +1665,16 @@ async def _send_with_human_delay(
                     if _m.get("role") == "user" and isinstance(_m.get("content"), str):
                         lead_text = _m["content"]
                         break
-            await _send_product_cards(phone, cid, client_data, conv, lead_text, stock_result)
+            # A IA pode pedir o carrossel (action show_products) quando o lead
+            # está em dúvida/comparando; o motor resolve os produtos reais.
+            show_query = ""
+            for _a in list(remaining_actions):
+                if isinstance(_a, dict) and _a.get("type") == "show_products":
+                    show_query = str(_a.get("query") or "").strip()
+                    remaining_actions.remove(_a)
+            await _send_product_cards(
+                phone, cid, client_data, conv, lead_text, stock_result, action_query=show_query,
+            )
         except Exception as e:
             log.error(f"Cards de produto falharam | {phone} | {type(e).__name__}: {e}")
 
@@ -2975,16 +2984,19 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
 
 async def _send_product_cards(
     phone: str, cid: str, client_data, conv, user_text: str, stock_result: dict | None,
+    action_query: str = "",
 ) -> int:
     """
     Manda card(s) de produto e registra no histórico o que o lead viu.
+
+    action_query: query da action show_products (a IA pediu o carrossel).
 
     Returns:
         Quantos cards saíram (0 = nada a mandar ou canal sem suporte).
     """
     from huma.core.product_cards import decide_cards, history_entry
 
-    cards = await decide_cards(client_data, user_text, stock_result)
+    cards = await decide_cards(client_data, user_text, stock_result, action_query=action_query)
     if not cards:
         return 0
     sent = await wa.send_cards(phone, cards, client_id=cid)

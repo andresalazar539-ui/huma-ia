@@ -25,6 +25,11 @@ log = get_logger("product_cards")
 
 MAX_CARDS = 10
 _TITLE_MAX = 80
+# Palavras que pedem "tudo" e não nomeiam produto (já normalizadas: sem acento).
+_GENERIC_QUERY = frozenset({
+    "opcoes", "opcao", "modelos", "modelo", "produtos", "produto", "catalogo", "tudo", "todos", "todas",
+    "variedade", "linha", "itens", "item", "novidades", "lancamentos", "ofertas", "promocoes", "mais",
+})
 
 _CATALOG_RE = re.compile(
     r"(o\s+que\s+(voc[eê]s?|vcs?|vc)?\s*(vend|tem|trabalh|ofere)|"
@@ -123,16 +128,74 @@ def caption_for_card(card: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
-async def decide_cards(identity: Any, text: str, stock_result: dict | None) -> list[dict]:
+async def _available_products(identity: Any) -> list[dict]:
+    """Produtos DISPONÍVEIS da loja (ao vivo); [] se a loja não responder."""
+    try:
+        from huma.providers.inventory import get_provider_for
+
+        adapter = get_provider_for(identity)
+        catalog = await adapter.list_products(limit=50, only_in_stock=True)
+        if catalog.get("status") == "ok":
+            return [p for p in (catalog.get("products") or []) if isinstance(p, dict)]
+    except Exception as e:
+        log.warning(f"Cards | catálogo ao vivo indisponível | {type(e).__name__}: {e}")
+    return []
+
+
+async def cards_for_query(identity: Any, query: str, limit: int = MAX_CARDS) -> list[dict]:
     """
-    Quais cards mandar neste turno: o produto consultado (1 card) ou, se o
-    lead pediu o catálogo, o carrossel. [] quando não se aplica.
+    Cards dos produtos que casam com a pergunta ("quero uma camiseta",
+    "opções de tênis"): um só → 1 card; vários → carrossel só deles;
+    nenhum → []. Sempre sobre produtos disponíveis (estoque ao vivo).
+    """
+    from huma.core.catalog_sync import best_match, query_tokens
+
+    q = " ".join((query or "").split())
+    if not q or not is_enabled(identity):
+        return []
+    pool = await _available_products(identity)
+    if not pool:
+        pool = [p for p in store_items(identity)]
+    if not pool:
+        return []
+    match = best_match(q, pool)
+    toks = query_tokens(q)
+    if match.get("status") == "found":
+        chosen = [match["product"]]
+    elif match.get("status") == "ambiguous":
+        chosen = list(match.get("matches") or [])
+    elif not toks or all(t in _GENERIC_QUERY for t in toks):
+        # Pergunta genérica ("opções", "modelos", "produtos"): o carrossel inteiro.
+        chosen = pool
+    else:
+        # Palavra de produto que não existe na loja: nada (nunca inventa card).
+        chosen = []
+    cards = [c for c in (card_from_product(p) for p in chosen) if c]
+    return cards[:limit]
+
+
+async def decide_cards(
+    identity: Any, text: str, stock_result: dict | None, action_query: str = "",
+) -> list[dict]:
+    """
+    Quais cards mandar neste turno:
+      1. a IA pediu (action show_products com query) → cards da query
+      2. pre-flight achou UM produto disponível → 1 card
+      3. pre-flight ficou em dúvida entre vários → carrossel só desses
+      4. lead pediu o catálogo → carrossel dos disponíveis
+    [] quando não se aplica.
     """
     if not is_enabled(identity):
         return []
+    if (action_query or "").strip():
+        cards = await cards_for_query(identity, action_query)
+        if cards:
+            return cards
     cards = cards_for_stock_result(stock_result)
     if cards:
         return cards
+    if isinstance(stock_result, dict) and stock_result.get("status") == "ambiguous":
+        return await cards_for_query(identity, text)
     if wants_catalog(text):
         return await cards_for_catalog(identity)
     return []

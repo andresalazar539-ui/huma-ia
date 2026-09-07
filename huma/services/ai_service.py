@@ -1795,6 +1795,7 @@ def _build_reply_tool_compact(
     PHYSICAL_LINES = [
         "- type='check_stock': query (texto livre ou SKU). Emita quando o lead perguntar se tem o produto ('tem cadeira gamer preta?', 'a cor azul tá disponível?'). Sistema consulta inventário e devolve preço e estoque REAIS. NUNCA invente disponibilidade nem preço — APENAS emita a action.",
         "- type='calc_shipping': sku, cep, qty (default 1). Emita SOMENTE quando o lead já passou o CEP. Sistema consulta transportadora e devolve custo e prazo REAIS. Se o lead não passou CEP ainda, peça antes — NÃO emita a action sem CEP.",
+        "- type='show_products': query (texto do que mostrar: categoria, modelo ou nome). Emita QUANDO o lead está em dúvida ou comparando ('me mostra as opções de tênis', 'tô entre a camiseta e o boné', 'quais modelos tem?'). Sistema monta os cards com foto, preço e estoque REAIS só dos produtos que existem e manda na conversa. Se o lead falou de UM produto específico, NÃO emita: o card daquele produto vai sozinho.",
     ]
     QUALIFY_LINES = [
         "- type='handoff_to_human': lead_name (primeiro nome do lead, como ele se apresentou), summary (resumo do lead em 1-2 frases, ex: 'João, quer apartamento 2 quartos em Pinheiros até R$700k, urgente'), urgency='normal'|'urgent'. Emita SOMENTE quando TODOS os campos obrigatórios de coleta foram preenchidos E o lead demonstrou interesse claro. Sistema notifica humano via WhatsApp + PARA de responder. NUNCA emita sem ter coletado os campos obrigatórios — peça os dados que faltam antes.",

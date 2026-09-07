@@ -93,6 +93,46 @@ class TestDecide:
         cards = asyncio.run(pc.decide_cards(_identity(), "quais os produtos?", None))
         assert [c["title"] for c in cards] == ["Camiseta Básica Preta", "Boné Aba Curva"]
 
+    def _live(self, monkeypatch, products):
+        from huma.providers.inventory.nuvemshop import NuvemshopAdapter
+
+        async def _list(self, limit=50, only_in_stock=True):
+            return {"status": "ok", "products": products, "count": len(products)}
+        monkeypatch.setattr(NuvemshopAdapter, "list_products", _list)
+
+    _LIVE = [
+        {"name": "Camiseta Básica Preta", "sku": "CAM-PRETA-M", "price_cents": 7990, "stock_qty": 10, "available": True, "url": "u1"},
+        {"name": "Camiseta Básica Branca", "sku": "CAM-BRANCA-M", "price_cents": 7990, "stock_qty": 4, "available": True, "url": "u2"},
+        {"name": "Tênis Corrida Leve", "sku": "TEN-LEVE-40", "price_cents": 24990, "stock_qty": 3, "available": True, "url": "u3"},
+    ]
+
+    def test_ia_pede_opcoes_de_um_tipo_so_vem_aquele_tipo(self, monkeypatch):
+        self._live(monkeypatch, self._LIVE)
+        cards = asyncio.run(pc.decide_cards(_identity(), "tô em dúvida", None, action_query="camisetas"))
+        assert [c["sku"] for c in cards] == ["CAM-PRETA-M", "CAM-BRANCA-M"]
+
+    def test_ia_pede_produto_que_nao_existe_nada_sai(self, monkeypatch):
+        self._live(monkeypatch, self._LIVE)
+        assert asyncio.run(pc.decide_cards(_identity(), "tem jaqueta?", None, action_query="jaqueta")) == []
+
+    def test_ia_pede_generico_vem_o_catalogo(self, monkeypatch):
+        self._live(monkeypatch, self._LIVE)
+        cards = asyncio.run(pc.decide_cards(_identity(), "quais modelos?", None, action_query="opções"))
+        assert len(cards) == 3
+
+    def test_preflight_em_duvida_vira_carrossel_so_dos_que_batem(self, monkeypatch):
+        self._live(monkeypatch, self._LIVE)
+        amb = {"status": "ambiguous", "matches": [{"name": "Camiseta Básica Preta"}, {"name": "Camiseta Básica Branca"}]}
+        cards = asyncio.run(pc.decide_cards(_identity(), "quero uma camiseta básica", amb))
+        assert [c["sku"] for c in cards] == ["CAM-PRETA-M", "CAM-BRANCA-M"]
+
+    def test_produto_especifico_e_um_card_mesmo_com_query_da_ia(self, monkeypatch):
+        self._live(monkeypatch, self._LIVE)
+        r = {"status": "found", "name": "Tênis Corrida Leve", "sku": "TEN-LEVE-40", "price_cents": 24990,
+             "stock_qty": 3, "available": True, "url": "u3"}
+        cards = asyncio.run(pc.decide_cards(_identity(), "quero o tênis", r, action_query="tênis"))
+        assert [c["sku"] for c in cards] == ["TEN-LEVE-40"]
+
     def test_sem_loja_ou_sem_intencao_nada(self):
         assert asyncio.run(pc.decide_cards(_identity(capabilities=["support"]), "o que vocês vendem?", None)) == []
         assert asyncio.run(pc.decide_cards(_identity(), "boa noite", None)) == []
