@@ -336,6 +336,8 @@ async def _run_pre_appointment_reminder_job() -> None:
 
         if not all([client_id, phone, event_id, dt_str]):
             continue
+        if phone.startswith("ig:"):
+            continue  # Instagram: fora da janela de 24h a Meta não entrega mensagem ativa
 
         try:
             dt = _parse_datetime(dt_str)
@@ -469,6 +471,8 @@ async def _run_nps_job() -> None:
 
         if not all([client_id, phone, event_id, dt_str]):
             continue
+        if phone.startswith("ig:"):
+            continue  # Instagram: fora da janela de 24h a Meta não entrega mensagem ativa
 
         try:
             dt = _parse_datetime(dt_str)

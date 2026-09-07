@@ -836,7 +836,6 @@ async def list_active_appointments(limit: int = 300, client_id: str = "") -> lis
             # sessão web:<sid> não é destino (hoje inalcançável — web não
             # agenda — mas mantém a família de queries consistente).
             .not_.like("phone", "web:%")
-            .not_.like("phone", "ig:%")
             .limit(limit)
         )
         if client_id:
