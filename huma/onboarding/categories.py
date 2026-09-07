@@ -423,14 +423,20 @@ async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
             model=AI_MODEL_PRIMARY,
-            max_tokens=3500,  # F3: JSON cresceu com o playbook (objeções + gatilhos + lacunas)
+            max_tokens=6000,  # F3: JSON cresceu com o playbook (objeções + gatilhos + lacunas); 3500 truncava com site grande
             messages=[{"role": "user", "content": prompt}],
         )
 
         raw = response.content[0].text.strip()
-        analysis = json.loads(
-            raw.replace("```json", "").replace("```", "").strip()
-        )
+        cleaned = raw.replace("```json", "").replace("```", "").strip()
+        # O modelo às vezes abre com uma frase antes do JSON ("Aqui está a
+        # análise:") ou fecha com comentário — recorta do primeiro "{" ao
+        # último "}" antes de parsear. Truncamento por max_tokens continua
+        # caindo no JSONDecodeError abaixo (logado com o fim do texto).
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start != -1 and end > start:
+            cleaned = cleaned[start:end + 1]
+        analysis = json.loads(cleaned)
 
         log.info(f"Análise de mercado OK | {identity_data.get('business_name', '')}")
         return {
@@ -438,10 +444,16 @@ async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
             "analysis": analysis,
         }
 
-    except json.JSONDecodeError:
-        log.warning("Análise de mercado — JSON inválido, tentando extrair")
+    except json.JSONDecodeError as e:
+        stop = getattr(response, "stop_reason", "?") if 'response' in dir() else "?"
+        tail = raw[-300:] if 'raw' in dir() else ""
+        log.warning(
+            f"Análise de mercado — JSON inválido | {identity_data.get('business_name', '')} | "
+            f"stop_reason={stop} | chars={len(raw) if 'raw' in dir() else 0} | {e} | fim={tail!r}"
+        )
         return {
             "status": "partial",
+            "detail": f"json:{e}",
             "raw": raw[:2000] if 'raw' in dir() else "",
         }
     except Exception as e:

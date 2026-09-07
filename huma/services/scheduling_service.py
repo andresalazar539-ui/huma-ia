@@ -411,7 +411,7 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
     missing = []
     if not request.lead_name:
         missing.append("nome")
-    if not request.lead_email:
+    if not request.lead_email and not getattr(request, "allow_no_email", False):
         missing.append("email")
     if not request.lead_phone_confirmed:
         missing.append("confirmação de telefone")

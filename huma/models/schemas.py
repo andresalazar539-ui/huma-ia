@@ -369,6 +369,10 @@ class SchedulingRequest(BaseModel):
     # Agenda do Google DESTE cliente (e-mail da agenda compartilhada com a
     # conta de serviço da HUMA). Vazio = legado (delegation + GOOGLE_CALENDAR_ID).
     calendar_id: str = ""
+    # Agendamento criado pelo DONO no Cockpit (2026-09-07): e-mail do lead
+    # é opcional (sem e-mail = sem convidado no evento). A IA nunca liga
+    # isso — pra ela o e-mail continua obrigatório (anti-alucinação).
+    allow_no_email: bool = False
 
 
 # ================================================================

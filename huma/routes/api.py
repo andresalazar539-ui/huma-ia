@@ -29,7 +29,7 @@ from huma.models.schemas import (
     ApprovalPayload, BusinessCategory, FunnelConfig,
     MediaAsset, MessagePayload, MessageResponse,
     OnboardingStatus, OutboundCampaign, PaymentRequest,
-    WhatsAppImportPayload,
+    SchedulingRequest, WhatsAppImportPayload,
 )
 from huma.onboarding.categories import get_onboarding_questions, FINAL_QUESTION
 from huma.services import attribution_service as attribution
@@ -1155,6 +1155,154 @@ async def get_conversation_cockpit(
         "owner_notes": conv.owner_notes or "",
         "lead_source": conv.lead_source or "",
         "history": conv.history,
+    }
+
+
+# ── Cockpit — Novo agendamento criado pelo dono (2026-09-07) ──
+#
+# Mesmo motor da HUMA: sched.create_appointment valida horário de
+# funcionamento, checa FreeBusy no Google e cria o evento. Conflito ou
+# fora do expediente volta como 409 (nunca grava). Quem agenda vira
+# cliente (CRM do dono), igual ao caminho automático.
+
+
+class NewAppointmentPayload(BaseModel):
+    """Agendamento manual pelo Cockpit."""
+    lead_name: str = Field(..., min_length=2, max_length=120)
+    phone: str = Field(..., min_length=10, max_length=20, description="WhatsApp do cliente (só dígitos, com DDI)")
+    service: str = Field(..., min_length=1, max_length=120)
+    date_time: str = Field(..., min_length=10, max_length=40, description="'YYYY-MM-DD HH:MM' (horário local do negócio)")
+    lead_email: str = Field(default="", max_length=200)
+    notes: str = Field(default="", max_length=500)
+    notify_lead: bool = Field(default=False, description="Mandar a confirmação pro WhatsApp do cliente")
+
+
+@router.post("/api/appointments", tags=["Cockpit"])
+async def create_appointment_cockpit(
+    client_id: str,
+    payload: NewAppointmentPayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Cria um agendamento pelo Cockpit (botão "Novo agendamento").
+
+    Erros:
+      400 — data/hora inválida ou dados faltando
+      409 — horário ocupado (FreeBusy) ou fora do horário de funcionamento
+      502 — agenda do Google não conectada / erro no Calendar
+    """
+    from huma.core.customers import mark_as_customer
+    from huma.core.service_duration import config_for_service
+    from huma.services import scheduling_service as sched
+
+    await verify_api_key_manual(client_id, creds, huma_session)
+
+    identity = await db.get_client(client_id)
+    if identity is None:
+        raise HTTPException(404, f"Cliente {client_id} não encontrado")
+
+    phone = "".join(c for c in payload.phone if c.isdigit())
+    if len(phone) < 10:
+        raise HTTPException(400, "WhatsApp inválido: precisa de DDD + número.")
+    if len(phone) <= 11:
+        phone = "55" + phone
+
+    # Data em formato fixo (o dono escolhe no calendário; nada de linguagem natural).
+    raw = payload.date_time.strip().replace("T", " ")
+    try:
+        when = datetime.strptime(raw[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        raise HTTPException(400, "Data/hora inválida. Use o seletor de data e horário.")
+    if when < datetime.now() - timedelta(minutes=5):
+        raise HTTPException(400, "Esse horário já passou. Escolha um horário futuro.")
+
+    email = payload.lead_email.strip()
+    if email and ("@" not in email or "." not in email.split("@", 1)[1]):
+        raise HTTPException(400, "E-mail inválido.")
+
+    conv = await db.get_conversation(client_id, phone)
+    request = SchedulingRequest(
+        client_id=client_id,
+        phone=phone,
+        lead_name=payload.lead_name.strip(),
+        lead_email=email,
+        lead_phone_confirmed=True,
+        service=payload.service.strip(),
+        date_time=when.strftime("%Y-%m-%dT%H:%M:%S"),
+        notes=payload.notes.strip(),
+        lead_context="Agendamento criado pelo dono no Cockpit da HUMA.",
+        calendar_id=(getattr(identity, "google_calendar_id", "") or ""),
+        schedule_config=config_for_service(
+            identity.business_schedule, identity.products_or_services, payload.service.strip()
+        ),
+        allow_no_email=True,
+    )
+
+    result = await sched.create_appointment(request, existing_event_id=conv.active_appointment_event_id or "")
+    status = result.get("status", "error")
+    if status in ("conflict", "outside_hours"):
+        detail = result.get("whatsapp_message") or result.get("detail") or "Horário indisponível."
+        if status == "conflict" and result.get("available_slots"):
+            detail = "Esse horário já está ocupado na sua agenda. Livres: " + ", ".join(result["available_slots"][:4])
+        elif status == "conflict":
+            detail = "Esse horário já está ocupado na sua agenda."
+        log.info(f"Cockpit new_appointment | client_id={client_id} | phone={phone} | {status}")
+        raise HTTPException(409, detail)
+    if status == "incomplete":
+        raise HTTPException(400, "Faltou: " + ", ".join(result.get("missing_fields") or []))
+    if status != "confirmed":
+        log.error(f"Cockpit new_appointment | client_id={client_id} | phone={phone} | {status} | {result.get('detail', '')}")
+        raise HTTPException(502, "Não consegui criar o agendamento agora. Tenta de novo.")
+    if not result.get("event_id"):
+        raise HTTPException(502, "Sua agenda do Google não está conectada. Conecte em Integrações e tente de novo.")
+
+    conv.active_appointment_event_id = result["event_id"]
+    conv.active_appointment_datetime = result.get("date_time", "") or request.date_time
+    conv.active_appointment_service = result.get("service", "") or request.service
+    if not conv.lead_name_canonical:
+        conv.lead_name_canonical = request.lead_name.split()[0]
+    if email and not conv.lead_email:
+        conv.lead_email = email
+    if conv.cancel_attempts:
+        conv.cancel_attempts = 0
+    conv.history.append({
+        "role": "assistant",
+        "content": (
+            f"[AGENDAMENTO CONFIRMADO] {request.service} em "
+            f"{result.get('date_display', when.strftime('%d/%m/%Y às %H:%M'))} (criado pelo dono no Cockpit)"
+        ),
+        "timestamp": datetime.utcnow().isoformat(),
+    })
+    if conv.last_message_at is None:
+        conv.last_message_at = datetime.utcnow()
+    if mark_as_customer(conv, "appointment"):
+        log.info(f"Customer | phone={phone} | motivo=appointment | via=cockpit")
+    await db.save_conversation(conv)
+
+    notified = False
+    if payload.notify_lead and not phone.startswith(("web", "ig")):
+        try:
+            await wa.send_text(phone, result["confirmation_message"], client_id=client_id)
+            notified = True
+        except Exception as e:
+            log.warning(f"Cockpit new_appointment | aviso ao lead falhou | phone={phone} | {type(e).__name__}: {e}")
+
+    log.info(
+        f"Cockpit new_appointment | client_id={client_id} | phone={phone} | "
+        f"{conv.active_appointment_datetime} | calendar={'OK' if result.get('calendar_ok') else 'fallback'} | "
+        f"update={bool(result.get('is_update'))} | notified={notified}"
+    )
+    return {
+        "status": "ok",
+        "event_id": result["event_id"],
+        "date_time": conv.active_appointment_datetime,
+        "date_display": result.get("date_display", ""),
+        "service": conv.active_appointment_service,
+        "phone": phone,
+        "calendar_ok": bool(result.get("calendar_ok")),
+        "is_update": bool(result.get("is_update")),
+        "notified": notified,
     }
 
 

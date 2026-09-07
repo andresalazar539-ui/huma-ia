@@ -447,6 +447,10 @@ async def rebuild_playbook(client_id: str, _=Depends(verify_api_key)):
     source_text = await _fetch_site_text(identity.website)
     analysis = await analyze_market(data, source_text=source_text)
     if analysis.get("status") != "completed":
+        log.error(
+            f"Playbook falhou | client={client_id} | status={analysis.get('status')} | "
+            f"detail={str(analysis.get('detail', ''))[:300]} | site_chars={len(source_text)}"
+        )
         raise HTTPException(502, "Não consegui gerar o playbook agora. Tenta de novo em instantes.")
 
     market = analysis.get("analysis") or {}

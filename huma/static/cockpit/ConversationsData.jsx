@@ -289,7 +289,20 @@ async function fetchAppointments() {
   // Adiciona tone determinístico (mesma lógica das conversas, cor estável por contato)
   return (data.items || []).map(ev => ({ ...ev, tone: toneFrom(ev.phone) }));
 }
-Object.assign(window, { fetchAppointments });
+// Novo agendamento criado pelo dono (Cockpit → Agenda). Passa pelo mesmo
+// motor da HUMA (horário de funcionamento + FreeBusy do Google) — 409 se
+// o horário estiver ocupado ou fora do expediente.
+async function createAppointment(payload) {
+  const url = `/api/appointments?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+Object.assign(window, { fetchAppointments, createAppointment });
 
 /* ---------------- Bloco C: Status real das integrações ---------------- */
 // Retorna { bling_access_token, crm_access_token, crm_provider, voice_id, ... }

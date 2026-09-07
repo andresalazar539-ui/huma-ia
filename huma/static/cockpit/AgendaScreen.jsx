@@ -72,6 +72,8 @@ const AgendaFullScreen = ({ onOpenConversa } = {}) => {
   const [events, setEvents] = useState([]);
   const [state, setState] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [selected, setSelected] = useState(null); // agendamento aberto no drawer
+  const [creating, setCreating] = useState(false); // modal "Novo agendamento"
+  const [flash, setFlash] = useState(null);         // aviso curto após criar
 
   // Carrega agendamentos do backend (silent = poll, não pisca o estado de loading).
   const load = React.useCallback(async ({ silent = false } = {}) => {
@@ -145,7 +147,7 @@ const AgendaFullScreen = ({ onOpenConversa } = {}) => {
             onChange={setView}
             options={[['dia', 'Dia'], ['semana', 'Semana'], ['mes', 'Mês'], ['lista', 'Lista']]}
           />
-          <Button variant="primary" size="sm" icon={<Icon name="plus" size={14} />} onClick={() => {}}>Novo agendamento</Button>
+          <Button variant="primary" size="sm" icon={<Icon name="plus" size={14} />} onClick={() => setCreating(true)}>Novo agendamento</Button>
         </div>
       </div>
 
@@ -170,7 +172,143 @@ const AgendaFullScreen = ({ onOpenConversa } = {}) => {
         )}
       </div>
 
+      {flash && (
+        <div style={{
+          position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)', zIndex: 60,
+          padding: '9px 16px', borderRadius: 999, background: 'var(--success)', color: '#fff',
+          fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, boxShadow: 'var(--sh-3, 0 6px 24px rgba(0,0,0,0.18))',
+        }}>{flash}</div>
+      )}
       {selected && <AppointmentDetail ev={selected} onClose={() => setSelected(null)} onOpenConversa={onOpenConversa} />}
+      {creating && (
+        <NewAppointmentModal
+          initialDate={isoDate(cursor)}
+          onClose={() => setCreating(false)}
+          onCreated={(res) => {
+            setCreating(false);
+            setFlash(res.calendar_ok ? 'Agendamento criado na sua agenda' : 'Agendamento criado');
+            setTimeout(() => setFlash(null), 2500);
+            load({ silent: true });
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+/* ================= NOVO AGENDAMENTO (dono) ================= */
+// Cria pelo mesmo motor da HUMA: respeita horário de funcionamento e checa
+// a agenda do Google (FreeBusy). Conflito volta como aviso, nunca grava.
+const NewAppointmentModal = ({ initialDate, onClose, onCreated }) => {
+  const [form, setForm] = useState({
+    lead_name: '', phone: '', lead_email: '', service: '',
+    date: initialDate || isoDate(new Date()), time: '09:00', notes: '', notify_lead: false,
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+
+  const phoneDigits = form.phone.replace(/\D/g, '');
+  const canSubmit = form.lead_name.trim().length >= 2 && phoneDigits.length >= 10 && form.service.trim() && form.date && form.time;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (busy || !canSubmit) return;
+    setBusy(true); setErr('');
+    try {
+      const res = await createAppointment({
+        lead_name: form.lead_name.trim(),
+        phone: phoneDigits.length <= 11 ? '55' + phoneDigits : phoneDigits,
+        lead_email: form.lead_email.trim(),
+        service: form.service.trim(),
+        date_time: `${form.date} ${form.time}`,
+        notes: form.notes.trim(),
+        notify_lead: !!form.notify_lead,
+      });
+      onCreated(res);
+    } catch (ex) {
+      setErr(String((ex && ex.message) || ex));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field = {
+    width: '100%', boxSizing: 'border-box', outline: 'none',
+    border: '1px solid var(--paper-edge)', borderRadius: 10, padding: '9px 12px',
+    background: 'var(--paper)', color: 'var(--ink)', fontFamily: 'var(--font-sans)', fontSize: 13,
+  };
+  const Label = ({ children }) => (
+    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 5 }}>{children}</div>
+  );
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 55, background: 'rgba(28,23,20,0.32)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <form onClick={e => e.stopPropagation()} onSubmit={submit} style={{
+        width: 'min(520px, 100%)', maxHeight: '92vh', overflow: 'auto',
+        background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 16,
+        boxShadow: '0 20px 60px rgba(28,23,20,0.22)', padding: '20px 22px 18px',
+        display: 'flex', flexDirection: 'column', gap: 14,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <Eyebrow>agenda</Eyebrow>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 20, letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 2 }}>Novo agendamento</div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Fechar" style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--ink-3)', padding: 6 }}>
+            <Icon name="x" size={18} />
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Label>Nome do cliente</Label>
+            <input value={form.lead_name} onChange={set('lead_name')} placeholder="Ex.: Ana Souza" style={field} autoFocus />
+          </div>
+          <div>
+            <Label>WhatsApp</Label>
+            <input value={form.phone} onChange={set('phone')} placeholder="(11) 99999-8888" inputMode="tel" style={field} />
+          </div>
+          <div>
+            <Label>E-mail (opcional)</Label>
+            <input value={form.lead_email} onChange={set('lead_email')} placeholder="recebe o convite da agenda" type="email" style={field} />
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Label>Serviço</Label>
+            <input value={form.service} onChange={set('service')} placeholder="Ex.: Avaliação, Consulta, Corte" style={field} />
+          </div>
+          <div>
+            <Label>Data</Label>
+            <input type="date" value={form.date} onChange={set('date')} style={field} />
+          </div>
+          <div>
+            <Label>Horário</Label>
+            <input type="time" value={form.time} onChange={set('time')} step="300" style={field} />
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Label>Observações (opcional)</Label>
+            <input value={form.notes} onChange={set('notes')} placeholder="Vai pra descrição do evento na agenda" style={field} />
+          </div>
+        </div>
+
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', cursor: 'pointer', lineHeight: 1.4 }}>
+          <input type="checkbox" checked={form.notify_lead} onChange={set('notify_lead')} style={{ marginTop: 3 }} />
+          <span>Avisar o cliente pelo WhatsApp. <span style={{ color: 'var(--ink-3)' }}>Só chega se ele falou com a HUMA nas últimas 24 horas.</span></span>
+        </label>
+
+        {err && (
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: '#7C2E18', background: '#F2D4CB', padding: '9px 12px', borderRadius: 10, lineHeight: 1.45 }}>{err}</div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, justifyContent: 'flex-end' }}>
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancelar</Button>
+          <button type="submit" disabled={busy || !canSubmit} style={{
+            fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600, padding: '9px 16px', borderRadius: 999, border: 'none',
+            cursor: busy || !canSubmit ? 'not-allowed' : 'pointer', opacity: busy || !canSubmit ? 0.6 : 1,
+            background: 'var(--terracotta)', color: 'var(--paper-raised)',
+          }}>{busy ? 'Verificando a agenda…' : 'Agendar'}</button>
+        </div>
+      </form>
     </div>
   );
 };
@@ -615,4 +753,4 @@ const DetailRow = ({ icon, label, value, sub }) => (
   </div>
 );
 
-Object.assign(window, { AgendaFullScreen });
+Object.assign(window, { AgendaFullScreen, NewAppointmentModal });
