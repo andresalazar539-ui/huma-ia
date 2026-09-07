@@ -1807,6 +1807,18 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                         await asyncio.sleep(2.0)
                         await wa.send_text(phone, parts[-1], client_id=cid)
 
+                # Cockpit: guarda o áudio (player) e o texto falado inteiro na
+                # última mensagem da HUMA. Chaves extras — o prompt só lê content.
+                try:
+                    for _m in reversed(conv.history):
+                        if _m.get("role") == "assistant" and "[áudio enviado" in str(_m.get("content", "")):
+                            _m["audio_url"] = audio_url
+                            _m["audio_text"] = clean_audio
+                            break
+                    await db.save_conversation(conv)
+                except Exception as e:
+                    log.warning(f"Áudio: não gravou no histórico do Cockpit | {phone} | {type(e).__name__}: {e}")
+
                 log.info(
                     f"Áudio enviado | {phone} | mode={'audio_first' if audio_is_substantial else 'complement'} | "
                     f"reason={audio_decision['reason']} | words={audio_word_count}"

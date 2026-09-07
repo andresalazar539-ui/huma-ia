@@ -146,6 +146,15 @@ function mapHistory(history) {
         time: formatTime(m.timestamp),
         by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
       };
+      // Áudio da HUMA: balão de texto (o que saiu escrito) + balão com o player
+      // e a transcrição completa do que foi falado.
+      if (m.audio_url) {
+        const spoken = (m.content || '').replace(/\s*\[áudio enviado:[\s\S]*$/, '').trim();
+        const out = [];
+        if (spoken) out.push({ ...base, text: spoken });
+        out.push({ ...base, text: m.audio_text || '', audio_url: m.audio_url });
+        return out;
+      }
       // Resposta enviada em partes: um balão por parte, igual ao que o lead viu.
       const parts = Array.isArray(m.parts) ? m.parts.filter(p => typeof p === 'string' && p.trim()) : [];
       if (parts.length > 1) return parts.map(p => ({ ...base, text: p }));

@@ -185,7 +185,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
   );
 };
 
-const Message = ({ from, text, time, responseTime, audio }) => {
+const Message = ({ from, text, time, responseTime, audio, audio_url }) => {
   const isClient = from === 'client';
   const isHuma = from === 'huma';
   return (
@@ -196,10 +196,22 @@ const Message = ({ from, text, time, responseTime, audio }) => {
         border: isClient ? '1px solid var(--paper-edge)' : 'none',
         color: isClient ? 'var(--ink)' : 'var(--paper-raised)',
         fontFamily: 'var(--font-sans)', fontSize: 14, lineHeight: 1.45,
-        padding: audio ? '10px 14px' : '9px 13px',
+        padding: (audio || audio_url) ? '10px 14px' : '9px 13px',
         borderRadius: isClient ? '14px 14px 14px 4px' : '14px 14px 4px 14px',
       }}>
-        {audio ? (
+        {audio_url ? (
+          // Áudio real enviado pela HUMA: player + o que foi falado.
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', opacity: 0.85 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/>
+              </svg>
+              Áudio com a sua voz
+            </div>
+            <audio controls preload="none" src={audio_url} style={{ width: 260, maxWidth: '100%', height: 36 }} />
+            {text && <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.95 }}>{text}</div>}
+          </div>
+        ) : audio ? (
           <VoiceClipInline dark={!isClient} duration={audio} />
         ) : text}
       </div>
