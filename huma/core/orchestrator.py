@@ -822,6 +822,8 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 _send_with_human_delay(
                     phone, reply, reply_parts, actions,
                     client_data, conv, ai_result,
+                    user_text=unified_text,
+                    stock_result=locals().get("stock_preflight_result"),  # None no Tier 0
                 )
             )
         else:
@@ -1082,9 +1084,16 @@ async def _compress_history_async(client_id: str, phone: str) -> None:
         await cache.release_lock(lock_key)
 
 
-async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv, ai_result):
+async def _send_with_human_delay(
+    phone, reply, parts, actions, client_data, conv, ai_result,
+    user_text: str = "", stock_result: dict | None = None,
+):
     """
     Envia com delay humano + processa actions + áudio inteligente.
+
+    user_text / stock_result (2026-09-07, opcionais): texto do lead neste
+    turno e resultado do pre-flight de estoque — alimentam os cards de
+    produto depois do texto. Sem eles, o texto vem do histórico.
 
     v10.0 — Mudanças:
       - Reversão de stage quando agendamento dá conflito
@@ -1650,10 +1659,13 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
         # preço, botão) e "o que vocês vendem" vira carrossel. Só com dado
         # verificado na loja; nunca derruba o turno.
         try:
-            await _send_product_cards(
-                phone, cid, client_data, conv, unified_text,
-                locals().get("stock_preflight_result"),  # None no caminho Tier 0 (sem IA)
-            )
+            lead_text = (user_text or "").strip()
+            if not lead_text:
+                for _m in reversed(conv.history or []):
+                    if _m.get("role") == "user" and isinstance(_m.get("content"), str):
+                        lead_text = _m["content"]
+                        break
+            await _send_product_cards(phone, cid, client_data, conv, lead_text, stock_result)
         except Exception as e:
             log.error(f"Cards de produto falharam | {phone} | {type(e).__name__}: {e}")
 
