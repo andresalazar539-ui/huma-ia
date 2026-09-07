@@ -29,7 +29,7 @@ AUDIO_EXTENSION_PRIMARY = "mp3"
 MAX_AUDIO_BYTES = 1_500_000
 
 # Instagram Direct (2026-09-07) recusa mp3 como anexo de áudio ("attachment
-# format is not supported"); aceita WAV. Pedimos PCM 22 kHz ao ElevenLabs e
+# format is not supported"); aceita WAV. Pedimos PCM ao ElevenLabs e
 # embrulhamos em WAV aqui mesmo (stdlib), sem ffmpeg. 44,1 kHz como o mp3
 # do WhatsApp — a 22 kHz a voz saía achatada ("robótica").
 _FORMATS: dict[str, dict] = {
