@@ -133,6 +133,8 @@ async def web_message(client_id: str, body: WebMessageBody, request: Request) ->
         "status": "ok",
         "reply_parts": result.get("reply_parts", []),
         "history_len": result.get("history_len", 0),
+        # Cards de produto (2026-09-07): o widget desenha foto, preço e botões.
+        "cards": result.get("cards") or [],
     }
 
 
