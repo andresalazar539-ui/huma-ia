@@ -216,8 +216,16 @@ async def asaas_connect(client_id: str, body: AsaasBody, client=Depends(verify_a
     if hook.get("status") != "ok":
         raise HTTPException(502, f"A chave é válida, mas não consegui criar o webhook no Asaas ({hook.get('detail', '')}). Tente de novo.")
 
-    await _persist(client_id, {"asaas_api_key": api_key, "asaas_webhook_token": token, "payment_provider": "asaas"})
-    log.info(f"Asaas | conectado | client={client_id} | sandbox={info.get('sandbox')} | webhook={hook.get('webhook_id')}")
+    # Meio de pagamento próprio conectado = a IA passa a cobrar na hora
+    # (princípio 2026-09-07): liga a venda se nenhuma estava ligada.
+    from huma.core.integration_effects import effects_for_connect
+    updates = {"asaas_api_key": api_key, "asaas_webhook_token": token, "payment_provider": "asaas"}
+    updates.update(effects_for_connect(getattr(client, "capabilities", None), "payment"))
+    await _persist(client_id, updates)
+    log.info(
+        f"Asaas | conectado | client={client_id} | sandbox={info.get('sandbox')} | "
+        f"webhook={hook.get('webhook_id')} | caps={updates.get('capabilities', 'inalteradas')}"
+    )
     return {"status": "ok", "account_name": info.get("name", ""), "sandbox": bool(info.get("sandbox"))}
 
 

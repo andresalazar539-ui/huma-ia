@@ -138,7 +138,53 @@ async def callback(
             "Tente conectar novamente em alguns instantes.",
         )
 
-    return _html_success(identity.business_name or client_id_huma)
+    # ERP conectado = conhecimento na hora (princípio 2026-09-07): catálogo
+    # em products_or_services + venda de produto físico ligada, igual ao
+    # onboarding. Falha aqui não desfaz a conexão (token já gravado).
+    synced = await _sync_erp_knowledge(client_id_huma, identity, access)
+    return _html_success(identity.business_name or client_id_huma, synced)
+
+
+async def _sync_erp_knowledge(client_id: str, identity: object, access_token: str) -> int:
+    """
+    Lê o catálogo do Bling e grava conhecimento + capabilities.
+
+    Returns:
+        Quantidade de produtos aprendidos (0 = catálogo indisponível ou update falhou;
+        -1 = leu, mas não conseguiu gravar).
+    """
+    from huma.core.catalog_sync import merge_store_catalog, store_products_to_items
+    from huma.core.integration_effects import effects_for_connect
+    from huma.providers.inventory.bling import BlingAdapter
+    from huma.services import playbook_service
+
+    adapter = BlingAdapter(access_token=access_token)
+    catalog = await adapter.list_products(limit=100, only_in_stock=False)
+    payload: dict = effects_for_connect(getattr(identity, "capabilities", None), "bling")
+    items: list[dict] = []
+    if catalog.get("status") == "ok":
+        items = store_products_to_items(catalog.get("products") or [], source="bling")
+        existing = getattr(identity, "products_or_services", None) or []
+        payload["products_or_services"] = merge_store_catalog(existing, items, source="bling")
+    else:
+        log.warning(
+            f"Bling sync catálogo pulado | client={client_id} | "
+            f"status={catalog.get('status')} | detail={catalog.get('detail', '')}"
+        )
+    if not payload:
+        return 0
+    try:
+        await db.update_client(client_id, payload)
+    except Exception as e:
+        log.error(f"Bling sync conhecimento falhou | client={client_id} | {type(e).__name__}: {e}")
+        return -1
+    log.info(
+        f"Bling sync conhecimento | client={client_id} | itens={len(items)} | "
+        f"caps={payload.get('capabilities', 'inalteradas')}"
+    )
+    if items:
+        playbook_service.schedule_regenerate(client_id, "bling_connect")
+    return len(items)
 
 
 # ================================================================
@@ -146,14 +192,22 @@ async def callback(
 # ================================================================
 
 
-def _html_success(business_name: str) -> HTMLResponse:
+def _html_success(business_name: str, synced: int = 0) -> HTMLResponse:
     """Página de sucesso pós-OAuth (identidade do Cockpit, volta sozinha)."""
     from huma.routes._oauth_pages import html_success
 
-    return html_success(
-        "Bling conectado",
-        f"A HUMA já consulta estoque e frete de <b>{html.escape(business_name)}</b> na conversa.",
-    )
+    nome = html.escape(business_name)
+    if synced > 0:
+        detail = (
+            f"A HUMA já aprendeu {synced} produtos do Bling de <b>{nome}</b> e a venda de "
+            "produto físico ficou ligada: estoque, frete e link na conversa."
+        )
+    else:
+        detail = (
+            f"A HUMA já consulta estoque e frete de <b>{nome}</b> na conversa. "
+            "Não consegui ler o catálogo agora; ela consulta o Bling a cada pergunta de produto."
+        )
+    return html_success("Bling conectado", detail)
 
 
 def _html_error(title: str, detail: str) -> HTMLResponse:

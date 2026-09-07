@@ -276,8 +276,15 @@ async def calendar_connect(client_id: str, body: CalendarConnectBody, client=Dep
     probe = await sched.probe_calendar(calendar_id)
     if not probe.get("ok"):
         raise HTTPException(400, probe.get("user_message") or "Não consegui acessar essa agenda.")
-    await _persist(client_id, {"google_calendar_id": calendar_id})
-    log.info(f"Calendar | conectada | client={client_id} | cal={calendar_id} | summary={probe.get('summary', '')!r}")
+    # Agenda conectada = a IA passa a agendar na hora (princípio 2026-09-07).
+    from huma.core.integration_effects import effects_for_connect
+    updates = {"google_calendar_id": calendar_id}
+    updates.update(effects_for_connect(getattr(client, "capabilities", None), "google_calendar"))
+    await _persist(client_id, updates)
+    log.info(
+        f"Calendar | conectada | client={client_id} | cal={calendar_id} | "
+        f"summary={probe.get('summary', '')!r} | caps={updates.get('capabilities', 'inalteradas')}"
+    )
     updated = client.model_copy(update={"google_calendar_id": calendar_id})
     out = _calendar_payload(updated)
     out["summary"] = probe.get("summary", "")

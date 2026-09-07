@@ -177,6 +177,11 @@ async def callback(
     if result.get("api_domain"):
         updates["crm_api_base_url"] = result["api_domain"]
 
+    # CRM conectado = a IA passa a qualificar e entregar o lead na hora
+    # (princípio 2026-09-07), sem o dono ter que marcar nada depois.
+    from huma.core.integration_effects import effects_for_connect
+    updates.update(effects_for_connect(getattr(identity, "capabilities", None), "crm"))
+
     # Zero-config: detecta pipeline + estágio padrão da conta pra o dono
     # não precisar configurar nada. Falha aqui NÃO bloqueia a conexão —
     # sem mapeamento, o negócio cai no pipeline default do CRM.

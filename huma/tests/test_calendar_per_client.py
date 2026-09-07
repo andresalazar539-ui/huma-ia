@@ -133,7 +133,10 @@ class TestCalendarRoutes:
         monkeypatch.setattr(sched, "probe_calendar", probe)
         resp = _client().post("/api/clients/cli_cal/calendar/connect", json={"calendar_id": "Cliente@Gmail.com"}, cookies=_session_cookie(monkeypatch))
         assert resp.status_code == 200, resp.text
-        assert sink["updates"][0] == {"google_calendar_id": "cliente@gmail.com"}
+        up = sink["updates"][0]
+        assert up["google_calendar_id"] == "cliente@gmail.com"
+        # Agenda conectada liga "Agendar" na hora (princípio 2026-09-07).
+        assert "schedule" in up["capabilities"] and up["enable_scheduling"] is True
         assert resp.json()["summary"] == "Agenda da Dra."
         assert resp.json()["calendar_id"] == "cliente@gmail.com"
 

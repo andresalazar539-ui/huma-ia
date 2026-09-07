@@ -85,6 +85,9 @@ async def callback(
         "google_oauth_email": result.get("email", ""),
         "google_calendar_id": calendar_pointer(client_id),
     }
+    # Agenda conectada = a IA passa a agendar na hora (princípio 2026-09-07).
+    from huma.core.integration_effects import effects_for_connect
+    updates.update(effects_for_connect(getattr(identity, "capabilities", None), "google_calendar"))
 
     # Planilha de leads: cria uma vez; se já existe, mantém.
     sheet_note = ""

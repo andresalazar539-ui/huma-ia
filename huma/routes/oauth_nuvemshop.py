@@ -134,4 +134,8 @@ async def _sync_store_knowledge(client_id: str, identity: object, catalog: dict)
         f"total_produtos={len(catalog.get('products') or [])} | caps={caps_after} | "
         f"sell_physical_novo={'sell_physical' not in caps_before}"
     )
+    if items:
+        # Catálogo novo = playbook novo sozinho (objeções/provas instanciadas no que a loja vende).
+        from huma.services import playbook_service
+        playbook_service.schedule_regenerate(client_id, "nuvemshop_connect")
     return True

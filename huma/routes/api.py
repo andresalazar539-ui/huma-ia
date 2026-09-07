@@ -616,7 +616,17 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
         persisted["enable_payments"] = bool(caps & {"sell_digital", "sell_physical"})
     await db.update_client(client_id, persisted)
     log.info(f"Settings salvos | client={client_id} | fields={sorted(accepted.keys())}")
-    return {"status": "ok", "updated": sorted(accepted.keys()), "ignored": ignored}
+
+    # Informação nova sobre o negócio = playbook novo sozinho (princípio
+    # 2026-09-07). Só quando o valor MUDOU de fato (o Cockpit manda a tela
+    # inteira) — uma chamada de IA por mudança real, em background.
+    from huma.core.integration_effects import knowledge_changed
+    changed = knowledge_changed(client.model_dump(mode="json"), persisted)
+    if changed:
+        from huma.services import playbook_service
+        playbook_service.schedule_regenerate(client_id, "settings:" + ",".join(changed))
+        log.info(f"Playbook regen agendado | client={client_id} | changed={changed}")
+    return {"status": "ok", "updated": sorted(accepted.keys()), "ignored": ignored, "playbook_refresh": changed}
 
 
 # ── Voz (Cockpit → sessão "Voz clonada" DE VERDADE) ──
@@ -2055,6 +2065,12 @@ async def integrations_disconnect(
             "bling_refresh_token": "",
             "bling_token_expires_at": None,
         }
+        # ERP fora = catálogo dele sai do conhecimento; itens do dono ficam.
+        identity = await db.get_client(client_id)
+        existing = (getattr(identity, "products_or_services", None) or []) if identity else []
+        if any(isinstance(p, dict) and p.get("source") == "bling" for p in existing):
+            from huma.core.catalog_sync import remove_store_items
+            updates["products_or_services"] = remove_store_items(existing, source="bling")
     elif integration_id in ("pipedrive", "hubspot", "rdstation", "rd_station", "crm"):
         updates = {
             "crm_access_token": "",
