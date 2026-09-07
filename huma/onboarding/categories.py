@@ -384,6 +384,79 @@ REGRAS DO PLAYBOOK:
     return prompt
 
 
+def _str_list() -> dict:
+    return {"type": "array", "items": {"type": "string"}}
+
+
+# Tool forçada pra análise de mercado + playbook: a API devolve o input já
+# como JSON válido. Schema permissivo (nada obrigatório, extras aceitos) —
+# o prompt descreve o conteúdo; o schema só garante a FORMA.
+MARKET_ANALYSIS_TOOL: dict = {
+    "name": "market_analysis",
+    "description": "Registra a análise de mercado e o playbook do negócio no formato pedido no prompt.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "market_context": {"type": "string"},
+            "target_audience": {"type": "string"},
+            "local_context": {"type": "string"},
+            "ideal_tone": {"type": "string"},
+            "expressions_to_use": _str_list(),
+            "expressions_to_avoid": _str_list(),
+            "sales_strategy": {"type": "string"},
+            "top_objections": _str_list(),
+            "top_arguments": _str_list(),
+            "closing_triggers": _str_list(),
+            "profiles": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "signals": _str_list(),
+                        "ideal_tone": {"type": "string"},
+                        "objections": _str_list(),
+                        "arguments": _str_list(),
+                        "conversation_flow": {"type": "string"},
+                    },
+                },
+            },
+            "playbook": {
+                "type": "object",
+                "properties": {
+                    "diferenciais": _str_list(),
+                    "provas_reais": _str_list(),
+                    "objecoes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "objecao": {"type": "string"},
+                                "resposta_exemplo": {"type": "string"},
+                            },
+                        },
+                    },
+                    "gatilhos_aplicaveis": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "gatilho": {"type": "string"},
+                                "fato_real": {"type": "string"},
+                            },
+                        },
+                    },
+                    "perfis_locais": _str_list(),
+                    "meta_e_caminho": {"type": "string"},
+                    "lacunas": _str_list(),
+                },
+            },
+        },
+    },
+}
+
+
 async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
     """
     Executa análise de mercado via IA.
@@ -421,11 +494,21 @@ async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
 
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        # JSON garantido pela API (2026-09-07): a resposta vem como input de
+        # uma tool forçada, então aspas dentro de texto nunca quebram o parse.
+        # Texto livre com JSON (modelo antigo / mock) continua aceito abaixo.
         response = await client.messages.create(
             model=AI_MODEL_PRIMARY,
             max_tokens=6000,  # F3: JSON cresceu com o playbook (objeções + gatilhos + lacunas); 3500 truncava com site grande
             messages=[{"role": "user", "content": prompt}],
+            tools=[MARKET_ANALYSIS_TOOL],
+            tool_choice={"type": "tool", "name": MARKET_ANALYSIS_TOOL["name"]},
         )
+
+        for block in (response.content or []):
+            if getattr(block, "type", "") == "tool_use" and isinstance(getattr(block, "input", None), dict):
+                log.info(f"Análise de mercado OK (tool) | {identity_data.get('business_name', '')}")
+                return {"status": "completed", "analysis": block.input}
 
         raw = response.content[0].text.strip()
         cleaned = raw.replace("```json", "").replace("```", "").strip()

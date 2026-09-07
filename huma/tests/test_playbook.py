@@ -211,6 +211,34 @@ class TestAnalyzeMarket:
         assert "CONHECIMENTO DE ESPECIALISTA" not in prompt
         assert "TEXTO DO SITE" not in prompt
 
+    def test_tool_forcada_devolve_json_valido_mesmo_com_aspas(self, monkeypatch):
+        """2026-09-07: aspas dentro do texto quebravam o parse (502 do playbook).
+        Com a tool forçada, o JSON vem pronto da API — o texto nem é lido."""
+        from types import SimpleNamespace
+
+        payload = {"market_context": 'Cliente diz "tá caro" direto', "playbook": PLAYBOOK}
+        captured: dict = {}
+
+        class _Messages:
+            async def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(content=[
+                    SimpleNamespace(type="tool_use", name="market_analysis", input=payload),
+                ], stop_reason="tool_use")
+
+        class _Fake:
+            def __init__(self, *a, **k):
+                self.messages = _Messages()
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", _Fake)
+        result = asyncio.run(analyze_market({"business_name": "X", "category": "clinica"}))
+
+        assert result["status"] == "completed"
+        assert result["analysis"]["market_context"] == 'Cliente diz "tá caro" direto'
+        assert result["analysis"]["playbook"]["lacunas"] == PLAYBOOK["lacunas"]
+        assert captured["tool_choice"] == {"type": "tool", "name": "market_analysis"}
+        assert captured["tools"][0]["input_schema"]["properties"]["playbook"]["properties"]["lacunas"]["type"] == "array"
+
     def test_json_invalido_degrada(self, monkeypatch):
         _FakeAnthropic.store = {}
         _FakeAnthropic.reply = "isso não é json"
