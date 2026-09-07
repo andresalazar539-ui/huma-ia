@@ -24,6 +24,28 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
       .catch(() => showToast('error', 'Não consegui copiar'));
   };
 
+  // Clientes (CRM do dono): estado local espelha o detalhe; o poll de 15s
+  // traz o valor do banco de volta. Marcar/desmarcar só muda a UI se o
+  // backend confirmar.
+  const [isCustomer, setIsCustomer] = React.useState(!!conversation.is_customer);
+  const [customerBusy, setCustomerBusy] = React.useState(false);
+  React.useEffect(() => { setIsCustomer(!!conversation.is_customer); }, [conversation.id, conversation.is_customer]);
+  const toggleCustomer = async () => {
+    if (customerBusy) return;
+    const next = !isCustomer;
+    if (!next && !window.confirm('Tirar esta pessoa da sua lista de clientes? As anotações ficam guardadas.')) return;
+    setCustomerBusy(true);
+    try {
+      await setCustomerFlag(conversation.id, next);
+      setIsCustomer(next);
+      showToast('ok', next ? 'Marcado como cliente' : 'Removido dos clientes');
+    } catch (e) {
+      showToast('error', String((e && e.message) || e));
+    } finally {
+      setCustomerBusy(false);
+    }
+  };
+
   // Assumir / devolver: só muda a UI se o backend confirmar.
   const doHandoff = async () => {
     if (busy) return;
@@ -93,6 +115,19 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           )}
         </div>
         {!mobile && <StatusPill status={conversation.status || 'andamento'} />}
+        <button onClick={toggleCustomer} disabled={customerBusy}
+          title={isCustomer ? 'Cliente da casa — clique pra remover da lista' : 'Marcar como cliente (aparece na aba Clientes)'}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0,
+            padding: mobile ? '6px 9px' : '6px 11px', borderRadius: 999, cursor: customerBusy ? 'wait' : 'pointer',
+            border: `1px solid ${isCustomer ? 'var(--sage)' : 'var(--paper-edge)'}`,
+            background: isCustomer ? 'var(--sage-tint)' : 'var(--paper-raised)',
+            color: isCustomer ? 'var(--sage-ink)' : 'var(--ink-2)',
+            fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap',
+          }}>
+          <Icon name={isCustomer ? 'check' : 'userPlus'} size={13} stroke={2} />
+          {isCustomer ? 'Cliente' : (mobile ? 'Cliente' : 'Marcar como cliente')}
+        </button>
         {!mobile && onOpenAgenda && (
           <Button variant="ghost" size="sm" icon={<Icon name="calendar" size={14} />} onClick={onOpenAgenda}>Agenda</Button>
         )}

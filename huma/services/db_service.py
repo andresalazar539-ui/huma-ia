@@ -342,6 +342,10 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             channel=d.get("channel", "whatsapp") or "whatsapp",
             lead_whatsapp=d.get("lead_whatsapp", "") or "",
             lead_state=d.get("lead_state") if isinstance(d.get("lead_state"), dict) else {},
+            is_customer=bool(d.get("is_customer") or False),
+            customer_since=d.get("customer_since"),
+            customer_reason=d.get("customer_reason", "") or "",
+            owner_notes=d.get("owner_notes", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -438,12 +442,23 @@ async def save_conversation(conv: Conversation):
     # sem o campo e avisa no log.
     if conv.lead_state:
         data["lead_state"] = conv.lead_state
+    # Clientes (CRM do dono): mesmo contrato — só entra quando preenchido.
+    # is_customer=False NÃO é gravado aqui (desmarcar é via set_customer_flag,
+    # que escreve direto), então um save concorrente carregado antes da
+    # marcação automática nunca rebaixa um cliente.
+    if conv.is_customer:
+        data["is_customer"] = True
+        data["customer_since"] = conv.customer_since.isoformat() if conv.customer_since else None
+        data["customer_reason"] = conv.customer_reason or ""
+    if conv.owner_notes:
+        data["owner_notes"] = conv.owner_notes
     try:
         await run_in_threadpool(
             lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
         )
     except Exception as e:
-        if "lead_state" in data and "lead_state" in str(e):
+        err = str(e)
+        if "lead_state" in data and "lead_state" in err:
             log.warning(
                 f"save_conversation | coluna lead_state ausente (rodar scripts/migration_lead_state.sql) | "
                 f"client={conv.client_id} | phone={conv.phone} | retry sem lead_state"
@@ -452,8 +467,127 @@ async def save_conversation(conv: Conversation):
             await run_in_threadpool(
                 lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
             )
+        elif any(k in data for k in _CUSTOMER_COLUMNS) and any(k in err for k in _CUSTOMER_COLUMNS):
+            log.warning(
+                f"save_conversation | colunas de cliente ausentes (rodar scripts/migration_customers.sql) | "
+                f"client={conv.client_id} | phone={conv.phone} | retry sem is_customer/owner_notes"
+            )
+            for k in _CUSTOMER_COLUMNS:
+                data.pop(k, None)
+            await run_in_threadpool(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            )
         else:
             raise
+
+
+_CUSTOMER_COLUMNS = ("is_customer", "customer_since", "customer_reason", "owner_notes")
+
+
+async def set_customer_flag(
+    client_id: str,
+    phone: str,
+    is_customer: bool,
+    reason: str = "manual",
+) -> dict:
+    """
+    Marca/desmarca a conversa como cliente (ação do dono no Cockpit).
+    Escreve DIRETO na linha (update, não upsert) — é o único caminho que
+    pode gravar is_customer=false.
+
+    A primeira marcação vence: ao marcar, só preenche customer_since e
+    customer_reason se ainda estiverem vazios.
+
+    Returns:
+        Dict com os campos gravados. Levanta se a coluna não existir
+        (a rota traduz em erro amigável pedindo a migration).
+    """
+    updates: dict = {"updated_at": datetime.utcnow().isoformat()}
+    if is_customer:
+        updates["is_customer"] = True
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("conversations")
+                .select("customer_since,customer_reason")
+                .eq("client_id", client_id).eq("phone", phone).limit(1).execute()
+        )
+        row = (resp.data or [{}])[0]
+        if not row.get("customer_since"):
+            updates["customer_since"] = datetime.utcnow().isoformat()
+            updates["customer_reason"] = reason if reason in ("payment", "appointment", "manual") else "manual"
+    else:
+        updates["is_customer"] = False
+        updates["customer_since"] = None
+        updates["customer_reason"] = ""
+    await run_in_threadpool(
+        lambda: get_supabase().table("conversations").update(updates)
+            .eq("client_id", client_id).eq("phone", phone).execute()
+    )
+    log.info(f"Customer flag | client={client_id} | phone={phone} | is_customer={is_customer}")
+    return updates
+
+
+async def set_owner_notes(client_id: str, phone: str, owner_notes: str) -> None:
+    """Grava as anotações do dono sobre o cliente (update direto; aceita vazio pra limpar)."""
+    await run_in_threadpool(
+        lambda: get_supabase().table("conversations")
+            .update({"owner_notes": owner_notes, "updated_at": datetime.utcnow().isoformat()})
+            .eq("client_id", client_id).eq("phone", phone).execute()
+    )
+    log.info(f"Owner notes | client={client_id} | phone={phone} | chars={len(owner_notes)}")
+
+
+async def list_customers_for_cockpit(client_id: str, limit: int = 500) -> list[dict]:
+    """
+    Aba Clientes — só conversas com is_customer=true, mais recentes primeiro.
+
+    Devolve linhas cruas (sem o history inteiro: só o necessário pra ficha).
+    Usa o índice parcial idx_conversations_customers.
+    """
+    def query():
+        return (
+            get_supabase()
+            .table("conversations")
+            .select(
+                "phone,stage,channel,lead_whatsapp,lead_name_canonical,lead_email,"
+                "last_message_at,customer_since,customer_reason,owner_notes,"
+                "active_appointment_datetime,active_appointment_service,lead_source"
+            )
+            .eq("client_id", client_id)
+            .eq("is_customer", True)
+            .order("customer_since", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+    resp = await run_in_threadpool(query)
+    return resp.data or []
+
+
+async def list_approved_payments_by_phone(client_id: str, limit: int = 1000) -> dict[str, list[dict]]:
+    """
+    Compras aprovadas do negócio agrupadas por telefone do lead (ficha do
+    cliente: "o que comprou"). Uma query só; nunca levanta.
+    """
+    try:
+        def query():
+            return (
+                get_supabase()
+                .table("payments")
+                .select("phone,description,amount_cents,method,paid_at,created_at,status")
+                .eq("client_id", client_id)
+                .eq("status", "approved")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        resp = await run_in_threadpool(query)
+    except Exception as e:
+        log.warning(f"list_approved_payments_by_phone | client={client_id} | {type(e).__name__}: {e}")
+        return {}
+    out: dict[str, list[dict]] = {}
+    for r in resp.data or []:
+        out.setdefault(str(r.get("phone") or ""), []).append(r)
+    return out
 
 
 async def set_lead_source(

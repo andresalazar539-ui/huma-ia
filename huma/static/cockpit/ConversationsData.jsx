@@ -180,6 +180,11 @@ function mapDetail(d) {
     status: deriveStatus(d),
     stage: d.stage,
     handoff_status: d.handoff_status,
+    // Clientes (CRM do dono)
+    is_customer: !!d.is_customer,
+    customer_since: d.customer_since || null,
+    customer_reason: d.customer_reason || '',
+    owner_notes: d.owner_notes || '',
     appointment: d.active_appointment_datetime
       ? { datetime: d.active_appointment_datetime, service: d.active_appointment_service }
       : null,
@@ -193,6 +198,53 @@ Object.assign(window, {
   mapListItem, mapHistory, mapDetail,
   HUMA_CLIENT_ID: CLIENT_ID,
 });
+
+/* ---------------- Clientes (CRM do dono) ---------------- */
+// Só quem é cliente (pagou, agendou ou o dono marcou). Nunca lead.
+async function fetchCustomers(q = '') {
+  const params = new URLSearchParams({ client_id: CLIENT_ID });
+  if (q) params.set('q', q);
+  const r = await fetch(`/api/customers?${params}`, { headers: AUTH_HEADERS });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+
+// Baixa o CSV (cookie de sessão vai junto; no dev o Bearer também).
+async function downloadCustomersCsv() {
+  const params = new URLSearchParams({ client_id: CLIENT_ID });
+  const r = await fetch(`/api/customers/export.csv?${params}`, { headers: AUTH_HEADERS });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'clientes-huma.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function setCustomerFlag(phone, isCustomer) {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/customer`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ is_customer: !!isCustomer }),
+  });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+
+async function saveOwnerNotes(phone, ownerNotes) {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/notes`;
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ owner_notes: ownerNotes || '' }),
+  });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+
+Object.assign(window, { fetchCustomers, downloadCustomersCsv, setCustomerFlag, saveOwnerNotes });
 
 /* ---------------- T3: Handoff + envio manual ---------------- */
 async function sendHandoff(phone, takeover, summary = '') {

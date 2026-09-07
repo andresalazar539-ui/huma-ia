@@ -24,6 +24,7 @@ from fastapi import BackgroundTasks
 from huma.config import SAFE_MODE, HISTORY_MAX_BEFORE_COMPRESS
 from huma.core.ai_schedule import resolve_effective_mode
 from huma.core.funnel import get_stages
+from huma.core.customers import mark_as_customer
 from huma.models.schemas import (
     Conversation, MessagePayload,
     OnboardingStatus, OutboundStatus,
@@ -1745,6 +1746,10 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     "role": "assistant",
                     "content": f"[AGENDAMENTO CONFIRMADO] {appointment_confirmation[:100]}",
                 })
+                # Clientes (CRM do dono): quem agendou vira cliente. Vai no
+                # mesmo save (contrato: só entra no upsert quando preenchido).
+                if mark_as_customer(conv, "appointment"):
+                    log.info(f"Customer | phone={phone} | motivo=appointment | via=preflight")
                 await db.save_conversation(conv)
             except Exception as e:
                 log.error(f"Erro salvando confirmação no histórico | {phone} | {e}")
@@ -2381,6 +2386,9 @@ async def _handle_appointment_action(phone, action, client_data, conv=None):
             conv.active_appointment_event_id = result["event_id"]
             conv.active_appointment_datetime = result.get("date_time", "")
             conv.active_appointment_service = result.get("service", "")
+            # Clientes (CRM do dono): quem agendou vira cliente.
+            if mark_as_customer(conv, "appointment"):
+                log.info(f"Customer | phone={phone} | motivo=appointment | via=action")
             try:
                 await db.save_conversation(conv)
             except Exception as e:

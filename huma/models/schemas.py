@@ -1152,6 +1152,31 @@ class Conversation(BaseModel):
         ),
     )
 
+    # Clientes (CRM do dono, 2026-09-07) — a conversa "promovida" a cliente.
+    # Vira cliente automaticamente em payment.approved / appointment.confirmed
+    # (core/customers.mark_as_customer) ou à mão pelo Cockpit. Segue o
+    # contrato do bsuid no save_conversation: só entra no upsert quando
+    # preenchido (migration scripts/migration_customers.sql).
+    is_customer: bool = Field(
+        default=False,
+        description="True = aparece na aba Clientes do Cockpit.",
+    )
+    customer_since: Optional[datetime] = Field(
+        default=None,
+        description="Quando virou cliente (UTC). A primeira marcação vence.",
+    )
+    customer_reason: str = Field(
+        default="",
+        description="Por que virou cliente: 'payment' | 'appointment' | 'manual'. Vazio = não é cliente.",
+    )
+    owner_notes: str = Field(
+        default="",
+        description=(
+            "Anotações do dono sobre este cliente (Cockpit). Entram no "
+            "prompt dinâmico SÓ quando preenchidas."
+        ),
+    )
+
 
 # ================================================================
 # APROVAÇÃO PENDENTE

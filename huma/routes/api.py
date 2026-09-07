@@ -1148,8 +1148,233 @@ async def get_conversation_cockpit(
         "active_appointment_service": conv.active_appointment_service or "",
         "channel": conv.channel or "whatsapp",
         "lead_whatsapp": conv.lead_whatsapp or "",
+        # Clientes (CRM do dono)
+        "is_customer": bool(conv.is_customer),
+        "customer_since": conv.customer_since.isoformat() if conv.customer_since else None,
+        "customer_reason": conv.customer_reason or "",
+        "owner_notes": conv.owner_notes or "",
+        "lead_source": conv.lead_source or "",
         "history": conv.history,
     }
+
+
+# ── Cockpit — Clientes (CRM do dono, 2026-09-07) ──
+#
+# Cliente = conversa promovida: pagou (payment.approved), agendou
+# (appointment.confirmed) ou o dono marcou à mão. A aba Clientes NUNCA
+# mostra lead. As anotações do dono entram no prompt dinâmico da HUMA
+# só quando existem (core/customers.build_customer_prompt).
+
+
+class CustomerFlagPayload(BaseModel):
+    """Marcar/desmarcar conversa como cliente."""
+    is_customer: bool = Field(..., description="True = vira cliente; False = volta a ser só conversa")
+
+
+class OwnerNotesPayload(BaseModel):
+    """Anotações do dono sobre o cliente."""
+    owner_notes: str = Field(default="", max_length=4000)
+
+
+def _customer_migration_error(e: Exception) -> HTTPException | None:
+    """Traduz 'coluna não existe' em erro amigável pedindo a migration."""
+    msg = str(e)
+    if any(k in msg for k in ("is_customer", "customer_since", "customer_reason", "owner_notes")):
+        return HTTPException(
+            503,
+            "A aba Clientes ainda não foi ativada neste banco (rodar scripts/migration_customers.sql).",
+        )
+    return None
+
+
+def _customer_row(r: dict, purchases: dict[str, list[dict]]) -> dict:
+    """Linha crua da tabela → item da aba Clientes (com compras e agendamento)."""
+    from huma.core.customers import reason_label
+
+    phone = r.get("phone", "") or ""
+    channel = r.get("channel", "whatsapp") or "whatsapp"
+    if phone.startswith("web:"):
+        channel = "web"
+    elif phone.startswith("ig:"):
+        channel = "instagram"
+    digits = "".join(c for c in phone if c.isdigit()) if channel == "whatsapp" else ""
+    if channel == "web" and r.get("lead_whatsapp"):
+        digits = "".join(c for c in str(r.get("lead_whatsapp")) if c.isdigit())
+    bought = []
+    for pmt in purchases.get(digits, []) if digits else []:
+        cents = int(pmt.get("amount_cents") or 0)
+        bought.append({
+            "description": pmt.get("description", "") or "",
+            "amount_cents": cents,
+            "amount_display": f"R$ {cents / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+            "method": pmt.get("method", "") or "",
+            "paid_at": pmt.get("paid_at") or pmt.get("created_at"),
+        })
+    appt_dt = r.get("active_appointment_datetime", "") or ""
+    appt_svc = r.get("active_appointment_service", "") or ""
+    return {
+        "phone": phone,
+        "channel": channel,
+        "lead_name": r.get("lead_name_canonical", "") or "",
+        "lead_email": r.get("lead_email", "") or "",
+        "lead_whatsapp": r.get("lead_whatsapp", "") or "",
+        "lead_source": r.get("lead_source", "") or "",
+        "stage": r.get("stage", "discovery") or "discovery",
+        "last_message_at": r.get("last_message_at"),
+        "customer_since": r.get("customer_since"),
+        "customer_reason": r.get("customer_reason", "") or "",
+        "customer_reason_label": reason_label(r.get("customer_reason", "")),
+        "owner_notes": r.get("owner_notes", "") or "",
+        "purchases": bought,
+        "appointment": {"datetime": appt_dt, "service": appt_svc} if appt_dt else None,
+        "appointment_label": (f"{appt_svc} · {appt_dt}" if appt_svc else appt_dt) if appt_dt else "",
+    }
+
+
+@router.get("/api/customers", tags=["Cockpit"])
+async def list_customers_cockpit(
+    client_id: str,
+    q: str = "",
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Aba Clientes — SÓ quem é cliente (is_customer=true), nunca lead.
+
+    Junta as compras aprovadas (tabela payments, por telefone) e o
+    agendamento ativo. `q` filtra por nome, telefone, e-mail ou anotação.
+    """
+    await verify_api_key_manual(client_id, creds, huma_session)
+    try:
+        rows = await db.list_customers_for_cockpit(client_id)
+    except Exception as e:
+        friendly = _customer_migration_error(e)
+        if friendly:
+            raise friendly
+        log.error(f"Cockpit list_customers | client_id={client_id} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui carregar os clientes agora.")
+
+    purchases = await db.list_approved_payments_by_phone(client_id) if rows else {}
+    items = [_customer_row(r, purchases) for r in rows]
+
+    needle = (q or "").strip().lower()
+    if needle:
+        items = [
+            it for it in items
+            if needle in " ".join((
+                it["lead_name"], it["phone"], it["lead_email"], it["owner_notes"],
+                " ".join(p["description"] for p in it["purchases"]),
+            )).lower()
+        ]
+
+    log.info(f"Cockpit list_customers | client_id={client_id} | count={len(items)} | q={'sim' if needle else 'não'}")
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/api/customers/export.csv", tags=["Cockpit"])
+async def export_customers_csv(
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> Response:
+    """Exporta a aba Clientes em CSV (UTF-8 com BOM, separador ';' — abre certo no Excel BR)."""
+    from huma.core.customers import customers_to_csv
+
+    await verify_api_key_manual(client_id, creds, huma_session)
+    try:
+        rows = await db.list_customers_for_cockpit(client_id)
+    except Exception as e:
+        friendly = _customer_migration_error(e)
+        if friendly:
+            raise friendly
+        log.error(f"Cockpit export_customers | client_id={client_id} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui exportar os clientes agora.")
+    purchases = await db.list_approved_payments_by_phone(client_id) if rows else {}
+    items = [_customer_row(r, purchases) for r in rows]
+    for it in items:
+        it["phone_display"] = (
+            it["lead_whatsapp"] if it["channel"] == "web" and it["lead_whatsapp"]
+            else ("" if it["channel"] in ("web", "instagram") else it["phone"])
+        )
+    csv_text = customers_to_csv(items)
+    log.info(f"Cockpit export_customers | client_id={client_id} | count={len(items)}")
+    return Response(
+        content=csv_text.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="clientes-huma.csv"'},
+    )
+
+
+@router.post("/api/conversations/{client_id}/{phone}/customer", tags=["Cockpit"])
+async def set_customer_cockpit(
+    client_id: str,
+    phone: str,
+    payload: CustomerFlagPayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Marca ou desmarca a conversa como cliente (botão da tela da conversa).
+
+    Marcar: a primeira marcação vence (customer_since não é sobrescrito).
+    Desmarcar: único caminho que grava is_customer=false; anotações ficam.
+    """
+    await verify_api_key_manual(client_id, creds, huma_session)
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+
+    try:
+        updates = await db.set_customer_flag(client_id, phone, payload.is_customer, reason="manual")
+    except Exception as e:
+        friendly = _customer_migration_error(e)
+        if friendly:
+            raise friendly
+        log.error(f"Cockpit set_customer | client_id={client_id} | phone={phone} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui salvar agora. Tenta de novo.")
+
+    log.info(f"Cockpit set_customer | client_id={client_id} | phone={phone} | is_customer={payload.is_customer}")
+    return {
+        "status": "ok",
+        "is_customer": payload.is_customer,
+        "customer_since": updates.get("customer_since", conv.customer_since.isoformat() if conv.customer_since else None) if payload.is_customer else None,
+        "customer_reason": updates.get("customer_reason", conv.customer_reason) if payload.is_customer else "",
+    }
+
+
+@router.patch("/api/conversations/{client_id}/{phone}/notes", tags=["Cockpit"])
+async def set_owner_notes_cockpit(
+    client_id: str,
+    phone: str,
+    payload: OwnerNotesPayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Grava as anotações do dono sobre o cliente. Elas viram memória da
+    HUMA pra esta conversa (bloco condicional no prompt dinâmico).
+    """
+    from huma.core.customers import clean_owner_notes
+
+    await verify_api_key_manual(client_id, creds, huma_session)
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+
+    notes = clean_owner_notes(payload.owner_notes)
+    try:
+        await db.set_owner_notes(client_id, phone, notes)
+    except Exception as e:
+        friendly = _customer_migration_error(e)
+        if friendly:
+            raise friendly
+        log.error(f"Cockpit owner_notes | client_id={client_id} | phone={phone} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui salvar as anotações agora.")
+
+    log.info(f"Cockpit owner_notes | client_id={client_id} | phone={phone} | chars={len(notes)}")
+    return {"status": "ok", "owner_notes": notes}
 
 
 # ── Cockpit (T3) — handoff humano + envio manual ──
@@ -2651,9 +2876,15 @@ async def handle_payment_result(result: dict, payment_id: str) -> None:
             except Exception as e:
                 log.error(f"Erro enviando confirmação | {phone} | {e}")
 
-            # 2. Avança funil pra "won"
+            # 2. Avança funil pra "won" (+ vira cliente: CRM do dono)
             try:
+                from huma.core.customers import mark_as_customer
+
                 conv = await db.get_conversation(client_id, phone)
+                if conv and mark_as_customer(conv, "payment"):
+                    log.info(f"Customer | phone={phone} | motivo=payment")
+                    if conv.stage == "won":
+                        await db.save_conversation(conv)
                 if conv and conv.stage != "won":
                     prev_stage = conv.stage
                     conv.stage = "won"

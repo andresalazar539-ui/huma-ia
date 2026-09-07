@@ -1186,6 +1186,12 @@ def build_dynamic_prompt(
     capped_facts = conv.lead_facts[-25:] if conv.lead_facts and len(conv.lead_facts) > 25 else conv.lead_facts
     prompt += "\n\n" + _format_lead_memory(capped_facts, conv.history_summary)
 
+    # ── Cliente da casa + anotações do dono (CRM, 2026-09-07) ──
+    # "" no caso comum (lead novo, sem anotação) — zero token. Quando
+    # existe, é instrução SE/QUANDO: usa pra personalizar, nunca recita.
+    from huma.core.customers import build_customer_prompt
+    prompt += build_customer_prompt(conv)
+
     # ── Insights aprendidos (Tier 2 também aprende) ──
     # Fica no bloco DINÂMICO de propósito: o texto muda quando novas conversas
     # won/lost são analisadas, e no estático invalidaria o cache Haiku.
