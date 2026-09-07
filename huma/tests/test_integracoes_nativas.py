@@ -890,3 +890,16 @@ class TestInstagramChangesFormat:
         out = ig.parse_webhook(body)
         assert len(out) == 1 and out[0]["sender_id"] == "12334" and out[0]["text"] == "random_text"
         assert out[0]["ig_user_id"] == "0"
+
+
+class TestAudioWavInstagram:
+    def test_wrap_pcm_as_wav(self):
+        import wave, io
+        from huma.services import audio_service as a
+        pcm = b"\x00\x01" * 2205  # 0,1s a 22050 Hz, 16-bit mono
+        out = a._wrap_pcm_as_wav(pcm, rate=22050)
+        assert out[:4] == b"RIFF" and out[8:12] == b"WAVE"
+        with wave.open(io.BytesIO(out), "rb") as w:
+            assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == 22050
+            assert w.getnframes() == 2205
+        assert a._FORMATS["wav"]["content_type"] == "audio/wav"

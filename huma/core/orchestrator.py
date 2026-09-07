@@ -1784,31 +1784,41 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 voice_id=voice_id,
                 sentiment=sentiment_value,
                 stage=conv.stage,
+                # Instagram Direct não aceita mp3 como anexo; WAV sim.
+                audio_format="wav" if phone.startswith("ig:") else "mp3",
             )
 
+            audio_msg_id = None
             if audio_url:
                 await asyncio.sleep(3.0)
-                await wa.send_audio(phone, audio_url, client_id=cid)
+                audio_msg_id = await wa.send_audio(phone, audio_url, client_id=cid)
                 await billing.log_usage(cid, billing.UsageType.ELEVENLABS, cost_usd=0.005)
 
+            if audio_msg_id:
                 if audio_is_substantial:
                     audio_ends_with_question = clean_audio.rstrip().endswith('?')
                     audio_has_cta = any(
                         w in clean_audio.lower()
                         for w in ['tá?', 'ta?', 'beleza?', 'bora?', 'achou?', 'fala', 'me diz', 'que tal']
                     )
-                    if not audio_ends_with_question and not audio_has_cta:
+                    # Fecho em texto SÓ se a resposta tinha uma última parte
+                    # própria. "Ficou alguma dúvida?" avulso era cheiro de robô.
+                    if not audio_ends_with_question and not audio_has_cta and len(parts) > 1:
                         await asyncio.sleep(2.0)
-                        if len(parts) > 1:
-                            await wa.send_text(phone, parts[-1], client_id=cid)
-                        else:
-                            await wa.send_text(phone, "Ficou alguma dúvida?", client_id=cid)
+                        await wa.send_text(phone, parts[-1], client_id=cid)
 
                 log.info(
                     f"Áudio enviado | {phone} | mode={'audio_first' if audio_is_substantial else 'complement'} | "
                     f"reason={audio_decision['reason']} | words={audio_word_count}"
                 )
             else:
+                if audio_url:
+                    # Gerou mas o canal recusou (ex.: formato): o lead NÃO pode
+                    # ficar sem a resposta — manda o conteúdo em texto.
+                    log.error(
+                        f"Áudio não entregue | {phone} | canal recusou o anexo | "
+                        f"mandando texto no lugar"
+                    )
                 if audio_is_substantial and len(parts) > 1:
                     for part in parts[1:]:
                         await asyncio.sleep(_typing_delay(part))

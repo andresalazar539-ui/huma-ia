@@ -28,6 +28,28 @@ AUDIO_EXTENSION_PRIMARY = "mp3"
 
 MAX_AUDIO_BYTES = 1_500_000
 
+# Instagram Direct (2026-09-07) recusa mp3 como anexo de áudio ("attachment
+# format is not supported"); aceita WAV. Pedimos PCM 22 kHz ao ElevenLabs e
+# embrulhamos em WAV aqui mesmo (stdlib), sem ffmpeg.
+_FORMATS: dict[str, dict] = {
+    "mp3": {"eleven": AUDIO_FORMAT_PRIMARY, "content_type": AUDIO_CONTENT_TYPE_PRIMARY, "ext": AUDIO_EXTENSION_PRIMARY},
+    "wav": {"eleven": "pcm_22050", "content_type": "audio/wav", "ext": "wav", "rate": 22050},
+}
+
+
+def _wrap_pcm_as_wav(pcm: bytes, rate: int = 22050) -> bytes:
+    """PCM 16-bit mono → WAV (cabeçalho RIFF) usando só a stdlib."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
 # ── Voice Settings por emoção (só usado no v2, v3 ignora) ──
 # v13 — FIDELIDADE PRIMEIRO: a voz clonada existe pro lead achar que é o
 # dono respondendo. `style` alto troca semelhança por dramatização (o
@@ -174,8 +196,14 @@ async def generate_and_upload(
     voice_id: str,
     sentiment: str = "neutral",
     stage: str = "",
+    audio_format: str = "mp3",
 ) -> Optional[str]:
-    """Gera áudio com voz clonada e faz upload pro Supabase."""
+    """
+    Gera áudio com voz clonada e faz upload pro Supabase.
+
+    audio_format: "mp3" (WhatsApp, default) | "wav" (Instagram Direct).
+    """
+    fmt = _FORMATS.get(audio_format, _FORMATS["mp3"])
     if not voice_id:
         log.warning("generate_and_upload chamado sem voice_id")
         return None
@@ -220,7 +248,7 @@ async def generate_and_upload(
             "text": clean_text,
             "voice_id": voice_id,
             "model_id": model,
-            "output_format": AUDIO_FORMAT_PRIMARY,
+            "output_format": fmt["eleven"],
         }
         if voice_settings is not None:
             convert_kwargs["voice_settings"] = voice_settings
@@ -237,11 +265,14 @@ async def generate_and_upload(
             log.error("ElevenLabs retornou áudio vazio")
             return None
 
+        if fmt["ext"] == "wav":
+            audio_bytes = _wrap_pcm_as_wav(audio_bytes, rate=int(fmt.get("rate", 22050)))
+
         if len(audio_bytes) > MAX_AUDIO_BYTES:
             log.warning(f"Áudio muito grande | size={len(audio_bytes)} bytes")
 
         # Upload pro Supabase Storage
-        filename = f"{uuid.uuid4()}.{AUDIO_EXTENSION_PRIMARY}"
+        filename = f"{uuid.uuid4()}.{fmt['ext']}"
         storage_path = f"audios/{filename}"
         supa = get_supabase()
 
@@ -249,7 +280,7 @@ async def generate_and_upload(
             lambda: supa.storage.from_("audios").upload(
                 storage_path,
                 audio_bytes,
-                {"content-type": AUDIO_CONTENT_TYPE_PRIMARY},
+                {"content-type": fmt["content_type"]},
             )
         )
 
