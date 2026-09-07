@@ -66,7 +66,7 @@ const GUTTER = 56;          // largura da coluna de horas
 const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
 
 /* ================= SHELL ================= */
-const AgendaFullScreen = () => {
+const AgendaFullScreen = ({ onOpenConversa } = {}) => {
   const [view, setView] = useState('dia');     // 'dia' | 'semana' | 'mes' | 'lista'
   const [cursor, setCursor] = useState(() => atMidnight(new Date()));
   const [events, setEvents] = useState([]);
@@ -170,7 +170,7 @@ const AgendaFullScreen = () => {
         )}
       </div>
 
-      {selected && <AppointmentDetail ev={selected} onClose={() => setSelected(null)} />}
+      {selected && <AppointmentDetail ev={selected} onClose={() => setSelected(null)} onOpenConversa={onOpenConversa} />}
     </div>
   );
 };
@@ -492,7 +492,7 @@ const STATUS_INFO = {
   waiting:   { label: 'Aguarda',    bg: 'var(--paper-sunk)',      ink: 'var(--warning)' },
 };
 
-const AppointmentDetail = ({ ev, onClose }) => {
+const AppointmentDetail = ({ ev, onClose, onOpenConversa }) => {
   const [shown, setShown] = useState(false);
   React.useEffect(() => {
     const r = requestAnimationFrame(() => setShown(true));
@@ -509,7 +509,11 @@ const AppointmentDetail = ({ ev, onClose }) => {
     ? `${Math.floor(durMin / 60)}h${durMin % 60 ? String(durMin % 60).padStart(2, '0') : ''}`
     : `${durMin}min`;
   const initials = window.initialsFrom ? window.initialsFrom(ev.name) : (ev.name || '?')[0];
-  const phone = window.maskPhone ? window.maskPhone(ev.phone) : (ev.phone || '');
+  // Canal: Instagram e chat do site têm id sintético — nunca mascarar como telefone.
+  const rawPhone = String(ev.phone || '');
+  const phone = rawPhone.startsWith('ig:') ? 'Instagram Direct'
+    : rawPhone.startsWith('web:') ? 'Chat do site'
+    : (window.maskPhone ? window.maskPhone(rawPhone) : rawPhone);
   const st = STATUS_INFO[ev.status] || STATUS_INFO.confirmed;
   // Briefing gerado pela HUMA. Vem do backend (campo `briefing`). Sem ele → estado "Em breve".
   const briefing = ev.briefing || ev.summary || '';
@@ -584,13 +588,13 @@ const AppointmentDetail = ({ ev, onClose }) => {
 
         {/* Ação */}
         <div style={{ padding: '0 22px 22px', marginTop: 'auto' }}>
-          <button onClick={() => { localStorage.setItem('huma_route', 'conversas'); window.location.reload(); }} style={{
+          <button onClick={() => { if (onOpenConversa) onOpenConversa(ev.phone); }} style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)',
             padding: '11px 16px', borderRadius: 10, border: '1px solid var(--paper-edge)',
             background: 'var(--paper)', cursor: 'pointer',
           }}>
-            <Icon name="message" size={15} /> Abrir conversa no WhatsApp
+            <Icon name="message" size={15} /> Abrir conversa
           </button>
         </div>
       </div>

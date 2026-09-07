@@ -360,7 +360,7 @@ function App() {
         mobile={isMobile} onBack={() => { setActiveId(null); setHandoff(false); }}
       />;
       break;
-    case 'agenda':      screen = <AgendaFullScreen />; break;
+    case 'agenda':      screen = <AgendaFullScreen onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }} />; break;
     case 'clientes':    screen = <ClientesScreen onOpen={(phone) => { setActiveId(phone); setRoute('conversas'); }} />; break;
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
