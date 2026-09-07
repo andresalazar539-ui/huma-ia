@@ -938,6 +938,15 @@ async def _run_instagram_token_refresh_job() -> None:
         log.error(f"sched | instagram_token_refresh | {type(e).__name__}: {e}")
 
 
+async def _run_catalog_refresh_job() -> None:
+    """Catálogo da loja/ERP vira conhecimento sozinho (2026-09-07). Nunca levanta."""
+    try:
+        from huma.services import catalog_refresh
+        await catalog_refresh.refresh_all()
+    except Exception as e:
+        log.error(f"sched | catalog_refresh | {type(e).__name__}: {e}")
+
+
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     # Controle de gasto — avisos de 80% e degraus de excedente: a cada 1h, lock 30min
     ("spend_alert", _run_spend_alert_job, 3600, 1800),
@@ -957,6 +966,9 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("stuck_conversation_alert", _run_stuck_conversation_alert_job, 3600, 1800),
     # Instagram Direct — renova tokens de 60 dias que vencem em <10 dias: 1x/dia
     ("instagram_token_refresh", _run_instagram_token_refresh_job, 86400, 3600),
+    # Loja/ERP conectado — catálogo (produto novo, preço, descrição, foto) vira
+    # conhecimento sem reconectar: a cada 30min, lock 15min. Zero IA.
+    ("catalog_refresh", _run_catalog_refresh_job, 1800, 900),
 ]
 
 

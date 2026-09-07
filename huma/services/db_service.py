@@ -152,6 +152,26 @@ async def list_instagram_clients() -> list[dict]:
     return [r for r in (resp.data or []) if (r.get("instagram_access_token") or "").strip()]
 
 
+async def list_store_clients() -> list[ClientIdentity]:
+    """
+    Clientes com loja virtual (Nuvemshop) ou ERP (Bling) conectado — pro job
+    que mantém o catálogo no conhecimento da IA (catalog_refresh, 2026-09-07).
+    Duas consultas simples e união por client_id (sem OR no PostgREST).
+    """
+    out: dict[str, ClientIdentity] = {}
+    for column in ("nuvemshop_access_token", "bling_access_token"):
+        resp = await run_in_threadpool(
+            lambda col=column: get_supabase().table("clients").select("*").neq(col, "").execute()
+        )
+        for row in (resp.data or []):
+            if not (row.get(column) or "").strip():
+                continue
+            identity = _identity_from_row(row)
+            if identity is not None and identity.client_id not in out:
+                out[identity.client_id] = identity
+    return list(out.values())
+
+
 async def get_client_by_evolution_instance(instance: str) -> ClientIdentity | None:
     """
     Roteamento de ENTRADA do canal Evolution: descobre o cliente HUMA a
