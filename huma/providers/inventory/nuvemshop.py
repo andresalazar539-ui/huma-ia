@@ -152,16 +152,21 @@ class NuvemshopAdapter(InventoryProvider):
         if not query:
             return {"status": "not_found", "query": query}
 
-        # 1) SKU exato (sem espaço) — endpoint dedicado
-        if " " not in query:
-            st, body = await self._request("GET", f"/products/sku/{query}")
+        from huma.core.catalog_sync import best_match, sku_candidates
+
+        # 1) SKU — a pergunta inteira ("CAM-PRETA-M") ou um token dela
+        #    ("camiseta preta CAM-PRETA-M"): endpoint dedicado.
+        sku_tries = [query] if " " not in query else []
+        sku_tries += [t for t in sku_candidates(query) if t not in sku_tries]
+        for sku in sku_tries:
+            st, body = await self._request("GET", f"/products/sku/{sku}")
             if st == 200 and isinstance(body, dict) and body.get("id"):
-                result = self._product_to_dict(body, sku_hint=query)
+                result = self._product_to_dict(body, sku_hint=sku)
                 result["status"] = "found"
                 log.info(f"Nuvemshop check_stock | found (sku) | sku={result['sku']} | qty={result['stock_qty']}")
                 return result
 
-        # 2) Busca textual
+        # 2) Busca textual da loja (literal: só acha o que bate no nome)
         st, body = await self._request(
             "GET", "/products", params={"q": query, "per_page": 5, "published": "true"},
         )
@@ -169,24 +174,35 @@ class NuvemshopAdapter(InventoryProvider):
             return {"status": "error", "detail": "network_error"}
         if st == 401:
             return {"status": "error", "detail": "unauthorized"}
-        if st == 404 or (st == 200 and not body):
-            log.info(f"Nuvemshop check_stock | not_found | query={query[:40]}")
-            return {"status": "not_found", "query": query}
-        if st != 200 or not isinstance(body, list):
+        if st not in (200, 404):
             return {"status": "error", "detail": f"http_{st}"}
+        products = [p for p in body if isinstance(p, dict)] if isinstance(body, list) else []
+        if len(products) == 1:
+            result = self._product_to_dict(products[0])
+            result["status"] = "found"
+            log.info(f"Nuvemshop check_stock | found | sku={result['sku']} | qty={result['stock_qty']} | price={result['price_cents']}")
+            return result
 
-        products = [p for p in body if isinstance(p, dict)]
-        if not products:
-            return {"status": "not_found", "query": query}
-        if len(products) > 1:
-            matches = [self._product_to_dict(p) for p in products[:5]]
-            log.info(f"Nuvemshop check_stock | ambiguous | query={query[:40]} | matches={len(matches)}")
-            return {"status": "ambiguous", "matches": matches}
-
-        result = self._product_to_dict(products[0])
-        result["status"] = "found"
-        log.info(f"Nuvemshop check_stock | found | sku={result['sku']} | qty={result['stock_qty']} | price={result['price_cents']}")
-        return result
+        # 3) O lead fala do jeito dele ("camisa preta M" ≠ "Camiseta Básica
+        #    Preta"): casa por tokens contra o catálogo inteiro (2026-09-07).
+        #    Também desempata quando a busca literal trouxe vários.
+        pool = [self._product_to_dict(p) for p in products] if len(products) > 1 else []
+        if not pool:
+            catalog = await self.list_products(limit=200, only_in_stock=False)
+            if catalog.get("status") != "ok":
+                return {"status": "error", "detail": catalog.get("detail", "catalog_unavailable")}
+            pool = catalog.get("products") or []
+        match = best_match(query, pool)
+        if match["status"] == "found":
+            result = dict(match["product"])
+            result["status"] = "found"
+            log.info(f"Nuvemshop check_stock | found (match local) | query={query[:40]} | sku={result.get('sku')} | qty={result.get('stock_qty')}")
+            return result
+        if match["status"] == "ambiguous":
+            log.info(f"Nuvemshop check_stock | ambiguous | query={query[:40]} | matches={len(match['matches'])}")
+            return {"status": "ambiguous", "matches": match["matches"]}
+        log.info(f"Nuvemshop check_stock | not_found | query={query[:40]} | catalogo={len(pool)}")
+        return {"status": "not_found", "query": query}
 
     async def list_products(self, limit: int = 50, only_in_stock: bool = True) -> dict:
         if not self._has_creds:

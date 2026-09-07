@@ -1135,11 +1135,31 @@ def _build_anti_tique(conv: Conversation) -> str:
 # NÃO é cacheado — mas é pequeno (~500-800 tokens).
 # ================================================================
 
+def build_followup_hint_prompt(followup_hint: str) -> str:
+    """
+    Bloco do turno 2 pós-consulta (estoque/frete): os dados já foram
+    verificados pelo sistema. Só entra quando o orchestrator re-invoca.
+    """
+    hint = (followup_hint or "").strip()
+    if not hint:
+        return ""
+    return f"""
+
+DADOS JÁ VERIFICADOS PELO SISTEMA (turno de resposta):
+  {hint}
+  Responda AGORA ao lead com esses dados, em 1 ou 2 frases naturais.
+  NÃO diga que vai checar, verificar ou consultar: a consulta já aconteceu.
+  NÃO emita check_stock nem calc_shipping de novo neste turno.
+  Se o produto foi encontrado, diga nome e preço e mande o link se houver.
+  Se não foi encontrado, diga isso com clareza e ofereça o que existe."""
+
+
 def build_dynamic_prompt(
     identity: ClientIdentity,
     conv: Conversation,
     image_url: str | None = None,
     learned_insights: str = "",
+    followup_hint: str = "",
 ) -> str:
     """
     Bloco dinâmico do system prompt — muda a cada mensagem.
@@ -1227,6 +1247,7 @@ REFORÇO (releia antes de responder):
 LEMBRETE: Você é "{identity.business_name}". Você VENDE e ATENDE.
   Já disse isso antes? NÃO repita. O que o lead quer? Releia. Responda com propósito."""
 
+    prompt += build_followup_hint_prompt(followup_hint)
     return prompt
 
 
@@ -1872,13 +1893,17 @@ def _build_reply_tool_compact(
 # GERAÇÃO DE RESPOSTA
 # ================================================================
 
-async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False, tier: int = 3):
+async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False, tier: int = 3, followup_hint: str = ""):
     """
     Gera resposta da IA usando tool_use para garantir JSON válido.
 
     v10.1: usa 2 system blocks pra cache do Anthropic API.
     Bloco 1 (estático): cacheado entre mensagens do mesmo cliente.
     Bloco 2 (dinâmico): muda por mensagem, pequeno.
+
+    followup_hint (2026-09-07): texto do marker de estoque/frete quando o
+    orchestrator re-invoca após a consulta — entra no bloco dinâmico pra
+    IA responder com os dados em vez de "vou verificar" de novo.
     """
     model = AI_MODEL_FAST if use_fast_model else AI_MODEL_PRIMARY
 
@@ -1898,7 +1923,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             learned = await _get_insights_cached(identity.client_id)
         except Exception as e:
             log.warning(f"Insights indisponíveis | tier=2 | client={identity.client_id} | {type(e).__name__}: {e}")
-        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url, learned_insights=learned)
+        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url, learned_insights=learned, followup_hint=followup_hint)
     else:
         # Tier 3: prompt ORIGINAL + insights + profiling (comportamento pré-tiers)
         static = build_static_prompt(identity)
@@ -1910,7 +1935,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         except Exception:
             pass
 
-        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url)
+        dynamic = build_dynamic_prompt(identity, conv, image_url=image_url, followup_hint=followup_hint)
 
         try:
             from huma.services.learning_engine import profile_lead, build_profile_prompt

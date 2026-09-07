@@ -1378,6 +1378,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
             ]
 
             inventory_executed = False
+            inv_results: list[dict] = []  # dados consultados (dica do turno 2 + safety net)
             for inv_action in inventory_actions_pending:
                 inv_type = inv_action.get("type")
                 if inv_type == "check_stock":
@@ -1392,6 +1393,7 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                     continue
                 if inv_result.get("executed"):
                     inventory_executed = True
+                    inv_results.append(inv_result)
 
             # Re-invoca SÓ se: marcou algo E reply do turn 1 ainda vai sair
             # (check_availability não suprimiu). Caso contrário, markers ficam
@@ -1421,6 +1423,14 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                             break
 
                 if last_user_text:
+                    # 2026-09-07: o turno 2 recebe os dados consultados como
+                    # dica explícita (bloco dinâmico) — sem isso a IA via a
+                    # própria pergunta repetida e respondia "vou checar" de novo.
+                    inv_hint = " ".join(
+                        r.get("marker", "") for r in inv_results if r.get("marker")
+                    ).strip()
+                    sent_text = ""
+                    sent_parts: list = []
                     try:
                         followup_result = await ai.generate_response(
                             client_data,
@@ -1429,10 +1439,31 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                             image_url=None,
                             use_fast_model=False,
                             tier=3,
+                            followup_hint=inv_hint,
                         )
 
                         fup_reply = (followup_result.get("reply") or "").strip()
                         fup_parts = followup_result.get("reply_parts") or []
+
+                        # Safety net determinística: se o turno 2 ainda é
+                        # "deixa eu checar" (ou vazio), o lead recebe os dados
+                        # verificados em vez de mais uma promessa.
+                        fup_concat = " ".join(
+                            [fup_reply] + [p for p in fup_parts if isinstance(p, str)]
+                        ).strip()
+                        if _inventory_reply_is_placeholder(fup_concat):
+                            safety_msg = _inventory_safety_message(inv_results)
+                            if safety_msg:
+                                log.warning(
+                                    f"inventory safety net ATIVADO | {phone} | "
+                                    f"turno 2 ainda placeholder (len={len(fup_concat)}) → "
+                                    f"enviando dados verificados"
+                                )
+                                fup_reply, fup_parts = safety_msg, []
+                                try:
+                                    await loop_detector.record_safety_net(cid)
+                                except Exception:
+                                    pass
 
                         if fup_parts and len(fup_parts) > 1:
                             for i, part in enumerate(fup_parts):
@@ -1444,14 +1475,18 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                                 )
                                 await asyncio.sleep(delay)
                                 await wa.send_text(phone, part, client_id=cid)
+                            sent_parts = [p for p in fup_parts if isinstance(p, str) and p.strip()]
+                            sent_text = " ".join(sent_parts)
                         elif fup_reply:
                             await asyncio.sleep(_typing_delay(fup_reply))
                             await wa.send_text(phone, fup_reply, client_id=cid)
+                            sent_text = fup_reply
                         elif fup_parts and isinstance(fup_parts[0], str):
                             single = fup_parts[0].strip()
                             if single:
                                 await asyncio.sleep(_typing_delay(single))
                                 await wa.send_text(phone, single, client_id=cid)
+                                sent_text = single
 
                         log.info(
                             f"inventory follow-up enviado | {phone} | "
@@ -1462,13 +1497,26 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                             f"inventory follow-up falhou | {phone} | "
                             f"{type(e).__name__}: {e}"
                         )
-                        # Safety net leve: mensagem genérica pra lead não ficar no vácuo
-                        fallback_msg = (
+                        # Safety net: temos os dados do handler, mandamos direto;
+                        # só cai na genérica se não houver dado nenhum.
+                        fallback_msg = _inventory_safety_message(inv_results) or (
                             "Tô consultando o sistema aqui, só um instante "
                             "que já te respondo com tudo certinho."
                         )
                         await asyncio.sleep(_typing_delay(fallback_msg))
                         await wa.send_text(phone, fallback_msg, client_id=cid)
+                        sent_text = fallback_msg
+
+                    # Histórico = o que o lead VIU: sai o "vou verificar" suprimido,
+                    # entra a resposta enviada (Cockpit e próximo turno coerentes).
+                    try:
+                        if _swap_suppressed_reply(conv, reply, sent_text, sent_parts):
+                            await db.save_conversation(conv)
+                    except Exception as e:
+                        log.error(
+                            f"Erro ajustando histórico pós inventory | {phone} | "
+                            f"{type(e).__name__}: {e}"
+                        )
                 else:
                     log.warning(
                         f"inventory sem user text pra re-invocar | {phone}"
@@ -2930,7 +2978,110 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
         "executed": True,
         "status": status,
         "product": result if status == "found" else None,
+        # 2026-09-07: o dispatcher usa o marker como dica do turno 2 e os
+        # dados crus pra safety net determinística (lead nunca fica no vácuo).
+        "marker": marker,
+        "query": query,
+        "matches": result.get("matches") or [] if status == "ambiguous" else [],
     }
+
+
+def _inventory_reply_is_placeholder(text: str) -> bool:
+    """
+    True quando a resposta do turno 2 ainda é "vou checar" em vez da resposta.
+
+    Depois do marker, "Deixa eu checar o estoque agora" é o sintoma de que a
+    IA re-emitiu a consulta em vez de usar o dado. Só o texto, sem dígito
+    (preço/quantidade) e com verbo de verificação, conta como placeholder.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if any(ch.isdigit() for ch in t):
+        return False
+    verbs = ("checar", "verificar", "consultar", "conferir", "confirmar", "olhar", "ver aqui", "um instante", "só um momento")
+    subjects = ("estoque", "disponibilidade", "sistema", "catálogo", "catalogo", "loja", "frete", "pra você", "pra vc")
+    return any(v in t for v in verbs) and any(s in t for s in subjects)
+
+
+def _inventory_safety_message(results: list[dict]) -> str:
+    """
+    Resposta determinística a partir dos dados consultados (safety net).
+
+    Usada quando o turno 2 veio vazio ou ainda como placeholder. Neutra no
+    tom (é rede de segurança, não a voz do dono) e só com dado verificado.
+    """
+    lines: list[str] = []
+    for r in results or []:
+        status = r.get("status")
+        product = r.get("product") or {}
+        if status == "found" and product:
+            name = product.get("name", "o produto")
+            price = _format_price_brl(product.get("price_cents", 0))
+            link = (product.get("url") or "").strip()
+            if product.get("available", False):
+                if product.get("stock_unlimited"):
+                    estoque = "disponível"
+                else:
+                    qty = int(product.get("stock_qty") or 0)
+                    estoque = f"{qty} em estoque" if qty != 1 else "1 em estoque"
+                msg = f"Verifiquei aqui: {name} por {price}, {estoque}."
+                if link:
+                    msg += f" Pra comprar é por aqui: {link}"
+            else:
+                msg = f"Verifiquei aqui: {name} ({price}) está esgotado no momento. Quer que eu te avise quando voltar?"
+            lines.append(msg)
+        elif status == "ambiguous":
+            names = [m.get("name", "") for m in (r.get("matches") or []) if m.get("name")]
+            if names:
+                lines.append("Achei mais de uma opção: " + ", ".join(names[:5]) + ". Qual delas você quer?")
+        elif status == "not_found":
+            q = (r.get("query") or "").strip()
+            lines.append(
+                f"Não encontrei \"{q}\" no catálogo. Me diz o nome exato ou a cor e o modelo que eu confiro pra você."
+                if q else "Não encontrei esse produto no catálogo. Me diz o nome exato que eu confiro pra você."
+            )
+        elif status == "ok" and r.get("marker"):
+            # Frete: o marker já traz o valor/prazo em texto; extrai o miolo.
+            body = r["marker"].strip("[]")
+            lines.append("Verifiquei aqui: " + body.split(". Use APENAS")[0].replace("FRETE CONSULTADO — ", "") + ".")
+    return " ".join(lines).strip()
+
+
+def _swap_suppressed_reply(conv, suppressed_text: str, sent_text: str, sent_parts: list) -> bool:
+    """
+    O turno 1 ("vou verificar") foi suprimido e o lead recebeu o turno 2.
+    O histórico precisa refletir o que o lead VIU: tira o texto suprimido
+    (última entry de assistant antes dos markers) e grava o enviado.
+
+    Returns:
+        True se mexeu no histórico.
+    """
+    history = conv.history or []
+    changed = False
+    suppressed = (suppressed_text or "").strip()
+    if suppressed:
+        for i in range(len(history) - 1, -1, -1):
+            entry = history[i]
+            if entry.get("role") != "assistant":
+                continue
+            content = entry.get("content", "")
+            if isinstance(content, str) and content.startswith("["):
+                continue  # marker: preserva
+            if isinstance(content, str) and content.strip() == suppressed:
+                del history[i]
+                changed = True
+            break
+    sent = (sent_text or "").strip()
+    if sent:
+        entry: dict = {"role": "assistant", "content": sent}
+        clean_parts = [p.strip() for p in (sent_parts or []) if isinstance(p, str) and p.strip()]
+        if len(clean_parts) > 1:
+            entry["parts"] = clean_parts
+        history.append(entry)
+        changed = True
+    conv.history = history
+    return changed
 
 
 async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict:
@@ -3014,7 +3165,7 @@ async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict
             f"{type(e).__name__}: {e}"
         )
 
-    return {"executed": True, "status": status}
+    return {"executed": True, "status": status, "marker": marker}
 
 
 # ================================================================

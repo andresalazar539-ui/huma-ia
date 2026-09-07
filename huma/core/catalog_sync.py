@@ -89,6 +89,114 @@ def merge_store_catalog(
     return remove_store_items(existing, source) + list(store_items or [])
 
 
+# ── Busca local no catálogo (2026-09-07) ──────────────────────────────
+#
+# A busca textual da loja (Nuvemshop `q=`) é literal: "camisa preta M" não
+# acha "Camiseta Básica Preta". O lead fala do jeito dele; quem tem que
+# entender é a HUMA. Matcher puro por tokens normalizados (sem acento,
+# prefixo de 4+ letras casa "camisa"→"camiseta", tamanhos/stopwords fora).
+
+import re as _re
+import unicodedata as _ud
+
+_STOPWORDS = frozenset({
+    "de", "da", "do", "das", "dos", "a", "o", "as", "os", "um", "uma", "e", "em", "no", "na",
+    "tem", "tamanho", "tam", "cor", "modelo", "numero", "número", "n", "nº", "pra", "para", "com",
+})
+_SIZE_TOKENS = frozenset({"pp", "p", "m", "g", "gg", "xg", "xgg", "xs", "s", "l", "xl", "xxl", "u", "unico", "único"})
+_SKU_RE = _re.compile(r"^(?=.*[A-Za-z])(?=.*\d|.*-)[A-Za-z0-9][A-Za-z0-9._/-]{2,}$")
+
+
+def normalize_text(text: str) -> str:
+    """minúsculas, sem acento, só letras/dígitos/espaço."""
+    s = _ud.normalize("NFKD", str(text or ""))
+    s = "".join(ch for ch in s if not _ud.combining(ch)).lower()
+    return _re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def query_tokens(query: str) -> list[str]:
+    """Tokens úteis do que o lead falou (sem stopwords e sem tamanho)."""
+    out: list[str] = []
+    for tok in normalize_text(query).split():
+        if tok in _STOPWORDS or tok in _SIZE_TOKENS or tok.isdigit():
+            continue
+        if tok not in out:
+            out.append(tok)
+    return out
+
+
+def looks_like_sku(token: str) -> bool:
+    """"CAM-PRETA-M", "TEN-LEVE-40", "SKU123" → True; "camiseta" → False."""
+    t = (token or "").strip()
+    return bool(t) and " " not in t and bool(_SKU_RE.match(t)) and (t.upper() == t or any(c.isdigit() for c in t))
+
+
+def sku_candidates(query: str) -> list[str]:
+    """Tokens da pergunta que parecem SKU, na ordem em que aparecem."""
+    return [tok for tok in (query or "").split() if looks_like_sku(tok)]
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _token_hits(q_tok: str, name_toks: list[str]) -> bool:
+    """
+    "camisa" casa "camiseta" (prefixo comum de 5+ letras), "tenis" casa
+    "tenis", "bone" casa "bone". Radical curto (< 4) só casa igual.
+    """
+    for n in name_toks:
+        if n == q_tok:
+            return True
+        if len(q_tok) >= 4 and len(n) >= 4 and (n.startswith(q_tok) or q_tok.startswith(n)):
+            return True
+        if len(q_tok) >= 5 and len(n) >= 5 and _common_prefix_len(q_tok, n) >= 5:
+            return True
+    return False
+
+
+def best_match(query: str, products: list[dict]) -> dict:
+    """
+    Casa a pergunta do lead com o catálogo.
+
+    Returns:
+        {"status": "found", "product": dict}
+        {"status": "ambiguous", "matches": [dict, ...]}
+        {"status": "not_found"}
+    """
+    q_toks = query_tokens(query)
+    if not q_toks:
+        return {"status": "not_found"}
+    scored: list[tuple[float, dict]] = []
+    for p in products or []:
+        if not isinstance(p, dict):
+            continue
+        name_toks = normalize_text(p.get("name", "")).split()
+        sku_toks = normalize_text(p.get("sku", "")).split()
+        hits = sum(1 for t in q_toks if _token_hits(t, name_toks + sku_toks))
+        if hits == 0:
+            continue
+        score = hits / len(q_toks)
+        # Penaliza levemente nomes com muitos tokens além dos pedidos (mais genérico).
+        extra = max(0, len(name_toks) - hits)
+        scored.append((score - 0.02 * extra, p))
+    if not scored:
+        return {"status": "not_found"}
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_score = scored[0][0]
+    if top_score < 0.5:
+        return {"status": "not_found"}
+    close = [p for s, p in scored if s >= top_score - 0.15]
+    if len(close) == 1:
+        return {"status": "found", "product": close[0]}
+    return {"status": "ambiguous", "matches": close[:5]}
+
+
 def capabilities_after_store_connect(capabilities: list) -> list[str]:
     """Liga `sell_physical` (idempotente) mantendo a ordem do que já existia."""
     caps: list[str] = []
