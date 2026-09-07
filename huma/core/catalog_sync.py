@@ -102,6 +102,12 @@ import unicodedata as _ud
 _STOPWORDS = frozenset({
     "de", "da", "do", "das", "dos", "a", "o", "as", "os", "um", "uma", "e", "em", "no", "na",
     "tem", "tamanho", "tam", "cor", "modelo", "numero", "número", "n", "nº", "pra", "para", "com",
+    # Jeito de perguntar (não é produto): a pontuação foca no que o lead quer.
+    "quero", "queria", "quanto", "custa", "preco", "preço", "valor", "voces", "vocês", "vcs", "vc",
+    "voce", "você", "ainda", "ai", "aí", "me", "manda", "mandar", "link", "comprar", "compra",
+    "esse", "essa", "isso", "aquele", "aquela", "esta", "está", "tá", "ta", "algum", "alguma",
+    "oi", "ola", "olá", "bom", "boa", "dia", "tarde", "noite", "tudo", "bem", "por", "favor",
+    "sim", "nao", "não", "qual", "quais", "gostaria", "saber", "se", "vende", "vendem", "que",
 })
 _SIZE_TOKENS = frozenset({"pp", "p", "m", "g", "gg", "xg", "xgg", "xs", "s", "l", "xl", "xxl", "u", "unico", "único"})
 _SKU_RE = _re.compile(r"^(?=.*[A-Za-z])(?=.*\d|.*-)[A-Za-z0-9][A-Za-z0-9._/-]{2,}$")

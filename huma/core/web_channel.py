@@ -419,6 +419,16 @@ async def _process_web_message_locked(
         log.warning(f"Limite IA atingido (web) | {phone} | max={max_ia} | dono notificado")
         return {"status": "ok", "reply_parts": [_HANDOFF_REPLY], "history_len": len(conv.history)}
     else:
+        # Estoque verificado ANTES da resposta (2026-09-07): o canal web não
+        # executa actions, então a loja é consultada aqui, com a identidade
+        # real (a web_identity tem capabilities=[]), e o marker entra no
+        # histórico pra IA responder com estoque de verdade.
+        try:
+            from huma.core.stock_preflight import preflight as _stock_preflight
+            await _stock_preflight(client_data, conv, text, phone=phone)
+        except Exception as e:
+            log.error(f"Stock preflight falhou (web, segue sem) | {phone} | {type(e).__name__}: {e}")
+
         tier, use_sonnet = _select_tier(classification, conv, text, None, web_identity)
         ai_result = await ai.generate_response(
             web_identity, conv, text,

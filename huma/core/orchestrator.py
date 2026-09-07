@@ -494,6 +494,17 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                         f"{type(e).__name__}: {e}"
                     )
 
+            # ── ESTOQUE PRE-FLIGHT (2026-09-07) ──
+            # Loja conectada + lead citou produto do catálogo → consulta o
+            # estoque real ANTES da IA e injeta o marker. A resposta sai no
+            # mesmo turno com dado verificado (sem "deixa eu checar").
+            try:
+                from huma.core.stock_preflight import preflight as _stock_preflight
+                if await _stock_preflight(client_data, conv, unified_text, phone=phone):
+                    await db.save_conversation(conv)
+            except Exception as e:
+                log.error(f"Stock preflight falhou (segue sem) | {phone} | {type(e).__name__}: {e}")
+
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
                 image_url=unified_image,
@@ -2899,63 +2910,11 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
     result = await adapter.check_stock(query)
     status = result.get("status", "error")
 
-    if status == "found":
-        name = result.get("name", query)
-        sku = result.get("sku", "")
-        price = _format_price_brl(result.get("price_cents", 0))
-        qty = result.get("stock_qty", 0)
-        available = result.get("available", False)
-        # Loja virtual (Nuvemshop): estoque sem limite informado + link do produto.
-        stock_txt = (
-            "em estoque (sem limite informado)" if result.get("stock_unlimited")
-            else f"em estoque: {qty} unidades"
-        )
-        link = (result.get("url") or "").strip()
-        link_txt = (
-            f" | link de compra: {link} (mande o link quando o lead quiser comprar)"
-            if link else ""
-        )
-        if available:
-            marker = (
-                f"[ESTOQUE CONSULTADO — produto: {name} (SKU {sku}) | "
-                f"preço: {price} | {stock_txt}{link_txt}. "
-                f"Use APENAS esses dados na resposta. "
-                f"NUNCA invente outro preço nem outro número de estoque. "
-                f"Apresente ao lead com clareza e ofereça avançar pra compra.]"
-            )
-        else:
-            marker = (
-                f"[ESTOQUE CONSULTADO — produto: {name} (SKU {sku}) | "
-                f"preço: {price} | SEM ESTOQUE no momento (0 unidades). "
-                f"Avise o lead que tá esgotado, peça contato pra avisar quando "
-                f"voltar, ou ofereça produtos similares se você conhecer.]"
-            )
-    elif status == "not_found":
-        marker = (
-            f"[ESTOQUE CONSULTADO — produto '{query}' NÃO encontrado no catálogo. "
-            f"Avise o lead com clareza, peça pra detalhar o que procura "
-            f"(nome exato, cor, modelo) ou ofereça alternativas que você conhece.]"
-        )
-    elif status == "ambiguous":
-        matches = result.get("matches") or []
-        names = [m.get("name", "?") for m in matches[:5]]
-        marker = (
-            f"[ESTOQUE CONSULTADO — vários produtos batem com '{query}': "
-            f"{', '.join(names)}. Pergunte ao lead qual desses ele quer "
-            f"antes de prosseguir. NÃO invente outros.]"
-        )
-    elif status == "no_credentials":
-        marker = (
-            "[ESTOQUE INDISPONÍVEL — loja/ERP não conectado nesse cliente. "
-            "Diga ao lead que vai confirmar a disponibilidade e retorna em "
-            "instantes. NÃO confirme estoque por conta própria.]"
-        )
-    else:
-        marker = (
-            "[ESTOQUE INDISPONÍVEL — consulta falhou por instabilidade. "
-            "Diga ao lead que vai confirmar a disponibilidade e retorna "
-            "em instantes. NÃO invente estoque nem preço.]"
-        )
+    # Texto do marker vive em stock_preflight.build_stock_marker (2026-09-07):
+    # o mesmo pro pre-flight (antes da IA) e pra action (turno 2).
+    from huma.core.stock_preflight import build_stock_marker
+    marker = build_stock_marker(query, result)
+    if status not in ("found", "not_found", "ambiguous", "no_credentials"):
         log.warning(
             f"check_stock fallback | {phone} | status={status} | "
             f"detail={result.get('detail', '')}"
