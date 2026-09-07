@@ -897,9 +897,9 @@ class TestAudioWavInstagram:
         import wave, io
         from huma.services import audio_service as a
         pcm = b"\x00\x01" * 2205  # 0,1s a 22050 Hz, 16-bit mono
-        out = a._wrap_pcm_as_wav(pcm, rate=44100)
+        out = a._wrap_pcm_as_wav(pcm, rate=24000)
         assert out[:4] == b"RIFF" and out[8:12] == b"WAVE"
         with wave.open(io.BytesIO(out), "rb") as w:
-            assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == 44100
+            assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == 24000
             assert w.getnframes() == 2205
         assert a._FORMATS["wav"]["content_type"] == "audio/wav"
