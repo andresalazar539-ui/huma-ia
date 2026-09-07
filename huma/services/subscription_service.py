@@ -628,7 +628,7 @@ async def credit_referral_conversion(client_id: str) -> None:
                     (
                         f"🎉 {nome} virou assinante da HUMA pela sua indicação! "
                         f"+{billing.REFERRAL_REWARD_CONVERSATIONS} conversas na sua conta. "
-                        f"Continue indicando em app.humaia.com.br"
+                        f"Continue indicando em app.HumaIA.com.br"
                     ),
                     client_id=referred_by,
                 )
@@ -1591,7 +1591,7 @@ async def _send_subscription_welcome_bg(client_id: str, plan: str) -> None:
                 owner_phone,
                 f"🎉 Assinatura {plan_name} ativa! {conversas} conversas/mês "
                 f"liberadas pra sua IA vender sem parar. "
-                f"Acompanha tudo em app.humaia.com.br",
+                f"Acompanha tudo em app.HumaIA.com.br",
                 client_id=client_id,
             )
     except Exception as e:

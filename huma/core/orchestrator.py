@@ -3561,7 +3561,7 @@ async def _handle_blocked_new_conversation(client_data, phone: str, lead_text: s
         owner_msg = (
             f"⏰ Seu teste grátis de {TRIAL_DAYS} dias terminou e {waiting} "
             f"{'lead está' if waiting == 1 else 'leads estão'} na sua fila esperando resposta. "
-            f"Assine pra HUMA voltar a atender: app.humaia.com.br"
+            f"Assine pra HUMA voltar a atender: app.HumaIA.com.br"
         )
     else:
         links = billing.spend_action_links(client_id, PUBLIC_BASE_URL)

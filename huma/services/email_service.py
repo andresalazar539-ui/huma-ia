@@ -45,7 +45,7 @@ def _shell(title: str, body_html: str) -> str:
       </td></tr>
       <tr><td style="padding:20px 8px 0 8px;">
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:{_MUTED};margin:0;">
-          HUMA IA · <a href="https://app.humaia.com.br" style="color:{_TERRACOTTA};text-decoration:none;">app.humaia.com.br</a>
+          HUMA IA · <a href="https://app.humaia.com.br" style="color:{_TERRACOTTA};text-decoration:none;">app.HumaIA.com.br</a>
         </p>
       </td></tr>
     </table>
