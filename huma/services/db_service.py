@@ -563,6 +563,30 @@ async def list_customers_for_cockpit(client_id: str, limit: int = 500) -> list[d
     return resp.data or []
 
 
+async def list_payments_for_cockpit(client_id: str, since_iso: str = "", limit: int = 300) -> list[dict]:
+    """
+    Aba Vendas — cobranças geradas pela HUMA (tabela payments) do negócio,
+    mais recentes primeiro. `since_iso` limita por created_at (>=).
+    Levanta se a tabela não existir (a rota traduz em erro amigável).
+    """
+    def query():
+        q = (
+            get_supabase()
+            .table("payments")
+            .select(
+                "id,phone,lead_name,mp_payment_id,external_reference,method,amount_cents,"
+                "description,status,mp_status_detail,metadata,paid_at,created_at"
+            )
+            .eq("client_id", client_id)
+        )
+        if since_iso:
+            q = q.gte("created_at", since_iso)
+        return q.order("created_at", desc=True).limit(limit).execute()
+
+    resp = await run_in_threadpool(query)
+    return resp.data or []
+
+
 async def list_approved_payments_by_phone(client_id: str, limit: int = 1000) -> dict[str, list[dict]]:
     """
     Compras aprovadas do negócio agrupadas por telefone do lead (ficha do

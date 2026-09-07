@@ -246,6 +246,15 @@ async function saveOwnerNotes(phone, ownerNotes) {
 
 Object.assign(window, { fetchCustomers, downloadCustomersCsv, setCustomerFlag, saveOwnerNotes });
 
+/* ---------------- Vendas (pedidos gerados pela HUMA) ---------------- */
+async function fetchSales(days = 30) {
+  const params = new URLSearchParams({ client_id: CLIENT_ID, days: String(days) });
+  const r = await fetch(`/api/sales?${params}`, { headers: AUTH_HEADERS });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+Object.assign(window, { fetchSales });
+
 /* ---------------- T3: Handoff + envio manual ---------------- */
 async function sendHandoff(phone, takeover, summary = '') {
   const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/handoff`;

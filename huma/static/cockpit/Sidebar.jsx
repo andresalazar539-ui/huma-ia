@@ -7,13 +7,27 @@ const CATEGORY_LABELS = {
   pet: 'Pet', automotivo: 'Automotivo', outros: 'Negócio',
 };
 
+// Agenda × Vendas dependem do que o negócio faz (capabilities_resolved do
+// /api/integrations/status): schedule → Agenda; sell_digital/sell_physical
+// → Vendas; os dois → as duas. Sem capability nenhuma (ou antes de carregar)
+// mantém Agenda, que era o comportamento anterior.
+function pipelineTabs(client) {
+  const caps = client && Array.isArray(client.capabilities_resolved) ? client.capabilities_resolved : null;
+  if (!caps) return { agenda: true, vendas: false };
+  const sells = caps.includes('sell_digital') || caps.includes('sell_physical');
+  const schedules = caps.includes('schedule');
+  return { agenda: schedules || !sells, vendas: sells };
+}
+
 // client = /api/integrations/status (business_name, category, owner_email...)
 // waitingCount = conversas aguardando você (handoff) — badge real.
 const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
+  const tabs = pipelineTabs(client);
   const items = [
     { id: 'inicio',       label: 'Início',       icon: 'home',     count: null },
     { id: 'conversas',    label: 'Conversas',    icon: 'message',  count: waitingCount || null },
-    { id: 'agenda',       label: 'Agenda',       icon: 'calendar', count: null },
+    ...(tabs.agenda ? [{ id: 'agenda', label: 'Agenda', icon: 'calendar', count: null }] : []),
+    ...(tabs.vendas ? [{ id: 'vendas', label: 'Vendas', icon: 'card',     count: null }] : []),
     { id: 'clientes',     label: 'Clientes',     icon: 'users',    count: null },
     { id: 'voz',          label: 'Voz',          icon: 'mic',      count: null },
     { id: 'relatorios',   label: 'Relatórios',   icon: 'chart',    count: null },
@@ -272,11 +286,16 @@ const WorkspaceSwitcher = ({ onNav, onInvite, client }) => {
 // Mobile (< 768px) — tab bar inferior + folha "Mais".
 // O desktop continua usando SidebarNav; nada acima muda.
 // ============================================================
-const MOBILE_TABS = [
-  { id: 'inicio',     label: 'Início',     icon: 'home' },
-  { id: 'conversas',  label: 'Conversas',  icon: 'message' },
-  { id: 'agenda',     label: 'Agenda',     icon: 'calendar' },
-];
+// Terceira aba do celular: Agenda ou Vendas conforme o negócio (se faz os
+// dois, Agenda fica na barra e Vendas entra em "Mais").
+const mobileTabsFor = (client) => {
+  const tabs = pipelineTabs(client);
+  return [
+    { id: 'inicio',     label: 'Início',     icon: 'home' },
+    { id: 'conversas',  label: 'Conversas',  icon: 'message' },
+    tabs.agenda ? { id: 'agenda', label: 'Agenda', icon: 'calendar' } : { id: 'vendas', label: 'Vendas', icon: 'card' },
+  ];
+};
 
 const MOBILE_MORE_ITEMS = [
   { id: 'relatorios',  label: 'Relatórios',               icon: 'chart' },
@@ -291,8 +310,10 @@ const MOBILE_MORE_ITEMS = [
   { id: 'perfil',      label: 'Seu perfil',               icon: 'user' },
 ];
 
-const MobileTabBar = ({ active, onNav }) => {
+const MobileTabBar = ({ active, onNav, client }) => {
   const [moreOpen, setMoreOpen] = React.useState(false);
+  const MOBILE_TABS = mobileTabsFor(client);
+  const tabs = pipelineTabs(client);
   const mainIds = MOBILE_TABS.map(t => t.id);
   const moreActive = !mainIds.includes(active);
 
@@ -316,6 +337,7 @@ const MobileTabBar = ({ active, onNav }) => {
           active={active}
           onNav={id => { setMoreOpen(false); onNav(id); }}
           onClose={() => setMoreOpen(false)}
+          extraItems={tabs.agenda && tabs.vendas ? [{ id: 'vendas', label: 'Vendas', icon: 'card' }] : []}
         />
       )}
       <nav style={{
@@ -335,7 +357,7 @@ const MobileTabBar = ({ active, onNav }) => {
   );
 };
 
-const MobileMoreSheet = ({ active, onNav, onClose }) => {
+const MobileMoreSheet = ({ active, onNav, onClose, extraItems = [] }) => {
   const Row = ({ icon, label, on, onClick, danger }) => (
     <button onClick={onClick} style={{
       display: 'flex', alignItems: 'center', gap: 12,
@@ -363,7 +385,7 @@ const MobileMoreSheet = ({ active, onNav, onClose }) => {
         boxShadow: '0 -12px 40px rgba(28,23,20,0.18)',
       }}>
         <div style={{ width: 36, height: 4, borderRadius: 999, background: 'var(--paper-edge)', margin: '4px auto 10px' }} />
-        {MOBILE_MORE_ITEMS.map(it => (
+        {[...extraItems, ...MOBILE_MORE_ITEMS].map(it => (
           <Row key={it.id} icon={it.icon} label={it.label} on={active === it.id} onClick={() => onNav(it.id)} />
         ))}
         <div style={{ height: 1, background: 'var(--paper-edge)', margin: '6px 4px' }} />
@@ -380,4 +402,4 @@ const MobileMoreSheet = ({ active, onNav, onClose }) => {
   );
 };
 
-Object.assign(window, { SidebarNav, WorkspaceSwitcher, ThemeToggle, MobileTabBar, MobileMoreSheet });
+Object.assign(window, { SidebarNav, WorkspaceSwitcher, ThemeToggle, MobileTabBar, MobileMoreSheet, pipelineTabs });

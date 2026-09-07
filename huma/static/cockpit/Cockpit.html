@@ -76,6 +76,7 @@
 <script type="text/babel" src="/static/cockpit/PlaceholderScreens.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/VozScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/AgendaScreen.jsx?v=__ASSET_V__"></script>
+<script type="text/babel" src="/static/cockpit/VendasScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/UsageScreens.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/SettingsScreens.jsx?v=__ASSET_V__"></script>
 
@@ -179,7 +180,7 @@ function App() {
   // quer assinar sem esperar o trial.
   const initialRoute = (() => {
     const s = new URLSearchParams(location.search).get('screen');
-    const valid = ['inicio', 'conversas', 'agenda', 'voz', 'relatorios',
+    const valid = ['inicio', 'conversas', 'agenda', 'vendas', 'clientes', 'voz', 'relatorios',
                    'disparos', 'integracoes', 'ajustes', 'uso', 'indicacao',
                    'creditos', 'planos', 'negocio', 'perfil'];
     return valid.includes(s) ? s : 'inicio';
@@ -361,6 +362,7 @@ function App() {
       />;
       break;
     case 'agenda':      screen = <AgendaFullScreen onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }} />; break;
+    case 'vendas':      screen = <VendasScreen onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }} />; break;
     case 'clientes':    screen = <ClientesScreen onOpen={(phone) => { setActiveId(phone); setRoute('conversas'); }} />; break;
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
@@ -396,7 +398,7 @@ function App() {
         <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
           {screen}
         </div>
-        {!inChat && <MobileTabBar active={route} onNav={setRoute} />}
+        {!inChat && <MobileTabBar active={route} onNav={setRoute} client={client} />}
         {inviteOpen && <InviteModal onClose={() => setInviteOpen(false)} />}
       </div>
     );

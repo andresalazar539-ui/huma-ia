@@ -1158,6 +1158,131 @@ async def get_conversation_cockpit(
     }
 
 
+# ── Cockpit — Vendas (2026-09-07) ──
+#
+# Pedidos gerados pela HUMA a partir da tabela `payments` (Mercado Pago
+# e Asaas). Sem migration: só leitura. A aba aparece quando o negócio
+# vende (capability sell_digital/sell_physical); quem agenda vê Agenda.
+
+_SALES_METHOD_LABEL = {
+    "pix": "Pix", "boleto": "Boleto", "credit_card": "Cartão", "card": "Cartão",
+    "debit_card": "Cartão de débito", "link": "Link",
+}
+
+
+def _sale_state(status: str, metadata: dict) -> str:
+    """
+    Estado humano do pedido:
+      pago | pendente | link_enviado | recusado | cancelado
+    'link_enviado' = cobrança pendente cuja entrega foi um link (checkout
+    do MP ou link do Asaas) — o lead ainda não abriu/pagou.
+    """
+    st = (status or "").strip().lower()
+    if st == "approved":
+        return "pago"
+    if st in ("rejected",):
+        return "recusado"
+    if st in ("cancelled", "canceled", "expired", "refunded", "charged_back"):
+        return "cancelado"
+    if (metadata or {}).get("checkout_url"):
+        return "link_enviado"
+    return "pendente"
+
+
+def _sale_row(r: dict) -> dict:
+    """Linha crua de payments → item da aba Vendas."""
+    cents = int(r.get("amount_cents") or 0)
+    meta = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
+    method = (r.get("method") or "").strip().lower()
+    provider = "asaas" if (meta.get("provider") == "asaas") else "mercadopago"
+    return {
+        "id": str(r.get("id") or r.get("mp_payment_id") or r.get("external_reference") or ""),
+        "phone": r.get("phone", "") or "",
+        "lead_name": r.get("lead_name", "") or "",
+        "description": r.get("description", "") or "",
+        "amount_cents": cents,
+        "amount_display": f"R$ {cents / 100:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
+        "method": method,
+        "method_label": _SALES_METHOD_LABEL.get(method, method.replace("_", " ").capitalize() or "—"),
+        "provider": provider,
+        "provider_label": "Asaas" if provider == "asaas" else "Mercado Pago",
+        "status": (r.get("status") or "").strip().lower(),
+        "state": _sale_state(r.get("status", ""), meta),
+        "created_at": r.get("created_at"),
+        "paid_at": r.get("paid_at"),
+        "checkout_url": meta.get("checkout_url", "") or "",
+    }
+
+
+def _sales_totals(items: list[dict]) -> dict:
+    """Totais em BRT: pago hoje / pago no mês, mais contagens de pendente e link."""
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Sao_Paulo")
+    now_local = datetime.now(tz)
+    today = now_local.date()
+    totals = {
+        "today_cents": 0, "today_count": 0,
+        "month_cents": 0, "month_count": 0,
+        "pending_count": 0, "link_count": 0,
+        "pending_cents": 0,
+    }
+    for it in items:
+        if it["state"] == "pago":
+            when = it.get("paid_at") or it.get("created_at")
+            try:
+                dt = datetime.fromisoformat(str(when).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                local = dt.astimezone(tz).date()
+            except (TypeError, ValueError):
+                continue
+            if local == today:
+                totals["today_cents"] += it["amount_cents"]
+                totals["today_count"] += 1
+            if local.year == today.year and local.month == today.month:
+                totals["month_cents"] += it["amount_cents"]
+                totals["month_count"] += 1
+        elif it["state"] == "pendente":
+            totals["pending_count"] += 1
+            totals["pending_cents"] += it["amount_cents"]
+        elif it["state"] == "link_enviado":
+            totals["link_count"] += 1
+            totals["pending_cents"] += it["amount_cents"]
+    return totals
+
+
+@router.get("/api/sales", tags=["Cockpit"])
+async def list_sales_cockpit(
+    client_id: str,
+    days: int = 30,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Aba Vendas — pedidos gerados pela HUMA (tabela payments), com estado
+    humano (pago / pendente / link enviado / recusado / cancelado),
+    método (Pix, boleto, cartão; Mercado Pago ou Asaas) e totais do dia e
+    do mês. `days` limita a lista (1–365); os totais do mês consideram o
+    mês corrente dentro dessa janela.
+    """
+    await verify_api_key_manual(client_id, creds, huma_session)
+    if days < 1 or days > 365:
+        raise HTTPException(400, "days deve estar entre 1 e 365")
+
+    since_iso = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    try:
+        rows = await db.list_payments_for_cockpit(client_id, since_iso=since_iso)
+    except Exception as e:
+        log.error(f"Cockpit list_sales | client_id={client_id} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui carregar as vendas agora.")
+
+    items = [_sale_row(r) for r in rows]
+    totals = _sales_totals(items)
+    log.info(f"Cockpit list_sales | client_id={client_id} | days={days} | count={len(items)}")
+    return {"items": items, "total": len(items), "totals": totals, "days": days}
+
+
 # ── Cockpit — Clientes (CRM do dono, 2026-09-07) ──
 #
 # Cliente = conversa promovida: pagou (payment.approved), agendou
@@ -1716,6 +1841,9 @@ async def integrations_status(
         "hubspot_server": _hubspot_server(),
         "asaas_connected": _truthy(getattr(identity, "asaas_api_key", "")),
         "payment_provider": getattr(identity, "payment_provider", "") or "",
+        # Capabilities resolvidas (2026-09-07): a sidebar do Cockpit decide
+        # Agenda (schedule) / Vendas (sell_digital|sell_physical) por aqui.
+        "capabilities_resolved": sorted(c.value for c in identity.capabilities_resolved),
     }
 
 
