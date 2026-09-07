@@ -110,6 +110,11 @@ class BlingAdapter(InventoryProvider):
 
         expires = getattr(self.identity, "bling_token_expires_at", None)
         if expires is not None:
+            # Supabase devolve datetime COM fuso (mesmo gotcha do CRM): normaliza
+            # pra UTC naive antes de comparar, senão TypeError e o refresh nunca roda.
+            if getattr(expires, "tzinfo", None) is not None:
+                from datetime import timezone as _tz
+                expires = expires.astimezone(_tz.utc).replace(tzinfo=None)
             now = datetime.utcnow()
             margin = timedelta(seconds=BLING_TOKEN_REFRESH_MARGIN_SEC)
             if expires > now + margin:

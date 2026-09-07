@@ -198,6 +198,32 @@ class _FakeIdentity:
 
 
 class TestAdapterRefresh:
+    def test_expires_com_fuso_do_supabase_nao_quebra(self, monkeypatch):
+        """2026-09-07: Supabase devolve datetime tz-aware; comparar com utcnow
+        naive dava TypeError e o job catalog_refresh caía no cliente Bling."""
+        from datetime import timezone
+        from huma.providers.inventory.bling import BlingAdapter
+        calls: list = []
+
+        async def fake_refresh(tok):
+            calls.append(tok)
+            return {"status": "ok", "access_token": "acc_new", "refresh_token": "ref_new",
+                    "expires_at": datetime.utcnow() + timedelta(hours=6)}
+        monkeypatch.setattr(bling_oauth, "refresh_access_token", fake_refresh)
+
+        async def fake_update(cid, updates): return None
+        from huma.services import db_service
+        monkeypatch.setattr(db_service, "update_client", fake_update)
+
+        # Ainda válido (tz-aware, longe da margem) → não renova
+        ident = _FakeIdentity("acc", "ref", datetime.now(timezone.utc) + timedelta(hours=5))
+        asyncio.run(BlingAdapter(identity=ident)._ensure_fresh_token())
+        assert calls == []
+        # Vencido (tz-aware) → renova
+        ident = _FakeIdentity("acc", "ref", datetime.now(timezone.utc) - timedelta(minutes=1))
+        asyncio.run(BlingAdapter(identity=ident)._ensure_fresh_token())
+        assert calls == ["ref"]
+
 
     def test_skips_refresh_when_token_valid(self, monkeypatch):
         """Token expira muito longe → ensure_fresh_token vira no-op."""
