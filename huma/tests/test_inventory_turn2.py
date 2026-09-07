@@ -101,6 +101,34 @@ class TestNuvemshopCheckStock:
         assert out["status"] == "found" and out["sku"] == "CAM-PRETA-M"
         assert calls[0][0] == "/products/sku/CAM-PRETA-M"
 
+    def test_descricao_e_variantes_viram_dado_da_conversa(self):
+        from huma.providers.inventory.nuvemshop import NuvemshopAdapter
+        raw = {
+            "id": 7, "name": {"pt": "Camiseta Básica"}, "published": True,
+            "description": {"pt": "<p>100% algodão <b>penteado</b>, 180g.&nbsp;Gola careca.</p><ul><li>Lavar a frio</li></ul>"},
+            "attributes": [{"pt": "Cor"}, {"pt": "Tamanho"}],
+            "variants": [
+                {"sku": "CAM-P", "price": "79.90", "stock": 2, "values": [{"pt": "Preto"}, {"pt": "P"}]},
+                {"sku": "CAM-M", "price": "79.90", "stock": 10, "values": [{"pt": "Preto"}, {"pt": "M"}]},
+                {"sku": "CAM-G", "price": "79.90", "stock": 0, "values": [{"pt": "Preto"}, {"pt": "G"}]},
+            ],
+        }
+        d = NuvemshopAdapter._product_to_dict(raw, sku_hint="CAM-M")
+        assert d["description"] == "100% algodão penteado, 180g. Gola careca. Lavar a frio"
+        assert [v["name"] for v in d["variants"]] == ["Cor Preto / Tamanho P", "Cor Preto / Tamanho M", "Cor Preto / Tamanho G"]
+        assert d["variants"][2]["available"] is False and d["variants"][1]["stock_qty"] == 10
+
+        from huma.core.stock_preflight import build_stock_marker
+        d["status"] = "found"
+        marker = build_stock_marker("camiseta", d)
+        assert "descrição: 100% algodão penteado" in marker
+        assert "Tamanho M (10 un)" in marker and "Tamanho G (esgotado)" in marker
+        assert "NÃO mande o lead ler no site" in marker
+
+        from huma.core.catalog_sync import store_products_to_items
+        item = store_products_to_items([d])[0]
+        assert item["description"].startswith("100% algodão penteado") and "SKU CAM-M" in item["description"]
+
     def test_nao_encontrado_de_verdade(self, monkeypatch):
         adapter, _ = self._adapter(monkeypatch, {"/products/sku/": (404, None), "/products": (200, [])})
 

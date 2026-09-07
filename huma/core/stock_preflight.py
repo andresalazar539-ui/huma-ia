@@ -33,6 +33,38 @@ def format_price_brl(cents: int) -> str:
     return f"R$ {value/100:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _spec_text(result: dict) -> str:
+    """
+    Especificações e variantes pro marker (2026-09-07).
+
+    Com isso a IA responde composição, medidas, cores e tamanhos NA
+    CONVERSA; o link é o botão de comprar, não o lugar de ler.
+    """
+    parts: list[str] = []
+    desc = " ".join(str(result.get("description") or "").split())
+    if desc:
+        parts.append(f"descrição: {desc[:500]}")
+    variants = [v for v in (result.get("variants") or []) if isinstance(v, dict) and v.get("name")]
+    if len(variants) > 1:
+        items = []
+        for v in variants[:12]:
+            if v.get("stock_unlimited"):
+                items.append(f"{v['name']} (disponível)")
+            elif v.get("available") and int(v.get("stock_qty") or 0) > 0:
+                items.append(f"{v['name']} ({int(v['stock_qty'])} un)")
+            else:
+                items.append(f"{v['name']} (esgotado)")
+        parts.append("variantes: " + ", ".join(items))
+    if not parts:
+        return ""
+    return (
+        " | " + " | ".join(parts)
+        + ". Responda dúvidas de especificação (composição, medidas, cor, tamanho) "
+        "com esses dados aqui na conversa; NÃO mande o lead ler no site. "
+        "Se algo não estiver nesses dados, diga que vai confirmar"
+    )
+
+
 def build_stock_marker(query: str, result: dict) -> str:
     """
     Marker [ESTOQUE ...] a partir do retorno do InventoryProvider.check_stock.
@@ -56,17 +88,18 @@ def build_stock_marker(query: str, result: dict) -> str:
             f" | link de compra: {link} (mande o link quando o lead quiser comprar)"
             if link else ""
         )
+        spec_txt = _spec_text(result)
         if available:
             return (
                 f"[ESTOQUE CONSULTADO — produto: {name} (SKU {sku}) | "
-                f"preço: {price} | {stock_txt}{link_txt}. "
+                f"preço: {price} | {stock_txt}{link_txt}{spec_txt}. "
                 f"Use APENAS esses dados na resposta. "
                 f"NUNCA invente outro preço nem outro número de estoque. "
                 f"Apresente ao lead com clareza e ofereça avançar pra compra.]"
             )
         return (
             f"[ESTOQUE CONSULTADO — produto: {name} (SKU {sku}) | "
-            f"preço: {price} | SEM ESTOQUE no momento (0 unidades). "
+            f"preço: {price} | SEM ESTOQUE no momento (0 unidades){spec_txt}. "
             f"Avise o lead que tá esgotado, peça contato pra avisar quando "
             f"voltar, ou ofereça produtos similares se você conhecer.]"
         )

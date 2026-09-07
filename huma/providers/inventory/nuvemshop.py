@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -50,6 +52,54 @@ def _cents(value: Any) -> int:
         return int(round(float(value or 0) * 100))
     except (TypeError, ValueError):
         return 0
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _plain_text(html_text: str, limit: int = 500) -> str:
+    """Descrição da loja (HTML) → texto corrido curto pra conversa."""
+    if not html_text:
+        return ""
+    text = _TAG_RE.sub(" ", str(html_text))
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)  # "</b> ," vindo de tag → "penteado,"
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return text
+
+
+def _variants_summary(variants: list[dict], attributes: list) -> list[dict]:
+    """
+    Variantes → [{"name": "M", "sku": ..., "stock_qty": 10, "available": True, "price_cents": ...}].
+
+    "name" junta os valores da variante ("Preto / M"); os atributos
+    ("Cor", "Tamanho") entram como rótulo quando existem.
+    """
+    labels = [_pt(a) for a in attributes if a]
+    out: list[dict] = []
+    for v in variants[:30]:
+        values = [_pt(x) for x in (v.get("values") or []) if x]
+        values = [x for x in values if x]
+        if labels and len(labels) == len(values):
+            name = " / ".join(f"{lab} {val}" for lab, val in zip(labels, values))
+        else:
+            name = " / ".join(values)
+        stock = v.get("stock")
+        unlimited = stock is None or v.get("stock_management") is False
+        qty = 0 if unlimited else int(stock or 0)
+        if not name and not (v.get("sku") or "").strip():
+            continue
+        out.append({
+            "name": name or (v.get("sku") or "").strip(),
+            "sku": (v.get("sku") or "").strip(),
+            "stock_qty": qty,
+            "stock_unlimited": bool(unlimited),
+            "available": bool(unlimited or qty > 0),
+            "price_cents": _cents(v.get("promotional_price") or v.get("price") or 0),
+        })
+    return out
 
 
 class NuvemshopAdapter(InventoryProvider):
@@ -141,6 +191,10 @@ class NuvemshopAdapter(InventoryProvider):
             "url": p.get("canonical_url") or p.get("permalink") or "",
             "image_url": image_url,
             "variants_count": len(variants),
+            # Especificações na conversa (2026-09-07): a IA responde composição,
+            # medidas, cores e tamanhos aqui, sem mandar o lead ler no site.
+            "description": _plain_text(_pt(p.get("description")), limit=500),
+            "variants": _variants_summary(variants, p.get("attributes") or []),
         }
 
     # ── contrato ─────────────────────────────────────────────────

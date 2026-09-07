@@ -53,6 +53,13 @@ def store_products_to_items(
         sku = str(p.get("sku") or "").strip()
         url = str(p.get("url") or "").strip()
         parts = []
+        # Especificação curta da loja: a IA responde composição/medidas na
+        # conversa em vez de mandar o lead ler no site (2026-09-07).
+        desc = " ".join(str(p.get("description") or "").split())
+        if desc:
+            if len(desc) > 160:
+                desc = desc[:160].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+            parts.append(desc)
         if sku:
             parts.append(f"SKU {sku}")
         if url:
