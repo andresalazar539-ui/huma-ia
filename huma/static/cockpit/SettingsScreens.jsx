@@ -1013,7 +1013,7 @@ const NEG_CATEGORIES = [
 const NEG_CAPS = [
   { id: 'schedule', label: 'Agendar', desc: 'Consulta a agenda de verdade e marca o horário (Google Calendar). Nunca confirma horário que não checou.', needs: 'gcal' },
   { id: 'sell_digital', label: 'Vender e cobrar', desc: 'Serviço, consulta paga, curso, assinatura. Pix, boleto ou cartão pelo Mercado Pago, na conversa.' },
-  { id: 'sell_physical', label: 'Vender produto físico', desc: 'Estoque, frete e pedido. Precisa do Bling conectado em Integrações.', needs: 'bling' },
+  { id: 'sell_physical', label: 'Vender produto físico', desc: 'Estoque, preço e link de compra. Precisa da loja (Nuvemshop) ou do Bling conectado em Integrações.', needs: 'store' },
   { id: 'qualify', label: 'Qualificar e passar pra você', desc: 'Coleta os dados, entende o momento do lead e entrega pronto (no seu CRM ou no seu WhatsApp).' },
   { id: 'support', label: 'Atender dúvidas', desc: 'Responde pela FAQ e pela base de conhecimento, sem forçar fechamento.' },
 ];
@@ -1025,7 +1025,8 @@ const NegocioMissao = ({ settings, patch }) => {
 
   const caps = Array.isArray(settings.capabilities) ? settings.capabilities : (settings.capabilities_resolved || []);
   const toggleCap = (id) => patch('capabilities', caps.includes(id) ? caps.filter(c => c !== id) : [...caps, id]);
-  const blingOn = !!(integ && integ.bling_access_token);
+  // Loja virtual OU ERP liberam a venda física (mesma regra do onboarding: check_any_field).
+  const storeOn = !!(integ && (integ.bling_access_token || integ.nuvemshop_connected));
   const gcalOn = !!(integ && integ.google_calendar);
   const fields = Array.isArray(settings.lead_collection_fields) ? settings.lead_collection_fields : [];
   const methods = Array.isArray(settings.accepted_payment_methods) ? settings.accepted_payment_methods : [];
@@ -1045,8 +1046,8 @@ const NegocioMissao = ({ settings, patch }) => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {NEG_CAPS.map(c => {
             const on = caps.includes(c.id);
-            const blocked = c.needs === 'bling' && !blingOn && !on;
-            const warn = c.needs === 'bling' && !blingOn ? 'Conecte o Bling em Integrações pra ligar.'
+            const blocked = c.needs === 'store' && !storeOn && !on;
+            const warn = c.needs === 'store' && !storeOn ? 'Conecte a Nuvemshop ou o Bling em Integrações pra ligar.'
               : (c.needs === 'gcal' && on && integ && !gcalOn ? 'A agenda ainda não tem credencial no servidor: a HUMA vai pedir pra confirmar com você.' : '');
             return (
               <label key={c.id} style={{
