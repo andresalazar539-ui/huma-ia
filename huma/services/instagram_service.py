@@ -291,6 +291,61 @@ async def send_media(identity: Any, phone: str, media_url: str, kind: str, capti
     return mid
 
 
+_POSTBACK_PREFIX = "PRODUTO:"
+
+
+def generic_template_payload(igsid: str, cards: list[dict]) -> dict:
+    """
+    Carrossel nativo do Instagram (generic template): até 10 cards com
+    foto, título, subtítulo e botões "Comprar" (link) e "Quero esse"
+    (postback que volta pro motor como texto). Puro, testável.
+    """
+    elements: list[dict] = []
+    for c in (cards or [])[:10]:
+        title = str(c.get("title") or "").strip()[:80]
+        if not title:
+            continue
+        el: dict = {"title": title}
+        subtitle = str(c.get("subtitle") or "").strip()[:80]
+        if subtitle:
+            el["subtitle"] = subtitle
+        image_url = str(c.get("image_url") or "").strip()
+        if image_url:
+            el["image_url"] = image_url
+        url = str(c.get("url") or "").strip()
+        buttons: list[dict] = []
+        if url:
+            el["default_action"] = {"type": "web_url", "url": url}
+            buttons.append({"type": "web_url", "url": url, "title": "Comprar"})
+        sku = str(c.get("sku") or "").strip()
+        want = f"Quero o {title}" + (f" (SKU {sku})" if sku else "")
+        buttons.append({"type": "postback", "title": "Quero esse", "payload": (_POSTBACK_PREFIX + want)[:1000]})
+        el["buttons"] = buttons[:3]
+        elements.append(el)
+    return {
+        "recipient": {"id": igsid},
+        "message": {
+            "attachment": {
+                "type": "template",
+                "payload": {"template_type": "generic", "elements": elements},
+            }
+        },
+    }
+
+
+async def send_cards(identity: Any, phone: str, cards: list[dict]) -> str | None:
+    """Carrossel de produtos pro IGSID. Devolve message_id ou None."""
+    igsid = igsid_from_phone(phone)
+    if not igsid or not cards:
+        return None
+    body = generic_template_payload(igsid, cards)
+    if not body["message"]["attachment"]["payload"]["elements"]:
+        return None
+    mid = await _post_message(identity, body)
+    log.info(f"Instagram cards | phone={phone} | cards={len(cards)} | ok={bool(mid)}")
+    return mid
+
+
 # ================================================================
 # WEBHOOK (entrada)
 # ================================================================
@@ -361,7 +416,13 @@ def parse_webhook(body: dict) -> list[dict]:
                         media_url = url
                         break
             elif isinstance(ev.get("postback"), dict):
-                text = (ev["postback"].get("title") or ev["postback"].get("payload") or "").strip()
+                payload = str(ev["postback"].get("payload") or "").strip()
+                if payload.startswith(_POSTBACK_PREFIX):
+                    # Botão "Quero esse" do card de produto: o payload já é a
+                    # frase do lead ("Quero o Camiseta Básica Preta (SKU ...)").
+                    text = payload[len(_POSTBACK_PREFIX):].strip()
+                else:
+                    text = (ev["postback"].get("title") or payload).strip()
                 message_id = str(ev["postback"].get("mid") or "")
             else:
                 continue  # read / reaction / etc.

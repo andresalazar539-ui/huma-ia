@@ -109,6 +109,31 @@
     text-align: center;
     max-width: 92%;
   }
+  /* Cards de produto (2026-09-07): carrossel horizontal dentro da conversa */
+  .cards {
+    display: flex; gap: 10px; overflow-x: auto; padding: 2px 0 6px;
+    max-width: 92%; align-self: flex-start; scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch; animation: rise .18s ease-out;
+  }
+  .card {
+    flex: 0 0 200px; scroll-snap-align: start; display: flex; flex-direction: column;
+    background: var(--paper-raised); border: 1px solid var(--paper-edge);
+    border-radius: 14px; overflow: hidden;
+  }
+  .card .img { width: 100%; height: 130px; object-fit: cover; background: var(--paper-sunk); display: block; }
+  .card .noimg { width: 100%; height: 130px; background: var(--paper-sunk); display: flex; align-items: center; justify-content: center; color: var(--ink-3); font-size: 28px; }
+  .card .body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+  .card .title { font-weight: 600; font-size: 14px; line-height: 1.3; }
+  .card .sub { font-size: 13px; color: var(--ink-3); }
+  .card .buy {
+    margin-top: 6px; display: inline-block; text-align: center; text-decoration: none;
+    background: var(--terracotta); color: #FFF9F5; font-size: 13px; font-weight: 600;
+    padding: 8px 10px; border-radius: 10px;
+  }
+  .card .want {
+    margin-top: 4px; background: transparent; border: 1px solid var(--paper-edge);
+    color: inherit; font-size: 13px; padding: 7px 10px; border-radius: 10px; cursor: pointer;
+  }
   .typing {
     align-self: flex-start;
     background: var(--paper-raised);
@@ -267,6 +292,50 @@
     return el;
   }
 
+  // Cards de produto: foto, nome, preço, "Comprar" (checkout da loja) e
+  // "Quero esse" (vira mensagem do visitante — tudo dentro da conversa).
+  function addCards(cards, persist) {
+    if (!cards || !cards.length) return null;
+    var wrap = document.createElement('div');
+    wrap.className = 'cards';
+    cards.forEach(function (c) {
+      var card = document.createElement('div');
+      card.className = 'card';
+      if (c.image_url) {
+        var img = document.createElement('img');
+        img.className = 'img'; img.src = c.image_url; img.alt = c.title || ''; img.loading = 'lazy';
+        card.appendChild(img);
+      } else {
+        var ph = document.createElement('div'); ph.className = 'noimg'; ph.textContent = '🛍️';
+        card.appendChild(ph);
+      }
+      var body = document.createElement('div'); body.className = 'body';
+      var t = document.createElement('div'); t.className = 'title'; t.textContent = c.title || '';
+      body.appendChild(t);
+      if (c.subtitle) { var s = document.createElement('div'); s.className = 'sub'; s.textContent = c.subtitle; body.appendChild(s); }
+      if (c.url) {
+        var a = document.createElement('a'); a.className = 'buy'; a.href = c.url; a.target = '_blank'; a.rel = 'noopener';
+        a.textContent = 'Comprar'; body.appendChild(a);
+      }
+      var w = document.createElement('button'); w.type = 'button'; w.className = 'want'; w.textContent = 'Quero esse';
+      w.addEventListener('click', function () {
+        if (sendBtn.disabled) return;
+        input.value = 'Quero o ' + (c.title || 'produto');
+        form.dispatchEvent(new Event('submit', { cancelable: true }));
+      });
+      body.appendChild(w);
+      card.appendChild(body);
+      wrap.appendChild(card);
+    });
+    chat.appendChild(wrap);
+    chat.scrollTop = chat.scrollHeight;
+    if (persist !== false) {
+      history.push({ k: 'cards', c: cards });
+      saveHistory(history);
+    }
+    return wrap;
+  }
+
   var typingEl = null;
   function showTyping() {
     if (typingEl) return;
@@ -287,7 +356,9 @@
   }
 
   // Restaura histórico local (a memória real vive no servidor).
-  history.forEach(function (m) { addMsg(m.k, m.t, false); });
+  history.forEach(function (m) {
+    if (m.k === 'cards') addCards(m.c, false); else addMsg(m.k, m.t, false);
+  });
 
   // ── Info do negócio: 404 = indisponível de verdade; erro de rede =
   // tenta de novo (elevador, troca de antena) antes de desistir. ──
@@ -334,7 +405,8 @@
       .then(function (r) { if (!r.ok) throw new Error('http'); return r.json(); })
       .then(function (data) {
         (data.messages || []).forEach(function (m) {
-          if (m.content) addMsg('bot', m.content);
+          if (m.cards && m.cards.length) addCards(m.cards);
+          else if (m.content) addMsg('bot', m.content);
         });
         if (typeof data.total === 'number' && data.total > seen) setSeen(data.total);
       })
@@ -385,6 +457,10 @@
           delay += idx === 0 ? 0 : Math.min(400 + part.length * 8, 1400);
           setTimeout(function () { addMsg('bot', part); }, delay);
         });
+        if (data.cards && data.cards.length) {
+          delay += 500;
+          setTimeout(function () { addCards(data.cards); }, delay);
+        }
         // Libera o campo junto com a última parte agendada — sem depender
         // do callback rodar (aba escondida atrasa timer, storage pode falhar).
         setTimeout(function () { setBusy(false); }, delay);

@@ -70,6 +70,7 @@ def store_products_to_items(
             "description": ". ".join(parts),
             "sku": sku,
             "url": url,
+            "image_url": str(p.get("image_url") or "").strip(),
             "source": source,
         })
         if len(items) >= max(1, int(limit)):

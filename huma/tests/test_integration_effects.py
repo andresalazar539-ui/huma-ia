@@ -112,7 +112,7 @@ class TestConnectEffects:
         sync = sink[1]
         assert sync["capabilities"] == ["support", "sell_physical"] and sync["enable_payments"] is True
         assert sync["products_or_services"][0] == {
-            "name": "Ração 10kg", "price": "189,90", "description": "SKU B1", "sku": "B1", "url": "", "source": "bling",
+            "name": "Ração 10kg", "price": "189,90", "description": "SKU B1", "sku": "B1", "url": "", "image_url": "", "source": "bling",
         }
         assert _no_background_playbook == [("cli_int", "bling_connect")]
 

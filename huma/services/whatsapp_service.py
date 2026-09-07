@@ -417,6 +417,56 @@ async def send_text(
     return await _twilio_send_text(phone, message)
 
 
+async def send_cards(phone: str, cards: list[dict], client_id: str = "") -> int:
+    """
+    Cards de produto dentro da conversa (2026-09-07), roteados por canal:
+      Instagram → carrossel nativo (generic template, até 10 cards)
+      WhatsApp (Meta/Evolution) → foto com legenda por card (máx 3); sem foto, texto
+      Web → nada aqui (o widget desenha a partir do histórico)
+    Retorna quantos cards saíram. Nunca levanta.
+    """
+    if not cards:
+        return 0
+    if phone.startswith("web:"):
+        return 0
+    try:
+        provider, identity = await _resolve_channel(client_id)
+        if _is_instagram_destination(phone):
+            if identity is None or not getattr(identity, "instagram_access_token", ""):
+                log.error(f"Instagram sem conexão | cards | phone={phone} | client={client_id}")
+                return 0
+            from huma.services import instagram_service as ig  # lazy: evita ciclo
+            mid = await ig.send_cards(identity, phone, cards)
+            return len(cards) if mid else 0
+
+        from huma.core.product_cards import caption_for_card
+        sent = 0
+        for card in cards[:3]:
+            caption = caption_for_card(card)
+            image_url = (card.get("image_url") or "").strip()
+            if image_url:
+                if provider == "meta":
+                    mid = await _meta_send_media(identity, phone, image_url, "image", caption=caption)
+                elif provider == "evolution":
+                    mid = await _evo_send_media(identity, phone, image_url, "image", caption=caption)
+                else:
+                    mid = await _twilio_send_media(phone, image_url, caption)
+            else:
+                if provider == "meta":
+                    mid = await _meta_send_text(identity, phone, caption, None)
+                elif provider == "evolution":
+                    mid = await _evo_send_text(identity, phone, caption, None)
+                else:
+                    mid = await _twilio_send_text(phone, caption)
+            if mid:
+                sent += 1
+        log.info(f"Cards enviados | phone={phone} | provider={provider} | sent={sent}/{min(len(cards), 3)}")
+        return sent
+    except Exception as e:
+        log.error(f"send_cards falhou | phone={phone} | client={client_id} | {type(e).__name__}: {e}")
+        return 0
+
+
 async def send_audio(
     phone: str,
     audio_url: str,

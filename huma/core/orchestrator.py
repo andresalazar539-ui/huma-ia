@@ -498,9 +498,11 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             # Loja conectada + lead citou produto do catálogo → consulta o
             # estoque real ANTES da IA e injeta o marker. A resposta sai no
             # mesmo turno com dado verificado (sem "deixa eu checar").
+            stock_preflight_result = None
             try:
                 from huma.core.stock_preflight import preflight as _stock_preflight
-                if await _stock_preflight(client_data, conv, unified_text, phone=phone):
+                stock_preflight_result = await _stock_preflight(client_data, conv, unified_text, phone=phone)
+                if stock_preflight_result:
                     await db.save_conversation(conv)
             except Exception as e:
                 log.error(f"Stock preflight falhou (segue sem) | {phone} | {type(e).__name__}: {e}")
@@ -1640,6 +1642,20 @@ async def _send_with_human_delay(phone, reply, parts, actions, client_data, conv
                 else:
                     await asyncio.sleep(_typing_delay(reply))
                     await wa.send_text(phone, reply, client_id=cid)
+
+        # ============================================================
+        # CARDS DE PRODUTO (2026-09-07) — tudo dentro da conversa
+        # ============================================================
+        # Depois do texto: o produto consultado vira card (foto, nome,
+        # preço, botão) e "o que vocês vendem" vira carrossel. Só com dado
+        # verificado na loja; nunca derruba o turno.
+        try:
+            await _send_product_cards(
+                phone, cid, client_data, conv, unified_text,
+                locals().get("stock_preflight_result"),  # None no caminho Tier 0 (sem IA)
+            )
+        except Exception as e:
+            log.error(f"Cards de produto falharam | {phone} | {type(e).__name__}: {e}")
 
         # ============================================================
         # ACTIONS RESTANTES (mídia, pagamento — agendamento já tratado)
@@ -2943,6 +2959,32 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
         "query": query,
         "matches": result.get("matches") or [] if status == "ambiguous" else [],
     }
+
+
+async def _send_product_cards(
+    phone: str, cid: str, client_data, conv, user_text: str, stock_result: dict | None,
+) -> int:
+    """
+    Manda card(s) de produto e registra no histórico o que o lead viu.
+
+    Returns:
+        Quantos cards saíram (0 = nada a mandar ou canal sem suporte).
+    """
+    from huma.core.product_cards import decide_cards, history_entry
+
+    cards = await decide_cards(client_data, user_text, stock_result)
+    if not cards:
+        return 0
+    sent = await wa.send_cards(phone, cards, client_id=cid)
+    if sent <= 0:
+        return 0
+    try:
+        conv.history.append(history_entry(cards))
+        await db.save_conversation(conv)
+    except Exception as e:
+        log.error(f"Erro salvando cards no histórico | {phone} | {type(e).__name__}: {e}")
+    log.info(f"Cards de produto | {phone} | enviados={sent} | skus={[c.get('sku') for c in cards][:10]}")
+    return sent
 
 
 def _inventory_reply_is_placeholder(text: str) -> bool:

@@ -212,16 +212,16 @@ async def get_web_messages(client_id: str, session_id: str, after: int) -> dict:
     if total <= after:
         return {"status": "ok", "total": total, "messages": []}
 
-    messages = [
-        {
-            "i": idx,
-            "content": str(m.get("content", "")),
-            "by": m.get("by", "ai"),
-        }
-        for idx, m in enumerate(conv.history)
-        if idx >= after and m.get("role") == "assistant"
-        and not str(m.get("content", "")).startswith("[")  # markers internos não vão pro visitante
-    ]
+    messages = []
+    for idx, m in enumerate(conv.history):
+        if idx < after or m.get("role") != "assistant":
+            continue
+        if str(m.get("content", "")).startswith("["):
+            continue  # markers internos não vão pro visitante
+        item = {"i": idx, "content": str(m.get("content", "")), "by": m.get("by", "ai")}
+        if isinstance(m.get("cards"), list) and m["cards"]:
+            item["cards"] = m["cards"]  # o widget desenha o card em vez do texto
+        messages.append(item)
     return {"status": "ok", "total": total, "messages": messages}
 
 
@@ -380,6 +380,7 @@ async def _process_web_message_locked(
         "location_query": 0.90,
     }
     rule_threshold = rule_thresholds.get(classification.msg_type.value)
+    stock_result: dict | None = None  # pre-flight de estoque (só no caminho da IA)
 
     if (classification.can_resolve_without_llm
             and rule_threshold is not None
@@ -425,7 +426,7 @@ async def _process_web_message_locked(
         # histórico pra IA responder com estoque de verdade.
         try:
             from huma.core.stock_preflight import preflight as _stock_preflight
-            await _stock_preflight(client_data, conv, text, phone=phone)
+            stock_result = await _stock_preflight(client_data, conv, text, phone=phone)
         except Exception as e:
             log.error(f"Stock preflight falhou (web, segue sem) | {phone} | {type(e).__name__}: {e}")
 
@@ -492,6 +493,19 @@ async def _process_web_message_locked(
     if len(reply_parts) > 1:
         _entry["parts"] = list(reply_parts)  # balões iguais aos que o visitante viu
     conv.history.append(_entry)
+
+    # Cards de produto (2026-09-07): o widget desenha; o histórico guarda
+    # o que o visitante viu (Cockpit e poll leem `cards`).
+    cards: list = []
+    try:
+        from huma.core.product_cards import decide_cards, history_entry
+        cards = await decide_cards(client_data, text, stock_result)
+        if cards:
+            conv.history.append(history_entry(cards))
+            log.info(f"Cards de produto (web) | {phone} | cards={len(cards)}")
+    except Exception as e:
+        log.error(f"Cards de produto falharam (web) | {phone} | {type(e).__name__}: {e}")
+        cards = []
     conv.last_message_at = datetime.utcnow()
 
     await db.save_conversation(conv)
@@ -504,4 +518,4 @@ async def _process_web_message_locked(
         f"Web OK | {client_id} | {phone} | via={resolved_by} | "
         f"stage={conv.stage} | parts={len(reply_parts)}"
     )
-    return {"status": "ok", "reply_parts": reply_parts, "history_len": len(conv.history)}
+    return {"status": "ok", "reply_parts": reply_parts, "history_len": len(conv.history), "cards": cards}
