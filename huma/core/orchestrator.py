@@ -770,7 +770,14 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             assistant_content = f"{reply} [áudio enviado: {audio_text_for_history[:150]}]"
         else:
             assistant_content = reply
-        conv.history.append({"role": "assistant", "content": assistant_content})
+        _entry: dict = {"role": "assistant", "content": assistant_content}
+        # Balões como o lead viu: quando a resposta saiu em partes, o Cockpit
+        # mostra as mesmas partes (ai_service só lê role/content, chave extra
+        # é ignorada no prompt).
+        _clean_parts = [p.strip() for p in (reply_parts or []) if isinstance(p, str) and p.strip()]
+        if len(_clean_parts) > 1:
+            _entry["parts"] = _clean_parts
+        conv.history.append(_entry)
         conv.last_message_at = datetime.utcnow()
 
         await db.save_conversation(conv)

@@ -478,7 +478,10 @@ async def _process_web_message_locked(
         log.info(f"Deflection | {phone} | client={client_id} | lead_whatsapp=+{lead_phone}")
 
     conv.history.append({"role": "user", "content": text})
-    conv.history.append({"role": "assistant", "content": reply})
+    _entry: dict = {"role": "assistant", "content": reply}
+    if len(reply_parts) > 1:
+        _entry["parts"] = list(reply_parts)  # balões iguais aos que o visitante viu
+    conv.history.append(_entry)
     conv.last_message_at = datetime.utcnow()
 
     await db.save_conversation(conv)

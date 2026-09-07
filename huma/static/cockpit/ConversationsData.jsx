@@ -140,12 +140,17 @@ function mapHistory(history) {
       const c = (m.content || '').trim();
       return c && !INTERNAL_MARKER.test(c);
     })
-    .map(m => ({
-      from: m.role === 'user' ? 'client' : 'huma',
-      text: m.content,
-      time: formatTime(m.timestamp),
-      by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
-    }));
+    .flatMap(m => {
+      const base = {
+        from: m.role === 'user' ? 'client' : 'huma',
+        time: formatTime(m.timestamp),
+        by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
+      };
+      // Resposta enviada em partes: um balão por parte, igual ao que o lead viu.
+      const parts = Array.isArray(m.parts) ? m.parts.filter(p => typeof p === 'string' && p.trim()) : [];
+      if (parts.length > 1) return parts.map(p => ({ ...base, text: p }));
+      return [{ ...base, text: m.content }];
+    });
 }
 
 // Detalhe (GET /api/conversations/{client_id}/{phone}) -> conversa completa
