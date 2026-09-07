@@ -38,6 +38,11 @@ class TestMatcher:
         assert cs.best_match("tenis de corrida", _CATALOG)["product"]["sku"] == "TEN-LEVE-40"
         assert cs.best_match("boné", _CATALOG)["product"]["sku"] == "BONE-01"
 
+    def test_pedido_de_opcoes_nomeando_o_tipo(self):
+        assert cs.best_match("me mostra as opções de tênis", _CATALOG)["product"]["sku"] == "TEN-LEVE-40"
+        assert cs.best_match("quais modelos de boné vocês têm?", _CATALOG)["product"]["sku"] == "BONE-01"
+        assert cs.best_match("me mostra as opções", _CATALOG)["status"] == "not_found"  # genérico: sem produto
+
     def test_nao_inventa_produto(self):
         assert cs.best_match("jaqueta de couro", _CATALOG)["status"] == "not_found"
         assert cs.best_match("M", _CATALOG)["status"] == "not_found"

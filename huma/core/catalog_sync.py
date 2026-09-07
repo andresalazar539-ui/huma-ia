@@ -116,6 +116,10 @@ _STOPWORDS = frozenset({
     "esse", "essa", "isso", "aquele", "aquela", "esta", "está", "tá", "ta", "algum", "alguma",
     "oi", "ola", "olá", "bom", "boa", "dia", "tarde", "noite", "tudo", "bem", "por", "favor",
     "sim", "nao", "não", "qual", "quais", "gostaria", "saber", "se", "vende", "vendem", "que",
+    # Pedido de ver opções (não nomeia produto): "me mostra as opções de tênis" → "tenis".
+    "mostra", "mostrar", "mostre", "ver", "veja", "vejo", "opcoes", "opcao", "opções", "opção",
+    "modelos", "tipos", "tipo", "todos", "todas", "lista", "listar", "quero", "dispon", "disponivel",
+    "disponível", "disponiveis", "disponíveis", "estoque",
 })
 _SIZE_TOKENS = frozenset({"pp", "p", "m", "g", "gg", "xg", "xgg", "xs", "s", "l", "xl", "xxl", "u", "unico", "único"})
 _SKU_RE = _re.compile(r"^(?=.*[A-Za-z])(?=.*\d|.*-)[A-Za-z0-9][A-Za-z0-9._/-]{2,}$")
