@@ -846,6 +846,27 @@ class TestCockpitRoutes:
         r = _client().post("/api/integrations/hubspot/disconnect?client_id=cli_int", cookies=cookies)
         assert r.status_code == 200 and sink["updates"][-1]["crm_provider"] == ""
 
+    def test_disconnect_nuvemshop_tira_catalogo_da_loja_e_mantem_o_do_dono(self, monkeypatch):
+        sink = {}
+        ident = _identity(
+            nuvemshop_access_token="t", nuvemshop_store_id="1",
+            products_or_services=[
+                {"name": "Consultoria", "price": "300", "description": "do dono"},
+                {"name": "Camiseta", "price": "79,90", "source": "nuvemshop"},
+            ],
+        )
+        self._mock_client(monkeypatch, ident, sink)
+        r = _client().post("/api/integrations/nuvemshop/disconnect?client_id=cli_int", cookies=_session_cookie(monkeypatch))
+        assert r.status_code == 200
+        up = sink["updates"][-1]
+        assert up["nuvemshop_access_token"] == "" and up["nuvemshop_store_id"] == ""
+        assert [p["name"] for p in up["products_or_services"]] == ["Consultoria"]
+        # Sem item da loja no cadastro, não mexe em products_or_services.
+        sink.clear()
+        self._mock_client(monkeypatch, _identity(nuvemshop_access_token="t", nuvemshop_store_id="1"), sink)
+        r = _client().post("/api/integrations/nuvemshop/disconnect?client_id=cli_int", cookies=_session_cookie(monkeypatch))
+        assert r.status_code == 200 and "products_or_services" not in sink["updates"][-1]
+
     def test_disconnect_google_revoga_e_limpa_ponteiro(self, monkeypatch):
         from huma.services import google_oauth as g
         sink = {}

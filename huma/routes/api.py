@@ -2102,6 +2102,13 @@ async def integrations_disconnect(
             "nuvemshop_store_url": "",
             "nuvemshop_store_name": "",
         }
+        # Loja fora = catálogo dela sai do conhecimento na hora; os itens
+        # cadastrados pelo dono ficam (catalog_sync, regra 2026-09-07).
+        identity = await db.get_client(client_id)
+        existing = (getattr(identity, "products_or_services", None) or []) if identity else []
+        if any(isinstance(p, dict) and p.get("source") == "nuvemshop" for p in existing):
+            from huma.core.catalog_sync import remove_store_items
+            updates["products_or_services"] = remove_store_items(existing)
     elif integration_id == "webhook":
         updates = {"webhook_url": "", "webhook_secret": ""}
     elif integration_id == "pixel":
