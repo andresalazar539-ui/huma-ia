@@ -1797,6 +1797,9 @@ def _build_reply_tool_compact(
         "- type='calc_shipping': sku, cep, qty (default 1). Emita SOMENTE quando o lead já passou o CEP. Sistema consulta transportadora e devolve custo e prazo REAIS. Se o lead não passou CEP ainda, peça antes — NÃO emita a action sem CEP.",
         "- type='show_products': query (texto do que mostrar: categoria, modelo ou nome). Emita QUANDO o lead está em dúvida ou comparando ('me mostra as opções de tênis', 'tô entre a camiseta e o boné', 'quais modelos tem?'). Sistema monta os cards com foto, preço e estoque REAIS só dos produtos que existem e manda na conversa. Se o lead falou de UM produto específico, NÃO emita: o card daquele produto vai sozinho.",
     ]
+    STORE_CHECKOUT_LINES = [
+        "- type='create_store_order': sku, qty, lead_name (nome completo), lead_email, cep, address (rua), number, complement, neighborhood, city, state (UF), cpf (opcional). Emita QUANDO o lead disse que quer comprar um produto da loja E você já tem nome completo, e-mail, CEP e endereço com número, cidade e UF. Sistema confere estoque e preço REAIS, soma o frete, manda o Pix aqui na conversa e cria o pedido pago na loja quando o Pix cair. Se falta algum dado, peça ANTES (um de cada vez) e NÃO emita. NUNCA use generate_payment pra produto da loja e NUNCA mande o lead comprar no site quando puder fechar aqui.",
+    ]
     QUALIFY_LINES = [
         "- type='handoff_to_human': lead_name (primeiro nome do lead, como ele se apresentou), summary (resumo do lead em 1-2 frases, ex: 'João, quer apartamento 2 quartos em Pinheiros até R$700k, urgente'), urgency='normal'|'urgent'. Emita SOMENTE quando TODOS os campos obrigatórios de coleta foram preenchidos E o lead demonstrou interesse claro. Sistema notifica humano via WhatsApp + PARA de responder. NUNCA emita sem ter coletado os campos obrigatórios — peça os dados que faltam antes.",
     ]
@@ -1824,6 +1827,14 @@ def _build_reply_tool_compact(
         action_lines.extend(SELL_LINES)
     if include_physical:
         action_lines.extend(PHYSICAL_LINES)
+        # Checkout de Conversa (2026-09-08): só quando o dono definiu o frete
+        # da venda na conversa (grátis/fixo) e a loja está conectada.
+        if identity is None:
+            action_lines.extend(STORE_CHECKOUT_LINES)
+        else:
+            from huma.core.store_checkout import checkout_enabled
+            if checkout_enabled(identity):
+                action_lines.extend(STORE_CHECKOUT_LINES)
     if include_qualify:
         action_lines.extend(QUALIFY_LINES)
     action_lines.extend(UNIVERSAL_LINES)

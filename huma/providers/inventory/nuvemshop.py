@@ -190,6 +190,7 @@ class NuvemshopAdapter(InventoryProvider):
             "stock_unlimited": bool(unlimited),
             "bling_id": "",
             "product_id": str(p.get("id") or ""),
+            "variant_id": str(chosen.get("id") or ""),  # pedido na loja (draft order) é por variante
             "url": p.get("canonical_url") or p.get("permalink") or "",
             "image_url": image_url,
             "variants_count": len(variants),
@@ -335,6 +336,32 @@ class NuvemshopAdapter(InventoryProvider):
                 return {"status": "error", "detail": f"http_{st}", "created": created, "existing": existing}
         log.info(f"Nuvemshop webhooks | store={self.store_id} | created={created} | existing={existing}")
         return {"status": "ok", "created": created, "existing": existing}
+
+    async def create_paid_order(self, draft: dict) -> dict:
+        """
+        Pedido criado pela HUMA já PAGO (Checkout de Conversa, Etapa 2):
+        POST /draft_orders (payment_status=paid) + POST /draft_orders/{id}/confirm.
+        Returns: {"status": "ok", "order_id", "number", "order"} ou erro.
+        """
+        if not self._has_creds:
+            return {"status": "no_credentials"}
+        st, body = await self._request("POST", "/draft_orders", json=draft)
+        if st not in (200, 201) or not isinstance(body, dict) or not body.get("id"):
+            detail = ""
+            if isinstance(body, dict):
+                detail = str(body.get("description") or body.get("message") or body)[:200]
+            log.error(f"Nuvemshop draft order falhou | http_{st} | {detail}")
+            return {"status": "error", "detail": f"http_{st}" if st else "network_error", "body": detail}
+        draft_id = body["id"]
+        st2, confirmed = await self._request("POST", f"/draft_orders/{draft_id}/confirm")
+        if st2 not in (200, 201) or not isinstance(confirmed, dict):
+            log.error(f"Nuvemshop confirm draft falhou | draft={draft_id} | http_{st2}")
+            return {"status": "error", "detail": f"confirm_http_{st2}", "draft_id": str(draft_id)}
+        order = confirmed.get("order") if isinstance(confirmed.get("order"), dict) else confirmed
+        order_id = str(order.get("id") or draft_id)
+        number = str(order.get("number") or order_id)
+        log.info(f"Nuvemshop pedido criado pela HUMA | store={self.store_id} | order={order_id} | number={number}")
+        return {"status": "ok", "order_id": order_id, "number": number, "order": order}
 
     async def create_coupon(
         self, code: str, percent: int, hours_valid: int = 48, max_uses: int = 1,

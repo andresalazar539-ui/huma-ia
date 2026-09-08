@@ -1108,6 +1108,24 @@ const NegocioMissao = ({ settings, patch }) => {
             <Input type="number" min={1} max={24} value={settings.max_installments ?? 10} onChange={e => patch('max_installments', num(e.target.value, 1, 24))}/>
           </Field>
         </div>
+        {caps.includes('sell_physical') && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+            <Field label="Fechar pedido da loja na conversa" half hint="A loja não calcula frete pela API. Escolha como a HUMA cobra o frete quando fecha o pedido com Pix aqui no chat.">
+              <select value={settings.store_checkout_shipping || 'site'} onChange={e => patch('store_checkout_shipping', e.target.value)} style={{
+                width: '100%', padding: '9px 10px', borderRadius: 8, border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)', color: 'var(--ink)', fontFamily: 'var(--font-sans)', fontSize: 14,
+              }}>
+                <option value="site">Só no site (a HUMA manda o link do pedido)</option>
+                <option value="gratis">Frete grátis na venda pela HUMA</option>
+                <option value="fixo">Frete fixo somado ao Pix</option>
+              </select>
+            </Field>
+            {settings.store_checkout_shipping === 'fixo' && (
+              <Field label="Frete fixo (R$)" half>
+                <Input type="number" min={0} step="0.01" value={((settings.store_checkout_shipping_cents ?? 0) / 100).toFixed(2)} onChange={e => patch('store_checkout_shipping_cents', Math.round(num(e.target.value, 0, 9999) * 100))}/>
+              </Field>
+            )}
+          </div>
+        )}
         <div>
           <Eyebrow>formas de pagamento que ela oferece</Eyebrow>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10, opacity: sells ? 1 : 0.6 }}>

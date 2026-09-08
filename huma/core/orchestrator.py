@@ -1689,6 +1689,11 @@ async def _send_with_human_delay(
 
             if action_type == "send_media":
                 await _handle_media_action(phone, action, client_data)
+            elif action_type == "create_store_order":
+                # Checkout de Conversa (2026-09-08): Pix aqui, pedido pago na loja quando cair.
+                from huma.core import store_checkout
+                so_result = await store_checkout.handle_action(phone, action, client_data, conv)
+                log.info(f"create_store_order | {phone} | {so_result}")
             elif action_type == "generate_payment":
                 pay_result = await _handle_payment_action(phone, action, client_data, conv=conv)
                 # Marca no histórico — impede IA de tentar gerar de novo

@@ -765,6 +765,11 @@ class ClientIdentity(BaseModel):
     nuvemshop_access_token: str = Field(default="", description="Token da loja (não expira).")
     nuvemshop_store_url: str = Field(default="", description="URL pública da loja (só exibição).")
     nuvemshop_store_name: str = Field(default="", description="Nome da loja (só exibição).")
+    # Checkout de Conversa (2026-09-08): como a HUMA cobra o frete ao fechar
+    # produto da loja dentro da conversa. 'site' = não fecha na conversa
+    # (manda o link do pedido pronto); 'gratis'; 'fixo' (valor em centavos).
+    store_checkout_shipping: str = Field(default="site", description="site | gratis | fixo")
+    store_checkout_shipping_cents: int = Field(default=0, ge=0, description="Frete fixo em centavos (modo 'fixo').")
     asaas_api_key: str = Field(default="", description="Chave de API do Asaas do cliente.")
     asaas_webhook_token: str = Field(
         default="", description="Token que o Asaas manda no header asaas-access-token.",

@@ -499,6 +499,8 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     # as flags legadas enable_scheduling/enable_payments no PATCH.
     "category", "website", "competitors", "capabilities",
     "lead_collection_fields", "collect_before_offer",
+    # Checkout de Conversa (2026-09-08): frete ao fechar produto da loja na conversa.
+    "store_checkout_shipping", "store_checkout_shipping_cents",
 })
 
 
@@ -3251,6 +3253,17 @@ async def handle_payment_result(result: dict, payment_id: str) -> None:
                     )
             except Exception as e:
                 log.error(f"LeadEvents payment falhou | {client_id} | {type(e).__name__}: {e}")
+
+            # 5. Checkout de Conversa (2026-09-08): se havia pedido de loja em
+            # aberto pra esta conversa, ele nasce PAGO na Nuvemshop agora.
+            try:
+                from huma.core import store_checkout
+
+                so = await store_checkout.on_payment_approved(client_id, phone, mp_payment_id)
+                if so.get("status") != "no_draft":
+                    log.info(f"Checkout de conversa | {client_id} | {phone} | {so}")
+            except Exception as e:
+                log.error(f"Checkout de conversa falhou | {client_id} | {phone} | {type(e).__name__}: {e}")
 
         # ── PAGAMENTO REJEITADO ──
         elif status == "rejected":
