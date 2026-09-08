@@ -247,6 +247,261 @@ async def load_checkout_token(token: str) -> dict | None:
         return None
 
 
+_RESULT_KEY = "store_order_result:{client_id}:{phone}"
+
+
+async def has_open_draft(client_id: str, phone: str) -> bool:
+    """True se há pedido de loja aguardando pagamento nesta conversa."""
+    try:
+        from huma.services import redis_service as cache
+        return bool(await cache.get_value(_DRAFT_KEY.format(client_id=client_id, phone=phone)))
+    except Exception:
+        return False
+
+
+async def prepare_order(token: str, form: dict) -> dict:
+    """
+    Caixinha v2: valida os dados, confere estoque/preço ao vivo, calcula o
+    total e guarda o rascunho — SEM mandar nada pra conversa.
+    Returns: {"status": "ok", identity, phone, client_id, draft, total_cents, ...} ou erro.
+    """
+    from huma.services import db_service as db
+
+    data = await load_checkout_token(token)
+    if not data:
+        return {"status": "invalid_token"}
+    identity = await db.get_client(data["client_id"])
+    if identity is None or not checkout_enabled(identity):
+        return {"status": "disabled"}
+    action = {
+        "sku": data["sku"], "qty": data.get("qty", 1),
+        "lead_name": str(form.get("lead_name") or "").strip()[:120],
+        "lead_email": str(form.get("lead_email") or "").strip()[:120],
+        "cpf": str(form.get("cpf") or "").strip()[:20],
+        "cep": str(form.get("cep") or "").strip()[:12],
+        "number": str(form.get("number") or "").strip()[:20],
+        "complement": str(form.get("complement") or "").strip()[:80],
+    }
+    missing = missing_fields(action)
+    if not missing:
+        action = await enrich_address(action)
+        missing = missing_address(action)
+    if missing:
+        return {"status": "missing", "missing": missing}
+
+    from huma.providers.inventory import get_provider_for
+
+    adapter = get_provider_for(identity)
+    qty = quantity_of(action)
+    stock = await adapter.check_stock(str(action.get("sku") or "").strip())
+    if stock.get("status") != "found" or not stock.get("available") or not stock.get("variant_id"):
+        return {"status": "unavailable"}
+    if not stock.get("stock_unlimited") and int(stock.get("stock_qty") or 0) < qty:
+        return {"status": "unavailable", "have": int(stock.get("stock_qty") or 0)}
+
+    phone = data["phone"]
+    ship = shipping_cents(identity)
+    price = int(stock.get("price_cents") or 0)
+    total = total_cents(price, qty, ship)
+    draft = build_draft(phone, action, stock, qty, ship)
+    payload = {"draft": draft, "total_cents": total, "summary": draft_summary(stock, qty, price, ship, action),
+               "product": stock.get("name", ""), "qty": qty, "lead_name": action["lead_name"],
+               "lead_email": action["lead_email"], "cpf": re.sub(r"\D", "", action.get("cpf") or "")}
+    try:
+        from huma.services import redis_service as cache
+        await cache.set_with_ttl(_DRAFT_KEY.format(client_id=data["client_id"], phone=phone), json.dumps(payload, ensure_ascii=False), ttl=_DRAFT_TTL)
+    except Exception as e:
+        log.warning(f"prepare_order | rascunho não foi pro Redis | {phone} | {type(e).__name__}: {e}")
+    return {"status": "ok", "identity": identity, "client_id": data["client_id"], "phone": phone,
+            "payload": payload, "total_cents": total, "product": stock}
+
+
+def _mp_payer(payload: dict, phone: str) -> dict:
+    email = payload.get("lead_email") or ""
+    if "@" not in email:
+        email = f"lead.{re.sub(r'[^0-9a-z]', '', phone.lower())[:24] or 'x'}@humaia.com.br"
+    first, last = split_name(payload.get("lead_name", ""))
+    payer: dict = {"email": email, "first_name": first, "last_name": last}
+    if payload.get("cpf"):
+        payer["identification"] = {"type": "CPF", "number": payload["cpf"]}
+    return payer
+
+
+async def _record_store_payment(client_id: str, phone: str, payload: dict, mp_id: str, ext_ref: str,
+                                method: str, status: str, extra: dict | None = None) -> None:
+    from huma.services.payment_service import _save_payment_record
+
+    await _save_payment_record(
+        client_id=client_id, phone=phone if not phone.startswith(("ig:", "web:")) else "",
+        lead_name=payload.get("lead_name", ""), mp_payment_id=mp_id, external_reference=ext_ref,
+        method=method, amount_cents=int(payload.get("total_cents") or 0),
+        description=f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}",
+        status=status,
+        metadata={"provider": "mercadopago", "store_order": True, "conversation_phone": phone, **(extra or {})},
+    )
+
+
+async def pay_pix(token: str, form: dict) -> dict:
+    """Caixinha v2: Pix na página (QR + copia e cola). Nada vai pra conversa até cair."""
+    import uuid
+
+    prep = await prepare_order(token, form)
+    if prep.get("status") != "ok":
+        return prep
+    from huma.config import MERCADOPAGO_ACCESS_TOKEN
+    from huma.services.payment_service import _build_external_reference, _get_notification_url, _mp_post_payment
+
+    if not MERCADOPAGO_ACCESS_TOKEN:
+        return {"status": "error", "detail": "Pagamento indisponível no momento."}
+    payload, phone, cid = prep["payload"], prep["phone"], prep["client_id"]
+    ext_ref = _build_external_reference(cid, phone)
+    body = {
+        "transaction_amount": round(prep["total_cents"] / 100, 2),
+        "description": f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}",
+        "payment_method_id": "pix",
+        "external_reference": ext_ref,
+        "payer": _mp_payer(payload, phone),
+    }
+    if _get_notification_url():
+        body["notification_url"] = _get_notification_url()
+    try:
+        data = await _mp_post_payment(body, str(uuid.uuid4()))
+    except Exception as e:
+        log.error(f"pay_pix | MP falhou | {phone} | {type(e).__name__}: {e}")
+        return {"status": "error", "detail": "Não consegui gerar o Pix agora. Tente de novo."}
+    tx = ((data.get("point_of_interaction") or {}).get("transaction_data")) or {}
+    mp_id = str(data.get("id") or "")
+    await _record_store_payment(cid, phone, payload, mp_id, ext_ref, "pix", "pending")
+    await _remember_payment(cid, phone, mp_id)
+    log.info(f"Caixinha Pix | {phone} | mp_id={mp_id} | total={prep['total_cents']}")
+    from huma.core.stock_preflight import format_price_brl
+    return {"status": "ok", "payment_id": mp_id, "qr_code_text": tx.get("qr_code", ""),
+            "qr_code_base64": tx.get("qr_code_base64", ""), "amount_display": format_price_brl(prep["total_cents"])}
+
+
+async def pay_card(token: str, form: dict) -> dict:
+    """
+    Caixinha v2: cartão de crédito/débito digitado NA PÁGINA (token do MP no
+    navegador). Aprovou → pedido nasce na loja e a conversa recebe UMA
+    mensagem. Recusou → motivo em português, sem sair da página.
+    """
+    import uuid
+
+    card_token = str(form.get("card_token_id") or "").strip()
+    pm_id = str(form.get("payment_method_id") or "").strip()
+    if not card_token or not pm_id:
+        return {"status": "error", "detail": "Dados do cartão incompletos. Confere número, validade e CVV."}
+    prep = await prepare_order(token, form)
+    if prep.get("status") != "ok":
+        return prep
+    from huma.config import MERCADOPAGO_ACCESS_TOKEN
+    from huma.services.payment_service import _build_external_reference, _get_notification_url, _mp_post_payment
+
+    if not MERCADOPAGO_ACCESS_TOKEN:
+        return {"status": "error", "detail": "Pagamento indisponível no momento."}
+    identity, payload, phone, cid = prep["identity"], prep["payload"], prep["phone"], prep["client_id"]
+    try:
+        cap = max(1, int(getattr(identity, "max_installments", 1) or 1))
+        installments = max(1, min(cap, int(form.get("installments") or 1)))
+    except (TypeError, ValueError):
+        installments = 1
+    ext_ref = _build_external_reference(cid, phone)
+    body = {
+        "transaction_amount": round(prep["total_cents"] / 100, 2),
+        "description": f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}",
+        "token": card_token,
+        "payment_method_id": pm_id,
+        "installments": installments,
+        "external_reference": ext_ref,
+        "payer": _mp_payer(payload, phone),
+    }
+    if form.get("issuer_id"):
+        body["issuer_id"] = str(form["issuer_id"])
+    if _get_notification_url():
+        body["notification_url"] = _get_notification_url()
+    try:
+        data = await _mp_post_payment(body, str(uuid.uuid4()))
+    except Exception as e:
+        log.error(f"pay_card | MP falhou | {phone} | {type(e).__name__}: {e}")
+        return {"status": "error", "detail": "Não consegui processar o cartão agora. Tente de novo ou use Pix."}
+    mp_status = str(data.get("status") or "").lower()
+    mp_id = str(data.get("id") or "")
+    detail = str(data.get("status_detail") or "").lower()
+    method = "credit_card" if str(data.get("payment_type_id") or "") != "debit_card" else "debit_card"
+    await _record_store_payment(cid, phone, payload, mp_id, ext_ref, method,
+                                "approved" if mp_status == "approved" else ("pending" if mp_status in ("in_process", "pending") else "rejected"),
+                                {"installments": installments, "status_detail": detail})
+    await _remember_payment(cid, phone, mp_id)
+    from huma.core.stock_preflight import format_price_brl
+
+    if mp_status == "approved":
+        # Efeitos na hora (idempotente: o webhook do MP vai encontrar payment_done).
+        try:
+            from huma.routes.api import handle_payment_result
+            await handle_payment_result({
+                "status": "approved", "client_id": cid, "phone": phone, "lead_name": payload.get("lead_name", ""),
+                "amount_display": format_price_brl(prep["total_cents"]), "amount_cents": prep["total_cents"],
+                "method": method, "description": f"Pedido HUMA: {payload.get('product', '')}",
+            }, mp_id)
+        except Exception as e:
+            log.error(f"pay_card | efeitos pós-aprovação falharam | {phone} | {type(e).__name__}: {e}")
+        result = await order_result(cid, phone)
+        log.info(f"Caixinha cartão APROVADO | {phone} | mp_id={mp_id} | total={prep['total_cents']} | pedido={result.get('number', '?')}")
+        return {"status": "approved", "payment_id": mp_id, "amount_display": format_price_brl(prep["total_cents"]),
+                "order_number": result.get("number", "")}
+    if mp_status in ("in_process", "pending"):
+        log.info(f"Caixinha cartão EM ANÁLISE | {phone} | mp_id={mp_id}")
+        return {"status": "in_process", "payment_id": mp_id, "amount_display": format_price_brl(prep["total_cents"])}
+    log.warning(f"Caixinha cartão RECUSADO | {phone} | mp_id={mp_id} | {detail}")
+    from huma.services.subscription_service import _CARD_DECLINE_PT
+    return {"status": "rejected", "detail": _CARD_DECLINE_PT.get(detail, "O cartão foi recusado. Tente outro cartão ou pague com Pix.")}
+
+
+_PAYMENT_KEY = "store_order_payment:{client_id}:{phone}"
+
+
+async def _remember_payment(client_id: str, phone: str, mp_id: str) -> None:
+    try:
+        from huma.services import redis_service as cache
+        await cache.set_with_ttl(_PAYMENT_KEY.format(client_id=client_id, phone=phone), mp_id, ttl=_DRAFT_TTL)
+    except Exception:
+        pass
+
+
+async def order_result(client_id: str, phone: str) -> dict:
+    """Resultado do pedido criado na loja (pra página mostrar "Pedido #N")."""
+    try:
+        from huma.services import redis_service as cache
+        raw = await cache.get_value(_RESULT_KEY.format(client_id=client_id, phone=phone))
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+async def payment_status(token: str) -> dict:
+    """Poll da página: {"status": "pending"|"approved"|"rejected"|"unknown", "order_number": ...}."""
+    data = await load_checkout_token(token)
+    if not data:
+        # token some ao pagar: tenta pelo resultado gravado
+        return {"status": "unknown"}
+    cid, phone = data["client_id"], data["phone"]
+    result = await order_result(cid, phone)
+    if result.get("number"):
+        return {"status": "approved", "order_number": result["number"]}
+    try:
+        from huma.services import redis_service as cache
+        mp_id = await cache.get_value(_PAYMENT_KEY.format(client_id=cid, phone=phone))
+    except Exception:
+        mp_id = None
+    if not mp_id:
+        return {"status": "pending"}
+    from huma.services.payment_service import _get_payment_by_provider_id
+    rec = await _get_payment_by_provider_id(mp_id)
+    status = str((rec or {}).get("status") or "pending")
+    return {"status": "approved" if status == "approved" else ("rejected" if status in ("rejected", "cancelled") else "pending"),
+            "order_number": result.get("number", "")}
+
+
 async def submit_checkout(token: str, form: dict) -> dict:
     """
     POST da Caixinha: monta a action com os dados do formulário e roda o
@@ -500,6 +755,12 @@ async def on_payment_approved(client_id: str, phone: str, payment_id: str) -> di
             pass
 
         number = res.get("number", res.get("order_id"))
+        try:
+            from huma.services import redis_service as cache
+            await cache.set_with_ttl(_RESULT_KEY.format(client_id=client_id, phone=phone),
+                                     json.dumps({"number": str(number), "order_id": res["order_id"]}), ttl=_DRAFT_TTL)
+        except Exception:
+            pass
         msg = f"Pedido #{number} criado e pago. {payload.get('product', '')} x{payload.get('qty', 1)} já está em separação. Te aviso quando sair pra entrega."
         try:
             await wa.send_text(phone, msg, client_id=client_id)

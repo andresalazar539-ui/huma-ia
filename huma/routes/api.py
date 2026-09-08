@@ -3145,15 +3145,39 @@ async def handle_payment_result(result: dict, payment_id: str) -> None:
 
         # ── PAGAMENTO APROVADO ──
         if status == "approved":
+            # Idempotência (2026-09-08): cartão aprovado na hora é processado
+            # inline E o webhook do MP chega depois — só o primeiro age.
+            try:
+                from huma.services import redis_service as _cache
+                _done_key = f"payment_done:{mp_payment_id}"
+                if mp_payment_id and await _cache.exists(_done_key):
+                    log.info(f"Payment já processado | id={mp_payment_id} | ignorando repetição")
+                    return
+                if mp_payment_id:
+                    await _cache.set_with_ttl(_done_key, "1", ttl=7 * 86400)
+            except Exception as e:
+                log.warning(f"Payment idempotência indisponível | id={mp_payment_id} | {type(e).__name__}: {e}")
+
             log.info(
                 f"VENDA CONFIRMADA | mp_id={mp_payment_id} | "
                 f"lead={lead_name} | phone={phone} | {amount_display} | {method}"
             )
 
+            # Checkout de Conversa: com pedido de loja em aberto, a única
+            # mensagem ao lead é "Pedido #N criado" (vem do on_payment_approved).
+            store_order_open = False
+            try:
+                from huma.core import store_checkout as _sc
+                store_order_open = await _sc.has_open_draft(client_id, phone)
+            except Exception:
+                store_order_open = False
+
             # 1. Confirmação pro lead no WhatsApp
             first_name = lead_name.split()[0] if lead_name else "você"
 
-            if method == "pix":
+            if store_order_open:
+                msg = ""
+            elif method == "pix":
                 msg = (
                     f"Pix de {amount_display} confirmado! "
                     f"Obrigado pela confiança, {first_name}! "
@@ -3173,7 +3197,8 @@ async def handle_payment_result(result: dict, payment_id: str) -> None:
                 )
 
             try:
-                await wa.send_text(phone, msg, client_id=client_id)
+                if msg:
+                    await wa.send_text(phone, msg, client_id=client_id)
             except Exception as e:
                 log.error(f"Erro enviando confirmação | {phone} | {e}")
 

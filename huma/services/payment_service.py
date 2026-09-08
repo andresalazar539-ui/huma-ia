@@ -842,15 +842,22 @@ async def process_payment_notification(mp_payment_id: str) -> dict:
 
     amount_cents = record.get("amount_cents", 0)
 
+    # Instagram/site: o phone da conversa não é dígito ("ig:…", "web:…") e a
+    # coluna phone só guarda dígitos. O registro leva a conversa em
+    # metadata.conversation_phone (Checkout de Conversa, 2026-09-08).
+    meta = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    phone = str(meta.get("conversation_phone") or record.get("phone") or "")
+
     return {
         "processed": True,
         "status": status,
         "status_detail": status_detail,
         "client_id": record.get("client_id", ""),
-        "phone": record.get("phone", ""),
+        "phone": phone,
         "lead_name": record.get("lead_name", ""),
         "method": record.get("method", ""),
         "amount_display": _format_brl(amount_cents),
         "amount_cents": amount_cents,
         "mp_payment_id": str(mp_payment_id),
+        "description": record.get("description", ""),
     }
