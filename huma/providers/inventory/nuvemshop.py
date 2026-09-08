@@ -134,12 +134,14 @@ class NuvemshopAdapter(InventoryProvider):
             "Content-Type": "application/json",
         }
 
-    async def _request(self, method: str, path: str, params: dict | None = None) -> tuple[int, Any]:
+    async def _request(
+        self, method: str, path: str, params: dict | None = None, json: dict | None = None,
+    ) -> tuple[int, Any]:
         """(status, json). status 0 = falha de rede. Nunca levanta."""
         url = f"{self.base_url}/{self.store_id}{path}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as http:
-                resp = await http.request(method, url, params=params, headers=self._headers())
+                resp = await http.request(method, url, params=params, json=json, headers=self._headers())
             try:
                 body = resp.json() if resp.content else None
             except ValueError:
@@ -283,6 +285,80 @@ class NuvemshopAdapter(InventoryProvider):
         if not self._has_creds:
             return {"status": "no_credentials"}
         return {"status": "no_logistics_configured"}
+
+    # ── pedidos, webhooks e cupons (carimbo e placar, 2026-09-07) ──
+
+    async def get_order(self, order_id: str) -> dict:
+        """Pedido completo da loja. {"status": "ok", "order": {...}} ou {"status": ...}."""
+        if not self._has_creds:
+            return {"status": "no_credentials"}
+        st, body = await self._request("GET", f"/orders/{order_id}")
+        if st == 200 and isinstance(body, dict):
+            return {"status": "ok", "order": body}
+        if st == 404:
+            return {"status": "not_found"}
+        return {"status": "error", "detail": f"http_{st}" if st else "network_error"}
+
+    async def list_webhooks(self) -> dict:
+        """Webhooks já registrados pelo app nesta loja."""
+        if not self._has_creds:
+            return {"status": "no_credentials"}
+        st, body = await self._request("GET", "/webhooks")
+        if st == 200 and isinstance(body, list):
+            return {"status": "ok", "webhooks": [w for w in body if isinstance(w, dict)]}
+        return {"status": "error", "detail": f"http_{st}" if st else "network_error"}
+
+    async def ensure_webhooks(self, url: str, events: tuple[str, ...] = ("order/paid",)) -> dict:
+        """
+        Garante os webhooks de pedido apontando pra `url` (idempotente).
+        Returns: {"status": "ok", "created": [...], "existing": [...]} ou erro.
+        """
+        if not self._has_creds:
+            return {"status": "no_credentials"}
+        if not url.startswith("https://"):
+            return {"status": "error", "detail": "url_must_be_https"}
+        current = await self.list_webhooks()
+        if current.get("status") != "ok":
+            return current
+        have = {(w.get("event"), w.get("url")) for w in current["webhooks"]}
+        created: list[str] = []
+        existing: list[str] = []
+        for event in events:
+            if (event, url) in have:
+                existing.append(event)
+                continue
+            st, body = await self._request("POST", "/webhooks", json={"event": event, "url": url})
+            if st in (200, 201):
+                created.append(event)
+            else:
+                log.warning(f"Nuvemshop webhook não criado | event={event} | http_{st}")
+                return {"status": "error", "detail": f"http_{st}", "created": created, "existing": existing}
+        log.info(f"Nuvemshop webhooks | store={self.store_id} | created={created} | existing={existing}")
+        return {"status": "ok", "created": created, "existing": existing}
+
+    async def create_coupon(
+        self, code: str, percent: int, hours_valid: int = 48, max_uses: int = 1,
+    ) -> dict:
+        """Cupom único da conversa. {"status": "ok", "coupon": {...}} ou erro."""
+        if not self._has_creds:
+            return {"status": "no_credentials"}
+        from datetime import datetime, timedelta
+
+        start = datetime.utcnow()
+        payload = {
+            "code": code,
+            "type": "percentage",
+            "value": str(int(percent)),
+            "max_uses": int(max_uses),
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": (start + timedelta(hours=hours_valid)).strftime("%Y-%m-%d"),
+        }
+        st, body = await self._request("POST", "/coupons", json=payload)
+        if st in (200, 201) and isinstance(body, dict):
+            return {"status": "ok", "coupon": body}
+        if st == 422:
+            return {"status": "exists"}
+        return {"status": "error", "detail": f"http_{st}" if st else "network_error"}
 
     # ── extras (conexão / Cockpit) ───────────────────────────────
 

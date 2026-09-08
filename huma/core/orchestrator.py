@@ -503,6 +503,9 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 from huma.core.stock_preflight import preflight as _stock_preflight
                 stock_preflight_result = await _stock_preflight(client_data, conv, unified_text, phone=phone)
                 if stock_preflight_result:
+                    # Interesse em produto → cupom único da conversa (se o dono permite desconto).
+                    from huma.services.store_orders import ensure_coupon
+                    await ensure_coupon(client_data, conv, phone)
                     await db.save_conversation(conv)
             except Exception as e:
                 log.error(f"Stock preflight falhou (segue sem) | {phone} | {type(e).__name__}: {e}")
@@ -2999,6 +3002,8 @@ async def _send_product_cards(
     cards = await decide_cards(client_data, user_text, stock_result, action_query=action_query)
     if not cards:
         return 0
+    from huma.services.store_orders import channel_of, tag_cards
+    cards = tag_cards(cards, channel_of(phone), cid)  # links com UTM da HUMA
     sent = await wa.send_cards(phone, cards, client_id=cid)
     if sent <= 0:
         return 0

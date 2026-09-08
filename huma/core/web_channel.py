@@ -427,6 +427,9 @@ async def _process_web_message_locked(
         try:
             from huma.core.stock_preflight import preflight as _stock_preflight
             stock_result = await _stock_preflight(client_data, conv, text, phone=phone)
+            if stock_result:
+                from huma.services.store_orders import ensure_coupon
+                await ensure_coupon(client_data, conv, phone)
         except Exception as e:
             log.error(f"Stock preflight falhou (web, segue sem) | {phone} | {type(e).__name__}: {e}")
 
@@ -501,6 +504,8 @@ async def _process_web_message_locked(
         from huma.core.product_cards import decide_cards, history_entry
         cards = await decide_cards(client_data, text, stock_result)
         if cards:
+            from huma.services.store_orders import tag_cards
+            cards = tag_cards(cards, "site", client_id)  # links com UTM da HUMA
             conv.history.append(history_entry(cards))
             log.info(f"Cards de produto (web) | {phone} | cards={len(cards)}")
     except Exception as e:

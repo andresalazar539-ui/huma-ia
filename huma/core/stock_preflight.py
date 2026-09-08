@@ -191,6 +191,11 @@ async def preflight(identity: Any, conv: Any, text: str, phone: str = "") -> dic
         if status in ("no_credentials", "error"):
             log.warning(f"Stock preflight | {phone} | status={status} | detail={result.get('detail', '')} | segue sem marker")
             return None
+        # Link carimbado com UTM da HUMA (carimbo e placar, 2026-09-07).
+        if result.get("url"):
+            from huma.services.store_orders import attribution_url, channel_of
+            result = dict(result)
+            result["url"] = attribution_url(result["url"], channel_of(phone), getattr(identity, "client_id", ""))
         marker = build_stock_marker(product.get("name") or query, result)
         conv.history.append({"role": "assistant", "content": marker})
         log.info(

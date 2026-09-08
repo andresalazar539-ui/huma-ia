@@ -81,6 +81,18 @@ async def callback(code: str = Query(default=""), state: str = Query(default="")
     # desfaz a conexão (token já gravado): loga e avisa na tela.
     synced = await _sync_store_knowledge(client_id, identity, catalog)
 
+    # Carimbo e placar (2026-09-07): pedido pago na loja avisa a HUMA.
+    try:
+        from huma.config import PUBLIC_BASE_URL
+        base = (PUBLIC_BASE_URL or "").rstrip("/")
+        if base:
+            hooks = await adapter.ensure_webhooks(f"{base}/webhook/nuvemshop")
+            log.info(f"Nuvemshop webhooks | client={client_id} | {hooks}")
+        else:
+            log.warning(f"Nuvemshop webhooks pulados | client={client_id} | sem PUBLIC_BASE_URL")
+    except Exception as e:
+        log.error(f"Nuvemshop webhooks falharam | client={client_id} | {type(e).__name__}: {e}")
+
     name = updates["nuvemshop_store_name"] or "sua loja"
     if synced:
         detail = (

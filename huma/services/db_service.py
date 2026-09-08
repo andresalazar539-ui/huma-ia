@@ -152,6 +152,35 @@ async def list_instagram_clients() -> list[dict]:
     return [r for r in (resp.data or []) if (r.get("instagram_access_token") or "").strip()]
 
 
+async def get_client_by_nuvemshop_store_id(store_id: str) -> ClientIdentity | None:
+    """Roteamento do webhook de pedido da Nuvemshop (store_id → cliente HUMA)."""
+    store_id = str(store_id or "").strip()
+    if not store_id:
+        return None
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("*")
+            .eq("nuvemshop_store_id", store_id).limit(1).execute()
+    )
+    if not resp.data:
+        return None
+    return _identity_from_row(resp.data[0])
+
+
+async def list_recent_conversations(client_id: str, limit: int = 300) -> list[dict]:
+    """
+    Conversas recentes do negócio (campos de contato) — casamento de pedido
+    da loja com o lead (store_orders, 2026-09-07). Mais recentes primeiro.
+    """
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("conversations")
+            .select("phone,channel,lead_whatsapp,lead_email,lead_name_canonical,last_message_at,stage")
+            .eq("client_id", client_id)
+            .order("last_message_at", desc=True)
+            .limit(limit).execute()
+    )
+    return resp.data or []
+
+
 async def list_store_clients() -> list[ClientIdentity]:
     """
     Clientes com loja virtual (Nuvemshop) ou ERP (Bling) conectado — pro job

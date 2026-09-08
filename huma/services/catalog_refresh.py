@@ -41,6 +41,27 @@ def _fingerprint(items: list[dict]) -> list[tuple]:
     ]
 
 
+async def _ensure_order_webhooks(adapter, client_id: str) -> None:
+    """
+    Carimbo e placar (2026-09-07): garante o webhook order/paid da loja
+    apontando pra HUMA. Idempotente e barato (um GET por rodada); cobre
+    loja conectada antes do recurso existir, sem reconectar. Nunca levanta.
+    """
+    try:
+        from huma.config import PUBLIC_BASE_URL
+
+        base = (PUBLIC_BASE_URL or "").rstrip("/")
+        if not base:
+            return
+        out = await adapter.ensure_webhooks(f"{base}/webhook/nuvemshop")
+        if out.get("created"):
+            log.info(f"catalog_refresh | {client_id} | webhooks criados={out['created']}")
+        elif out.get("status") != "ok":
+            log.warning(f"catalog_refresh | {client_id} | webhooks status={out.get('status')} | {out.get('detail', '')}")
+    except Exception as e:
+        log.warning(f"catalog_refresh | {client_id} | webhooks | {type(e).__name__}: {e}")
+
+
 async def refresh_client(identity) -> dict:
     """
     Sincroniza o catálogo de UM cliente. {"status": "updated"|"unchanged"|"skipped"|"error", "items": n}.
@@ -53,6 +74,8 @@ async def refresh_client(identity) -> dict:
         from huma.providers.inventory import get_provider_for
 
         adapter = get_provider_for(identity)
+        if source == "nuvemshop":
+            await _ensure_order_webhooks(adapter, client_id)
         catalog = await adapter.list_products(limit=200 if source == "nuvemshop" else 100, only_in_stock=False)
         if catalog.get("status") != "ok":
             log.warning(f"catalog_refresh | {client_id} | {source} | status={catalog.get('status')} | detail={catalog.get('detail', '')}")

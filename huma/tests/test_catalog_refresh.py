@@ -33,7 +33,10 @@ def _mock(monkeypatch, products, sink: list):
         return {"status": "ok", "products": products, "count": len(products)}
 
     async def _update(cid, updates): sink.append((cid, updates))
+    async def _hooks(self, url, events=("order/paid",)):
+        return {"status": "ok", "created": [], "existing": list(events)}  # sem rede nos testes
     monkeypatch.setattr(NuvemshopAdapter, "list_products", _list)
+    monkeypatch.setattr(NuvemshopAdapter, "ensure_webhooks", _hooks)
     monkeypatch.setattr(db_service, "update_client", _update)
 
 
@@ -70,6 +73,8 @@ class TestRefreshClient:
 
         async def _list(self, limit=50, only_in_stock=True): return {"status": "error", "detail": "network_error"}
         async def _update(cid, updates): sink.append(updates)
+        async def _hooks(self, url, events=("order/paid",)): return {"status": "ok", "created": [], "existing": []}
+        monkeypatch.setattr(NuvemshopAdapter, "ensure_webhooks", _hooks)
         monkeypatch.setattr(NuvemshopAdapter, "list_products", _list)
         monkeypatch.setattr(db_service, "update_client", _update)
         assert asyncio.run(cr.refresh_client(_identity()))["status"] == "error" and sink == []
