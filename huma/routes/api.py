@@ -2341,12 +2341,23 @@ async def health_deep():
 
 
 @router.get("/", tags=["Sistema"])
-async def root(request: Request) -> RedirectResponse:
-    """Raiz do domínio: logado vai pro Cockpit, deslogado vai pro login."""
+async def root(request: Request):
+    """
+    Raiz do domínio: logado vai pro Cockpit; deslogado vê a página PÚBLICA
+    da HUMA (2026-09-08 — a verificação OAuth do Google exige homepage que
+    não esteja atrás de login).
+    """
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
     from huma.core.auth import SESSION_COOKIE_NAME, verify_session_token
 
     session_client = verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, ""))
-    return RedirectResponse("/cockpit" if session_client else "/login", status_code=307)
+    if session_client:
+        return RedirectResponse("/cockpit", status_code=307)
+    landing = Path(__file__).resolve().parent.parent / "static" / "landing" / "index.html"
+    return FileResponse(str(landing), media_type="text/html")
 
 
 # ================================================================

@@ -221,7 +221,8 @@ class TestGoogleOAuth:
         monkeypatch.setattr(g, "_save_state", fake_save)
         url = asyncio.run(g.build_authorize_url("cli_int"))
         assert "access_type=offline" in url and "prompt=consent" in url
-        assert "calendar" in url and "spreadsheets" in url
+        assert "calendar.events" in url and "calendar.freebusy" in url and "drive.file" in url
+        assert "auth%2Fcalendarassert "calendar" in url and "spreadsheets" in url" not in url and "spreadsheets" not in url  # menor privilégio
 
     def test_nao_configurado_devolve_vazio(self, monkeypatch):
         from huma.services import google_oauth as g

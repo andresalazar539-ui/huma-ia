@@ -304,7 +304,7 @@ def _oauth_credentials_for_pointer(pointer: str):
         from huma.services import google_oauth
 
         return google_oauth.credentials_from_refresh_token(
-            refresh, scopes=["https://www.googleapis.com/auth/calendar"],
+            refresh, scopes=google_oauth.CALENDAR_SCOPES,
         )
     except Exception as e:
         log.error(f"Google OAuth | credencial falhou | client={client_id} | {type(e).__name__}: {e}")
@@ -357,7 +357,12 @@ async def probe_calendar(calendar_id: str) -> dict:
         from googleapiclient.discovery import build
 
         svc = build("calendar", "v3", credentials=credentials)
-        info = svc.calendars().get(calendarId=cal).execute()
+        # Caminho OAuth usa só calendar.events + freebusy (menor privilégio):
+        # calendars().get exige calendar.readonly, então pula a leitura.
+        if (calendar_id or "").strip().startswith(OAUTH_POINTER_PREFIX):
+            info = {"summary": "Agenda principal"}
+        else:
+            info = svc.calendars().get(calendarId=cal).execute()
         start = datetime.utcnow() + timedelta(days=30)
         event = {
             "summary": "Teste de conexão HUMA (pode ignorar)",

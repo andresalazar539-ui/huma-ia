@@ -41,12 +41,22 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
 
+# Menor privilégio (exigência da verificação do Google, 2026-09-08):
+#   calendar.events   — criar/atualizar/cancelar SÓ eventos (não a agenda inteira)
+#   calendar.freebusy — ler livre/ocupado (sem ler o conteúdo dos eventos)
+#   drive.file        — só os arquivos que a própria HUMA criou (a planilha de
+#                       leads); a Sheets API aceita esse escopo pra esses arquivos
+# Nada de calendar (total) nem spreadsheets (todas as planilhas).
 SCOPES = [
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.freebusy",
     "https://www.googleapis.com/auth/drive.file",
     "openid",
     "email",
+]
+CALENDAR_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.freebusy",
 ]
 
 _STATE_KEY_PREFIX = "google:oauth:state:"
