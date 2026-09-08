@@ -63,6 +63,24 @@ class TestSaleRow:
         assert row["checkout_url"] == "https://asaas/x"
 
 
+    def test_pedido_da_loja_via_instagram_mostra_canal_e_origem(self):
+        row = api_mod._sale_row({
+            'id': 12, 'phone': '', 'lead_name': 'Andre', 'method': 'pix', 'amount_cents': 100, 'status': 'approved',
+            'description': 'Pedido HUMA: Camiseta x1 · cupom TESTE99',
+            'metadata': {'provider': 'mercadopago', 'store_order': True, 'conversation_phone': 'ig:123', 'coupon': 'TESTE99'},
+        })
+        assert row['phone'] == 'ig:123' and row['channel'] == 'instagram' and row['channel_label'] == 'Instagram'
+        assert row['origin'] == 'Pedido fechado na conversa' and row['coupon'] == 'TESTE99'
+
+    def test_pedido_do_site_carimbado(self):
+        row = api_mod._sale_row({
+            'phone': '', 'method': 'loja', 'amount_cents': 9990, 'status': 'approved',
+            'metadata': {'provider': 'nuvemshop', 'level': 'cupom', 'channel': 'whatsapp', 'conversation_phone': '5511999990000', 'number': '1042'},
+        })
+        assert row['provider'] == 'nuvemshop' and row['channel_label'] == 'WhatsApp'
+        assert row['origin'] == 'Pedido na loja · cupom da conversa' and row['order_number'] == '1042'
+        assert row['phone'] == '5511999990000'
+
 class TestSalesTotals:
 
     def test_hoje_mes_pendentes(self):

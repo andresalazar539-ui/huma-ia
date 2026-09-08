@@ -154,8 +154,15 @@ const VendasScreen = ({ onOpenConversa } = {}) => {
                 </div>
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{phoneLabel(it.phone)}</div>
               </div>
-              <div style={{ flex: 1.6, minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {it.description || 'Pedido'}
+              <div style={{ flex: 1.6, minWidth: 0 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {it.description || 'Pedido'}
+                </div>
+                {(it.origin || it.channel_label) && (
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2, letterSpacing: '0.02em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {[it.channel_label, it.origin, it.order_number ? `pedido #${it.order_number}` : ''].filter(Boolean).join(' · ')}
+                  </div>
+                )}
               </div>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>
                 {it.method_label}{it.provider === 'asaas' ? ' · Asaas' : ''}

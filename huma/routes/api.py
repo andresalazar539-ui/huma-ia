@@ -1354,10 +1354,29 @@ def _sale_row(r: dict) -> dict:
     cents = int(r.get("amount_cents") or 0)
     meta = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
     method = (r.get("method") or "").strip().lower()
-    provider = "asaas" if (meta.get("provider") == "asaas") else "mercadopago"
+    provider = "asaas" if (meta.get("provider") == "asaas") else ("nuvemshop" if meta.get("provider") == "nuvemshop" else "mercadopago")
+    # Conversa de origem (Instagram/site não têm dígitos → vive em metadata) e
+    # carimbo da venda (Checkout de Conversa / carimbo e placar, 2026-09-08).
+    conv_phone = str(meta.get("conversation_phone") or r.get("phone") or "")
+    channel = str(meta.get("channel") or "")
+    if not channel:
+        channel = "instagram" if conv_phone.startswith("ig:") else ("site" if conv_phone.startswith("web:") else ("whatsapp" if conv_phone else ""))
+    if meta.get("store_order"):
+        origin = "Pedido fechado na conversa"
+    elif provider == "nuvemshop":
+        level = str(meta.get("level") or "")
+        origin = {"certa": "Pedido na loja · criado pela HUMA", "cupom": "Pedido na loja · cupom da conversa",
+                  "provavel": "Pedido na loja · cliente da conversa"}.get(level, "Pedido na loja")
+    else:
+        origin = "Cobrança na conversa"
     return {
         "id": str(r.get("id") or r.get("mp_payment_id") or r.get("external_reference") or ""),
-        "phone": r.get("phone", "") or "",
+        "phone": conv_phone,
+        "channel": channel,
+        "channel_label": {"instagram": "Instagram", "site": "Site", "whatsapp": "WhatsApp"}.get(channel, ""),
+        "origin": origin,
+        "coupon": str(meta.get("coupon") or ""),
+        "order_number": str(meta.get("number") or meta.get("order_number") or ""),
         "lead_name": r.get("lead_name", "") or "",
         "description": r.get("description", "") or "",
         "amount_cents": cents,
