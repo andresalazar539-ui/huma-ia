@@ -84,6 +84,7 @@ def _wire(monkeypatch, mp_status="approved", mp_type="credit_card"):
     monkeypatch.setattr(ps, "_get_payment_by_provider_id", _byid)
     monkeypatch.setattr("huma.config.MERCADOPAGO_ACCESS_TOKEN", "tok")
     monkeypatch.setattr(page, "MERCADOPAGO_PUBLIC_KEY", "pk_test")
+    page._rate.clear()  # rate limit por IP acumula entre testes
     monkeypatch.setattr(api_mod, "handle_payment_result", _hpr)
     return w
 
@@ -159,3 +160,54 @@ class TestCartao:
         w = _wire(monkeypatch)
         o = _client().post("/pedido/" + TOKEN + "/card", json=FORM).json()
         assert o["status"] == "error" and w["mp"] == []
+
+
+class TestCupom:
+    def _coupon(self, monkeypatch, coupon):
+        from huma.providers.inventory.nuvemshop import NuvemshopAdapter
+        async def _get(self, code): return {'status': 'ok', 'coupon': coupon} if coupon and code.upper() == coupon['code'] else {'status': 'not_found'}
+        monkeypatch.setattr(NuvemshopAdapter, 'get_coupon', _get)
+
+    def test_puro_desconto_e_validade(self):
+        assert sc.coupon_discount_cents({'type': 'percentage', 'value': '99'}, 7990) == 7910
+        assert sc.coupon_discount_cents({'type': 'absolute', 'value': '10'}, 7990) == 1000
+        assert sc.coupon_discount_cents({'type': 'absolute', 'value': '500'}, 7990) == 7990  # nunca acima do subtotal
+        assert sc.coupon_is_valid({'valid': True}, 7990) and not sc.coupon_is_valid({'valid': False}, 7990)
+        assert not sc.coupon_is_valid({'min_price': '100.00'}, 7990) and not sc.coupon_is_valid({'max_uses': 1, 'used': 1}, 7990)
+        assert not sc.coupon_is_valid({'end_date': '2020-01-01'}, 7990)
+
+    def test_previa_do_cupom_na_pagina(self, monkeypatch):
+        _wire(monkeypatch)
+        self._coupon(monkeypatch, {'code': 'TESTE99', 'type': 'percentage', 'value': '99', 'valid': True})
+        o = _client().post('/pedido/' + TOKEN + '/coupon', json={'coupon': 'teste99'}).json()
+        assert o['status'] == 'ok' and o['discount_cents'] == 7910 and o['total_cents'] == 80 and o['total_display'] == 'R$ 0,80'
+        o = _client().post('/pedido/' + TOKEN + '/coupon', json={'coupon': 'NAOEXISTE'}).json()
+        assert o['status'] == 'invalid_coupon' and o['total_cents'] == 7990
+        o = _client().post('/pedido/' + TOKEN + '/coupon', json={'coupon': ''}).json()
+        assert o['status'] == 'ok' and o['discount_cents'] == 0
+
+    def test_pix_com_cupom_cobra_o_total_com_desconto_e_leva_pro_pedido(self, monkeypatch):
+        w = _wire(monkeypatch)
+        self._coupon(monkeypatch, {'code': 'TESTE99', 'type': 'percentage', 'value': '99', 'valid': True})
+        o = _client().post('/pedido/' + TOKEN + '/pix', json={**FORM, 'coupon': 'TESTE99'}).json()
+        assert o['status'] == 'ok' and o['amount_display'] == 'R$ 0,80'
+        assert w['mp'][0]['transaction_amount'] == 0.8
+        draft = json.loads(w['store']['store_order_draft:cli_sc:ig:123'])['draft']
+        assert draft['discount'] == 79.1 and draft['discount_type'] == 'absolute' and 'cupom TESTE99' in draft['note']
+        assert w['saved'][0]['metadata']['coupon'] == 'TESTE99' and w['saved'][0]['amount_cents'] == 80
+
+    def test_cupom_invalido_bloqueia_a_cobranca(self, monkeypatch):
+        w = _wire(monkeypatch)
+        self._coupon(monkeypatch, None)
+        o = _client().post('/pedido/' + TOKEN + '/pix', json={**FORM, 'coupon': 'XYZ'}).json()
+        assert o['status'] == 'invalid_coupon' and w['mp'] == []
+
+    def test_cupom_da_conversa_da_huma(self, monkeypatch):
+        from huma.services import db_service
+        from huma.services.store_orders import coupon_code_for
+        w = _wire(monkeypatch)
+        async def _client_disc(cid): return _identity(max_discount_percent=5)
+        monkeypatch.setattr(db_service, 'get_client', _client_disc)
+        code = coupon_code_for('cli_sc', 'ig:123')
+        o = _client().post('/pedido/' + TOKEN + '/coupon', json={'coupon': code}).json()
+        assert o['status'] == 'ok' and o['discount_cents'] == 400 and '5%' in o['label']

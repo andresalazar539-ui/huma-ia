@@ -250,6 +250,82 @@ async def load_checkout_token(token: str) -> dict | None:
 _RESULT_KEY = "store_order_result:{client_id}:{phone}"
 
 
+def coupon_discount_cents(coupon: dict, subtotal_cents: int) -> int:
+    """Desconto em centavos de um cupom da Nuvemshop sobre o subtotal (nunca > subtotal)."""
+    ctype = str(coupon.get("type") or "").lower()
+    try:
+        value = float(coupon.get("value") or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if ctype == "percentage":
+        disc = int(round(subtotal_cents * max(0.0, min(100.0, value)) / 100))
+    elif ctype == "absolute":
+        disc = int(round(value * 100))
+    else:
+        disc = 0  # "shipping": frete já é política do dono aqui
+    return max(0, min(disc, subtotal_cents))
+
+
+def coupon_is_valid(coupon: dict, subtotal_cents: int) -> bool:
+    """Cupom ativo, dentro do prazo, com usos e valor mínimo respeitados."""
+    from datetime import date
+
+    if coupon.get("valid") is False:
+        return False
+    try:
+        min_price = float(coupon.get("min_price") or 0)
+        if min_price > 0 and subtotal_cents < int(round(min_price * 100)):
+            return False
+    except (TypeError, ValueError):
+        pass
+    try:
+        max_uses = int(coupon.get("max_uses") or 0)
+        used = int(coupon.get("used") or 0)
+        if max_uses > 0 and used >= max_uses:
+            return False
+    except (TypeError, ValueError):
+        pass
+    today = date.today().isoformat()
+    start = str(coupon.get("start_date") or "")[:10]
+    end = str(coupon.get("end_date") or "")[:10]
+    if start and today < start:
+        return False
+    if end and today > end:
+        return False
+    return True
+
+
+async def resolve_coupon(identity: Any, phone: str, code: str, subtotal_cents: int) -> dict:
+    """
+    Cupom digitado na Caixinha → {"status": "ok", "code", "discount_cents", "label"} |
+    {"status": "invalid"} | {"status": "none"} (campo vazio).
+    Aceita o cupom único da conversa (HUMA-XXXXX) e cupons da loja.
+    """
+    code = (code or "").strip().upper()
+    if not code:
+        return {"status": "none"}
+    from huma.services.store_orders import coupon_code_for
+
+    percent = int(round(float(getattr(identity, "max_discount_percent", 0) or 0)))
+    if percent > 0 and code == coupon_code_for(getattr(identity, "client_id", ""), phone):
+        disc = int(round(subtotal_cents * percent / 100))
+        return {"status": "ok", "code": code, "discount_cents": min(disc, subtotal_cents), "label": f"{percent}% da conversa"}
+    from huma.providers.inventory.nuvemshop import NuvemshopAdapter
+
+    res = await NuvemshopAdapter(identity=identity).get_coupon(code)
+    if res.get("status") != "ok":
+        return {"status": "invalid"}
+    coupon = res["coupon"]
+    if not coupon_is_valid(coupon, subtotal_cents):
+        return {"status": "invalid"}
+    disc = coupon_discount_cents(coupon, subtotal_cents)
+    if disc <= 0:
+        return {"status": "invalid"}
+    ctype = str(coupon.get("type") or "")
+    label = f"{int(float(coupon.get('value') or 0))}%" if ctype == "percentage" else "desconto"
+    return {"status": "ok", "code": code, "discount_cents": disc, "label": label}
+
+
 async def has_open_draft(client_id: str, phone: str) -> bool:
     """True se há pedido de loja aguardando pagamento nesta conversa."""
     try:
@@ -302,18 +378,53 @@ async def prepare_order(token: str, form: dict) -> dict:
     phone = data["phone"]
     ship = shipping_cents(identity)
     price = int(stock.get("price_cents") or 0)
-    total = total_cents(price, qty, ship)
+    subtotal = price * qty
+    coupon = await resolve_coupon(identity, phone, str(form.get("coupon") or ""), subtotal)
+    if coupon.get("status") == "invalid":
+        return {"status": "invalid_coupon"}
+    discount = int(coupon.get("discount_cents") or 0)
+    total = max(0, total_cents(price, qty, ship) - discount)
     draft = build_draft(phone, action, stock, qty, ship)
+    if discount > 0:
+        draft["discount"] = round(discount / 100, 2)
+        draft["discount_type"] = "absolute"
+        draft["note"] = f"{draft['note']} · cupom {coupon['code']}"
     payload = {"draft": draft, "total_cents": total, "summary": draft_summary(stock, qty, price, ship, action),
                "product": stock.get("name", ""), "qty": qty, "lead_name": action["lead_name"],
-               "lead_email": action["lead_email"], "cpf": re.sub(r"\D", "", action.get("cpf") or "")}
+               "lead_email": action["lead_email"], "cpf": re.sub(r"\D", "", action.get("cpf") or ""),
+               "coupon": coupon.get("code", ""), "discount_cents": discount}
     try:
         from huma.services import redis_service as cache
         await cache.set_with_ttl(_DRAFT_KEY.format(client_id=data["client_id"], phone=phone), json.dumps(payload, ensure_ascii=False), ttl=_DRAFT_TTL)
     except Exception as e:
         log.warning(f"prepare_order | rascunho não foi pro Redis | {phone} | {type(e).__name__}: {e}")
     return {"status": "ok", "identity": identity, "client_id": data["client_id"], "phone": phone,
-            "payload": payload, "total_cents": total, "product": stock}
+            "payload": payload, "total_cents": total, "product": stock,
+            "discount_cents": discount, "coupon": coupon.get("code", ""), "coupon_label": coupon.get("label", "")}
+
+
+async def quote(token: str, form: dict) -> dict:
+    """Prévia do total com cupom (a página chama ao aplicar o cupom). Não cobra nem grava nada."""
+    from huma.core.stock_preflight import format_price_brl
+    from huma.services import db_service as db
+
+    data = await load_checkout_token(token)
+    if not data:
+        return {"status": "invalid_token"}
+    identity = await db.get_client(data["client_id"])
+    if identity is None:
+        return {"status": "invalid_token"}
+    qty = int(data.get("qty") or 1)
+    subtotal = int(data.get("price_cents") or 0) * qty
+    ship = shipping_cents(identity)
+    coupon = await resolve_coupon(identity, data["phone"], str(form.get("coupon") or ""), subtotal)
+    if coupon.get("status") == "invalid":
+        return {"status": "invalid_coupon", "total_cents": subtotal + ship, "total_display": format_price_brl(subtotal + ship)}
+    discount = int(coupon.get("discount_cents") or 0)
+    total = max(0, subtotal + ship - discount)
+    return {"status": "ok", "total_cents": total, "total_display": format_price_brl(total),
+            "discount_cents": discount, "discount_display": format_price_brl(discount) if discount else "",
+            "coupon": coupon.get("code", ""), "label": coupon.get("label", "")}
 
 
 def _mp_payer(payload: dict, phone: str) -> dict:
@@ -335,9 +446,12 @@ async def _record_store_payment(client_id: str, phone: str, payload: dict, mp_id
         client_id=client_id, phone=phone if not phone.startswith(("ig:", "web:")) else "",
         lead_name=payload.get("lead_name", ""), mp_payment_id=mp_id, external_reference=ext_ref,
         method=method, amount_cents=int(payload.get("total_cents") or 0),
-        description=f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}",
+        description=f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}"
+        + (f" · cupom {payload['coupon']}" if payload.get("coupon") else ""),
         status=status,
-        metadata={"provider": "mercadopago", "store_order": True, "conversation_phone": phone, **(extra or {})},
+        metadata={"provider": "mercadopago", "store_order": True, "conversation_phone": phone,
+                  "coupon": payload.get("coupon", ""), "discount_cents": int(payload.get("discount_cents") or 0),
+                  **(extra or {})},
     )
 
 

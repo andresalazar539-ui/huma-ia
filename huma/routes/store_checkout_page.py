@@ -131,8 +131,13 @@ def render_form(token: str, data: dict, identity) -> str:
   <div class="addr" id="addr"></div>
   <label>Complemento<input name="complement" placeholder="apto, bloco (opcional)"></label>
 </div>
+<div class="sec"><h3>Cupom</h3>
+  <div class="row3"><label>Código<input name="coupon" id="coupon" autocomplete="off" placeholder="tem cupom?" style="text-transform:uppercase"></label><label>&nbsp;<button type="button" class="go" id="btn-coupon" style="margin:0;padding:11px">Aplicar</button></label></div>
+  <div class="addr" id="coupon-msg"></div>
+</div>
 <div class="sec"><h3>Pagamento</h3>{tabs}{pix_pane}{card_pane}
-  <div class="total"><span>Total</span><b>{_price(total)}</b></div>
+  <div class="total" id="discount-row" style="display:none;border-top:0;padding-top:0"><span>Desconto</span><b id="discount"></b></div>
+  <div class="total"><span>Total</span><b id="total">{_price(total)}</b></div>
   <div class="err" id="err"></div>
 </div>
 </form>
@@ -151,6 +156,14 @@ def render_form(token: str, data: dict, identity) -> str:
   cep.addEventListener('blur',function(){{var c=cep.value.replace(/\\D/g,'');if(c.length!==8)return;addr.textContent='Buscando endereço…';
     fetch('https://viacep.com.br/ws/'+c+'/json/').then(function(r){{return r.json()}}).then(function(d){{addr.textContent=d.erro?'CEP não encontrado':(d.logradouro||'')+(d.bairro?', '+d.bairro:'')+' · '+d.localidade+'/'+d.uf}}).catch(function(){{addr.textContent=''}});}});
   function data(){{var b={{}};new FormData(f).forEach(function(v,k){{b[k]=v}});return b;}}
+  var TOTAL={total}, MAXI={max_inst};
+  function brl(c){{return 'R$ '+(c/100).toFixed(2).replace('.',',').replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,'.');}}
+  function setTotal(c,disc){{TOTAL=c;document.getElementById('total').textContent=brl(c);var dr=document.getElementById('discount-row');if(disc>0){{dr.style.display='flex';document.getElementById('discount').textContent='- '+brl(disc);}}else dr.style.display='none';
+    var bp=document.getElementById('btn-pix');if(bp)bp.textContent='Gerar Pix de '+brl(c);var bc=document.getElementById('btn-card');if(bc)bc.textContent='Pagar '+brl(c);
+    var sel=document.getElementById('inst');if(sel){{sel.innerHTML='';for(var n=1;n<=MAXI;n++){{var o=document.createElement('option');o.value=n;o.textContent=n+'x de '+brl(Math.round(c/n))+(n>1?' sem juros':'');sel.appendChild(o);}}}}}}
+  var bcp=document.getElementById('btn-coupon'), cmsg=document.getElementById('coupon-msg');
+  bcp.addEventListener('click',function(){{var code=(document.getElementById('coupon').value||'').trim().toUpperCase();document.getElementById('coupon').value=code;cmsg.textContent='Verificando…';
+    post('/coupon',{{coupon:code}}).then(function(o){{if(o.status==='ok'){{setTotal(o.total_cents,o.discount_cents||0);cmsg.textContent=o.discount_cents?('Cupom '+o.coupon+' aplicado ('+o.label+').'):'';}}else{{setTotal(o.total_cents||TOTAL,0);cmsg.textContent=code?'Cupom inválido ou vencido.':'';}}}}).catch(function(){{cmsg.textContent='Não consegui validar agora.';}});}});
   function check(){{var d=data();if(!d.lead_name||!d.lead_email||!d.cep||!d.number){{err.textContent='Preencha nome, e-mail, CEP e número.';return null;}}err.textContent='';return d;}}
   function post(path,body){{return fetch(T+path,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}}).then(function(r){{return r.json()}});}}
   function fail(o){{err.textContent=o.detail||(o.status==='missing'?'Preencha: '+(o.missing||[]).join(', ')+'.':o.status==='unavailable'?'Esse item acabou de sair do estoque.':'Não deu certo agora. Tente de novo.');}}
@@ -210,10 +223,19 @@ async def _json_body(request: Request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+@router.post("/pedido/{token}/coupon", include_in_schema=False)
+async def checkout_coupon(token: str, request: Request) -> JSONResponse:
+    ip = request.client.host if request.client else "?"
+    if not _ok_rate(ip, limit=30):
+        return JSONResponse({"status": "error", "detail": "Muitas tentativas."}, status_code=429)
+    out = await sc.quote(token, await _json_body(request))
+    return JSONResponse(out, status_code=200 if out.get("status") in ("ok", "invalid_coupon") else 400)
+
+
 @router.post("/pedido/{token}/pix", include_in_schema=False)
 async def checkout_pix(token: str, request: Request) -> JSONResponse:
     ip = request.client.host if request.client else "?"
-    if not _ok_rate(ip, limit=10):
+    if not _ok_rate(ip, limit=20):
         return JSONResponse({"status": "error", "detail": "Muitas tentativas. Espere um instante."}, status_code=429)
     out = await sc.pay_pix(token, await _json_body(request))
     return JSONResponse(out, status_code=200 if out.get("status") == "ok" else 400)
@@ -222,7 +244,7 @@ async def checkout_pix(token: str, request: Request) -> JSONResponse:
 @router.post("/pedido/{token}/card", include_in_schema=False)
 async def checkout_card(token: str, request: Request) -> JSONResponse:
     ip = request.client.host if request.client else "?"
-    if not _ok_rate(ip, limit=10):
+    if not _ok_rate(ip, limit=20):
         return JSONResponse({"status": "error", "detail": "Muitas tentativas. Espere um instante."}, status_code=429)
     out = await sc.pay_card(token, await _json_body(request))
     code = 200 if out.get("status") in ("approved", "in_process", "rejected") else 400

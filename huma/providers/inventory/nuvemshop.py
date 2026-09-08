@@ -363,6 +363,26 @@ class NuvemshopAdapter(InventoryProvider):
         log.info(f"Nuvemshop pedido criado pela HUMA | store={self.store_id} | order={order_id} | number={number}")
         return {"status": "ok", "order_id": order_id, "number": number, "order": order}
 
+    async def get_coupon(self, code: str) -> dict:
+        """
+        Cupom da loja pelo código (case-insensitive).
+        {"status": "ok", "coupon": {code, type, value, valid, ...}} | not_found | erro.
+        """
+        if not self._has_creds:
+            return {"status": "no_credentials"}
+        wanted = (code or "").strip().upper()
+        if not wanted:
+            return {"status": "not_found"}
+        st, body = await self._request("GET", "/coupons", params={"q": wanted, "per_page": 50})
+        if st == 404 or (st == 200 and not body):
+            return {"status": "not_found"}
+        if st != 200 or not isinstance(body, list):
+            return {"status": "error", "detail": f"http_{st}" if st else "network_error"}
+        for c in body:
+            if isinstance(c, dict) and str(c.get("code") or "").strip().upper() == wanted:
+                return {"status": "ok", "coupon": c}
+        return {"status": "not_found"}
+
     async def create_coupon(
         self, code: str, percent: int, hours_valid: int = 48, max_uses: int = 1,
     ) -> dict:
