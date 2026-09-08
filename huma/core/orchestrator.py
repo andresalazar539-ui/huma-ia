@@ -1671,13 +1671,21 @@ async def _send_with_human_delay(
             # A IA pode pedir o carrossel (action show_products) quando o lead
             # está em dúvida/comparando; o motor resolve os produtos reais.
             show_query = ""
+            closing_order = False
             for _a in list(remaining_actions):
-                if isinstance(_a, dict) and _a.get("type") == "show_products":
+                if not isinstance(_a, dict):
+                    continue
+                if _a.get("type") == "show_products":
                     show_query = str(_a.get("query") or "").strip()
                     remaining_actions.remove(_a)
-            await _send_product_cards(
-                phone, cid, client_data, conv, lead_text, stock_result, action_query=show_query,
-            )
+                elif _a.get("type") == "create_store_order":
+                    closing_order = True
+            # Lead já disse "vou levar": só o card Finalizar pedido sai (na action),
+            # o card de produto seria redundante.
+            if not closing_order:
+                await _send_product_cards(
+                    phone, cid, client_data, conv, lead_text, stock_result, action_query=show_query,
+                )
         except Exception as e:
             log.error(f"Cards de produto falharam | {phone} | {type(e).__name__}: {e}")
 
@@ -3022,6 +3030,14 @@ async def _send_product_cards(
         return 0
     from huma.services.store_orders import channel_of, tag_cards
     cards = tag_cards(cards, channel_of(phone), cid)  # links com UTM da HUMA
+    # Checkout na conversa ligado: o card não manda pro site ("Comprar" some),
+    # fica só "Quero esse" — a compra fecha aqui.
+    try:
+        from huma.core.store_checkout import checkout_enabled
+        if checkout_enabled(client_data):
+            cards = [{**c, "url": ""} for c in cards]
+    except Exception:
+        pass
     sent = await wa.send_cards(phone, cards, client_id=cid)
     if sent <= 0:
         return 0
