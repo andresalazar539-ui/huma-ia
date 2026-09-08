@@ -2129,7 +2129,8 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
 
     await billing.log_usage(cid, billing.UsageType.PAYMENT)
     log.info(f"Pagamento enviado | {method} | {result.get('amount_display', '')}")
-    return {"sent": True, "method": method, "amount_display": result.get("amount_display", "")}
+    # payment_result (aditivo, 2026-09-08): a Caixinha da HUMA mostra o Pix/link na página.
+    return {"sent": True, "method": method, "amount_display": result.get("amount_display", ""), "payment_result": result}
 
 
 # ================================================================

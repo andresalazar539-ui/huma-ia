@@ -101,7 +101,7 @@ class TestHandleAction:
         sent, store = self._wire(monkeypatch)
         conv = Conversation(client_id="cli_sc", phone="ig:123", history=[])
         out = asyncio.run(sc.handle_action("ig:123", _ACTION, _identity(), conv))
-        assert out == {"status": "pix_sent", "total_cents": 17480, "method": "pix", "installments": 1}
+        assert out["status"] == "pix_sent" and out["total_cents"] == 17480 and out["method"] == "pix" and out["installments"] == 1
         assert sent[0][0] == "CARD" and sent[0][1]["kind"] == "order"
         assert sent[0][1]["title"] == "Pedido: Camiseta Básica Preta x2" and "Total R$ 174,80" in sent[0][1]["subtitle"]
         assert sent[0][1]["buttons"] == [] and sent[1] == "PIX 17480"
@@ -109,11 +109,25 @@ class TestHandleAction:
         assert draft["note"] == "HUMA · instagram · ig:123"
         assert conv.history[-1]["content"].startswith("[PEDIDO EM ABERTO ") and "NÃO gere outro pagamento" in conv.history[-1]["content"]
 
-    def test_faltando_dado_pede_e_nao_cobra(self, monkeypatch):
-        sent, _ = self._wire(monkeypatch)
+    def test_faltando_dado_manda_a_caixinha(self, monkeypatch):
+        import huma.core.store_checkout as mod
+        monkeypatch.setattr("huma.config.PUBLIC_BASE_URL", "https://app.humaia.com.br")
+        sent, store = self._wire(monkeypatch)
         conv = Conversation(client_id="cli_sc", phone="ig:123", history=[])
         out = asyncio.run(sc.handle_action("ig:123", {**_ACTION, "cep": ""}, _identity(), conv))
-        assert out["status"] == "missing" and sent == ["Pra fechar o pedido aqui eu preciso de: CEP."]
+        assert out["status"] == "link_sent" and out["url"].startswith("https://app.humaia.com.br/pedido/")
+        card = sent[0][1]
+        assert card["kind"] == "checkout" and card["buttons"][0]["title"] == "Finalizar pedido" and card["buttons"][0]["url"] == out["url"]
+        token = out["url"].rsplit("/", 1)[1]
+        assert json.loads(store[f"checkout_token:{token}"])["sku"] == "CAM-PRETA-M"
+        assert conv.history[-1]["content"].startswith("[CAIXINHA ENVIADA")
+        assert "PIX" not in str(sent)  # não cobra sem os dados
+
+    def test_faltando_dado_via_pagina_devolve_o_que_falta(self, monkeypatch):
+        sent, _ = self._wire(monkeypatch)
+        conv = Conversation(client_id="cli_sc", phone="ig:123", history=[])
+        out = asyncio.run(sc.handle_action("ig:123", {**_ACTION, "cep": "", "via": "page"}, _identity(), conv))
+        assert out["status"] == "missing" and out["missing"] == ["CEP"] and sent == []
 
     def test_estoque_insuficiente_nao_cobra(self, monkeypatch):
         sent, _ = self._wire(monkeypatch, stock={**_STOCK, "stock_qty": 1})
@@ -261,3 +275,77 @@ class TestFormaDePagamento:
         assert out["method"] == "credit_card" and out["installments"] == 4
         assert pay_actions[0]["payment_method"] == "credit_card" and pay_actions[0]["installments"] == 4
         assert "credit_card em 4x" in conv.history[-1]["content"]
+
+
+class TestCaixinha:
+    def _wire(self, monkeypatch):
+        from huma.core import orchestrator as orch
+        from huma.providers.inventory.nuvemshop import NuvemshopAdapter
+        from huma.services import db_service, redis_service as cache, whatsapp_service as wa
+
+        store: dict = {"checkout_token:tok_abcdefghijklmnop": json.dumps({
+            "client_id": "cli_sc", "phone": "ig:123", "sku": "CAM-PRETA-M", "qty": 1,
+            "name": "Camiseta Básica Preta", "image_url": "https://img/1.jpg", "price_cents": 7990,
+        })}
+        sent: list = []
+
+        async def _get(k): return store.get(k)
+        async def _set(k, v, ttl=0): store[k] = v
+        async def _del(k): store.pop(k, None)
+        async def _client(cid): return _identity(accepted_payment_methods=["pix", "credit_card"], max_installments=3)
+        async def _conv(cid, phone): return Conversation(client_id=cid, phone=phone, history=[])
+        async def _save(c): return None
+        async def _check(self, q): return _STOCK
+        async def _send(phone, text, client_id="", **kw): sent.append(text); return "m"
+        async def _cards(phone, cards, client_id=""): sent.append(("CARD", cards[0]["kind"])); return 1
+        async def _pay(phone, action, client_data, conv=None):
+            return {"sent": True, "method": action["payment_method"], "payment_result": {
+                "amount_display": "R$ 94,90", "qr_code_text": "00020126PIX", "qr_code_base64": "QUJD", "checkout_url": "https://mp/x"}}
+        import huma.core.auth as auth_mod
+        monkeypatch.setattr(cache, "get_value", _get); monkeypatch.setattr(cache, "set_with_ttl", _set); monkeypatch.setattr(cache, "delete_key", _del)
+        monkeypatch.setattr(db_service, "get_client", _client); monkeypatch.setattr(db_service, "get_conversation", _conv)
+        monkeypatch.setattr(db_service, "save_conversation", _save)
+        monkeypatch.setattr(NuvemshopAdapter, "check_stock", _check)
+        monkeypatch.setattr(wa, "send_text", _send); monkeypatch.setattr(wa, "send_cards", _cards)
+        monkeypatch.setattr(orch, "_handle_payment_action", _pay)
+        from huma.services import cep_service as cep
+        async def _lookup(c): return {"address": "Av. Paulista", "neighborhood": "Bela Vista", "city": "São Paulo", "state": "SP"}
+        monkeypatch.setattr(cep, "lookup", _lookup)
+        return store, sent
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from huma.app import app
+        return TestClient(app)
+
+    def test_pagina_mostra_produto_loja_e_formas(self, monkeypatch):
+        self._wire(monkeypatch)
+        r = self._client().get("/pedido/tok_abcdefghijklmnop")
+        assert r.status_code == 200
+        assert "Camiseta Básica Preta x1" in r.text and "Loja SC" in r.text and 'value="credit_card"' in r.text and "3x de" in r.text
+        assert "name=\"cpf\"" in r.text and "viacep.com.br" in r.text
+
+    def test_token_invalido(self, monkeypatch):
+        self._wire(monkeypatch)
+        assert self._client().get("/pedido/nao_existe_token_xx").status_code == 404
+
+    def test_envio_gera_pix_na_conversa_e_mostra_na_pagina(self, monkeypatch):
+        store, sent = self._wire(monkeypatch)
+        form = {"lead_name": "André Salazar", "lead_email": "a@x.com", "cpf": "", "cep": "01311-000", "number": "10",
+                "payment_method": "pix"}
+        r = self._client().post("/pedido/tok_abcdefghijklmnop", json=form)
+        assert r.status_code == 200, r.text
+        assert "Pix de R$ 94,90 gerado" in r.text and "00020126PIX" in r.text and "Copiar código Pix" in r.text
+        assert ("CARD", "order") in sent  # card do pedido também foi pra conversa
+        assert "checkout_token:tok_abcdefghijklmnop" not in store  # token morre ao cobrar
+
+    def test_envio_cartao_mostra_botao(self, monkeypatch):
+        store, sent = self._wire(monkeypatch)
+        form = {"lead_name": "A B", "lead_email": "a@x.com", "cep": "01311-000", "number": "10", "payment_method": "credit_card", "installments": "3"}
+        r = self._client().post("/pedido/tok_abcdefghijklmnop", json=form)
+        assert r.status_code == 200 and "Pagar com cartão" in r.text and "https://mp/x" in r.text
+
+    def test_envio_faltando_dado(self, monkeypatch):
+        self._wire(monkeypatch)
+        r = self._client().post("/pedido/tok_abcdefghijklmnop", json={"lead_name": "A B", "lead_email": "a@x.com", "cep": "", "number": "10"})
+        assert r.status_code == 400 and "CEP" in r.text

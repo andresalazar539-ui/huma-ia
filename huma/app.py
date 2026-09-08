@@ -129,6 +129,8 @@ def create_app() -> FastAPI:
     app.include_router(oauth_nuvemshop_router)
     from huma.routes.nuvemshop_webhook import router as nuvemshop_webhook_router
     app.include_router(nuvemshop_webhook_router)
+    from huma.routes.store_checkout_page import router as store_checkout_page_router
+    app.include_router(store_checkout_page_router)
     app.include_router(instagram_router)
     app.include_router(integrations_router)
     app.include_router(crm_webhook_router)

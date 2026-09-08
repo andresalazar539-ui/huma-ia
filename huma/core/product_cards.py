@@ -124,7 +124,8 @@ def caption_for_card(card: dict) -> str:
     if card.get("subtitle"):
         parts.append(card["subtitle"])
     if card.get("url"):
-        parts.append(f"Comprar: {card['url']}")
+        label = "Finalizar pedido" if card.get("kind") == "checkout" else "Comprar"
+        parts.append(f"{label}: {card['url']}")
     return "\n".join(p for p in parts if p)
 
 

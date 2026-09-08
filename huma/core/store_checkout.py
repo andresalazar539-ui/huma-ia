@@ -26,6 +26,11 @@ log = get_logger("store_checkout")
 
 _DRAFT_KEY = "store_order_draft:{client_id}:{phone}"
 _DRAFT_TTL = 24 * 3600
+# Caixinha da HUMA (2026-09-08): link seguro pro lead preencher os dados
+# numa página nossa (nome, e-mail, CPF, CEP, forma de pagamento) em vez
+# de digitar CPF no chat. Token aleatório, 24h, um por conversa.
+_TOKEN_KEY = "checkout_token:{token}"
+_TOKEN_TTL = 24 * 3600
 _DRAFT_MARKER = "[PEDIDO EM ABERTO "
 REQUIRED = ("sku", "lead_name", "lead_email", "cep", "number")
 ADDRESS_FIELDS = ("address", "city", "state")  # vêm do CEP (ViaCEP); só pedidos se o CEP não resolver
@@ -186,6 +191,98 @@ def resolve_payment_method(identity: Any, action: dict) -> tuple[str, int]:
     return method, installments
 
 
+def checkout_card(product: dict, qty: int, price_cents: int, ship_cents: int, url: str) -> dict:
+    """Card "Finalizar pedido" com botão pra Caixinha da HUMA (foto, item, total)."""
+    from huma.core.stock_preflight import format_price_brl
+
+    frete = "frete grátis" if ship_cents == 0 else f"+ frete {format_price_brl(ship_cents)}"
+    return {
+        "kind": "checkout",
+        "title": f"{product.get('name', 'Produto')} x{qty}",
+        "subtitle": f"{format_price_brl(price_cents * qty)} {frete} · pagamento seguro"[:80],
+        "image_url": str(product.get("image_url") or "").strip(),
+        "url": url,
+        "sku": str(product.get("sku") or ""),
+        "price": format_price_brl(total_cents(price_cents, qty, ship_cents)),
+        "buttons": [{"type": "web_url", "url": url, "title": "Finalizar pedido"}],
+    }
+
+
+async def issue_checkout_link(identity: Any, phone: str, product: dict, qty: int) -> str:
+    """Cria o token da Caixinha e devolve a URL pública (""; sem PUBLIC_BASE_URL ou sem Redis)."""
+    import secrets
+
+    from huma.config import PUBLIC_BASE_URL
+    from huma.services import redis_service as cache
+
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    if not base:
+        return ""
+    token = secrets.token_urlsafe(24)
+    payload = {
+        "client_id": getattr(identity, "client_id", ""), "phone": phone,
+        "sku": str(product.get("sku") or ""), "qty": int(qty),
+        "name": product.get("name", ""), "image_url": product.get("image_url", ""),
+        "price_cents": int(product.get("price_cents") or 0),
+    }
+    try:
+        await cache.set_with_ttl(_TOKEN_KEY.format(token=token), json.dumps(payload, ensure_ascii=False), ttl=_TOKEN_TTL)
+    except Exception as e:
+        log.warning(f"checkout link | Redis indisponível | {phone} | {type(e).__name__}: {e}")
+        return ""
+    return f"{base}/pedido/{token}"
+
+
+async def load_checkout_token(token: str) -> dict | None:
+    """Dados do token da Caixinha (None se inválido/expirado)."""
+    from huma.services import redis_service as cache
+
+    if not token or not re.match(r"^[A-Za-z0-9_-]{16,64}$", token):
+        return None
+    try:
+        raw = await cache.get_value(_TOKEN_KEY.format(token=token))
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        log.warning(f"checkout token | Redis indisponível | {type(e).__name__}: {e}")
+        return None
+
+
+async def submit_checkout(token: str, form: dict) -> dict:
+    """
+    POST da Caixinha: monta a action com os dados do formulário e roda o
+    mesmo handle_action (card + cobrança na conversa). Devolve o que a
+    página mostra (Pix copia e cola / link do cartão) ou o erro.
+    """
+    from huma.services import db_service as db
+
+    data = await load_checkout_token(token)
+    if not data:
+        return {"status": "invalid_token"}
+    identity = await db.get_client(data["client_id"])
+    if identity is None:
+        return {"status": "invalid_token"}
+    conv = await db.get_conversation(data["client_id"], data["phone"])
+    action = {
+        "type": "create_store_order", "via": "page", "sku": data["sku"], "qty": data.get("qty", 1),
+        "lead_name": str(form.get("lead_name") or "").strip()[:120],
+        "lead_email": str(form.get("lead_email") or "").strip()[:120],
+        "cpf": str(form.get("cpf") or "").strip()[:20],
+        "cep": str(form.get("cep") or "").strip()[:12],
+        "number": str(form.get("number") or "").strip()[:20],
+        "complement": str(form.get("complement") or "").strip()[:80],
+        "payment_method": str(form.get("payment_method") or "pix").strip()[:20],
+        "installments": form.get("installments") or 1,
+    }
+    out = await handle_action(data["phone"], action, identity, conv)
+    if out.get("status") == "pix_sent":
+        try:
+            from huma.services import redis_service as cache
+            await cache.delete_key(_TOKEN_KEY.format(token=token))
+        except Exception:
+            pass
+    return out
+
+
 def total_cents(price_cents: int, qty: int, ship_cents: int) -> int:
     return int(price_cents) * int(qty) + int(ship_cents)
 
@@ -222,22 +319,50 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
             log.info(f"store_checkout | {phone} | desligado (frete='{getattr(client_data, 'store_checkout_shipping', '')}')")
             return {"status": "disabled"}
 
-        missing = missing_fields(action)
-        if not missing:
-            action = await enrich_address(action)  # rua/bairro/cidade/UF pelo CEP
-            missing = missing_address(action)
-        if missing:
-            msg = "Pra fechar o pedido aqui eu preciso de: " + ", ".join(missing) + "."
-            await wa.send_text(phone, msg, client_id=cid)
-            conv.history.append({"role": "assistant", "content": msg})
-            await db.save_conversation(conv)
-            return {"status": "missing", "missing": missing}
-
         from huma.providers.inventory import get_provider_for
 
         adapter = get_provider_for(client_data)
         qty = quantity_of(action)
         stock = await adapter.check_stock(str(action.get("sku") or "").strip())
+
+        missing = missing_fields(action)
+        if not missing:
+            action = await enrich_address(action)  # rua/bairro/cidade/UF pelo CEP
+            missing = missing_address(action)
+        if missing:
+            # Caixinha da HUMA: em vez de pedir CPF/endereço no chat, o lead
+            # preenche numa página nossa (card com botão). Texto só como fallback.
+            if action.get("via") == "page":
+                return {"status": "missing", "missing": missing}
+            if stock.get("status") == "found" and stock.get("available"):
+                url = await issue_checkout_link(client_data, phone, stock, qty)
+                if url:
+                    ship = shipping_cents(client_data)
+                    price = int(stock.get("price_cents") or 0)
+                    card = checkout_card(stock, qty, price, ship, url)
+                    sent = 0
+                    try:
+                        sent = await wa.send_cards(phone, [card], client_id=cid)
+                    except Exception as e:
+                        log.warning(f"store_checkout | card Finalizar pedido falhou | {phone} | {type(e).__name__}: {e}")
+                    if sent <= 0:
+                        await wa.send_text(phone, f"Pra fechar o pedido com segurança, preenche seus dados aqui: {url}", client_id=cid)
+                    conv.history.append({
+                        "role": "assistant",
+                        "content": (
+                            f"[CAIXINHA ENVIADA: link seguro pra o lead preencher nome, e-mail, CPF, endereço e forma de "
+                            f"pagamento ({stock.get('name')} x{qty}). NÃO peça esses dados no chat; se o lead preferir "
+                            f"digitar aqui, aceite. Quando ele preencher, o Pix/link chega nesta conversa.]"
+                        ),
+                    })
+                    await db.save_conversation(conv)
+                    log.info(f"store_checkout | {phone} | caixinha enviada | sku={stock.get('sku')} | qty={qty}")
+                    return {"status": "link_sent", "url": url}
+            msg = "Pra fechar o pedido aqui eu preciso de: " + ", ".join(missing) + "."
+            await wa.send_text(phone, msg, client_id=cid)
+            conv.history.append({"role": "assistant", "content": msg})
+            await db.save_conversation(conv)
+            return {"status": "missing", "missing": missing}
         if stock.get("status") != "found" or not stock.get("available") or not stock.get("variant_id"):
             msg = "Esse produto acabou de ficar indisponível na loja. Quer que eu veja outra opção?"
             await wa.send_text(phone, msg, client_id=cid)
@@ -298,7 +423,13 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
         })
         await db.save_conversation(conv)
         log.info(f"store_checkout | {phone} | cobrança enviada | {method} x{installments} | total={total} | sku={stock.get('sku')} | qty={qty}")
-        return {"status": "pix_sent", "total_cents": total, "method": method, "installments": installments}
+        pr = pay_result.get("payment_result") if isinstance(pay_result.get("payment_result"), dict) else {}
+        return {
+            "status": "pix_sent", "total_cents": total, "method": method, "installments": installments,
+            "summary": summary, "amount_display": pr.get("amount_display", ""),
+            "qr_code_text": pr.get("qr_code_text", ""), "qr_code_base64": pr.get("qr_code_base64", ""),
+            "checkout_url": pr.get("checkout_url", "") or pr.get("boleto_pdf_url", ""),
+        }
     except Exception as e:
         log.error(f"store_checkout erro | {phone} | {type(e).__name__}: {e}")
         return {"status": "error", "detail": type(e).__name__}
