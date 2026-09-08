@@ -159,6 +159,33 @@ def build_draft(phone: str, action: dict, product: dict, qty: int, ship_cents: i
     return draft
 
 
+_METHOD_ALIASES = {
+    "pix": "pix", "boleto": "boleto", "credit_card": "credit_card", "cartao": "credit_card",
+    "cartão": "credit_card", "card": "credit_card", "credito": "credit_card", "crédito": "credit_card",
+}
+
+
+def resolve_payment_method(identity: Any, action: dict) -> tuple[str, int]:
+    """
+    (método, parcelas) pro pedido: o que o lead pediu, dentro do que o dono
+    aceita (accepted_payment_methods) e do teto de parcelas (max_installments).
+    Sem pedido explícito → Pix se aceito, senão o primeiro aceito.
+    """
+    accepted = [m for m in (getattr(identity, "accepted_payment_methods", None) or []) if m in ("pix", "boleto", "credit_card")]
+    if not accepted:
+        accepted = ["pix"]
+    wanted = _METHOD_ALIASES.get(str(action.get("payment_method") or "").strip().lower(), "")
+    method = wanted if wanted in accepted else ("pix" if "pix" in accepted else accepted[0])
+    installments = 1
+    if method == "credit_card":
+        try:
+            cap = max(1, int(getattr(identity, "max_installments", 1) or 1))
+            installments = max(1, min(cap, int(action.get("installments") or 1)))
+        except (TypeError, ValueError):
+            installments = 1
+    return method, installments
+
+
 def total_cents(price_cents: int, qty: int, ship_cents: int) -> int:
     return int(price_cents) * int(qty) + int(ship_cents)
 
@@ -231,12 +258,15 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
         draft = build_draft(phone, action, stock, qty, ship)
         summary = draft_summary(stock, qty, price, ship, action)
 
+        method, installments = resolve_payment_method(client_data, action)
         pay_action = {
             "type": "generate_payment",
             "lead_name": action.get("lead_name", ""),
             "description": f"Pedido HUMA: {stock.get('name', '')} x{qty}",
             "amount_cents": total,
-            "payment_method": "pix",
+            "payment_method": method,
+            "installments": installments,
+            "lead_cpf": str(action.get("cpf") or ""),
         }
         # Resumo como CARD (foto, item, total, entrega); texto só se o canal não desenhar.
         card_sent = 0
@@ -250,7 +280,8 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
         if not pay_result or not (pay_result.get("sent") or pay_result.get("reason") == "dedup"):
             return {"status": "error", "detail": "payment_not_sent"}
 
-        payload = {"draft": draft, "total_cents": total, "summary": summary, "product": stock.get("name", ""), "qty": qty}
+        payload = {"draft": draft, "total_cents": total, "summary": summary, "product": stock.get("name", ""), "qty": qty,
+                   "method": method, "installments": installments}
         try:
             from huma.services import redis_service as cache
             await cache.set_with_ttl(_DRAFT_KEY.format(client_id=cid, phone=phone), json.dumps(payload, ensure_ascii=False), ttl=_DRAFT_TTL)
@@ -260,13 +291,14 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
             "role": "assistant",
             "content": (
                 f"{_DRAFT_MARKER}{json.dumps(payload, ensure_ascii=False)}] "
-                f"Pix de {format_price_brl(total)} enviado. Quando pagar, o pedido é criado na loja automaticamente. "
+                f"Cobrança de {format_price_brl(total)} enviada ({method}{f' em {installments}x' if installments > 1 else ''}). "
+                f"Quando pagar, o pedido é criado na loja automaticamente. "
                 f"NÃO gere outro pagamento nem outro pedido."
             ),
         })
         await db.save_conversation(conv)
-        log.info(f"store_checkout | {phone} | pix enviado | total={total} | sku={stock.get('sku')} | qty={qty}")
-        return {"status": "pix_sent", "total_cents": total}
+        log.info(f"store_checkout | {phone} | cobrança enviada | {method} x{installments} | total={total} | sku={stock.get('sku')} | qty={qty}")
+        return {"status": "pix_sent", "total_cents": total, "method": method, "installments": installments}
     except Exception as e:
         log.error(f"store_checkout erro | {phone} | {type(e).__name__}: {e}")
         return {"status": "error", "detail": type(e).__name__}

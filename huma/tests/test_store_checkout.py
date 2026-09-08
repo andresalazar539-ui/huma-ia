@@ -101,7 +101,7 @@ class TestHandleAction:
         sent, store = self._wire(monkeypatch)
         conv = Conversation(client_id="cli_sc", phone="ig:123", history=[])
         out = asyncio.run(sc.handle_action("ig:123", _ACTION, _identity(), conv))
-        assert out == {"status": "pix_sent", "total_cents": 17480}
+        assert out == {"status": "pix_sent", "total_cents": 17480, "method": "pix", "installments": 1}
         assert sent[0][0] == "CARD" and sent[0][1]["kind"] == "order"
         assert sent[0][1]["title"] == "Pedido: Camiseta Básica Preta x2" and "Total R$ 174,80" in sent[0][1]["subtitle"]
         assert sent[0][1]["buttons"] == [] and sent[1] == "PIX 17480"
@@ -224,3 +224,40 @@ class TestCepEForma:
         from huma.core.product_cards import card_from_product
         el2 = ig.generic_template_payload("9", [card_from_product(_STOCK)])["message"]["attachment"]["payload"]["elements"][0]
         assert [b["title"] for b in el2["buttons"]] == ["Comprar", "Quero esse"]
+
+
+class TestFormaDePagamento:
+    def test_lead_escolhe_dentro_do_que_o_dono_aceita(self):
+        ident = _identity(accepted_payment_methods=["pix", "credit_card"], max_installments=6)
+        assert sc.resolve_payment_method(ident, {}) == ("pix", 1)
+        assert sc.resolve_payment_method(ident, {"payment_method": "cartão", "installments": 3}) == ("credit_card", 3)
+        assert sc.resolve_payment_method(ident, {"payment_method": "credit_card", "installments": 12}) == ("credit_card", 6)
+        assert sc.resolve_payment_method(ident, {"payment_method": "boleto"}) == ("pix", 1)  # boleto não aceito → Pix
+        so_cartao = _identity(accepted_payment_methods=["credit_card"], max_installments=3)
+        assert sc.resolve_payment_method(so_cartao, {}) == ("credit_card", 1)
+        assert sc.resolve_payment_method(_identity(accepted_payment_methods=[]), {"payment_method": "boleto"}) == ("pix", 1)
+
+    def test_cartao_passa_parcelas_pra_cobranca(self, monkeypatch):
+        from huma.core import orchestrator as orch
+        from huma.providers.inventory.nuvemshop import NuvemshopAdapter
+        from huma.services import db_service, redis_service as cache, whatsapp_service as wa
+        pay_actions: list = []
+
+        async def _check(self, q): return _STOCK
+        async def _send(phone, text, client_id="", **kw): return "m"
+        async def _cards(phone, cards, client_id=""): return 1
+        async def _save(c): return None
+        async def _pay(phone, action, client_data, conv=None): pay_actions.append(action); return {"sent": True}
+        async def _set(k, v, ttl=0): return None
+        monkeypatch.setattr(NuvemshopAdapter, "check_stock", _check)
+        monkeypatch.setattr(wa, "send_text", _send)
+        monkeypatch.setattr(wa, "send_cards", _cards)
+        monkeypatch.setattr(db_service, "save_conversation", _save)
+        monkeypatch.setattr(orch, "_handle_payment_action", _pay)
+        monkeypatch.setattr(cache, "set_with_ttl", _set)
+        conv = Conversation(client_id="cli_sc", phone="ig:123", history=[])
+        ident = _identity(accepted_payment_methods=["pix", "credit_card"], max_installments=10)
+        out = asyncio.run(sc.handle_action("ig:123", {**_ACTION, "payment_method": "cartao", "installments": 4}, ident, conv))
+        assert out["method"] == "credit_card" and out["installments"] == 4
+        assert pay_actions[0]["payment_method"] == "credit_card" and pay_actions[0]["installments"] == 4
+        assert "credit_card em 4x" in conv.history[-1]["content"]
