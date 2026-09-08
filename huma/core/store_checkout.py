@@ -859,6 +859,19 @@ async def on_payment_approved(client_id: str, phone: str, payment_id: str) -> di
                     ), client_id=client_id)
             except Exception as e:
                 log.error(f"store_checkout | aviso ao dono falhou | {type(e).__name__}: {e}")
+            # O lead pagou: recebe a confirmação do pagamento (sem número de pedido,
+            # que a loja ainda não gerou) — nunca fica no vácuo.
+            try:
+                msg_lead = (
+                    f"Pagamento confirmado! Estou registrando seu pedido de {payload.get('product', '')} "
+                    f"e já te mando o número."
+                )
+                await wa.send_text(phone, msg_lead, client_id=client_id)
+                conv.history.append({"role": "assistant", "content": msg_lead})
+                conv.history.append({"role": "assistant", "content": "[PAGAMENTO CONFIRMADO, PEDIDO NA LOJA PENDENTE — o dono foi avisado pra registrar. NÃO cobre de novo.]"})
+                await db.save_conversation(conv)
+            except Exception as e:
+                log.error(f"store_checkout | confirmação parcial ao lead falhou | {phone} | {type(e).__name__}: {e}")
             return {"status": "error", "detail": res.get("detail", "")}
 
         try:

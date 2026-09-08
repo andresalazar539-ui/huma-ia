@@ -207,7 +207,7 @@ class TestOnPaymentApproved:
         sent, owner, created, store, _ = self._wire(monkeypatch, conv, create_ok=False)
         out = asyncio.run(sc.on_payment_approved("cli_sc", "ig:123", "mp_80"))
         assert out["status"] == "error" and owner and "não consegui criar o pedido" in owner[0]
-        assert sent == []  # lead não recebe promessa falsa
+        assert sent and sent[0].startswith('Pagamento confirmado!') and 'já te mando o número' in sent[0]  # sem prometer pedido criado
 
 
 class TestCepEForma:
