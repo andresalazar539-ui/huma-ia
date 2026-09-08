@@ -205,3 +205,24 @@ class TestTurn2:
         assert "DADOS JÁ VERIFICADOS" not in sem
         assert "DADOS JÁ VERIFICADOS" in com and "BONE-01" in com and "NÃO emita check_stock" in com
         assert ai.build_followup_hint_prompt("") == ""
+
+
+class TestAntiRepeticao:
+    def test_a_propria_resposta_no_historico_nao_conta_como_repeticao(self):
+        p1 = 'Otimo! Vou te passar o link da Oversized Preta pra voce dar uma olhada.'
+        p2 = 'Pra gente fechar, so preciso do seu nome completo, email e o endereco.'
+        reply = p1 + ' ' + p2 + ' https://loja.x/p'
+        history = [
+            {'role': 'user', 'content': 'Vou levar'},
+            {'role': 'assistant', 'content': reply, 'parts': [p1, p2, 'https://loja.x/p']},
+        ]
+        assert orch._is_redundant_reply(p1, history) is True  # comportamento antigo (bug)
+        assert orch._is_redundant_reply(p1, history, exclude_text=reply) is False  # corrigido
+        history2 = [{'role': 'assistant', 'content': p1}, {'role': 'assistant', 'content': reply}]
+        assert orch._is_redundant_reply(p1, history2, exclude_text=reply) is True
+
+    def test_card_no_historico_nao_conta(self):
+        card_text = '📦 Camiseta Basica Preta - R$ 79,90' + chr(10) + '📦 Tenis Corrida Leve - R$ 249,90'
+        history = [{'role': 'assistant', 'content': card_text, 'cards': []}]
+        cand = 'Camiseta Basica Preta por R$ 79,90 e Tenis Corrida Leve por R$ 249,90, qual prefere?'
+        assert orch._is_redundant_reply(cand, history, exclude_text='x') is False

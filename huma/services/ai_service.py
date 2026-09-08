@@ -680,6 +680,26 @@ def _build_business_knowledge_prompt(identity: ClientIdentity) -> str:
     return ("\n" + "\n\n".join(parts) + "\n") if parts else ""
 
 
+
+_STORE_LINK_RE = re.compile(r"\s*Link:\s*https?://\S+")
+
+
+def _product_desc_for_prompt(identity: ClientIdentity, p: dict) -> str:
+    """
+    Descrição do produto no prompt. Com o Checkout de Conversa ligado
+    (2026-09-08), o link da loja sai da descrição: a compra fecha aqui e a
+    IA não deve colar link nenhum (o card 'Finalizar pedido' tem o botão).
+    """
+    desc = str(p.get("description", "") or "")
+    if p.get("source"):
+        try:
+            from huma.core.store_checkout import checkout_enabled
+            if checkout_enabled(identity):
+                desc = _STORE_LINK_RE.sub("", desc).strip(" .")
+        except Exception:
+            pass
+    return desc
+
 def build_static_prompt(identity: ClientIdentity) -> str:
     """
     Bloco estático do system prompt — cacheado entre mensagens.
@@ -695,7 +715,7 @@ def build_static_prompt(identity: ClientIdentity) -> str:
     products_text = ""
     if identity.products_or_services:
         for p in identity.products_or_services:
-            products_text += f"  - {p.get('name', '')}: {p.get('description', '')} (R${p.get('price', '')})\n"
+            products_text += f"  - {p.get('name', '')}: {_product_desc_for_prompt(identity, p)} (R${p.get('price', '')})\n"
     else:
         products_text = "  Não cadastrados.\n"
 
@@ -1355,7 +1375,7 @@ def build_tier2_prompt(identity: ClientIdentity, conv: Conversation) -> str:
     products_text = ""
     if identity.products_or_services:
         for p in identity.products_or_services:
-            products_text += f"  - {p.get('name', '')}: {p.get('description', '')} (R${p.get('price', '')})\n"
+            products_text += f"  - {p.get('name', '')}: {_product_desc_for_prompt(identity, p)} (R${p.get('price', '')})\n"
     else:
         products_text = "  Não cadastrados.\n"
 
@@ -1490,7 +1510,7 @@ def build_tier3_prompt(
     products_text = ""
     if identity.products_or_services:
         for p in identity.products_or_services:
-            products_text += f"  - {p.get('name', '')}: {p.get('description', '')} (R${p.get('price', '')})\n"
+            products_text += f"  - {p.get('name', '')}: {_product_desc_for_prompt(identity, p)} (R${p.get('price', '')})\n"
     else:
         products_text = "  Não cadastrados.\n"
 
@@ -1798,7 +1818,7 @@ def _build_reply_tool_compact(
         "- type='show_products': query (texto do que mostrar: categoria, modelo ou nome). Emita QUANDO o lead está em dúvida ou comparando ('me mostra as opções de tênis', 'tô entre a camiseta e o boné', 'quais modelos tem?'). Sistema monta os cards com foto, preço e estoque REAIS só dos produtos que existem e manda na conversa. Se o lead falou de UM produto específico, NÃO emita: o card daquele produto vai sozinho.",
     ]
     STORE_CHECKOUT_LINES = [
-        "- type='create_store_order': sku, qty, lead_name (nome completo), lead_email, cep, number (número da casa), payment_method ('pix' | 'credit_card' | 'boleto', o que o lead escolheu entre as formas aceitas), installments (parcelas no cartão, se o lead pediu), complement (opcional), cpf (obrigatório só pra boleto). Emita QUANDO o lead disse que quer comprar um produto da loja E você já tem nome completo, e-mail, CEP, número e a forma de pagamento. Rua, bairro, cidade e UF o sistema preenche pelo CEP — NÃO peça. Sistema confere estoque e preço REAIS, soma o frete, manda o card do pedido e a cobrança aqui na conversa (Pix copia e cola; cartão e boleto por link seguro) e cria o pedido pago na loja quando o pagamento cair. Se falta nome, e-mail, CEP, número ou forma de pagamento, peça ANTES (um de cada vez, ou CEP e número juntos) e NÃO emita. NUNCA use generate_payment pra produto da loja e NUNCA mande o lead comprar no site quando puder fechar aqui.",
+        "- type='create_store_order': sku (obrigatório), qty (default 1) e, SÓ se o lead já disse espontaneamente: lead_name, lead_email, cep, number, complement, cpf, payment_method ('pix' | 'credit_card' | 'boleto'), installments. Emita ASSIM QUE o lead disser que vai levar um produto da loja ('vou levar', 'quero esse', 'fecha'), mesmo sem nenhum dado dele: o sistema manda um card 'Finalizar pedido' com botão pra ele preencher nome, e-mail, CPF, endereço e forma de pagamento numa página segura da HUMA, e a cobrança (Pix ou cartão) volta pra esta conversa; quando cair, o pedido nasce pago na loja. Sua mensagem junto: curta, confirmando o item e dizendo que é só tocar em Finalizar pedido. NÃO peça nome, e-mail, CPF ou endereço no chat. NUNCA cole link da loja na mensagem, NUNCA use generate_payment pra produto da loja e NUNCA mande o lead comprar no site.",
     ]
     QUALIFY_LINES = [
         "- type='handoff_to_human': lead_name (primeiro nome do lead, como ele se apresentou), summary (resumo do lead em 1-2 frases, ex: 'João, quer apartamento 2 quartos em Pinheiros até R$700k, urgente'), urgency='normal'|'urgent'. Emita SOMENTE quando TODOS os campos obrigatórios de coleta foram preenchidos E o lead demonstrou interesse claro. Sistema notifica humano via WhatsApp + PARA de responder. NUNCA emita sem ter coletado os campos obrigatórios — peça os dados que faltam antes.",

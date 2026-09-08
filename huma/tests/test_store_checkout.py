@@ -349,3 +349,14 @@ class TestCaixinha:
         self._wire(monkeypatch)
         r = self._client().post("/pedido/tok_abcdefghijklmnop", json={"lead_name": "A B", "lead_email": "a@x.com", "cep": "", "number": "10"})
         assert r.status_code == 400 and "CEP" in r.text
+
+
+class TestPromptSemLink:
+    def test_link_da_loja_sai_do_prompt_com_checkout_ligado(self):
+        from huma.services.ai_service import build_static_prompt
+        item = {"name": "Camiseta Básica Preta", "price": "79,90", "sku": "CAM-PRETA-M",
+                "description": "100% algodão. SKU CAM-PRETA-M. Link: https://loja.x/produtos/cam/", "url": "https://loja.x/produtos/cam/", "source": "nuvemshop"}
+        on = build_static_prompt(_identity(products_or_services=[item]))
+        off = build_static_prompt(_identity(products_or_services=[item], store_checkout_shipping="site"))
+        assert "https://loja.x/produtos/cam/" not in on and "100% algodão. SKU CAM-PRETA-M" in on
+        assert "https://loja.x/produtos/cam/" in off

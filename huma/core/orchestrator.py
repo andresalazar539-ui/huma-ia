@@ -1620,7 +1620,7 @@ async def _send_with_human_delay(
         if not suppress_claude_reply and parts and len(conv.history) > 2:
             filtered = []
             for p in parts:
-                if isinstance(p, str) and _is_redundant_reply(p, conv.history):
+                if isinstance(p, str) and _is_redundant_reply(p, conv.history, exclude_text=reply):
                     log.info(f"Parte redundante omitida | {phone} | preview='{p[:60]}'")
                     continue
                 filtered.append(p)
@@ -2198,7 +2198,9 @@ def _bigram_set(text: str) -> set:
     return {(words[i], words[i + 1]) for i in range(len(words) - 1)}
 
 
-def _is_redundant_reply(candidate: str, history: list[dict], threshold: float = 0.7) -> bool:
+def _is_redundant_reply(
+    candidate: str, history: list[dict], threshold: float = 0.7, exclude_text: str = "",
+) -> bool:
     """
     True se candidate tem overlap de bigrams > threshold com alguma das
     últimas 3 mensagens reais do assistant no history.
@@ -2206,6 +2208,10 @@ def _is_redundant_reply(candidate: str, history: list[dict], threshold: float = 
     Zero custo LLM. Só string match.
     Ignora markers estruturais (texto entre [] no histórico).
     Ignora mensagens curtas (<20 chars) — não faz sentido filtrar "ok", "tá".
+
+    exclude_text (2026-09-08): a resposta ATUAL já está no histórico quando
+    o filtro roda (é gravada antes do envio). Sem excluí-la, cada parte
+    "repetia" a si mesma e só sobrava o que não tem bigrama (ex.: um link).
     """
     candidate = (candidate or "").strip()
     if len(candidate) < 20:
@@ -2215,6 +2221,7 @@ def _is_redundant_reply(candidate: str, history: list[dict], threshold: float = 
     if len(cand_bigrams) < 3:
         return False
 
+    current = (exclude_text or "").strip()
     recent_assistant = []
     for m in history[-10:]:
         if m.get("role") != "assistant":
@@ -2227,6 +2234,11 @@ def _is_redundant_reply(candidate: str, history: list[dict], threshold: float = 
         if stripped.startswith("[") and stripped.endswith("]"):
             continue
         if len(stripped) < 20:
+            continue
+        # ignora a própria resposta deste turno (e cards "📦", que não são fala)
+        if current and (stripped == current or stripped.startswith(current)):
+            continue
+        if stripped.startswith("📦"):
             continue
         recent_assistant.append(stripped)
 
