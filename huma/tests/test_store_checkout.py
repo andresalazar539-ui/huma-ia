@@ -88,7 +88,9 @@ class TestHandleAction:
             sent.append(f"PIX {action['amount_cents']}")
             return {"sent": pay_ok, "method": "pix"}
         async def _set(k, v, ttl=0): store[k] = v
+        async def _cards(phone, cards, client_id=""): sent.append(("CARD", cards[0])); return 1
         monkeypatch.setattr(NuvemshopAdapter, "check_stock", _check)
+        monkeypatch.setattr(wa, "send_cards", _cards)
         monkeypatch.setattr(wa, "send_text", _send)
         monkeypatch.setattr(db_service, "save_conversation", _save)
         monkeypatch.setattr(orch, "_handle_payment_action", _pay)
@@ -100,8 +102,9 @@ class TestHandleAction:
         conv = Conversation(client_id="cli_sc", phone="ig:123", history=[])
         out = asyncio.run(sc.handle_action("ig:123", _ACTION, _identity(), conv))
         assert out == {"status": "pix_sent", "total_cents": 17480}
-        assert sent[0].startswith("Fechei seu pedido assim:") and "Total: R$ 174,80" in sent[0]
-        assert sent[1] == "PIX 17480"
+        assert sent[0][0] == "CARD" and sent[0][1]["kind"] == "order"
+        assert sent[0][1]["title"] == "Pedido: Camiseta Básica Preta x2" and "Total R$ 174,80" in sent[0][1]["subtitle"]
+        assert sent[0][1]["buttons"] == [] and sent[1] == "PIX 17480"
         draft = json.loads(store["store_order_draft:cli_sc:ig:123"])["draft"]
         assert draft["note"] == "HUMA · instagram · ig:123"
         assert conv.history[-1]["content"].startswith("[PEDIDO EM ABERTO ") and "NÃO gere outro pagamento" in conv.history[-1]["content"]
@@ -191,3 +194,33 @@ class TestOnPaymentApproved:
         out = asyncio.run(sc.on_payment_approved("cli_sc", "ig:123", "mp_80"))
         assert out["status"] == "error" and owner and "não consegui criar o pedido" in owner[0]
         assert sent == []  # lead não recebe promessa falsa
+
+
+class TestCepEForma:
+    def test_viacep_parse_e_normalize(self):
+        from huma.services import cep_service as cep
+        assert cep.normalize("01311-000") == "01311000" and cep.normalize("123") == ""
+        out = cep.parse_viacep({"logradouro": "Avenida Paulista", "bairro": "Bela Vista", "localidade": "São Paulo", "uf": "sp"})
+        assert out == {"address": "Avenida Paulista", "neighborhood": "Bela Vista", "city": "São Paulo", "state": "SP"}
+        assert cep.parse_viacep({"erro": True}) == {} and cep.parse_viacep({}) == {}
+
+    def test_endereco_vem_do_cep_e_o_que_o_lead_disse_vence(self, monkeypatch):
+        from huma.services import cep_service as cep
+
+        async def _lookup(c): return {"address": "Avenida Paulista", "neighborhood": "Bela Vista", "city": "São Paulo", "state": "SP"}
+        monkeypatch.setattr(cep, "lookup", _lookup)
+        action = {"sku": "X", "lead_name": "A B", "lead_email": "a@b.com", "cep": "01311-000", "number": "10", "city": "Sampa"}
+        out = asyncio.run(sc.enrich_address(action))
+        assert out["address"] == "Avenida Paulista" and out["state"] == "SP" and out["city"] == "Sampa"
+        assert sc.missing_address(out) == []
+        assert sc.missing_address({"cep": "1"}) == ["rua", "cidade", "estado (UF)"]
+
+    def test_card_do_pedido_sem_botoes_no_instagram(self):
+        from huma.services import instagram_service as ig
+        card = sc.order_card(_STOCK, 2, 7990, 1500, _ACTION)
+        el = ig.generic_template_payload("9", [card])["message"]["attachment"]["payload"]["elements"][0]
+        assert el["title"] == "Pedido: Camiseta Básica Preta x2" and "buttons" not in el and "default_action" not in el
+        # Card de produto continua com Comprar + Quero esse
+        from huma.core.product_cards import card_from_product
+        el2 = ig.generic_template_payload("9", [card_from_product(_STOCK)])["message"]["attachment"]["payload"]["elements"][0]
+        assert [b["title"] for b in el2["buttons"]] == ["Comprar", "Quero esse"]

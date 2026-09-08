@@ -313,6 +313,15 @@ def generic_template_payload(igsid: str, cards: list[dict]) -> dict:
         if image_url:
             el["image_url"] = image_url
         url = str(c.get("url") or "").strip()
+        if isinstance(c.get("buttons"), list):
+            # Card com botões definidos pelo chamador (ex.: card de pedido, sem botões).
+            custom = [b for b in c["buttons"] if isinstance(b, dict) and b.get("title")][:3]
+            if url:
+                el["default_action"] = {"type": "web_url", "url": url}
+            if custom:
+                el["buttons"] = custom
+            elements.append(el)
+            continue
         buttons: list[dict] = []
         if url:
             el["default_action"] = {"type": "web_url", "url": url}

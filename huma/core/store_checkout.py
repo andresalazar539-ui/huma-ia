@@ -27,11 +27,56 @@ log = get_logger("store_checkout")
 _DRAFT_KEY = "store_order_draft:{client_id}:{phone}"
 _DRAFT_TTL = 24 * 3600
 _DRAFT_MARKER = "[PEDIDO EM ABERTO "
-REQUIRED = ("sku", "lead_name", "lead_email", "cep", "address", "number", "city", "state")
+REQUIRED = ("sku", "lead_name", "lead_email", "cep", "number")
+ADDRESS_FIELDS = ("address", "city", "state")  # vêm do CEP (ViaCEP); só pedidos se o CEP não resolver
 _LABELS = {
     "sku": "produto", "lead_name": "nome completo", "lead_email": "e-mail", "cep": "CEP",
     "address": "rua", "number": "número", "city": "cidade", "state": "estado (UF)",
 }
+
+
+async def enrich_address(action: dict) -> dict:
+    """
+    Preenche rua, bairro, cidade e UF pelo CEP quando o lead não passou.
+    Devolve uma cópia da action; o que o lead disse tem prioridade.
+    """
+    out = dict(action)
+    if all(str(out.get(k) or "").strip() for k in ADDRESS_FIELDS):
+        return out
+    from huma.services.cep_service import lookup
+
+    found = await lookup(str(out.get("cep") or ""))
+    for key in ("address", "neighborhood", "city", "state"):
+        if not str(out.get(key) or "").strip() and found.get(key):
+            out[key] = found[key]
+    return out
+
+
+def missing_address(action: dict) -> list[str]:
+    """Rótulos do endereço que nem o lead nem o CEP resolveram."""
+    return [_LABELS[k] for k in ADDRESS_FIELDS if not str(action.get(k) or "").strip()]
+
+
+def order_card(product: dict, qty: int, price_cents: int, ship_cents: int, action: dict) -> dict:
+    """
+    Card do pedido (foto, item, total, frete, entrega) — mesma linguagem
+    visual dos cards de produto, sem botões de compra.
+    """
+    from huma.core.stock_preflight import format_price_brl
+
+    frete = "frete grátis" if ship_cents == 0 else f"frete {format_price_brl(ship_cents)}"
+    total = format_price_brl(total_cents(price_cents, qty, ship_cents))
+    entrega = f"{action.get('address', '')}, {action.get('number', '')} · {action.get('city', '')}/{str(action.get('state', '')).upper()}"
+    return {
+        "kind": "order",
+        "title": f"Pedido: {product.get('name', 'Produto')} x{qty}",
+        "subtitle": f"Total {total} · {frete} · {entrega}"[:80],
+        "image_url": str(product.get("image_url") or "").strip(),
+        "url": "",
+        "sku": str(product.get("sku") or ""),
+        "price": total,
+        "buttons": [],
+    }
 
 
 # ── puro ─────────────────────────────────────────────────────────
@@ -151,6 +196,9 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
             return {"status": "disabled"}
 
         missing = missing_fields(action)
+        if not missing:
+            action = await enrich_address(action)  # rua/bairro/cidade/UF pelo CEP
+            missing = missing_address(action)
         if missing:
             msg = "Pra fechar o pedido aqui eu preciso de: " + ", ".join(missing) + "."
             await wa.send_text(phone, msg, client_id=cid)
@@ -190,7 +238,14 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
             "amount_cents": total,
             "payment_method": "pix",
         }
-        await wa.send_text(phone, "Fechei seu pedido assim:\n" + summary, client_id=cid)
+        # Resumo como CARD (foto, item, total, entrega); texto só se o canal não desenhar.
+        card_sent = 0
+        try:
+            card_sent = await wa.send_cards(phone, [order_card(stock, qty, price, ship, action)], client_id=cid)
+        except Exception as e:
+            log.warning(f"store_checkout | card do pedido falhou | {phone} | {type(e).__name__}: {e}")
+        if card_sent <= 0:
+            await wa.send_text(phone, "Fechei seu pedido assim:\n" + summary, client_id=cid)
         pay_result = await orch._handle_payment_action(phone, pay_action, client_data, conv=conv)
         if not pay_result or not (pay_result.get("sent") or pay_result.get("reason") == "dedup"):
             return {"status": "error", "detail": "payment_not_sent"}
