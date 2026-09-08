@@ -104,6 +104,7 @@ class TestPagina:
         assert 'id="btn-pix"' in r.text and 'id="btn-card"' in r.text and 'id="cnum"' in r.text
         assert "sdk.mercadopago.com" in r.text and "pk_test" in r.text and "3x de" in r.text
         assert "mercadopago.com.br/checkout" not in r.text  # nada de redirect
+        assert 'var PK="pk_test"' in r.text and "&#x27;" not in r.text  # JS válido (aspas HTML quebravam o script)
 
     def test_token_invalido(self, monkeypatch):
         _wire(monkeypatch)

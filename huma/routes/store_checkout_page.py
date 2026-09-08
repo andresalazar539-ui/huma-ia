@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import html
+import json as _json
 import time
 
 from fastapi import APIRouter, Request
@@ -146,7 +147,7 @@ def render_form(token: str, data: dict, identity) -> str:
 <script>
 (function(){{
   var T=location.pathname, f=document.getElementById('f'), err=document.getElementById('err'), addr=document.getElementById('addr'), cep=document.getElementById('cep'), res=document.getElementById('result');
-  var PK={html.escape(repr(MERCADOPAGO_PUBLIC_KEY or ""))}, mp=null;
+  var PK={_json.dumps(MERCADOPAGO_PUBLIC_KEY or "")}, mp=null;
   try{{ if(PK && window.MercadoPago) mp=new window.MercadoPago(PK); }}catch(e){{}}
   document.querySelectorAll('.tab').forEach(function(t){{t.addEventListener('click',function(){{
     document.querySelectorAll('.tab').forEach(function(x){{x.classList.remove('on')}}); t.classList.add('on');
