@@ -1041,7 +1041,10 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
                     except Exception as e:
                         log.warning(f"store_checkout | card Finalizar pedido falhou | {phone} | {type(e).__name__}: {e}")
                     if sent <= 0:
-                        await wa.send_text(phone, f"Pra fechar o pedido com segurança, preenche seus dados aqui: {url}", client_id=cid)
+                        _fallback = f"Pra fechar o pedido com segurança, preenche seus dados aqui: {url}"
+                        await wa.send_text(phone, _fallback, client_id=cid)
+                        conv.history.append({"role": "assistant", "content": _fallback, "by": "ai"})
+                    # O marcador guia a IA; `cards` é o que o lead viu (Cockpit desenha o card).
                     conv.history.append({
                         "role": "assistant",
                         "content": (
@@ -1049,6 +1052,7 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
                             f"pagamento ({stock.get('name')} x{qty}). NÃO peça esses dados no chat; se o lead preferir "
                             f"digitar aqui, aceite. Quando ele preencher, o Pix/link chega nesta conversa.]"
                         ),
+                        **({"cards": [dict(card)]} if sent > 0 else {}),
                     })
                     await db.save_conversation(conv)
                     log.info(f"store_checkout | {phone} | caixinha enviada | sku={stock.get('sku')} | qty={qty}")
@@ -1093,12 +1097,17 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
         }
         # Resumo como CARD (foto, item, total, entrega); texto só se o canal não desenhar.
         card_sent = 0
+        _ocard = order_card(stock, qty, price, ship, action)
         try:
-            card_sent = await wa.send_cards(phone, [order_card(stock, qty, price, ship, action)], client_id=cid)
+            card_sent = await wa.send_cards(phone, [_ocard], client_id=cid)
         except Exception as e:
             log.warning(f"store_checkout | card do pedido falhou | {phone} | {type(e).__name__}: {e}")
-        if card_sent <= 0:
-            await wa.send_text(phone, "Fechei seu pedido assim:\n" + summary, client_id=cid)
+        if card_sent > 0:
+            conv.history.append({"role": "assistant", "content": f"🧾 {_ocard.get('title', 'Pedido')} · {_ocard.get('price', '')}".strip(" ·"), "cards": [_ocard], "by": "ai"})
+        else:
+            _fallback = "Fechei seu pedido assim:\n" + summary
+            await wa.send_text(phone, _fallback, client_id=cid)
+            conv.history.append({"role": "assistant", "content": _fallback, "by": "ai"})
         pay_result = await orch._handle_payment_action(phone, pay_action, client_data, conv=conv)
         if not pay_result or not (pay_result.get("sent") or pay_result.get("reason") == "dedup"):
             return {"status": "error", "detail": "payment_not_sent"}

@@ -1697,7 +1697,7 @@ async def _send_with_human_delay(
             action_type = action.get("type", "")
 
             if action_type == "send_media":
-                await _handle_media_action(phone, action, client_data)
+                await _handle_media_action(phone, action, client_data, conv=conv)
             elif action_type == "create_store_order":
                 # Checkout de Conversa (2026-09-08): Pix aqui, pedido pago na loja quando cair.
                 from huma.core import store_checkout
@@ -2020,18 +2020,44 @@ def _should_send_audio(
 # HANDLERS DE ACTIONS
 # ================================================================
 
-async def _handle_media_action(phone, action, client_data):
-    """Busca e envia criativos por tag."""
+def _record_sent(conv, content: str, **extra) -> None:
+    """
+    Registra no histórico algo que a HUMA de fato mandou pro lead (conversa
+    idêntica no Cockpit, 2026-09-10). Chaves extras (cards, image_url,
+    video_url, file_url) são só pro Cockpit — o prompt lê role+content.
+    Nunca levanta; conv=None é ignorado.
+    """
+    if conv is None:
+        return
+    text = (content or "").strip()
+    if not text and not extra:
+        return
+    entry: dict = {"role": "assistant", "content": text or "📎", "by": "ai"}
+    entry.update({k: v for k, v in extra.items() if v})
+    conv.history.append(entry)
+
+
+async def _handle_media_action(phone, action, client_data, conv=None):
+    """Busca e envia criativos por tag. conv opcional: grava no histórico o que saiu."""
     tags = action.get("tags", [])
     assets = await media.search_media(client_data.client_id, tags, limit=3)
 
     for asset in assets:
         await asyncio.sleep(2.0)
         if asset.media_type == "video":
-            await wa.send_video(phone, asset.url, caption=asset.description, client_id=client_data.client_id)
+            mid = await wa.send_video(phone, asset.url, caption=asset.description, client_id=client_data.client_id)
+            if mid:
+                _record_sent(conv, asset.description or "🎬 vídeo", video_url=asset.url)
         else:
-            await wa.send_image(phone, asset.url, caption=asset.description, client_id=client_data.client_id)
+            mid = await wa.send_image(phone, asset.url, caption=asset.description, client_id=client_data.client_id)
+            if mid:
+                _record_sent(conv, asset.description or "📷 foto", image_url=asset.url)
 
+    if assets and conv is not None:
+        try:
+            await db.save_conversation(conv)
+        except Exception as e:
+            log.warning(f"Mídia: não gravou no histórico do Cockpit | {phone} | {type(e).__name__}: {e}")
     log.info(f"Mídia enviada | {len(assets)} assets | tags={tags}")
 
 
@@ -2103,6 +2129,7 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
                 client_id=cid,
                 reply_to=original_msg_id,
             )
+            _record_sent(conv, result["whatsapp_message"])
         log.info(f"Pagamento dedup | {phone} | {result.get('amount_display', '')}")
         return {"sent": False, "reason": "dedup", "amount_display": result.get("amount_display", "")}
 
@@ -2113,6 +2140,7 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
     payment_msg_id = None
     if result.get("whatsapp_message"):
         payment_msg_id = await wa.send_text(phone, result["whatsapp_message"], client_id=cid)
+        _record_sent(conv, result["whatsapp_message"])
 
     if method == "pix":
         # qr_code_base64 do MP é base64 PURA (sem prefixo data:). Twilio media_url
@@ -2125,6 +2153,7 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
         if result.get("qr_code_text"):
             await asyncio.sleep(1.5)
             qr_text_msg_id = await wa.send_text(phone, result["qr_code_text"], client_id=cid)
+            _record_sent(conv, result["qr_code_text"])
             # QR text é a mensagem mais relevante pra citar no dedup
             if qr_text_msg_id:
                 payment_msg_id = qr_text_msg_id
@@ -2133,9 +2162,11 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
         if result.get("barcode"):
             await asyncio.sleep(1.5)
             await wa.send_text(phone, result["barcode"], client_id=cid)
+            _record_sent(conv, result["barcode"])
         if result.get("boleto_pdf_url"):
             await asyncio.sleep(1.0)
             await wa.send_image(phone, result["boleto_pdf_url"], caption="Boleto", client_id=cid)
+            _record_sent(conv, "Boleto", file_url=result["boleto_pdf_url"])
 
     # Armazena message_id da mensagem de pagamento no Redis
     # Usado pra quoted reply quando o lead pedir o link de novo
@@ -2195,8 +2226,11 @@ async def _send_caixinha_payment(phone: str, request, client_data, conv) -> dict
     except Exception as e:
         log.warning(f"Caixinha | card Pagar falhou | {phone} | {type(e).__name__}: {e}")
     if sent <= 0:
-        await wa.send_text(phone, f"Pra pagar {amount_display} com cartão em segurança, é aqui: {url}", client_id=cid)
+        _fallback = f"Pra pagar {amount_display} com cartão em segurança, é aqui: {url}"
+        await wa.send_text(phone, _fallback, client_id=cid)
+        _record_sent(conv, _fallback)
     if conv is not None:
+        # O marcador guia a IA; `cards` é o que o lead viu (Cockpit desenha o card).
         conv.history.append({
             "role": "assistant",
             "content": (
@@ -2204,6 +2238,7 @@ async def _send_caixinha_payment(phone: str, request, client_data, conv) -> dict
                 f"segura da HUMA. NÃO peça CPF nem dados de cartão no chat, NÃO gere outro pagamento; quando "
                 f"pagar, a confirmação chega nesta conversa.]"
             ),
+            **({"cards": [dict(card)]} if sent > 0 else {}),
         })
     await billing.log_usage(cid, billing.UsageType.PAYMENT)
     log.info(f"Caixinha | card Pagar enviado | {phone} | {amount_display} | via={'card' if sent > 0 else 'texto'}")
