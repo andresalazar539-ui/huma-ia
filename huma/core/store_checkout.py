@@ -1021,7 +1021,10 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
         if not missing:
             action = await enrich_address(action)  # rua/bairro/cidade/UF pelo CEP
             missing = missing_address(action)
-        if missing:
+        # Trilho Asaas (2026-09-10): mesmo com todos os dados no chat, a cobrança
+        # vai pela Caixinha (Pix com QR e cartão na página) — nunca link do Asaas.
+        force_page = action.get("via") != "page" and payment_rail(client_data) == RAIL_ASAAS
+        if missing or force_page:
             # Caixinha da HUMA: em vez de pedir CPF/endereço no chat, o lead
             # preenche numa página nossa (card com botão). Texto só como fallback.
             if action.get("via") == "page":
@@ -1050,11 +1053,13 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
                     await db.save_conversation(conv)
                     log.info(f"store_checkout | {phone} | caixinha enviada | sku={stock.get('sku')} | qty={qty}")
                     return {"status": "link_sent", "url": url}
-            msg = "Pra fechar o pedido aqui eu preciso de: " + ", ".join(missing) + "."
-            await wa.send_text(phone, msg, client_id=cid)
-            conv.history.append({"role": "assistant", "content": msg})
-            await db.save_conversation(conv)
-            return {"status": "missing", "missing": missing}
+            if missing:
+                msg = "Pra fechar o pedido aqui eu preciso de: " + ", ".join(missing) + "."
+                await wa.send_text(phone, msg, client_id=cid)
+                conv.history.append({"role": "assistant", "content": msg})
+                await db.save_conversation(conv)
+                return {"status": "missing", "missing": missing}
+            # force_page sem URL pública: segue no fluxo antigo (cobrança pelo link)
         if stock.get("status") != "found" or not stock.get("available") or not stock.get("variant_id"):
             msg = "Esse produto acabou de ficar indisponível na loja. Quer que eu veja outra opção?"
             await wa.send_text(phone, msg, client_id=cid)

@@ -16,6 +16,7 @@
 # ================================================================
 
 import asyncio
+import json
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -2165,9 +2166,26 @@ async def _send_caixinha_payment(phone: str, request, client_data, conv) -> dict
         return None
     cid = client_data.client_id
     item = _sc.custom_item(request.description or "Pagamento", int(request.amount_cents), description=request.description or "")
-    url = await _sc.issue_checkout_link(client_data, phone, item, 1, origin=_sc.ORIGIN_CUSTOM, needs_shipping=False, description=request.description or "")
+    # Mesmo valor pedido de novo em até 30 min (IA repetiu ou lead pediu "manda de
+    # novo") reaproveita a MESMA página — um só token, um só rascunho.
+    _last_key = f"caixinha_last:{cid}:{phone}"
+    url = ""
+    try:
+        _raw = await cache.get_value(_last_key)
+        if _raw:
+            _last = json.loads(_raw)
+            if int(_last.get("amount_cents") or 0) == int(request.amount_cents) and _last.get("url"):
+                url = str(_last["url"])
+    except Exception as e:
+        log.warning(f"Caixinha | dedup indisponível | {phone} | {type(e).__name__}: {e}")
     if not url:
-        return None
+        url = await _sc.issue_checkout_link(client_data, phone, item, 1, origin=_sc.ORIGIN_CUSTOM, needs_shipping=False, description=request.description or "")
+        if not url:
+            return None
+        try:
+            await cache.set_with_ttl(_last_key, json.dumps({"url": url, "amount_cents": int(request.amount_cents)}), ttl=1800)
+        except Exception:
+            pass
     card = _sc.payment_card(item, 1, int(request.amount_cents), url)
     amount_display = card.get("price", "")
     await asyncio.sleep(1.0)

@@ -300,3 +300,76 @@ class TestPaginaEChat:
         monkeypatch.setattr(db, "get_supabase", lambda: None)
         r = asyncio.run(ps.process_asaas_notification({"payment": {"id": "pay_9", "externalReference": "huma_cli_as_x"}}, "tok-wh"))
         assert r["processed"] is True and r["phone"] == "ig:9" and r["status"] == "approved"
+
+
+# ================================================================
+# REVISÃO (2026-09-10): caminhos que ainda podiam vazar link ou repetir card
+# ================================================================
+
+
+class TestRevisao:
+    def test_pedido_da_loja_digitado_no_chat_com_asaas_vai_pra_caixinha(self, monkeypatch):
+        """Lead deu todos os dados no chat + trilho Asaas → card Finalizar pedido, nunca link do Asaas."""
+        from huma.core import store_checkout as sc
+        from huma.core import orchestrator as orch
+        from huma.services import db_service as db, whatsapp_service as wa
+        from huma.providers.inventory import nuvemshop as ns
+        _redis(monkeypatch)
+        import huma.config as cfg
+        monkeypatch.setattr(cfg, "PUBLIC_BASE_URL", "https://app.humaia.com.br")
+        ident = _identity(capabilities=["sell_physical"], nuvemshop_access_token="t", nuvemshop_store_id="1", store_checkout_shipping="gratis")
+        seen = {"cards": [], "pay": 0}
+
+        async def _check(self, q): return {"status": "found", "available": True, "sku": "CAM", "name": "Camiseta", "price_cents": 7990, "variant_id": 9, "stock_unlimited": True}
+        async def _cards(phone, cards, client_id=""): seen["cards"].extend(cards); return 1
+        async def _send(phone, text, client_id="", **kw): return "m"
+        async def _save(c): pass
+        async def _pay(*a, **kw): seen["pay"] += 1; return {"sent": True}
+        async def _lookup(c): return {"address": "Av. Paulista", "neighborhood": "Bela Vista", "city": "São Paulo", "state": "SP"}
+        monkeypatch.setattr(ns.NuvemshopAdapter, "check_stock", _check)
+        monkeypatch.setattr(wa, "send_cards", _cards)
+        monkeypatch.setattr(wa, "send_text", _send)
+        monkeypatch.setattr(db, "save_conversation", _save)
+        monkeypatch.setattr(orch, "_handle_payment_action", _pay)
+        from huma.services import cep_service as cep
+        monkeypatch.setattr(cep, "lookup", _lookup)
+        conv = Conversation(client_id="cli_as", phone="5511999990000", history=[])
+        action = {"type": "create_store_order", "sku": "CAM", "qty": 1, "lead_name": "Ana Lima", "lead_email": "ana@x.com",
+                  "cep": "01310-100", "number": "10"}
+        out = asyncio.run(sc.handle_action("5511999990000", action, ident, conv))
+        assert out["status"] == "link_sent" and seen["pay"] == 0
+        assert seen["cards"][0]["kind"] == "checkout" and seen["cards"][0]["buttons"][0]["title"] == "Finalizar pedido"
+
+    def test_mesmo_valor_reaproveita_a_mesma_pagina(self, monkeypatch):
+        from huma.core import orchestrator as orch
+        from huma.services import billing_service as billing, whatsapp_service as wa
+        store = _redis(monkeypatch)
+        import huma.config as cfg
+        monkeypatch.setattr(cfg, "PUBLIC_BASE_URL", "https://app.humaia.com.br")
+        urls = []
+
+        async def _cards(phone, cards, client_id=""): urls.append(cards[0]["url"]); return 1
+        async def _noop(*a, **kw): pass
+        monkeypatch.setattr(wa, "send_cards", _cards)
+        monkeypatch.setattr(billing, "log_usage", _noop)
+        monkeypatch.setattr(orch.asyncio, "sleep", _noop)
+
+        class Req:
+            description = "Consulta"; amount_cents = 25000
+        ident = _identity()
+        conv = Conversation(client_id="cli_as", phone="5511999990000", history=[])
+        asyncio.run(orch._send_caixinha_payment("5511999990000", Req(), ident, conv))
+        asyncio.run(orch._send_caixinha_payment("5511999990000", Req(), ident, conv))
+        Req.amount_cents = 30000
+        asyncio.run(orch._send_caixinha_payment("5511999990000", Req(), ident, conv))
+        assert urls[0] == urls[1] and urls[2] != urls[0]
+        assert len([k for k in store if k.startswith("checkout_token:")]) == 2
+
+    def test_sentry_apaga_dados_de_cartao(self):
+        from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
+        from sentry_sdk.utils import AnnotatedValue
+        sc = EventScrubber(denylist=DEFAULT_DENYLIST + ["card_number", "card_cvv", "cpf"], recursive=True)
+        ev = {"exception": {"values": [{"stacktrace": {"frames": [{"vars": {"form": {"card_number": "4111", "card_cvv": "123", "lead_name": "Ana"}}}]}}]}}
+        sc.scrub_event(ev)
+        v = ev["exception"]["values"][0]["stacktrace"]["frames"][0]["vars"]["form"]
+        assert isinstance(v["card_number"], AnnotatedValue) and isinstance(v["card_cvv"], AnnotatedValue) and v["lead_name"] == "Ana"

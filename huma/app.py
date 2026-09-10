@@ -46,12 +46,33 @@ def create_app() -> FastAPI:
     if SENTRY_DSN:
         try:
             import sentry_sdk
-            sentry_sdk.init(
+
+            # Caixinha pelo Asaas (2026-09-10): dados de cartão passam pelo servidor
+            # só em trânsito. O Sentry captura variáveis locais em erro — o
+            # scrubber apaga esses campos (e os do titular) antes de sair.
+            _scrubber = None
+            try:
+                from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
+                _card_fields = [
+                    "card_number", "card_cvv", "card_exp", "card_holder", "cvv", "ccv", "number",
+                    "creditCard", "creditCardHolderInfo", "card", "holder", "cpf", "cpfCnpj", "cpf_cnpj",
+                    "cardNumber", "securityCode", "card_token_id", "asaas_api_key", "access_token",
+                ]
+                try:
+                    _scrubber = EventScrubber(denylist=DEFAULT_DENYLIST + _card_fields, recursive=True)
+                except TypeError:  # SDK antigo sem `recursive`
+                    _scrubber = EventScrubber(denylist=DEFAULT_DENYLIST + _card_fields)
+            except Exception as e:  # scrubber indisponível: nunca derruba o init
+                log.warning(f"Sentry scrubber indisponível | {type(e).__name__}: {e}")
+            _init_kwargs = dict(
                 dsn=SENTRY_DSN,
                 release=f"huma-ia@{APP_VERSION}",
                 traces_sample_rate=0.05,   # 5% de traces de performance (custo baixo)
                 send_default_pii=False,    # LGPD: sem telefone/nome de lead nos eventos
             )
+            if _scrubber is not None:
+                _init_kwargs["event_scrubber"] = _scrubber
+            sentry_sdk.init(**_init_kwargs)
             log.info("Sentry ativo")
         except Exception as e:
             log.error(f"Sentry init falhou | {type(e).__name__}: {e}")
