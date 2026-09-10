@@ -42,14 +42,58 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "").rstrip("/")
 # ================================================================
 
 
+def _global_mp_token() -> str:
+    """Token global da HUMA (legado). Lê o config em runtime (patchável em testes)."""
+    from huma import config as _cfg
+    return MERCADOPAGO_ACCESS_TOKEN or _cfg.MERCADOPAGO_ACCESS_TOKEN
+
+
+def mp_own_token(identity) -> str:
+    """Token da conta Mercado Pago DO CLIENTE (OAuth), ou "" se não conectou."""
+    if identity is None:
+        return ""
+    return (getattr(identity, "mercadopago_access_token", "") or "").strip()
+
+
+def _tok_kw(access_token: str) -> dict:
+    """kwarg pro _mp_post_payment SÓ quando há token próprio (mocks legados têm assinatura fixa)."""
+    return {"access_token": access_token} if access_token else {}
+
+
+def mp_token_for(identity) -> str:
+    """
+    Access token do Mercado Pago que cobra o LEAD deste cliente (2026-09-10).
+
+    Conta DO CLIENTE conectada por OAuth (mercadopago_access_token) vence;
+    senão o token global da HUMA (caminho legado). Vazio = MP indisponível.
+    """
+    return mp_own_token(identity) or _global_mp_token()
+
+
+def mp_public_key_for(identity) -> str:
+    """Public key que tokeniza o cartão no navegador: a do cliente, senão a da HUMA."""
+    from huma.config import MERCADOPAGO_PUBLIC_KEY
+
+    own = (getattr(identity, "mercadopago_public_key", "") or "").strip() if identity is not None else ""
+    return own or MERCADOPAGO_PUBLIC_KEY
+
+
+async def mp_own_token_for_client_id(client_id: str) -> str:
+    """mp_own_token a partir do client_id (carrega a identidade; nunca levanta)."""
+    identity = await _identity_for(client_id) if client_id else None
+    return mp_own_token(identity)
+
+
 @with_retry(max_attempts=3, base_delay=1.5, label="mp_create_payment")
-async def _mp_post_payment(body: dict, idempotency_key: str) -> dict:
+async def _mp_post_payment(body: dict, idempotency_key: str, access_token: str = "") -> dict:
     """
     POST /v1/payments com retry exponencial.
 
     Sprint 3 / item 10. CRITICO: idempotency_key é gerado FORA do retry e
     passado como argumento — todas as tentativas usam a MESMA key. Sem isso,
     retry após timeout pode criar pagamentos duplicados no MP.
+
+    access_token (2026-09-10): token da conta DO CLIENTE; vazio = global.
 
     Levanta em erro (httpx.HTTPStatusError ou timeout) pro decorator retentar.
     """
@@ -58,7 +102,7 @@ async def _mp_post_payment(body: dict, idempotency_key: str) -> dict:
             "https://api.mercadopago.com/v1/payments",
             json=body,
             headers={
-                "Authorization": f"Bearer {MERCADOPAGO_ACCESS_TOKEN}",
+                "Authorization": f"Bearer {access_token or MERCADOPAGO_ACCESS_TOKEN}",
                 "X-Idempotency-Key": idempotency_key,
             },
         )
@@ -332,13 +376,15 @@ async def create_payment(request) -> dict:
             and (getattr(identity, "asaas_api_key", "") or "").strip():
         return await _create_asaas_link(request, identity, method)
 
+    # Mercado Pago DO CLIENTE (OAuth, 2026-09-10); vazio = global da HUMA (legado).
+    own = mp_own_token(identity)
     if method == "pix":
-        return await _create_pix(request)
+        return await _create_pix(request, access_token=own)
     elif method == "boleto":
-        return await _create_boleto(request)
+        return await _create_boleto(request, access_token=own)
     elif method == "credit_card":
-        return await _create_card(request)
-    return await _create_pix(request)
+        return await _create_card(request, access_token=own)
+    return await _create_pix(request, access_token=own)
 
 
 async def _identity_for(client_id: str):
@@ -513,9 +559,9 @@ async def _get_payment_by_provider_id(provider_id: str) -> dict | None:
         return None
 
 
-async def _create_pix(req) -> dict:
-    """Gera Pix. Retorna QR code (base64) + copia/cola."""
-    if not MERCADOPAGO_ACCESS_TOKEN:
+async def _create_pix(req, access_token: str = "") -> dict:
+    """Gera Pix. Retorna QR code (base64) + copia/cola. access_token vazio = global."""
+    if not (access_token or _global_mp_token()):
         return {"status": "error", "detail": "Mercado Pago não configurado"}
 
     ext_ref = _build_external_reference(req.client_id, req.phone)
@@ -541,7 +587,7 @@ async def _create_pix(req) -> dict:
         # tentativas evita duplicação de pagamento se 1ª tentativa der timeout
         # mas o MP já tiver processado.
         idempotency_key = str(uuid.uuid4())
-        data = await _mp_post_payment(body, idempotency_key)
+        data = await _mp_post_payment(body, idempotency_key, **_tok_kw(access_token))
 
         pix = data.get("point_of_interaction", {}).get("transaction_data", {})
         amount = _format_brl(req.amount_cents)
@@ -582,9 +628,9 @@ async def _create_pix(req) -> dict:
         return {"status": "error", "detail": str(e)}
 
 
-async def _create_boleto(req) -> dict:
-    """Gera boleto. Retorna código de barras + URL do PDF."""
-    if not MERCADOPAGO_ACCESS_TOKEN:
+async def _create_boleto(req, access_token: str = "") -> dict:
+    """Gera boleto. Retorna código de barras + URL do PDF. access_token vazio = global."""
+    if not (access_token or _global_mp_token()):
         return {"status": "error", "detail": "Mercado Pago não configurado"}
 
     cpf = req.lead_cpf.replace(".", "").replace("-", "").replace(" ", "")
@@ -620,7 +666,7 @@ async def _create_boleto(req) -> dict:
 
         # Idempotency key fixa pra todas as tentativas (evita boleto duplicado)
         idempotency_key = str(uuid.uuid4())
-        data = await _mp_post_payment(body, idempotency_key)
+        data = await _mp_post_payment(body, idempotency_key, **_tok_kw(access_token))
 
         barcode = data.get("barcode", {}).get("content", "")
         pdf_url = data.get("transaction_details", {}).get("external_resource_url", "")
@@ -656,9 +702,10 @@ async def _create_boleto(req) -> dict:
         return {"status": "error", "detail": str(e)}
 
 
-async def _create_card(req) -> dict:
-    """Gera link de checkout seguro do Mercado Pago."""
-    if not MERCADOPAGO_ACCESS_TOKEN:
+async def _create_card(req, access_token: str = "") -> dict:
+    """Gera link de checkout seguro do Mercado Pago. access_token vazio = global."""
+    access_token = access_token or _global_mp_token()
+    if not access_token:
         return {"status": "error", "detail": "Mercado Pago não configurado"}
 
     ext_ref = _build_external_reference(req.client_id, req.phone)
@@ -697,7 +744,7 @@ async def _create_card(req) -> dict:
             resp = await http.post(
                 "https://api.mercadopago.com/checkout/preferences",
                 json=preference,
-                headers={"Authorization": f"Bearer {MERCADOPAGO_ACCESS_TOKEN}"},
+                headers={"Authorization": f"Bearer {access_token}"},
             )
             resp.raise_for_status()
             data = resp.json()
@@ -740,15 +787,19 @@ async def _create_card(req) -> dict:
 # ================================================================
 
 
-async def check_payment_status(payment_id: str) -> dict:
-    """Verifica status de qualquer pagamento na API do Mercado Pago."""
-    if not MERCADOPAGO_ACCESS_TOKEN:
+async def check_payment_status(payment_id: str, access_token: str = "") -> dict:
+    """
+    Verifica status de qualquer pagamento na API do Mercado Pago.
+    access_token (2026-09-10): token da conta que recebeu; vazio = global.
+    """
+    access_token = access_token or _global_mp_token()
+    if not access_token:
         return {"status": "pending", "method": "unknown"}
     try:
         async with httpx.AsyncClient(timeout=10.0) as http:
             resp = await http.get(
                 f"https://api.mercadopago.com/v1/payments/{payment_id}",
-                headers={"Authorization": f"Bearer {MERCADOPAGO_ACCESS_TOKEN}"},
+                headers={"Authorization": f"Bearer {access_token}"},
             )
             data = resp.json()
 
@@ -771,7 +822,35 @@ async def check_payment_status(payment_id: str) -> dict:
 # ================================================================
 
 
-async def process_payment_notification(mp_payment_id: str) -> dict:
+async def _mp_token_for_notification(mp_payment_id: str, mp_user_id: str) -> str:
+    """
+    Token PRÓPRIO do cliente pra consultar um pagamento notificado pelo
+    webhook (2026-09-10), ou "" pra seguir no token global (legado).
+
+    Com a conta DO CLIENTE conectada, só o token dela lê o pagamento:
+    (1) registro em `payments` → client_id → token; (2) body.user_id do
+    webhook → cliente dono daquela conta MP. Nunca levanta.
+    """
+    try:
+        record = await _get_payment_by_provider_id(mp_payment_id)
+        if record and record.get("client_id"):
+            token = await mp_own_token_for_client_id(str(record["client_id"]))
+            if token:
+                return token
+    except Exception as e:
+        log.warning(f"MP token por payment falhou | id={mp_payment_id} | {type(e).__name__}: {e}")
+    if mp_user_id:
+        try:
+            from huma.services.db_service import get_client_by_mercadopago_user_id
+            identity = await get_client_by_mercadopago_user_id(mp_user_id)
+            if identity is not None:
+                return mp_own_token(identity)
+        except Exception as e:
+            log.warning(f"MP token por user_id falhou | user_id={mp_user_id} | {type(e).__name__}: {e}")
+    return ""
+
+
+async def process_payment_notification(mp_payment_id: str, mp_user_id: str = "") -> dict:
     """
     Processa notificação IPN do Mercado Pago.
 
@@ -779,11 +858,16 @@ async def process_payment_notification(mp_payment_id: str) -> dict:
     2. Atualiza registro no Supabase
     3. Retorna dados completos pra o endpoint notificar o lead
 
+    mp_user_id (2026-09-10, opcional): body.user_id do webhook — conta MP
+    que recebeu; resolve o token do cliente dono dela.
+
     Returns:
         {"processed": True, "status": "approved", "client_id": ..., "phone": ..., ...}
     """
-    # 1. Consulta status real na API do MP
-    mp_data = await check_payment_status(mp_payment_id)
+    # 1. Consulta status real na API do MP (token da conta DO CLIENTE quando
+    #    há; kwarg só nesse caso — mocks legados têm assinatura fixa)
+    own = await _mp_token_for_notification(str(mp_payment_id), str(mp_user_id or ""))
+    mp_data = await check_payment_status(mp_payment_id, **_tok_kw(own))
     status = mp_data.get("status", "pending")
     status_detail = mp_data.get("status_detail", "")
 

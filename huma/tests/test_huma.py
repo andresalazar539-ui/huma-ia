@@ -3128,8 +3128,9 @@ class TestSprint5OwnerNotifications:
         from huma.services import payment_service
         src = inspect.getsource(payment_service)
 
-        # _mp_post_payment recebe idempotency_key como argumento
-        assert "_mp_post_payment(body, idempotency_key)" in src
+        # _mp_post_payment recebe idempotency_key como argumento (2026-09-10:
+        # pode vir seguido do kwarg access_token da conta do cliente)
+        assert "_mp_post_payment(body, idempotency_key" in src
         assert "X-Idempotency-Key\": idempotency_key" in src
         # Idempotency key gerada antes (str(uuid.uuid4()) acontece nos callers)
         assert "idempotency_key = str(uuid.uuid4())" in src

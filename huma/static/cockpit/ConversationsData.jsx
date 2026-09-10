@@ -998,6 +998,7 @@ function oauthStartUrl(kind) {
   const cid = encodeURIComponent(CLIENT_ID);
   return {
     google: `/oauth/google/start?client_id=${cid}`,
+    mercadopago: `/oauth/mercadopago/start?client_id=${cid}`,
     instagram: `/oauth/instagram/start?client_id=${cid}`,
     nuvemshop: `/oauth/nuvemshop/start?client_id=${cid}`,
     hubspot: `/oauth/crm/hubspot/start?client_id=${cid}`,

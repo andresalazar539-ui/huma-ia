@@ -25,6 +25,7 @@ from huma.routes.legal import router as legal_router
 from huma.routes.oauth_bling import router as oauth_bling_router
 from huma.routes.oauth_crm import router as oauth_crm_router
 from huma.routes.oauth_google import router as oauth_google_router
+from huma.routes.oauth_mercadopago import router as oauth_mercadopago_router
 from huma.routes.oauth_nuvemshop import router as oauth_nuvemshop_router
 from huma.routes.onboarding import router as onboarding_router
 from huma.routes.web_channel import router as web_channel_router
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_bling_router)
     app.include_router(oauth_crm_router)
     app.include_router(oauth_google_router)
+    app.include_router(oauth_mercadopago_router)
     app.include_router(oauth_nuvemshop_router)
     from huma.routes.nuvemshop_webhook import router as nuvemshop_webhook_router
     app.include_router(nuvemshop_webhook_router)

@@ -142,6 +142,35 @@ async def get_client_by_instagram_user_id(ig_user_id: str) -> ClientIdentity | N
     return _identity_from_row(resp.data[0])
 
 
+async def get_client_by_mercadopago_user_id(mp_user_id: str) -> ClientIdentity | None:
+    """
+    Roteamento do webhook do Mercado Pago (2026-09-10): body.user_id é a
+    conta que recebeu o pagamento. Com a conta DO CLIENTE conectada por
+    OAuth, o status do pagamento só pode ser consultado com o token dela.
+    Índice parcial idx_clients_mercadopago_user_id. None se vazio/não achou.
+    """
+    mp_user_id = str(mp_user_id or "").strip()
+    if not mp_user_id:
+        return None
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("*")
+            .eq("mercadopago_user_id", mp_user_id).limit(1).execute()
+    )
+    if not resp.data:
+        return None
+    return _identity_from_row(resp.data[0])
+
+
+async def list_mercadopago_clients() -> list[dict]:
+    """Clientes com Mercado Pago próprio conectado (pro job de renovação de token)."""
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients")
+            .select("client_id,mercadopago_refresh_token,mercadopago_token_expires_at")
+            .neq("mercadopago_refresh_token", "").execute()
+    )
+    return [r for r in (resp.data or []) if r.get("mercadopago_refresh_token")]
+
+
 async def list_instagram_clients() -> list[dict]:
     """Clientes com Instagram conectado (pro job de renovação de token)."""
     resp = await run_in_threadpool(

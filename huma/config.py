@@ -190,6 +190,14 @@ MERCADOPAGO_PUBLIC_KEY = os.getenv("MERCADOPAGO_PUBLIC_KEY", "")
 # Configurar no painel MP: Webhooks → Configurações → "Sua chave secreta"
 MERCADOPAGO_WEBHOOK_SECRET = os.getenv("MERCADOPAGO_WEBHOOK_SECRET", "")
 PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "mercadopago")
+# Mercado Pago DO CLIENTE por OAuth (2026-09-10): app "HUMA" no painel de
+# desenvolvedores do MP (client_id/secret) + Redirect URL estática igual à
+# do painel. Vazios = card "indisponível no servidor"; o token global acima
+# continua sendo o fallback (caminho legado) pra quem não conectou.
+MERCADOPAGO_OAUTH_CLIENT_ID = os.getenv("MERCADOPAGO_OAUTH_CLIENT_ID", "")
+MERCADOPAGO_OAUTH_CLIENT_SECRET = os.getenv("MERCADOPAGO_OAUTH_CLIENT_SECRET", "")
+MERCADOPAGO_OAUTH_REDIRECT_URI = os.getenv("MERCADOPAGO_OAUTH_REDIRECT_URI", "")
+MERCADOPAGO_OAUTH_STATE_TTL_SEC = int(os.getenv("MERCADOPAGO_OAUTH_STATE_TTL_SEC", "600"))
 
 # E-mail transacional próprio (Resend) — boas-vindas de assinatura etc.
 # Vazio = e-mails de produto desligados (auth continua via Supabase/Resend SMTP).

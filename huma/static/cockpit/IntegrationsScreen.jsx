@@ -305,6 +305,43 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     ),
   };
 
+  // ── Mercado Pago DO CLIENTE (OAuth, 2026-09-10) ──
+  // Sem conectar, a HUMA cobra pelo Mercado Pago da própria HUMA (legado):
+  // o card diz isso na cara, porque o dinheiro do dono tem que cair na conta dele.
+  const mpConnected = Boolean(client && client.mercadopago_connected);
+  const mpServer = Boolean(client && client.mercadopago_server);
+  const mpTest = Boolean(client && mpConnected && client.mercadopago_live_mode === false);
+  const mpCard = {
+    id: 'mercadopago',
+    name: 'Mercado Pago',
+    category: 'Pagamentos',
+    glyph: { type: 'mercadopago' },
+    status: mpConnected ? 'connected' : 'disconnected',
+    meta: mpConnected
+      ? [['CONTA', client.mercadopago_nickname || 'conectada'], ['ACEITA', 'Pix · boleto · cartão'], ...(mpTest ? [['MODO', 'Conta de teste']] : [])]
+      : [['COBRA', 'Pix, boleto e cartão'], ['COMO', mpServer ? 'Um clique, login Mercado Pago' : 'Indisponível no servidor']],
+    note: mpConnected
+      ? 'A HUMA gera Pix, boleto e cartão pela sua conta Mercado Pago; o dinheiro das vendas cai direto nela.'
+      : 'Conecte sua conta Mercado Pago pra receber as vendas da conversa direto nela. Sem conectar, a cobrança sai pela conta da HUMA.',
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        {!mpConnected && (
+          <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} disabled={!mpServer}
+                  onClick={() => { window.location.href = oauthStartUrl('mercadopago'); }}>
+            Conectar Mercado Pago
+          </Button>
+        )}
+        {mpConnected && (
+          <Button variant="ghost" size="sm" icon={<Icon name="link" size={13}/>}
+                  onClick={() => { window.location.href = oauthStartUrl('mercadopago'); }}>
+            Trocar conta
+          </Button>
+        )}
+        {mpConnected && <Button variant="plain" size="sm" onClick={() => handleDisconnect('mercadopago')}>Desconectar</Button>}
+      </div>
+    ),
+  };
+
   // ── Asaas ──
   const [asaasModal, setAsaasModal] = React.useState(false);
   const asConnected = Boolean(client && client.asaas_connected && client.payment_provider === 'asaas');
@@ -348,7 +385,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
 
   const integrations = [
     instagramCard, balcaoCard, gcalCard, pixelCard, webhookCard,
-    nuvemshopCard, blingCard, asaasCard, hubspotCard, pipedriveCard, rdCard, ...INTEGRATIONS,
+    nuvemshopCard, blingCard, mpCard, asaasCard, hubspotCard, pipedriveCard, rdCard, ...INTEGRATIONS,
   ];
   const connectedCount = integrations.filter(i => i.status === 'connected' || i.status === 'active').length;
   const availableCount = integrations.length - connectedCount;
@@ -1256,6 +1293,14 @@ const IntegrationGlyph = ({ type }) => {
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
           <path d="M3 17l6-6 4 4 8-8"/>
           <path d="M14 7h7v7"/>
+        </svg>
+      ));
+    case 'mercadopago':
+      return wrap('#009EE3', (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+          <ellipse cx="12" cy="12" rx="9" ry="6.5"/>
+          <path d="M7 12c1.5-1.5 3-2 4.5-1s2.5 1.5 4 .5"/>
+          <path d="M8 14.5c1.5-.8 2.6-.8 3.8 0s2.5.9 4.2 0"/>
         </svg>
       ));
     case 'asaas':

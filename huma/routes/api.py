@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from huma.config import APP_VERSION, ELEVENLABS_API_KEY, ELEVENLABS_MODEL, GOOGLE_CALENDAR_CREDENTIALS
+from huma.config import APP_VERSION, ELEVENLABS_API_KEY, ELEVENLABS_MODEL, GOOGLE_CALENDAR_CREDENTIALS, MERCADOPAGO_ACCESS_TOKEN
 from huma.core.auth import verify_webhook, verify_api_key, verify_api_key_manual, bearer_scheme
 from huma.core.orchestrator import handle_message, process_outbound_campaign
 from huma.models.schemas import (
@@ -2078,6 +2078,12 @@ async def integrations_status(
         "hubspot_server": _hubspot_server(),
         "asaas_connected": _truthy(getattr(identity, "asaas_api_key", "")),
         "payment_provider": getattr(identity, "payment_provider", "") or "",
+        # Mercado Pago DO CLIENTE por OAuth (2026-09-10) — só marcadores
+        "mercadopago_connected": _truthy(getattr(identity, "mercadopago_access_token", "")),
+        "mercadopago_nickname": getattr(identity, "mercadopago_nickname", "") or "",
+        "mercadopago_live_mode": bool(getattr(identity, "mercadopago_live_mode", True)),
+        "mercadopago_server": _mercadopago_oauth_server(),
+        "mercadopago_global": bool(MERCADOPAGO_ACCESS_TOKEN),
         # Capabilities resolvidas (2026-09-07): a sidebar do Cockpit decide
         # Agenda (schedule) / Vendas (sell_digital|sell_physical) por aqui.
         "capabilities_resolved": sorted(c.value for c in identity.capabilities_resolved),
@@ -2087,6 +2093,11 @@ async def integrations_status(
 def _google_oauth_server() -> bool:
     from huma.services import google_oauth
     return google_oauth.is_configured()
+
+
+def _mercadopago_oauth_server() -> bool:
+    from huma.services import mercadopago_oauth
+    return mercadopago_oauth.is_configured()
 
 
 def _instagram_server() -> bool:
@@ -2210,6 +2221,20 @@ async def integrations_disconnect(
         updates = {"meta_pixel_id": "", "meta_capi_token": ""}
     elif integration_id == "asaas":
         updates = {"asaas_api_key": "", "asaas_webhook_token": "", "payment_provider": ""}
+    elif integration_id == "mercadopago":
+        # Volta pro caminho legado (token global da HUMA). Não revoga no MP:
+        # o token morre sozinho em 180 dias sem renovação.
+        identity = await db.get_client(client_id)
+        updates = {
+            "mercadopago_user_id": "",
+            "mercadopago_nickname": "",
+            "mercadopago_access_token": "",
+            "mercadopago_refresh_token": "",
+            "mercadopago_public_key": "",
+            "mercadopago_token_expires_at": None,
+        }
+        if identity is not None and (getattr(identity, "payment_provider", "") or "") == "mercadopago":
+            updates["payment_provider"] = ""
     else:
         raise HTTPException(
             400,
@@ -3161,8 +3186,9 @@ async def mercadopago_webhook(request: Request, bg: BackgroundTasks):
             )
             raise HTTPException(401, "Assinatura inválida")
 
-        # Processa em background pra responder rápido (MP espera 200 em <500ms)
-        bg.add_task(_process_mp_payment, mp_payment_id)
+        # Processa em background pra responder rápido (MP espera 200 em <500ms).
+        # body.user_id = conta MP que recebeu (roteia pro token do cliente, 2026-09-10).
+        bg.add_task(_process_mp_payment, mp_payment_id, str(body.get("user_id") or ""))
         return {"status": "received"}
 
     if topic == "merchant_order":
@@ -3173,16 +3199,16 @@ async def mercadopago_webhook(request: Request, bg: BackgroundTasks):
     return {"status": "ignored", "reason": f"type_{topic}"}
 
 
-async def _process_mp_payment(mp_payment_id: str):
+async def _process_mp_payment(mp_payment_id: str, mp_user_id: str = ""):
     """
     Background task: processa pagamento do Mercado Pago.
 
-    1. Consulta API do MP pra confirmar status
+    1. Consulta API do MP pra confirmar status (token da conta certa)
     2. Atualiza tabela payments no Supabase
     3. Se approved: notifica lead + avança funil + notifica dono
     """
     try:
-        result = await pay.process_payment_notification(mp_payment_id)
+        result = await pay.process_payment_notification(mp_payment_id, mp_user_id=mp_user_id)
 
         if not result.get("processed"):
             # Cobrança de ASSINATURA da HUMA chegando como topic payment

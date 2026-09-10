@@ -462,11 +462,14 @@ async def pay_pix(token: str, form: dict) -> dict:
     prep = await prepare_order(token, form)
     if prep.get("status") != "ok":
         return prep
-    from huma.config import MERCADOPAGO_ACCESS_TOKEN
-    from huma.services.payment_service import _build_external_reference, _get_notification_url, _mp_post_payment
+    from huma.services.payment_service import (
+        _build_external_reference, _get_notification_url, _mp_post_payment, _tok_kw, mp_own_token, mp_token_for,
+    )
 
-    if not MERCADOPAGO_ACCESS_TOKEN:
+    # Conta MP DO CLIENTE (OAuth) ou a global da HUMA (legado).
+    if not mp_token_for(prep.get("identity")):
         return {"status": "error", "detail": "Pagamento indisponível no momento."}
+    mp_own = mp_own_token(prep.get("identity"))
     payload, phone, cid = prep["payload"], prep["phone"], prep["client_id"]
     ext_ref = _build_external_reference(cid, phone)
     body = {
@@ -479,7 +482,7 @@ async def pay_pix(token: str, form: dict) -> dict:
     if _get_notification_url():
         body["notification_url"] = _get_notification_url()
     try:
-        data = await _mp_post_payment(body, str(uuid.uuid4()))
+        data = await _mp_post_payment(body, str(uuid.uuid4()), **_tok_kw(mp_own))
     except Exception as e:
         log.error(f"pay_pix | MP falhou | {phone} | {type(e).__name__}: {e}")
         return {"status": "error", "detail": "Não consegui gerar o Pix agora. Tente de novo."}
@@ -508,12 +511,16 @@ async def pay_card(token: str, form: dict) -> dict:
     prep = await prepare_order(token, form)
     if prep.get("status") != "ok":
         return prep
-    from huma.config import MERCADOPAGO_ACCESS_TOKEN
-    from huma.services.payment_service import _build_external_reference, _get_notification_url, _mp_post_payment
+    from huma.services.payment_service import (
+        _build_external_reference, _get_notification_url, _mp_post_payment, _tok_kw, mp_own_token, mp_token_for,
+    )
 
-    if not MERCADOPAGO_ACCESS_TOKEN:
-        return {"status": "error", "detail": "Pagamento indisponível no momento."}
     identity, payload, phone, cid = prep["identity"], prep["payload"], prep["phone"], prep["client_id"]
+    # Conta MP DO CLIENTE (OAuth) ou a global da HUMA (legado). O cartão foi
+    # tokenizado na página com a public_key da MESMA conta (store_checkout_page).
+    if not mp_token_for(identity):
+        return {"status": "error", "detail": "Pagamento indisponível no momento."}
+    mp_own = mp_own_token(identity)
     try:
         cap = max(1, int(getattr(identity, "max_installments", 1) or 1))
         installments = max(1, min(cap, int(form.get("installments") or 1)))
@@ -534,7 +541,7 @@ async def pay_card(token: str, form: dict) -> dict:
     if _get_notification_url():
         body["notification_url"] = _get_notification_url()
     try:
-        data = await _mp_post_payment(body, str(uuid.uuid4()))
+        data = await _mp_post_payment(body, str(uuid.uuid4()), **_tok_kw(mp_own))
     except Exception as e:
         log.error(f"pay_card | MP falhou | {phone} | {type(e).__name__}: {e}")
         return {"status": "error", "detail": "Não consegui processar o cartão agora. Tente de novo ou use Pix."}

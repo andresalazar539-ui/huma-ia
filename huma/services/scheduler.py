@@ -938,6 +938,15 @@ async def _run_instagram_token_refresh_job() -> None:
         log.error(f"sched | instagram_token_refresh | {type(e).__name__}: {e}")
 
 
+async def _run_mercadopago_token_refresh_job() -> None:
+    """Renova tokens do Mercado Pago do cliente perto de vencer (180 dias). Nunca levanta."""
+    try:
+        from huma.services import mercadopago_oauth
+        await mercadopago_oauth.refresh_expiring_tokens()
+    except Exception as e:
+        log.error(f"sched | mercadopago_token_refresh | {type(e).__name__}: {e}")
+
+
 async def _run_catalog_refresh_job() -> None:
     """Catálogo da loja/ERP vira conhecimento sozinho (2026-09-07). Nunca levanta."""
     try:
@@ -966,6 +975,8 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("stuck_conversation_alert", _run_stuck_conversation_alert_job, 3600, 1800),
     # Instagram Direct — renova tokens de 60 dias que vencem em <10 dias: 1x/dia
     ("instagram_token_refresh", _run_instagram_token_refresh_job, 86400, 3600),
+    # Mercado Pago do cliente — renova 30 dias antes de vencer: 1x/dia, lock 1h
+    ("mercadopago_token_refresh", _run_mercadopago_token_refresh_job, 86400, 3600),
     # Loja/ERP conectado — catálogo (produto novo, preço, descrição, foto) vira
     # conhecimento sem reconectar: a cada 30min, lock 15min. Zero IA.
     ("catalog_refresh", _run_catalog_refresh_job, 1800, 900),

@@ -778,9 +778,26 @@ class ClientIdentity(BaseModel):
         default="",
         description=(
             "Meio de pagamento que cobra o LEAD deste cliente: '' (Mercado Pago da "
-            "HUMA, legado) | 'asaas' (conta do próprio cliente)."
+            "HUMA, legado) | 'mercadopago' (conta Mercado Pago do próprio cliente, "
+            "OAuth) | 'asaas' (conta do próprio cliente)."
         ),
     )
+    # ── Mercado Pago DO CLIENTE por OAuth (2026-09-10) ──
+    # Migration: scripts/migration_mercadopago_oauth.sql. Com access_token
+    # preenchido, payment_service cobra pela conta do dono; vazio = token
+    # global da HUMA (legado). O refresh é ROTATIVO (cada renovação devolve
+    # um novo) e o access vale 180 dias (job mercadopago_token_refresh).
+    mercadopago_user_id: str = Field(default="", description="ID da conta MP conectada (roteia o webhook).")
+    mercadopago_nickname: str = Field(default="", description="Apelido/e-mail da conta MP (só exibição).")
+    mercadopago_access_token: str = Field(default="", description="Access token da conta MP do dono (180 dias).")
+    mercadopago_refresh_token: str = Field(default="", description="Refresh token rotativo da conta MP do dono.")
+    mercadopago_public_key: str = Field(
+        default="", description="Public key da conta MP do dono (tokeniza o cartão na Caixinha).",
+    )
+    mercadopago_token_expires_at: Optional[datetime] = Field(
+        default=None, description="Quando o access token do MP expira (UTC).",
+    )
+    mercadopago_live_mode: bool = Field(default=True, description="False = conta de teste do MP.")
     report_frequency: str = Field(
         default="weekly",
         description=(

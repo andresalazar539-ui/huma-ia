@@ -23,8 +23,8 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from huma.config import MERCADOPAGO_PUBLIC_KEY
 from huma.core import store_checkout as sc
+from huma.config import MERCADOPAGO_PUBLIC_KEY
 from huma.services import db_service as db
 from huma.utils.logger import get_logger
 
@@ -105,7 +105,10 @@ def render_form(token: str, data: dict, identity) -> str:
     inst_opts = "".join(f'<option value="{n}">{n}x de {_price(round(total / n))}{" sem juros" if n > 1 else ""}</option>' for n in range(1, max_inst + 1))
     frete = "frete grátis" if ship == 0 else f"frete {_price(ship)}"
     has_pix = "pix" in accepted
-    has_card = "credit_card" in accepted and bool(MERCADOPAGO_PUBLIC_KEY)
+    # Public key da conta que vai cobrar (a do cliente por OAuth, senão a da HUMA):
+    # o token do cartão só vale pra conta dona da public_key (2026-09-10).
+    public_key = (getattr(identity, "mercadopago_public_key", "") or "").strip() or MERCADOPAGO_PUBLIC_KEY
+    has_card = "credit_card" in accepted and bool(public_key)
     tabs = ""
     if has_pix and has_card:
         tabs = '<div class="tabs"><div class="tab on" data-t="pix">Pix</div><div class="tab" data-t="card">Cartão</div></div>'
@@ -147,7 +150,7 @@ def render_form(token: str, data: dict, identity) -> str:
 <script>
 (function(){{
   var T=location.pathname, f=document.getElementById('f'), err=document.getElementById('err'), addr=document.getElementById('addr'), cep=document.getElementById('cep'), res=document.getElementById('result');
-  var PK={_json.dumps(MERCADOPAGO_PUBLIC_KEY or "")}, mp=null;
+  var PK={_json.dumps(public_key or "")}, mp=null;
   try{{ if(PK && window.MercadoPago) mp=new window.MercadoPago(PK); }}catch(e){{}}
   document.querySelectorAll('.tab').forEach(function(t){{t.addEventListener('click',function(){{
     document.querySelectorAll('.tab').forEach(function(x){{x.classList.remove('on')}}); t.classList.add('on');
