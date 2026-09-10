@@ -2065,6 +2065,17 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
             cpf=request.lead_cpf,
         )
 
+    # Caixinha universal (2026-09-10): cartão NUNCA vira link externo. A
+    # página segura da HUMA abre dentro do app (WhatsApp/Instagram) com Pix
+    # e cartão. Pix pedido no chat continua no chat (copia e cola nativo).
+    if request.payment_method == "credit_card" and action.get("via") != "store_checkout":
+        try:
+            sent_card = await _send_caixinha_payment(phone, request, client_data, conv)
+            if sent_card:
+                return sent_card
+        except Exception as e:
+            log.error(f"Caixinha cartão falhou, caindo no link | {phone} | {type(e).__name__}: {e}")
+
     result = await pay.create_payment(request)
 
     if result.get("status") == "error":
@@ -2139,6 +2150,48 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
     log.info(f"Pagamento enviado | {method} | {result.get('amount_display', '')}")
     # payment_result (aditivo, 2026-09-08): a Caixinha da HUMA mostra o Pix/link na página.
     return {"sent": True, "method": method, "amount_display": result.get("amount_display", ""), "payment_result": result}
+
+
+async def _send_caixinha_payment(phone: str, request, client_data, conv) -> dict | None:
+    """
+    Manda o card "Pagar" (Caixinha universal) pro valor combinado. Devolve o
+    mesmo contrato de _handle_payment_action ({"sent": True, ...}) ou None
+    quando a Caixinha não está disponível (o caller cai no caminho antigo).
+    """
+    from huma.core import store_checkout as _sc
+
+    if not _sc.caixinha_enabled(client_data) or int(request.amount_cents or 0) <= 0:
+        return None
+    cid = client_data.client_id
+    item = _sc.custom_item(request.description or "Pagamento", int(request.amount_cents), description=request.description or "")
+    url = await _sc.issue_checkout_link(client_data, phone, item, 1, origin=_sc.ORIGIN_CUSTOM, needs_shipping=False, description=request.description or "")
+    if not url:
+        return None
+    card = _sc.payment_card(item, 1, int(request.amount_cents), url)
+    amount_display = card.get("price", "")
+    await asyncio.sleep(1.0)
+    sent = 0
+    try:
+        sent = await wa.send_cards(phone, [card], client_id=cid)
+    except Exception as e:
+        log.warning(f"Caixinha | card Pagar falhou | {phone} | {type(e).__name__}: {e}")
+    if sent <= 0:
+        await wa.send_text(phone, f"Pra pagar {amount_display} com cartão em segurança, é aqui: {url}", client_id=cid)
+    if conv is not None:
+        conv.history.append({
+            "role": "assistant",
+            "content": (
+                f"[CAIXINHA ENVIADA: card 'Pagar' de {amount_display} ({item['name']}) com Pix e cartão numa página "
+                f"segura da HUMA. NÃO peça CPF nem dados de cartão no chat, NÃO gere outro pagamento; quando "
+                f"pagar, a confirmação chega nesta conversa.]"
+            ),
+        })
+    await billing.log_usage(cid, billing.UsageType.PAYMENT)
+    log.info(f"Caixinha | card Pagar enviado | {phone} | {amount_display} | via={'card' if sent > 0 else 'texto'}")
+    return {
+        "sent": True, "method": "credit_card", "amount_display": amount_display,
+        "payment_result": {"status": "pending", "method": "credit_card", "amount_display": amount_display, "checkout_url": url},
+    }
 
 
 # ================================================================

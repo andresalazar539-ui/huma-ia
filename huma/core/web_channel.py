@@ -82,6 +82,25 @@ _WEB_CHANNEL_RULES = (
     "- NUNCA invente link, QR code ou confirmação de horário."
 )
 
+# Caixinha universal (2026-09-10): quem VENDE fecha a venda no próprio chat
+# do site — o pedido, o Pix e o cartão aparecem na bolha (iframe da Caixinha).
+_WEB_CHANNEL_RULES_SELLS = (
+    "\n\n[CANAL: CHAT DO SITE]\n"
+    "Você está atendendo pelo chat do site, não pelo WhatsApp. "
+    "Neste canal você NÃO consegue agendar horário, enviar arquivos nem áudio, "
+    "mas CONSEGUE fechar a venda aqui mesmo.\n"
+    "- SE o lead decidir comprar: emita create_store_order (produto da loja) ou "
+    "generate_payment (serviço/valor definido). O sistema desenha o pedido com Pix e "
+    "cartão dentro do próprio chat. NUNCA mande o lead pro WhatsApp nem pro site pra pagar.\n"
+    "- SE o lead quiser agendar, receber material ou continuar depois: peça o "
+    "WhatsApp dele (com DDD) pra equipe continuar por lá.\n"
+    "- SE o lead der o número: confirme que a equipe vai chamar por lá e continue.\n"
+    "- Estoque, preço e frete: use só o que o sistema já te informou; NÃO emita "
+    "check_stock nem calc_shipping neste canal.\n"
+    "- NUNCA diga que vai agendar ou enviar arquivo por aqui.\n"
+    "- NUNCA invente link, QR code ou confirmação."
+)
+
 _PAUSED_REPLY = "Ops! Nosso atendimento está pausado no momento. Tente novamente em breve!"
 _HANDOFF_REPLY = "Nossa equipe já está cuidando do seu atendimento e te responde em breve!"
 _ERROR_REPLY = "Tive um probleminha aqui. Pode mandar de novo?"
@@ -125,11 +144,78 @@ def build_web_identity(identity: ClientIdentity) -> ClientIdentity:
     O texto derivado é determinístico por cliente, então o bloco
     estático do prompt web continua cacheável (regra #4 do CLAUDE.md).
     """
+    from huma.core.capabilities import Capability as _Cap
+
+    sells = sorted(
+        (c for c in identity.capabilities_resolved if c in (_Cap.SELL_DIGITAL, _Cap.SELL_PHYSICAL)),
+        key=lambda c: c.value,
+    )
+    # Caixinha universal (2026-09-10): quem vende mantém SÓ as capabilities de
+    # venda (o tool lista generate_payment / create_store_order); agendar,
+    # qualificar e áudio continuam fora — o canal não executa.
     return identity.model_copy(update={
-        "capabilities": [],
+        "capabilities": list(sells),
         "enable_audio": False,
-        "custom_rules": (identity.custom_rules or "") + _WEB_CHANNEL_RULES,
+        "custom_rules": (identity.custom_rules or "") + (_WEB_CHANNEL_RULES_SELLS if sells else _WEB_CHANNEL_RULES),
     })
+
+
+async def _web_checkout_cards(client_data, conv, phone: str, actions: list, stock_result) -> tuple[list, bool]:
+    """
+    Actions de venda emitidas no chat do site → cards da Caixinha (o widget
+    abre a página dentro da bolha). Devolve (cards, closing) — closing=True
+    quando o lead já está fechando (o card de produto seria redundante).
+    Nunca levanta.
+    """
+    from huma.core import store_checkout as sc
+
+    cards: list = []
+    closing = False
+    for action in actions or []:
+        if not isinstance(action, dict):
+            continue
+        kind = str(action.get("type") or "")
+        try:
+            if kind == "create_store_order" and sc.checkout_enabled(client_data):
+                closing = True
+                sku = str(action.get("sku") or "").strip()
+                qty = sc.quantity_of(action)
+                stock = None
+                if isinstance(stock_result, dict) and stock_result.get("status") == "found" and (
+                    not sku or str(stock_result.get("sku") or "") == sku
+                ):
+                    stock = stock_result
+                if stock is None and sku:
+                    from huma.providers.inventory import get_provider_for
+                    stock = await get_provider_for(client_data).check_stock(sku)
+                if not stock or stock.get("status") != "found" or not stock.get("available"):
+                    continue
+                url = await sc.issue_checkout_link(client_data, phone, stock, qty)
+                if url:
+                    ship = sc.shipping_cents(client_data)
+                    cards.append(sc.checkout_card(stock, qty, int(stock.get("price_cents") or 0), ship, url))
+            elif kind == "generate_payment" and sc.caixinha_enabled(client_data):
+                amount = int(action.get("amount_cents") or 0)
+                if amount <= 0:
+                    continue
+                closing = True
+                item = sc.custom_item(action.get("description") or "Pagamento", amount, description=action.get("description") or "")
+                url = await sc.issue_checkout_link(client_data, phone, item, 1, origin=sc.ORIGIN_CUSTOM, needs_shipping=False, description=action.get("description") or "")
+                if url:
+                    cards.append(sc.payment_card(item, 1, amount, url))
+        except Exception as e:
+            log.error(f"Caixinha (web) | action {kind} falhou | {phone} | {type(e).__name__}: {e}")
+    if cards:
+        conv.history.append({
+            "role": "assistant",
+            "content": (
+                f"[CAIXINHA ENVIADA no chat do site: {', '.join(c.get('title', '') for c in cards)} "
+                f"({', '.join(c.get('price', '') for c in cards)}). Pix e cartão aparecem na própria conversa. "
+                f"NÃO peça CPF nem cartão no chat, NÃO gere outro pagamento; a confirmação chega aqui.]"
+            ),
+        })
+        log.info(f"Caixinha (web) | {phone} | cards={len(cards)}")
+    return cards, closing
 
 
 async def _notify_owner_lead_whatsapp(
@@ -497,20 +583,40 @@ async def _process_web_message_locked(
         _entry["parts"] = list(reply_parts)  # balões iguais aos que o visitante viu
     conv.history.append(_entry)
 
+    # Caixinha universal (2026-09-10): o site também fecha a venda. Actions de
+    # venda viram cards "Finalizar pedido"/"Pagar" que o widget abre na bolha.
+    checkout_cards: list = []
+    closing_order = False
+    show_query = ""
+    try:
+        _actions = [a for a in (ai_result.get("actions") or []) if isinstance(a, dict)]
+        show_query = next((str(a.get("query") or "").strip() for a in _actions if a.get("type") == "show_products"), "")
+        checkout_cards, closing_order = await _web_checkout_cards(client_data, conv, phone, _actions, stock_result)
+    except Exception as e:
+        log.error(f"Caixinha (web) falhou | {phone} | {type(e).__name__}: {e}")
+
     # Cards de produto (2026-09-07): o widget desenha; o histórico guarda
     # o que o visitante viu (Cockpit e poll leem `cards`).
     cards: list = []
     try:
         from huma.core.product_cards import decide_cards, history_entry
-        cards = await decide_cards(client_data, text, stock_result)
+        if not closing_order:
+            cards = await decide_cards(client_data, text, stock_result, action_query=show_query)
         if cards:
             from huma.services.store_orders import tag_cards
             cards = tag_cards(cards, "site", client_id)  # links com UTM da HUMA
+            from huma.core.store_checkout import checkout_enabled as _co_enabled
+            if _co_enabled(client_data):
+                cards = [{**c, "url": ""} for c in cards]  # a compra fecha aqui, não no site
             conv.history.append(history_entry(cards))
             log.info(f"Cards de produto (web) | {phone} | cards={len(cards)}")
     except Exception as e:
         log.error(f"Cards de produto falharam (web) | {phone} | {type(e).__name__}: {e}")
         cards = []
+    if checkout_cards:
+        from huma.core.product_cards import history_entry as _hist
+        conv.history.append(_hist(checkout_cards))
+        cards = list(cards) + list(checkout_cards)
     conv.last_message_at = datetime.utcnow()
 
     await db.save_conversation(conv)

@@ -124,7 +124,10 @@ def caption_for_card(card: dict) -> str:
     if card.get("subtitle"):
         parts.append(card["subtitle"])
     if card.get("url"):
-        label = "Finalizar pedido" if card.get("kind") == "checkout" else "Comprar"
+        buttons = card.get("buttons") if isinstance(card.get("buttons"), list) else []
+        label = (buttons[0].get("title") if buttons and isinstance(buttons[0], dict) else "") or (
+            "Finalizar pedido" if card.get("kind") == "checkout" else "Comprar"
+        )
         parts.append(f"{label}: {card['url']}")
     return "\n".join(p for p in parts if p)
 

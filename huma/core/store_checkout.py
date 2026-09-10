@@ -32,6 +32,18 @@ _DRAFT_TTL = 24 * 3600
 _TOKEN_KEY = "checkout_token:{token}"
 _TOKEN_TTL = 24 * 3600
 _DRAFT_MARKER = "[PEDIDO EM ABERTO "
+# Caixinha UNIVERSAL (2026-09-10): a mesma página fecha QUALQUER venda —
+# produto da loja (origin "store": estoque ao vivo, pedido nasce pago na
+# Nuvemshop) ou serviço/produto do cadastro/valor combinado (origin
+# "custom": sem estoque, sem endereço quando não há entrega). Em todo
+# canal: card nativo no WhatsApp/Instagram (abre dentro do app), iframe
+# na bolha do widget. Cartão NUNCA vira link externo.
+ORIGIN_STORE = "store"
+ORIGIN_CUSTOM = "custom"
+# Perfil de compra do lead (nome, e-mail, CPF, CEP, número): lembrado por
+# 180 dias pra segunda compra ser um toque. Só dados que ele mesmo digitou.
+_PROFILE_KEY = "checkout_profile:{client_id}:{phone}"
+_PROFILE_TTL = 180 * 86400
 REQUIRED = ("sku", "lead_name", "lead_email", "cep", "number")
 ADDRESS_FIELDS = ("address", "city", "state")  # vêm do CEP (ViaCEP); só pedidos se o CEP não resolver
 _LABELS = {
@@ -106,10 +118,107 @@ def shipping_cents(identity: Any) -> int:
     return 0
 
 
-def missing_fields(action: dict) -> list[str]:
+def parse_price_cents(raw: Any) -> int:
+    """
+    Preço como o dono cadastrou → centavos. "R$ 1.200,00" → 120000;
+    "120,50" → 12050; "300" → 30000; "a partir de 250" → 25000. 0 se não
+    dá pra ler (a IA então precisa mandar amount_cents).
+    """
+    if raw is None:
+        return 0
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, (int, float)):
+        return int(round(float(raw) * 100)) if float(raw) > 0 else 0
+    text = str(raw)
+    m = re.search(r"(\d{1,3}(?:\.\d{3})+|\d+)(?:[.,](\d{1,2}))?", text)
+    if not m:
+        return 0
+    inteiro = m.group(1).replace(".", "")
+    dec = m.group(2) or ""
+    try:
+        cents = int(inteiro) * 100 + (int(dec.ljust(2, "0")) if dec else 0)
+    except ValueError:
+        return 0
+    return max(0, cents)
+
+
+def caixinha_enabled(identity: Any) -> bool:
+    """
+    A Caixinha universal está disponível pra este cliente: vende (digital ou
+    físico), o servidor tem URL pública e há conta Mercado Pago pra cobrar
+    (a do cliente por OAuth, senão a global). Asaas cobra por link próprio.
+    """
+    caps = {str(getattr(c, "value", c)) for c in (getattr(identity, "capabilities_resolved", None) or getattr(identity, "capabilities", None) or [])}
+    if not caps & {"sell_digital", "sell_physical"}:
+        return False
+    from huma.config import PUBLIC_BASE_URL
+    if not (PUBLIC_BASE_URL or "").strip():
+        return False
+    if (getattr(identity, "payment_provider", "") or "") == "asaas":
+        return False
+    from huma.services.payment_service import mp_token_for
+    return bool(mp_token_for(identity))
+
+
+def custom_item(name: str, amount_cents: int, description: str = "", image_url: str = "") -> dict:
+    """Item de valor combinado (serviço, curso, consulta, produto do cadastro) no formato de produto."""
+    name = " ".join(str(name or "").split())[:120] or "Pagamento"
+    return {
+        "name": name, "sku": "", "price_cents": max(0, int(amount_cents or 0)),
+        "image_url": str(image_url or "").strip(), "description": str(description or "").strip()[:300],
+    }
+
+
+def payment_card(product: dict, qty: int, price_cents: int, url: str) -> dict:
+    """Card "Pagar" (serviço/valor combinado): item, total e botão pra Caixinha. Sem frete."""
+    from huma.core.stock_preflight import format_price_brl
+
+    total = format_price_brl(int(price_cents) * int(qty))
+    name = str(product.get("name") or "Pagamento")
+    return {
+        "kind": "checkout",
+        "title": f"{name} x{qty}" if int(qty) > 1 else name,
+        "subtitle": f"{total} · Pix ou cartão · pagamento seguro"[:80],
+        "image_url": str(product.get("image_url") or "").strip(),
+        "url": url,
+        "sku": "",
+        "price": total,
+        "buttons": [{"type": "web_url", "url": url, "title": "Pagar"}],
+    }
+
+
+async def checkout_profile(client_id: str, phone: str) -> dict:
+    """Dados que o lead já digitou numa Caixinha (prefill). {} se nunca comprou ou sem Redis."""
+    try:
+        from huma.services import redis_service as cache
+        raw = await cache.get_value(_PROFILE_KEY.format(client_id=client_id, phone=phone))
+        data = json.loads(raw) if raw else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _save_profile(client_id: str, phone: str, action: dict) -> None:
+    keep = {k: str(action.get(k) or "").strip() for k in ("lead_name", "lead_email", "cpf", "cep", "number", "complement")}
+    keep = {k: v for k, v in keep.items() if v}
+    if not keep:
+        return
+    try:
+        from huma.services import redis_service as cache
+        await cache.set_with_ttl(_PROFILE_KEY.format(client_id=client_id, phone=phone), json.dumps(keep, ensure_ascii=False), ttl=_PROFILE_TTL)
+    except Exception as e:
+        log.warning(f"checkout profile | Redis indisponível | {phone} | {type(e).__name__}: {e}")
+
+
+def missing_fields(action: dict, needs_shipping: bool = True, require_sku: bool = True) -> list[str]:
     """Rótulos (pra pedir ao lead) dos campos obrigatórios que faltam."""
     out = []
     for key in REQUIRED:
+        if key == "sku" and not require_sku:
+            continue
+        if key in ("cep", "number") and not needs_shipping:
+            continue
         if not str(action.get(key) or "").strip():
             out.append(_LABELS[key])
     email = str(action.get("lead_email") or "").strip()
@@ -208,8 +317,17 @@ def checkout_card(product: dict, qty: int, price_cents: int, ship_cents: int, ur
     }
 
 
-async def issue_checkout_link(identity: Any, phone: str, product: dict, qty: int) -> str:
-    """Cria o token da Caixinha e devolve a URL pública (""; sem PUBLIC_BASE_URL ou sem Redis)."""
+async def issue_checkout_link(
+    identity: Any, phone: str, product: dict, qty: int,
+    origin: str = ORIGIN_STORE, needs_shipping: bool = True, description: str = "",
+) -> str:
+    """
+    Cria o token da Caixinha e devolve a URL pública (""; sem PUBLIC_BASE_URL ou sem Redis).
+
+    origin (2026-09-10): "store" = produto da loja (estoque ao vivo, pedido na
+    Nuvemshop); "custom" = serviço/valor combinado. needs_shipping=False
+    esconde o endereço na página.
+    """
     import secrets
 
     from huma.config import PUBLIC_BASE_URL
@@ -224,6 +342,8 @@ async def issue_checkout_link(identity: Any, phone: str, product: dict, qty: int
         "sku": str(product.get("sku") or ""), "qty": int(qty),
         "name": product.get("name", ""), "image_url": product.get("image_url", ""),
         "price_cents": int(product.get("price_cents") or 0),
+        "origin": origin or ORIGIN_STORE, "needs_shipping": bool(needs_shipping),
+        "description": str(description or "")[:300],
     }
     try:
         await cache.set_with_ttl(_TOKEN_KEY.format(token=token), json.dumps(payload, ensure_ascii=False), ttl=_TOKEN_TTL)
@@ -295,11 +415,11 @@ def coupon_is_valid(coupon: dict, subtotal_cents: int) -> bool:
     return True
 
 
-async def resolve_coupon(identity: Any, phone: str, code: str, subtotal_cents: int) -> dict:
+async def resolve_coupon(identity: Any, phone: str, code: str, subtotal_cents: int, store: bool = True) -> dict:
     """
     Cupom digitado na Caixinha → {"status": "ok", "code", "discount_cents", "label"} |
     {"status": "invalid"} | {"status": "none"} (campo vazio).
-    Aceita o cupom único da conversa (HUMA-XXXXX) e cupons da loja.
+    Aceita o cupom único da conversa (HUMA-XXXXX) e, com store=True, cupons da loja.
     """
     code = (code or "").strip().upper()
     if not code:
@@ -310,6 +430,8 @@ async def resolve_coupon(identity: Any, phone: str, code: str, subtotal_cents: i
     if percent > 0 and code == coupon_code_for(getattr(identity, "client_id", ""), phone):
         disc = int(round(subtotal_cents * percent / 100))
         return {"status": "ok", "code": code, "discount_cents": min(disc, subtotal_cents), "label": f"{percent}% da conversa"}
+    if not store:
+        return {"status": "invalid"}
     from huma.providers.inventory.nuvemshop import NuvemshopAdapter
 
     res = await NuvemshopAdapter(identity=identity).get_coupon(code)
@@ -347,10 +469,17 @@ async def prepare_order(token: str, form: dict) -> dict:
     if not data:
         return {"status": "invalid_token"}
     identity = await db.get_client(data["client_id"])
-    if identity is None or not checkout_enabled(identity):
+    if identity is None:
         return {"status": "disabled"}
+    origin = str(data.get("origin") or ORIGIN_STORE)
+    if origin == ORIGIN_STORE:
+        if not checkout_enabled(identity):
+            return {"status": "disabled"}
+    elif not caixinha_enabled(identity):
+        return {"status": "disabled"}
+    needs_shipping = bool(data.get("needs_shipping", origin == ORIGIN_STORE))
     action = {
-        "sku": data["sku"], "qty": data.get("qty", 1),
+        "sku": data.get("sku", ""), "qty": data.get("qty", 1),
         "lead_name": str(form.get("lead_name") or "").strip()[:120],
         "lead_email": str(form.get("lead_email") or "").strip()[:120],
         "cpf": str(form.get("cpf") or "").strip()[:20],
@@ -358,12 +487,14 @@ async def prepare_order(token: str, form: dict) -> dict:
         "number": str(form.get("number") or "").strip()[:20],
         "complement": str(form.get("complement") or "").strip()[:80],
     }
-    missing = missing_fields(action)
-    if not missing:
+    missing = missing_fields(action, needs_shipping=needs_shipping, require_sku=(origin == ORIGIN_STORE))
+    if not missing and needs_shipping:
         action = await enrich_address(action)
         missing = missing_address(action)
     if missing:
         return {"status": "missing", "missing": missing}
+    if origin != ORIGIN_STORE:
+        return await _prepare_custom(token, data, identity, action, needs_shipping, form)
 
     from huma.providers.inventory import get_provider_for
 
@@ -398,8 +529,57 @@ async def prepare_order(token: str, form: dict) -> dict:
         await cache.set_with_ttl(_DRAFT_KEY.format(client_id=data["client_id"], phone=phone), json.dumps(payload, ensure_ascii=False), ttl=_DRAFT_TTL)
     except Exception as e:
         log.warning(f"prepare_order | rascunho não foi pro Redis | {phone} | {type(e).__name__}: {e}")
+    await _save_profile(data["client_id"], phone, action)
     return {"status": "ok", "identity": identity, "client_id": data["client_id"], "phone": phone,
             "payload": payload, "total_cents": total, "product": stock,
+            "discount_cents": discount, "coupon": coupon.get("code", ""), "coupon_label": coupon.get("label", "")}
+
+
+async def _prepare_custom(token: str, data: dict, identity: Any, action: dict, needs_shipping: bool, form: dict) -> dict:
+    """
+    Caixinha universal, origem "custom": serviço, curso, consulta ou produto
+    do cadastro com valor definido. Sem consulta de estoque, sem rascunho de
+    loja; quando pagar, a conversa recebe a confirmação (on_payment_approved).
+    """
+    from huma.core.stock_preflight import format_price_brl
+
+    phone = data["phone"]
+    qty = quantity_of(action)
+    price = int(data.get("price_cents") or 0)
+    if price <= 0:
+        return {"status": "error", "detail": "O valor deste pagamento não foi definido. Volte pra conversa."}
+    ship = shipping_cents(identity) if needs_shipping else 0
+    subtotal = price * qty
+    coupon = await resolve_coupon(identity, phone, str(form.get("coupon") or ""), subtotal, store=False)
+    if coupon.get("status") == "invalid":
+        return {"status": "invalid_coupon"}
+    discount = int(coupon.get("discount_cents") or 0)
+    total = max(0, total_cents(price, qty, ship) - discount)
+    product = {
+        "name": str(data.get("name") or "Pagamento"), "sku": str(data.get("sku") or ""),
+        "image_url": str(data.get("image_url") or ""), "price_cents": price,
+    }
+    if needs_shipping:
+        summary = draft_summary(product, qty, price, ship, action)
+    else:
+        summary = f"{product['name']} x{qty}: {format_price_brl(subtotal)}\nTotal: {format_price_brl(total)}"
+    address = {k: str(action.get(k) or "") for k in ("address", "number", "complement", "neighborhood", "city", "state", "cep")} if needs_shipping else {}
+    payload = {
+        "origin": ORIGIN_CUSTOM, "draft": None, "needs_shipping": needs_shipping, "address": address,
+        "total_cents": total, "summary": summary, "product": product["name"], "qty": qty,
+        "lead_name": action["lead_name"], "lead_email": action["lead_email"],
+        "cpf": re.sub(r"\D", "", action.get("cpf") or ""),
+        "coupon": coupon.get("code", ""), "discount_cents": discount,
+        "description": str(data.get("description") or ""),
+    }
+    try:
+        from huma.services import redis_service as cache
+        await cache.set_with_ttl(_DRAFT_KEY.format(client_id=data["client_id"], phone=phone), json.dumps(payload, ensure_ascii=False), ttl=_DRAFT_TTL)
+    except Exception as e:
+        log.warning(f"prepare_custom | rascunho não foi pro Redis | {phone} | {type(e).__name__}: {e}")
+    await _save_profile(data["client_id"], phone, action)
+    return {"status": "ok", "identity": identity, "client_id": data["client_id"], "phone": phone,
+            "payload": payload, "total_cents": total, "product": product,
             "discount_cents": discount, "coupon": coupon.get("code", ""), "coupon_label": coupon.get("label", "")}
 
 
@@ -416,8 +596,9 @@ async def quote(token: str, form: dict) -> dict:
         return {"status": "invalid_token"}
     qty = int(data.get("qty") or 1)
     subtotal = int(data.get("price_cents") or 0) * qty
-    ship = shipping_cents(identity)
-    coupon = await resolve_coupon(identity, data["phone"], str(form.get("coupon") or ""), subtotal)
+    is_store = str(data.get("origin") or ORIGIN_STORE) == ORIGIN_STORE
+    ship = shipping_cents(identity) if bool(data.get("needs_shipping", is_store)) else 0
+    coupon = await resolve_coupon(identity, data["phone"], str(form.get("coupon") or ""), subtotal, store=is_store)
     if coupon.get("status") == "invalid":
         return {"status": "invalid_coupon", "total_cents": subtotal + ship, "total_display": format_price_brl(subtotal + ship)}
     discount = int(coupon.get("discount_cents") or 0)
@@ -609,6 +790,9 @@ async def payment_status(token: str) -> dict:
     result = await order_result(cid, phone)
     if result.get("number"):
         return {"status": "approved", "order_number": result["number"]}
+    if result.get("paid"):
+        # Origem "custom": não há pedido de loja; o pagamento em si é o fim.
+        return {"status": "approved", "order_number": "", "done": True}
     try:
         from huma.services import redis_service as cache
         mp_id = await cache.get_value(_PAYMENT_KEY.format(client_id=cid, phone=phone))
@@ -762,6 +946,7 @@ async def handle_action(phone: str, action: dict, client_data: Any, conv: Any) -
         method, installments = resolve_payment_method(client_data, action)
         pay_action = {
             "type": "generate_payment",
+            "via": "store_checkout",  # já é a Caixinha: não redirecionar de novo
             "lead_name": action.get("lead_name", ""),
             "description": f"Pedido HUMA: {stock.get('name', '')} x{qty}",
             "amount_cents": total,
@@ -824,6 +1009,46 @@ def _draft_from_history(conv: Any) -> dict | None:
     return None
 
 
+async def _confirm_custom(client_id: str, phone: str, payload: dict, payment_id: str, conv: Any) -> dict:
+    """
+    Caixinha universal (origem "custom") paga: a conversa recebe UMA
+    confirmação com o que foi comprado; sem pedido de loja pra criar.
+    """
+    from huma.core.stock_preflight import format_price_brl
+    from huma.services import db_service as db
+    from huma.services import whatsapp_service as wa
+
+    total = format_price_brl(int(payload.get("total_cents") or 0))
+    product = str(payload.get("product") or "")
+    qty = int(payload.get("qty") or 1)
+    item = f"{product} x{qty}" if qty > 1 else product
+    addr = payload.get("address") if isinstance(payload.get("address"), dict) else {}
+    if payload.get("needs_shipping") and addr.get("address"):
+        entrega = f"{addr.get('address', '')}, {addr.get('number', '')} · {addr.get('city', '')}/{str(addr.get('state', '')).upper()}"
+        msg = f"Pagamento de {total} confirmado. {item} vai pra {entrega}. Te aviso quando sair."
+    else:
+        msg = f"Pagamento de {total} confirmado. {item} está garantido, já vou cuidar de tudo pra você."
+    try:
+        await wa.send_text(phone, msg, client_id=client_id)
+    except Exception as e:
+        log.error(f"caixinha | confirmação ao lead falhou | {phone} | {type(e).__name__}: {e}")
+    try:
+        from huma.services import redis_service as cache
+        await cache.delete_key(_DRAFT_KEY.format(client_id=client_id, phone=phone))
+        await cache.set_with_ttl(_RESULT_KEY.format(client_id=client_id, phone=phone),
+                                 json.dumps({"number": "", "paid": True}), ttl=_DRAFT_TTL)
+    except Exception:
+        pass
+    try:
+        conv.history.append({"role": "assistant", "content": msg})
+        conv.history.append({"role": "assistant", "content": f"[PAGAMENTO CONFIRMADO NA CAIXINHA — {item}, {total}, pagamento {payment_id}. NÃO cobre de novo.]"})
+        await db.save_conversation(conv)
+    except Exception as e:
+        log.error(f"caixinha | histórico da confirmação falhou | {phone} | {type(e).__name__}: {e}")
+    log.info(f"CAIXINHA PAGA | {client_id} | {phone} | {item} | {total} | pagamento={payment_id}")
+    return {"status": "confirmed", "total_cents": int(payload.get("total_cents") or 0)}
+
+
 async def on_payment_approved(client_id: str, phone: str, payment_id: str) -> dict:
     """
     Pix da conversa caiu → pedido nasce PAGO na Nuvemshop com a nota da HUMA.
@@ -844,6 +1069,8 @@ async def on_payment_approved(client_id: str, phone: str, payment_id: str) -> di
         conv = await db.get_conversation(client_id, phone)
         if payload is None:
             payload = _draft_from_history(conv)
+        if payload and str(payload.get("origin") or ORIGIN_STORE) != ORIGIN_STORE:
+            return await _confirm_custom(client_id, phone, payload, payment_id, conv)
         if not payload or not isinstance(payload.get("draft"), dict):
             return {"status": "no_draft"}
 

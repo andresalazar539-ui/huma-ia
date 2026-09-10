@@ -1810,7 +1810,7 @@ def _build_reply_tool_compact(
         "- type='cancel_appointment': (sem campos — só emita quando lead insistiu em cancelar após você oferecer alternativa E perguntar motivo; sistema deleta o evento no Calendar)",
     ]
     SELL_LINES = [
-        "- type='generate_payment': lead_name, description, amount_cents, payment_method, lead_cpf (só boleto)",
+        "- type='generate_payment': lead_name, description, amount_cents, payment_method ('pix' | 'credit_card' | 'boleto'), lead_cpf (só boleto), installments (só cartão). Emita QUANDO o lead decidir comprar um serviço/produto com valor definido (do cadastro ou combinado nesta conversa). 'pix' → o Pix (copia e cola) aparece aqui na conversa. 'credit_card' → o sistema manda um card 'Pagar' que abre a página segura da HUMA dentro do app, com Pix e cartão; NÃO peça dados de cartão nem CPF no chat. description = o que está sendo comprado, como o lead vai reconhecer. NUNCA invente valor: só amount_cents do cadastro ou combinado. NUNCA cole link nem QR na mensagem.",
     ]
     PHYSICAL_LINES = [
         "- type='check_stock': query (texto livre ou SKU). Emita quando o lead perguntar se tem o produto ('tem cadeira gamer preta?', 'a cor azul tá disponível?'). Sistema consulta inventário e devolve preço e estoque REAIS. NUNCA invente disponibilidade nem preço — APENAS emita a action.",

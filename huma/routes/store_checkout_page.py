@@ -90,24 +90,38 @@ def _price(cents: int) -> str:
     return format_price_brl(cents)
 
 
-def render_form(token: str, data: dict, identity) -> str:
-    """HTML da Caixinha v2 (puro, testável): dados + pagamento numa tela."""
+def render_form(token: str, data: dict, identity, prefill: dict | None = None) -> str:
+    """
+    HTML da Caixinha (puro, testável): dados + pagamento numa tela.
+
+    Universal (2026-09-10): origem "store" (produto da loja, com entrega e
+    cupom da loja) ou "custom" (serviço/valor combinado: sem endereço quando
+    needs_shipping=False, sem cupom da loja). `prefill` = o que o lead já
+    digitou numa compra anterior (segunda compra é um toque).
+    """
+    prefill = prefill if isinstance(prefill, dict) else {}
+    origin = str(data.get("origin") or sc.ORIGIN_STORE)
+    is_store = origin == sc.ORIGIN_STORE
+    needs_shipping = bool(data.get("needs_shipping", is_store))
     name = html.escape(str(data.get("name") or "Produto"))
     qty = int(data.get("qty") or 1)
     price = int(data.get("price_cents") or 0)
-    ship = sc.shipping_cents(identity)
+    ship = sc.shipping_cents(identity) if needs_shipping else 0
     total = sc.total_cents(price, qty, ship)
     img = str(data.get("image_url") or "").strip()
-    head_img = f'<img src="{html.escape(img)}" alt="">' if img else '<div class="ph">🛍️</div>'
+    head_img = f'<img src="{html.escape(img)}" alt="">' if img else f'<div class="ph">{"🛍️" if is_store else "✓"}</div>'
     store = html.escape(getattr(identity, "business_name", "") or "Loja")
     accepted = [m for m in (getattr(identity, "accepted_payment_methods", None) or []) if m in ("pix", "credit_card")] or ["pix"]
     max_inst = max(1, int(getattr(identity, "max_installments", 1) or 1))
     inst_opts = "".join(f'<option value="{n}">{n}x de {_price(round(total / n))}{" sem juros" if n > 1 else ""}</option>' for n in range(1, max_inst + 1))
-    frete = "frete grátis" if ship == 0 else f"frete {_price(ship)}"
-    has_pix = "pix" in accepted
+    if needs_shipping:
+        frete = "frete grátis" if ship == 0 else f"frete {_price(ship)}"
+    else:
+        frete = html.escape(str(data.get("description") or "")[:60]) or "pagamento seguro"
     # Public key da conta que vai cobrar (a do cliente por OAuth, senão a da HUMA):
     # o token do cartão só vale pra conta dona da public_key (2026-09-10).
     public_key = (getattr(identity, "mercadopago_public_key", "") or "").strip() or MERCADOPAGO_PUBLIC_KEY
+    has_pix = "pix" in accepted
     has_card = "credit_card" in accepted and bool(public_key)
     tabs = ""
     if has_pix and has_card:
@@ -123,22 +137,31 @@ def render_form(token: str, data: dict, identity) -> str:
   <label>Parcelas<select id="inst">{inst_opts}</select></label>
   <div class="wait">Crédito ou débito. O número do cartão vai criptografado direto pro Mercado Pago; a HUMA não vê nem guarda.</div>
   <button type="button" class="go" id="btn-card">Pagar {_price(total)}</button></div>""" if has_card else ""
-    body = f"""
-<div class="store">{store} · pagamento seguro pela HUMA</div>
-<div class="head">{head_img}<div><div class="t">{name} x{qty}</div><div class="s">{_price(price * qty)} · {frete}</div></div></div>
-<form id="f" autocomplete="on" onsubmit="return false">
-<div class="sec"><h3>Seus dados</h3>
-  <label>Nome completo<input name="lead_name" required autocomplete="name" placeholder="Como está no documento"></label>
-  <label>E-mail<input name="lead_email" type="email" required autocomplete="email" placeholder="pra receber o pedido"></label>
-  <label>CPF<input name="cpf" inputmode="numeric" placeholder="000.000.000-00"></label>
-  <div class="row3"><label>CEP<input name="cep" id="cep" inputmode="numeric" required placeholder="00000-000"></label><label>Número<input name="number" required placeholder="nº"></label></div>
+
+    def _v(key: str) -> str:
+        return html.escape(str(prefill.get(key) or ""), quote=True)
+
+    address_block = f"""
+  <div class="row3"><label>CEP<input name="cep" id="cep" inputmode="numeric" required placeholder="00000-000" value="{_v('cep')}"></label><label>Número<input name="number" required placeholder="nº" value="{_v('number')}"></label></div>
   <div class="addr" id="addr"></div>
-  <label>Complemento<input name="complement" placeholder="apto, bloco (opcional)"></label>
-</div>
+  <label>Complemento<input name="complement" placeholder="apto, bloco (opcional)" value="{_v('complement')}"></label>""" if needs_shipping else ""
+    coupon_block = """
 <div class="sec"><h3>Cupom</h3>
   <div class="row3"><label>Código<input name="coupon" id="coupon" autocomplete="off" placeholder="tem cupom?" style="text-transform:uppercase"></label><label>&nbsp;<button type="button" class="go" id="btn-coupon" style="margin:0;padding:11px">Aplicar</button></label></div>
   <div class="addr" id="coupon-msg"></div>
-</div>
+</div>""" if is_store else ""
+    item_line = f"{name} x{qty}" if (is_store or qty > 1) else name
+    lembrado = '<div class="addr">Seus dados da última compra já estão aqui. Confere e paga.</div>' if prefill.get("lead_name") else ""
+    titulo = "Finalizar pedido" if needs_shipping else "Pagar"
+    body = f"""
+<div class="store">{store} · pagamento seguro pela HUMA</div>
+<div class="head">{head_img}<div><div class="t">{item_line}</div><div class="s">{_price(price * qty)} · {frete}</div></div></div>
+<form id="f" autocomplete="on" onsubmit="return false">
+<div class="sec"><h3>Seus dados</h3>{lembrado}
+  <label>Nome completo<input name="lead_name" required autocomplete="name" placeholder="Como está no documento" value="{_v('lead_name')}"></label>
+  <label>E-mail<input name="lead_email" type="email" required autocomplete="email" placeholder="pra receber a confirmação" value="{_v('lead_email')}"></label>
+  <label>CPF<input name="cpf" inputmode="numeric" placeholder="000.000.000-00" value="{_v('cpf')}"></label>{address_block}
+</div>{coupon_block}
 <div class="sec"><h3>Pagamento</h3>{tabs}{pix_pane}{card_pane}
   <div class="total" id="discount-row" style="display:none;border-top:0;padding-top:0"><span>Desconto</span><b id="discount"></b></div>
   <div class="total"><span>Total</span><b id="total">{_price(total)}</b></div>
@@ -150,6 +173,7 @@ def render_form(token: str, data: dict, identity) -> str:
 <script>
 (function(){{
   var T=location.pathname, f=document.getElementById('f'), err=document.getElementById('err'), addr=document.getElementById('addr'), cep=document.getElementById('cep'), res=document.getElementById('result');
+  var SHIP={'true' if needs_shipping else 'false'}, STORE={'true' if is_store else 'false'};
   var PK={_json.dumps(public_key or "")}, mp=null;
   try{{ if(PK && window.MercadoPago) mp=new window.MercadoPago(PK); }}catch(e){{}}
   document.querySelectorAll('.tab').forEach(function(t){{t.addEventListener('click',function(){{
@@ -157,8 +181,9 @@ def render_form(token: str, data: dict, identity) -> str:
     document.querySelectorAll('.pane').forEach(function(p){{p.classList.remove('on')}});
     document.getElementById('pane-'+t.dataset.t).classList.add('on');
   }});}});
-  cep.addEventListener('blur',function(){{var c=cep.value.replace(/\\D/g,'');if(c.length!==8)return;addr.textContent='Buscando endereço…';
-    fetch('https://viacep.com.br/ws/'+c+'/json/').then(function(r){{return r.json()}}).then(function(d){{addr.textContent=d.erro?'CEP não encontrado':(d.logradouro||'')+(d.bairro?', '+d.bairro:'')+' · '+d.localidade+'/'+d.uf}}).catch(function(){{addr.textContent=''}});}});
+  function lookupCep(){{if(!cep)return;var c=cep.value.replace(/\\D/g,'');if(c.length!==8)return;addr.textContent='Buscando endereço…';
+    fetch('https://viacep.com.br/ws/'+c+'/json/').then(function(r){{return r.json()}}).then(function(d){{addr.textContent=d.erro?'CEP não encontrado':(d.logradouro||'')+(d.bairro?', '+d.bairro:'')+' · '+d.localidade+'/'+d.uf}}).catch(function(){{addr.textContent=''}});}}
+  if(cep){{cep.addEventListener('blur',lookupCep); if(cep.value) lookupCep();}}
   function data(){{var b={{}};new FormData(f).forEach(function(v,k){{b[k]=v}});return b;}}
   var TOTAL={total}, MAXI={max_inst};
   function brl(c){{return 'R$ '+(c/100).toFixed(2).replace('.',',').replace(/\\B(?=(\\d{{3}})+(?!\\d))/g,'.');}}
@@ -166,16 +191,18 @@ def render_form(token: str, data: dict, identity) -> str:
     var bp=document.getElementById('btn-pix');if(bp)bp.textContent='Gerar Pix de '+brl(c);var bc=document.getElementById('btn-card');if(bc)bc.textContent='Pagar '+brl(c);
     var sel=document.getElementById('inst');if(sel){{sel.innerHTML='';for(var n=1;n<=MAXI;n++){{var o=document.createElement('option');o.value=n;o.textContent=n+'x de '+brl(Math.round(c/n))+(n>1?' sem juros':'');sel.appendChild(o);}}}}}}
   var bcp=document.getElementById('btn-coupon'), cmsg=document.getElementById('coupon-msg');
-  bcp.addEventListener('click',function(){{var code=(document.getElementById('coupon').value||'').trim().toUpperCase();document.getElementById('coupon').value=code;cmsg.textContent='Verificando…';
+  if(bcp) bcp.addEventListener('click',function(){{var code=(document.getElementById('coupon').value||'').trim().toUpperCase();document.getElementById('coupon').value=code;cmsg.textContent='Verificando…';
     post('/coupon',{{coupon:code}}).then(function(o){{if(o.status==='ok'){{setTotal(o.total_cents,o.discount_cents||0);cmsg.textContent=o.discount_cents?('Cupom '+o.coupon+' aplicado ('+o.label+').'):'';}}else{{setTotal(o.total_cents||TOTAL,0);cmsg.textContent=code?'Cupom inválido ou vencido.':'';}}}}).catch(function(){{cmsg.textContent='Não consegui validar agora.';}});}});
-  function check(){{var d=data();if(!d.lead_name||!d.lead_email||!d.cep||!d.number){{err.textContent='Preencha nome, e-mail, CEP e número.';return null;}}err.textContent='';return d;}}
+  function check(){{var d=data();if(!d.lead_name||!d.lead_email||(SHIP&&(!d.cep||!d.number))){{err.textContent=SHIP?'Preencha nome, e-mail, CEP e número.':'Preencha nome e e-mail.';return null;}}err.textContent='';return d;}}
   function post(path,body){{return fetch(T+path,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}}).then(function(r){{return r.json()}});}}
   function fail(o){{err.textContent=o.detail||(o.status==='missing'?'Preencha: '+(o.missing||[]).join(', ')+'.':o.status==='unavailable'?'Esse item acabou de sair do estoque.':'Não deu certo agora. Tente de novo.');}}
-  function showPix(o){{f.style.display='none';res.innerHTML='<div class="done"><div class="ok">✓</div><h2>Pix de '+o.amount_display+' gerado</h2><p>Pague pelo app do seu banco. Assim que cair, o pedido é criado em <b>{store}</b> e você recebe a confirmação aqui e na conversa.</p>'+(o.qr_code_base64?'<img class="qr" src="data:image/png;base64,'+o.qr_code_base64+'" alt="QR Pix">':'')+'<div class="pix" id="pix">'+o.qr_code_text+'</div><button class="btn" id="copy">Copiar código Pix</button><div class="wait" id="w">Aguardando pagamento…</div></div>';
+  function showPix(o){{f.style.display='none';res.innerHTML='<div class="done"><div class="ok">✓</div><h2>Pix de '+o.amount_display+' gerado</h2><p>Pague pelo app do seu banco. Assim que cair, '+(STORE?'o pedido é criado em <b>{store}</b> e ':'')+'você recebe a confirmação aqui e na conversa.</p>'+(o.qr_code_base64?'<img class="qr" src="data:image/png;base64,'+o.qr_code_base64+'" alt="QR Pix">':'')+'<div class="pix" id="pix">'+o.qr_code_text+'</div><button class="btn" id="copy">Copiar código Pix</button><div class="wait" id="w">Aguardando pagamento…</div></div>';
     document.getElementById('copy').addEventListener('click',function(){{navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('pix').textContent);this.textContent='Código copiado';}});
     poll();}}
-  function showOk(n){{f.style.display='none';res.innerHTML='<div class="done"><div class="ok">✓</div><h2>Pagamento confirmado</h2><p>'+(n?'Pedido <b>#'+n+'</b> criado em {store}. A confirmação já está na sua conversa. Pode voltar pro chat.':'{store} está registrando seu pedido. O número chega na sua conversa em instantes.')+'</p></div>';if(!n){{var tries=0;(function again(){{tries++;fetch(T+'/status').then(function(r){{return r.json()}}).then(function(s){{if(s.order_number)showOk(s.order_number);else if(tries<20)setTimeout(again,3000);}}).catch(function(){{if(tries<20)setTimeout(again,5000);}});}})();}}}}
-  function poll(){{fetch(T+'/status').then(function(r){{return r.json()}}).then(function(s){{if(s.status==='approved'){{showOk(s.order_number);}}else if(s.status==='rejected'){{var w=document.getElementById('w');if(w)w.textContent='Pagamento não aprovado. Volte pra conversa.';}}else setTimeout(poll,3000);}}).catch(function(){{setTimeout(poll,5000)}});}}
+  function showOk(n,done){{f.style.display='none';
+    if(done||!STORE){{res.innerHTML='<div class="done"><div class="ok">✓</div><h2>Pagamento confirmado</h2><p>Tudo certo. A confirmação já está na sua conversa com <b>{store}</b>. Pode voltar pro chat.</p></div>';return;}}
+    res.innerHTML='<div class="done"><div class="ok">✓</div><h2>Pagamento confirmado</h2><p>'+(n?'Pedido <b>#'+n+'</b> criado em {store}. A confirmação já está na sua conversa. Pode voltar pro chat.':'{store} está registrando seu pedido. O número chega na sua conversa em instantes.')+'</p></div>';if(!n){{var tries=0;(function again(){{tries++;fetch(T+'/status').then(function(r){{return r.json()}}).then(function(s){{if(s.order_number||s.done)showOk(s.order_number,s.done);else if(tries<20)setTimeout(again,3000);}}).catch(function(){{if(tries<20)setTimeout(again,5000);}});}})();}}}}
+  function poll(){{fetch(T+'/status').then(function(r){{return r.json()}}).then(function(s){{if(s.status==='approved'){{showOk(s.order_number,s.done);}}else if(s.status==='rejected'){{var w=document.getElementById('w');if(w)w.textContent='Pagamento não aprovado. Volte pra conversa.';}}else setTimeout(poll,3000);}}).catch(function(){{setTimeout(poll,5000)}});}}
   var bp=document.getElementById('btn-pix'); if(bp) bp.addEventListener('click',function(){{var d=check();if(!d)return;bp.disabled=true;bp.textContent='Gerando…';post('/pix',d).then(function(o){{if(o.status==='ok')showPix(o);else{{fail(o);bp.disabled=false;bp.textContent='Gerar Pix';}}}}).catch(function(){{fail({{}});bp.disabled=false;bp.textContent='Gerar Pix';}});}});
   var bc=document.getElementById('btn-card'); if(bc) bc.addEventListener('click',function(){{var d=check();if(!d)return;
     if(!mp){{err.textContent='Cartão indisponível agora. Use Pix.';return;}}
@@ -185,13 +212,13 @@ def render_form(token: str, data: dict, identity) -> str:
     mp.getPaymentMethods({{bin:num.slice(0,6)}}).then(function(pms){{var pm=pms&&pms.results&&pms.results[0];if(!pm)throw new Error('Não reconheci a bandeira. Confere o número.');
       return mp.createCardToken({{cardNumber:num,cardholderName:nm,cardExpirationMonth:ex.slice(0,2),cardExpirationYear:'20'+ex.slice(2),securityCode:cv,identificationType:'CPF',identificationNumber:cpf}}).then(function(tk){{if(!tk||!tk.id)throw new Error('Cartão não validado. Confere os dados.');
         d.card_token_id=tk.id; d.payment_method_id=pm.id; d.issuer_id=(pm.issuer&&pm.issuer.id)||''; d.installments=document.getElementById('inst').value; return post('/card',d);}});
-    }}).then(function(o){{if(o.status==='approved')showOk(o.order_number);else if(o.status==='in_process'){{f.style.display='none';res.innerHTML='<div class="done"><div class="ok">…</div><h2>Pagamento em análise</h2><p>O banco está analisando. Assim que aprovar, o pedido é criado em {store} e a confirmação chega na sua conversa.</p></div>';}}else{{fail(o);bc.disabled=false;bc.textContent='Pagar';}}
+    }}).then(function(o){{if(o.status==='approved')showOk(o.order_number,!STORE);else if(o.status==='in_process'){{f.style.display='none';res.innerHTML='<div class="done"><div class="ok">…</div><h2>Pagamento em análise</h2><p>O banco está analisando. Assim que aprovar, '+(STORE?'o pedido é criado em {store} e ':'')+'a confirmação chega na sua conversa.</p></div>';}}else{{fail(o);bc.disabled=false;bc.textContent='Pagar';}}
     }}).catch(function(e){{err.textContent=(e&&e.message)||'Não deu certo. Confere os dados do cartão.';bc.disabled=false;bc.textContent='Pagar';}});
   }});
 }})();
 </script>"""
     head = '<script src="https://sdk.mercadopago.com/js/v2"></script>' if has_card else ""
-    return _shell(f"Finalizar pedido · {store}", body, head)
+    return _shell(f"{titulo} · {store}", body, head)
 
 
 def render_error(title: str, detail: str) -> str:
@@ -216,7 +243,8 @@ async def checkout_page(token: str, request: Request) -> HTMLResponse:
         return HTMLResponse(render_error("Link expirado", "Volte pra conversa e peça um novo link pra finalizar o pedido."), status_code=404)
     if identity is None:
         return HTMLResponse(render_error("Loja não encontrada", ""), status_code=404)
-    return HTMLResponse(render_form(token, data, identity))
+    prefill = await sc.checkout_profile(data.get("client_id", ""), data.get("phone", ""))
+    return HTMLResponse(render_form(token, data, identity, prefill))
 
 
 async def _json_body(request: Request) -> dict:

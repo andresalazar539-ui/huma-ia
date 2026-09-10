@@ -74,11 +74,19 @@ class TestBuildWebIdentity:
         base.update(kwargs)
         return ClientIdentity(**base)
 
-    def test_capabilities_vazias(self):
-        """Canal web não oferece agendar/pagar — o tool nem lista as actions."""
+    def test_so_capabilities_de_venda(self):
+        """
+        Canal web não agenda nem qualifica (o tool nem lista essas actions),
+        mas VENDE (Caixinha universal, 2026-09-10): sell_* fica.
+        """
         web_id = web_channel.build_web_identity(self._identity())
-        assert web_id.capabilities == []
-        assert web_id.capabilities_resolved == set()
+        assert web_id.capabilities == [Capability.SELL_DIGITAL]
+        assert web_id.capabilities_resolved == {Capability.SELL_DIGITAL}
+        # Quem não vende continua sem action nenhuma.
+        sem_venda = web_channel.build_web_identity(self._identity(enable_payments=False))
+        assert sem_venda.capabilities == []
+        assert "[CANAL: CHAT DO SITE]" in sem_venda.custom_rules and "fechar a venda" not in sem_venda.custom_rules
+        assert "fechar a venda aqui mesmo" in web_id.custom_rules
         # Original não pode ser mutado (model_copy).
         original = self._identity()
         web_channel.build_web_identity(original)
@@ -97,6 +105,8 @@ class TestBuildWebIdentity:
         """Instrução nova no prompt deve ser SE/QUANDO, nunca SEMPRE."""
         assert "SE o lead" in web_channel._WEB_CHANNEL_RULES
         assert "SEMPRE" not in web_channel._WEB_CHANNEL_RULES
+        assert "SE o lead" in web_channel._WEB_CHANNEL_RULES_SELLS
+        assert "SEMPRE" not in web_channel._WEB_CHANNEL_RULES_SELLS
 
     def test_deterministico_para_cache(self):
         """Mesma identidade → mesmo custom_rules (bloco estático cacheável)."""
@@ -151,7 +161,9 @@ class TestReplyToolSemActions:
         tool = _build_reply_tool_compact(MessagingStyle.SPLIT, web_id)
         desc = tool["input_schema"]["properties"]["actions"]["description"]
         assert "create_appointment" not in desc
-        assert "generate_payment" not in desc
         assert "check_availability" not in desc
+        assert "handoff_to_human" not in desc
+        # Caixinha universal (2026-09-10): o site vende — generate_payment fica.
+        assert "generate_payment" in desc
         # Regra #1 do CLAUDE.md: a instrução estrutural de 'type' permanece.
         assert "type" in desc

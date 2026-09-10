@@ -134,6 +134,23 @@
     margin-top: 4px; background: transparent; border: 1px solid var(--paper-edge);
     color: inherit; font-size: 13px; padding: 7px 10px; border-radius: 10px; cursor: pointer;
   }
+  /* Caixinha na bolha (2026-09-10): o pagamento abre DENTRO do widget */
+  .card.checkout { flex-basis: 250px; border-color: var(--terracotta); }
+  .card .pay {
+    margin-top: 6px; border: none; background: var(--terracotta); color: #FFF9F5;
+    font-size: 13px; font-weight: 600; padding: 9px 10px; border-radius: 10px; cursor: pointer; width: auto; height: auto;
+  }
+  .sheet {
+    position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column;
+    background: var(--paper); animation: rise .18s ease-out;
+  }
+  .sheet .bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 14px; background: var(--paper-raised); border-bottom: 1px solid var(--paper-edge);
+    font-size: 13px; color: var(--ink-3); flex-shrink: 0;
+  }
+  .sheet .bar button { width: auto; height: auto; border-radius: 10px; padding: 6px 12px; font-size: 13px; background: transparent; color: var(--ink); border: 1px solid var(--paper-edge); }
+  .sheet iframe { flex: 1; width: 100%; border: 0; background: var(--paper); }
   .typing {
     align-self: flex-start;
     background: var(--paper-raised);
@@ -198,7 +215,7 @@
   .powered a { color: var(--ink-4); }
 </style>
 </head>
-<body>
+<body style="position:relative">
   <header>
     <div class="avatar" id="avatar">·</div>
     <div class="head-txt">
@@ -313,17 +330,28 @@
       var t = document.createElement('div'); t.className = 'title'; t.textContent = c.title || '';
       body.appendChild(t);
       if (c.subtitle) { var s = document.createElement('div'); s.className = 'sub'; s.textContent = c.subtitle; body.appendChild(s); }
-      if (c.url) {
-        var a = document.createElement('a'); a.className = 'buy'; a.href = c.url; a.target = '_blank'; a.rel = 'noopener';
-        a.textContent = 'Comprar'; body.appendChild(a);
+      if (c.kind === 'checkout' && c.url) {
+        // Caixinha da HUMA: Pix e cartão abrem AQUI, dentro do chat (2026-09-10).
+        card.classList.add('checkout');
+        var label = (c.buttons && c.buttons[0] && c.buttons[0].title) || 'Finalizar pedido';
+        var pay = document.createElement('button'); pay.type = 'button'; pay.className = 'pay'; pay.textContent = label;
+        pay.addEventListener('click', function () { openSheet(c.url, c.title || label); });
+        body.appendChild(pay);
+      } else if (c.kind === 'order') {
+        // resumo do pedido: só leitura
+      } else {
+        if (c.url) {
+          var a = document.createElement('a'); a.className = 'buy'; a.href = c.url; a.target = '_blank'; a.rel = 'noopener';
+          a.textContent = 'Comprar'; body.appendChild(a);
+        }
+        var w = document.createElement('button'); w.type = 'button'; w.className = 'want'; w.textContent = 'Quero esse';
+        w.addEventListener('click', function () {
+          if (sendBtn.disabled) return;
+          input.value = 'Quero o ' + (c.title || 'produto');
+          form.dispatchEvent(new Event('submit', { cancelable: true }));
+        });
+        body.appendChild(w);
       }
-      var w = document.createElement('button'); w.type = 'button'; w.className = 'want'; w.textContent = 'Quero esse';
-      w.addEventListener('click', function () {
-        if (sendBtn.disabled) return;
-        input.value = 'Quero o ' + (c.title || 'produto');
-        form.dispatchEvent(new Event('submit', { cancelable: true }));
-      });
-      body.appendChild(w);
       card.appendChild(body);
       wrap.appendChild(card);
     });
@@ -334,6 +362,28 @@
       saveHistory(history);
     }
     return wrap;
+  }
+
+  // Caixinha na bolha: painel com a página segura da HUMA por cima do chat.
+  var sheetEl = null;
+  function openSheet(url, title) {
+    closeSheet();
+    var sh = document.createElement('div'); sh.className = 'sheet';
+    var bar = document.createElement('div'); bar.className = 'bar';
+    var t = document.createElement('span'); t.textContent = 'Pagamento seguro · ' + (title || '');
+    var x = document.createElement('button'); x.type = 'button'; x.textContent = 'Voltar ao chat';
+    x.addEventListener('click', closeSheet);
+    bar.appendChild(t); bar.appendChild(x);
+    var fr = document.createElement('iframe'); fr.src = url; fr.title = 'Pagamento seguro';
+    fr.setAttribute('allow', 'payment; clipboard-write');
+    sh.appendChild(bar); sh.appendChild(fr);
+    document.body.appendChild(sh);
+    sheetEl = sh;
+  }
+  function closeSheet() {
+    if (sheetEl && sheetEl.parentNode) sheetEl.parentNode.removeChild(sheetEl);
+    sheetEl = null;
+    pollOnce();
   }
 
   var typingEl = null;
