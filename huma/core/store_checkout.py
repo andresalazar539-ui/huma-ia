@@ -143,11 +143,27 @@ def parse_price_cents(raw: Any) -> int:
     return max(0, cents)
 
 
+RAIL_MERCADOPAGO = "mercadopago"
+RAIL_ASAAS = "asaas"
+
+
+def payment_rail(identity: Any) -> str:
+    """
+    Quem processa o dinheiro da Caixinha deste cliente (2026-09-10):
+    "asaas" (chave própria conectada no Cockpit) ou "mercadopago" (conta do
+    cliente por OAuth, senão a global). O lead nunca vê o provedor além do
+    rodapé "processado por …" (exigência regulatória).
+    """
+    if (getattr(identity, "payment_provider", "") or "") == "asaas" and (getattr(identity, "asaas_api_key", "") or "").strip():
+        return RAIL_ASAAS
+    return RAIL_MERCADOPAGO
+
+
 def caixinha_enabled(identity: Any) -> bool:
     """
     A Caixinha universal está disponível pra este cliente: vende (digital ou
-    físico), o servidor tem URL pública e há conta Mercado Pago pra cobrar
-    (a do cliente por OAuth, senão a global). Asaas cobra por link próprio.
+    físico), o servidor tem URL pública e há trilho pra cobrar (Asaas do
+    cliente, ou Mercado Pago do cliente/global).
     """
     caps = {str(getattr(c, "value", c)) for c in (getattr(identity, "capabilities_resolved", None) or getattr(identity, "capabilities", None) or [])}
     if not caps & {"sell_digital", "sell_physical"}:
@@ -155,8 +171,8 @@ def caixinha_enabled(identity: Any) -> bool:
     from huma.config import PUBLIC_BASE_URL
     if not (PUBLIC_BASE_URL or "").strip():
         return False
-    if (getattr(identity, "payment_provider", "") or "") == "asaas":
-        return False
+    if payment_rail(identity) == RAIL_ASAAS:
+        return True
     from huma.services.payment_service import mp_token_for
     return bool(mp_token_for(identity))
 
@@ -620,20 +636,130 @@ def _mp_payer(payload: dict, phone: str) -> dict:
 
 
 async def _record_store_payment(client_id: str, phone: str, payload: dict, mp_id: str, ext_ref: str,
-                                method: str, status: str, extra: dict | None = None) -> None:
+                                method: str, status: str, extra: dict | None = None,
+                                provider: str = RAIL_MERCADOPAGO) -> None:
     from huma.services.payment_service import _save_payment_record
 
+    is_store = str(payload.get("origin") or ORIGIN_STORE) == ORIGIN_STORE
     await _save_payment_record(
         client_id=client_id, phone=phone if not phone.startswith(("ig:", "web:")) else "",
         lead_name=payload.get("lead_name", ""), mp_payment_id=mp_id, external_reference=ext_ref,
         method=method, amount_cents=int(payload.get("total_cents") or 0),
-        description=f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}"
+        description=(f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}" if is_store
+                     else f"{payload.get('product', 'Pagamento')}" + (f" x{payload.get('qty')}" if int(payload.get("qty") or 1) > 1 else ""))
         + (f" · cupom {payload['coupon']}" if payload.get("coupon") else ""),
         status=status,
-        metadata={"provider": "mercadopago", "store_order": True, "conversation_phone": phone,
+        metadata={"provider": provider, "store_order": is_store, "conversation_phone": phone,
                   "coupon": payload.get("coupon", ""), "discount_cents": int(payload.get("discount_cents") or 0),
                   **(extra or {})},
     )
+
+
+def _asaas_description(prep: dict) -> str:
+    payload = prep["payload"]
+    if str(payload.get("origin") or ORIGIN_STORE) == ORIGIN_STORE:
+        return f"Pedido HUMA: {payload.get('product', '')} x{payload.get('qty', 1)}"
+    return str(payload.get("product") or "Pagamento")
+
+
+async def _asaas_customer(prep: dict, form: dict) -> dict:
+    """Cliente do Asaas pro lead desta Caixinha (CPF obrigatório nesse trilho)."""
+    from huma.providers.payment import asaas
+
+    identity, payload, phone = prep["identity"], prep["payload"], prep["phone"]
+    addr = payload.get("address") if isinstance(payload.get("address"), dict) else {}
+    return await asaas.find_or_create_customer(
+        identity.asaas_api_key,
+        name=payload.get("lead_name", ""), cpf_cnpj=payload.get("cpf", ""), email=payload.get("lead_email", ""),
+        mobile_phone=str(form.get("phone") or ("" if phone.startswith(("ig:", "web:")) else phone)),
+        postal_code=str(addr.get("cep") or form.get("cep") or ""), address_number=str(addr.get("number") or form.get("number") or ""),
+        external_reference=f"huma:{prep['client_id']}:{phone}"[:255],
+    )
+
+
+async def _pay_pix_asaas(prep: dict, form: dict) -> dict:
+    """Pix pelo Asaas do cliente, desenhado na Caixinha (QR + copia e cola)."""
+    from huma.core.stock_preflight import format_price_brl
+    from huma.providers.payment import asaas
+    from huma.services.payment_service import _build_external_reference
+
+    payload, phone, cid = prep["payload"], prep["phone"], prep["client_id"]
+    if not payload.get("cpf"):
+        return {"status": "missing", "missing": ["CPF"], "detail": "Pra gerar o Pix preciso do seu CPF."}
+    cust = await _asaas_customer(prep, form)
+    if cust.get("status") != "ok":
+        return {"status": "error", "detail": cust.get("user_message") or "Não consegui gerar o Pix agora. Tente de novo."}
+    ext_ref = _build_external_reference(cid, phone)
+    res = await asaas.create_pix_charge(
+        prep["identity"].asaas_api_key, customer_id=cust["id"], value_cents=prep["total_cents"],
+        description=_asaas_description(prep), external_reference=ext_ref,
+    )
+    if res.get("status") != "ok":
+        log.error(f"pay_pix asaas | falhou | {phone} | {res.get('detail', '')}")
+        return {"status": "error", "detail": "Não consegui gerar o Pix agora. Tente de novo."}
+    await _record_store_payment(cid, phone, payload, res["payment_id"], ext_ref, "pix", "pending", provider=RAIL_ASAAS)
+    await _remember_payment(cid, phone, res["payment_id"])
+    log.info(f"Caixinha Pix (Asaas) | {phone} | id={res['payment_id']} | total={prep['total_cents']}")
+    return {"status": "ok", "payment_id": res["payment_id"], "qr_code_text": res["qr_code_text"],
+            "qr_code_base64": res["qr_code_base64"], "amount_display": format_price_brl(prep["total_cents"])}
+
+
+async def _pay_card_asaas(prep: dict, form: dict, remote_ip: str) -> dict:
+    """Cartão pelo Asaas do cliente, digitado na Caixinha: tokeniza e cobra na hora."""
+    from huma.core.stock_preflight import format_price_brl
+    from huma.providers.payment import asaas
+    from huma.services.payment_service import _build_external_reference
+
+    identity, payload, phone, cid = prep["identity"], prep["payload"], prep["phone"], prep["client_id"]
+    cust = await _asaas_customer(prep, form)
+    if cust.get("status") != "ok":
+        return {"status": "rejected", "detail": cust.get("user_message") or "Não consegui validar seus dados. Confere o CPF."}
+    try:
+        cap = max(1, int(getattr(identity, "max_installments", 1) or 1))
+        installments = max(1, min(cap, int(form.get("installments") or 1)))
+    except (TypeError, ValueError):
+        installments = 1
+    exp = str(form.get("card_exp") or "")
+    exp_digits = re.sub(r"\D", "", exp)
+    addr = payload.get("address") if isinstance(payload.get("address"), dict) else {}
+    ext_ref = _build_external_reference(cid, phone)
+    res = await asaas.charge_card(
+        identity.asaas_api_key, customer_id=cust["id"], value_cents=prep["total_cents"],
+        description=_asaas_description(prep), external_reference=ext_ref,
+        card={"number": form.get("card_number"), "holder_name": form.get("card_holder"),
+              "exp_month": exp_digits[:2], "exp_year": exp_digits[2:], "cvv": form.get("card_cvv")},
+        holder={"name": payload.get("lead_name", ""), "email": payload.get("lead_email", ""), "cpf_cnpj": payload.get("cpf", ""),
+                "postal_code": addr.get("cep") or form.get("cep") or "", "address_number": addr.get("number") or form.get("number") or "",
+                "phone": form.get("phone") or ("" if phone.startswith(("ig:", "web:")) else phone)},
+        remote_ip=remote_ip, installments=installments,
+    )
+    status = res.get("status")
+    if status == "error":
+        return {"status": "error", "detail": res.get("detail", "")}
+    if status == "rejected":
+        return {"status": "rejected", "detail": res.get("detail", "")}
+    pid = str(res.get("payment_id") or "")
+    await _record_store_payment(cid, phone, payload, pid, ext_ref, "credit_card",
+                                "approved" if status == "approved" else "pending",
+                                {"installments": installments, "brand": res.get("brand", ""), "last4": res.get("last4", "")},
+                                provider=RAIL_ASAAS)
+    await _remember_payment(cid, phone, pid)
+    if status == "approved":
+        try:
+            from huma.routes.api import handle_payment_result
+            await handle_payment_result({
+                "status": "approved", "client_id": cid, "phone": phone, "lead_name": payload.get("lead_name", ""),
+                "amount_display": format_price_brl(prep["total_cents"]), "amount_cents": prep["total_cents"],
+                "method": "credit_card", "description": _asaas_description(prep),
+            }, pid)
+        except Exception as e:
+            log.error(f"pay_card asaas | efeitos pós-aprovação falharam | {phone} | {type(e).__name__}: {e}")
+        result = await order_result(cid, phone)
+        log.info(f"Caixinha cartão (Asaas) APROVADO | {phone} | id={pid} | total={prep['total_cents']}")
+        return {"status": "approved", "payment_id": pid, "amount_display": format_price_brl(prep["total_cents"]),
+                "order_number": result.get("number", "")}
+    log.info(f"Caixinha cartão (Asaas) EM ANÁLISE | {phone} | id={pid}")
+    return {"status": "in_process", "payment_id": pid, "amount_display": format_price_brl(prep["total_cents"])}
 
 
 async def pay_pix(token: str, form: dict) -> dict:
@@ -643,6 +769,8 @@ async def pay_pix(token: str, form: dict) -> dict:
     prep = await prepare_order(token, form)
     if prep.get("status") != "ok":
         return prep
+    if payment_rail(prep.get("identity")) == RAIL_ASAAS:
+        return await _pay_pix_asaas(prep, form)
     from huma.services.payment_service import (
         _build_external_reference, _get_notification_url, _mp_post_payment, _tok_kw, mp_own_token, mp_token_for,
     )
@@ -677,21 +805,25 @@ async def pay_pix(token: str, form: dict) -> dict:
             "qr_code_base64": tx.get("qr_code_base64", ""), "amount_display": format_price_brl(prep["total_cents"])}
 
 
-async def pay_card(token: str, form: dict) -> dict:
+async def pay_card(token: str, form: dict, remote_ip: str = "") -> dict:
     """
-    Caixinha v2: cartão de crédito/débito digitado NA PÁGINA (token do MP no
-    navegador). Aprovou → pedido nasce na loja e a conversa recebe UMA
-    mensagem. Recusou → motivo em português, sem sair da página.
+    Caixinha v2: cartão de crédito/débito digitado NA PÁGINA. Mercado Pago:
+    token do MP no navegador. Asaas (2026-09-10): dados do cartão vêm no form
+    só em trânsito e são cobrados na hora (remote_ip exigido pelo Asaas).
+    Aprovou → pedido nasce na loja e a conversa recebe UMA mensagem.
+    Recusou → motivo em português, sem sair da página.
     """
     import uuid
 
+    prep = await prepare_order(token, form)
+    if prep.get("status") != "ok":
+        return prep
+    if payment_rail(prep.get("identity")) == RAIL_ASAAS:
+        return await _pay_card_asaas(prep, form, remote_ip)
     card_token = str(form.get("card_token_id") or "").strip()
     pm_id = str(form.get("payment_method_id") or "").strip()
     if not card_token or not pm_id:
         return {"status": "error", "detail": "Dados do cartão incompletos. Confere número, validade e CVV."}
-    prep = await prepare_order(token, form)
-    if prep.get("status") != "ok":
-        return prep
     from huma.services.payment_service import (
         _build_external_reference, _get_notification_url, _mp_post_payment, _tok_kw, mp_own_token, mp_token_for,
     )

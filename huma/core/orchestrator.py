@@ -2068,7 +2068,8 @@ async def _handle_payment_action(phone, action, client_data, conv=None):
     # Caixinha universal (2026-09-10): cartão NUNCA vira link externo. A
     # página segura da HUMA abre dentro do app (WhatsApp/Instagram) com Pix
     # e cartão. Pix pedido no chat continua no chat (copia e cola nativo).
-    if request.payment_method == "credit_card" and action.get("via") != "store_checkout":
+    _rail_asaas = (getattr(client_data, "payment_provider", "") or "") == "asaas"
+    if (request.payment_method == "credit_card" or _rail_asaas) and action.get("via") != "store_checkout":
         try:
             sent_card = await _send_caixinha_payment(phone, request, client_data, conv)
             if sent_card:

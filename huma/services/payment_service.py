@@ -526,12 +526,14 @@ async def process_asaas_notification(body: dict, received_token: str) -> dict:
 
     amount_cents = record.get("amount_cents", 0)
     log.info(f"Webhook Asaas processando | id={payment_id} | status={status} | ref={ext_ref} | client={client_id}")
+    # Instagram/site: a conversa vive em metadata.conversation_phone (Caixinha, 2026-09-10)
+    meta = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
     return {
         "processed": True,
         "status": status,
         "status_detail": real.get("status_detail", ""),
         "client_id": client_id,
-        "phone": record.get("phone", ""),
+        "phone": str(meta.get("conversation_phone") or record.get("phone") or ""),
         "lead_name": record.get("lead_name", ""),
         "method": method,
         "amount_display": _format_brl(amount_cents),

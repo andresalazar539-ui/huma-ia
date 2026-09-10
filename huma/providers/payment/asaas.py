@@ -218,6 +218,191 @@ async def get_payment(api_key: str, payment_id: str) -> dict:
     }
 
 
+# ================================================================
+# CAIXINHA EMBUTIDA (2026-09-10) — Pix com QR e cartão SEM sair da HUMA
+#
+# O Asaas não tem SDK de navegador: o cartão passa pelo servidor da HUMA
+# só em trânsito (TLS), é tokenizado e cobrado na hora, NUNCA guardado e
+# NUNCA logado (só últimos 4 dígitos e bandeira, que o Asaas devolve).
+# Cliente do Asaas exige cpfCnpj — por isso a Caixinha pede CPF nesse trilho.
+# ================================================================
+
+
+def _digits(value: Any) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+async def find_or_create_customer(
+    api_key: str,
+    *,
+    name: str,
+    cpf_cnpj: str,
+    email: str = "",
+    mobile_phone: str = "",
+    postal_code: str = "",
+    address_number: str = "",
+    external_reference: str = "",
+) -> dict:
+    """
+    Cliente do Asaas pra cobrar (obrigatório em toda cobrança). Procura por
+    CPF/CNPJ; se não existe, cria. {"status": "ok", "id"} ou erro.
+    """
+    doc = _digits(cpf_cnpj)
+    if not doc or len(doc) not in (11, 14):
+        return {"status": "error", "detail": "cpf_invalido", "user_message": "Confere o CPF: precisa ter 11 dígitos."}
+    st, body = await _request(api_key, "GET", "/customers", params={"cpfCnpj": doc, "limit": 1})
+    if st == 200 and isinstance(body, dict):
+        data = body.get("data") or []
+        if data and isinstance(data[0], dict) and data[0].get("id"):
+            return {"status": "ok", "id": str(data[0]["id"]), "created": False}
+    payload: dict = {
+        "name": (name or "Cliente")[:100],
+        "cpfCnpj": doc,
+        "notificationDisabled": True,
+    }
+    if email and "@" in email:
+        payload["email"] = email[:120]
+    if _digits(mobile_phone):
+        payload["mobilePhone"] = _digits(mobile_phone)[-11:]
+    if _digits(postal_code):
+        payload["postalCode"] = _digits(postal_code)
+    if address_number:
+        payload["addressNumber"] = str(address_number)[:20]
+    if external_reference:
+        payload["externalReference"] = external_reference[:255]
+    st, body = await _request(api_key, "POST", "/customers", json_body=payload)
+    if st in (200, 201) and isinstance(body, dict) and body.get("id"):
+        return {"status": "ok", "id": str(body["id"]), "created": True}
+    return {"status": "error", "detail": _error_text(body, st)}
+
+
+async def create_pix_charge(
+    api_key: str,
+    *,
+    customer_id: str,
+    value_cents: int,
+    description: str,
+    external_reference: str,
+) -> dict:
+    """
+    Cobrança Pix + QR code (base64 e copia e cola) pra desenhar na Caixinha.
+    {"status": "ok", "payment_id", "qr_code_base64", "qr_code_text", "expires_at"} ou erro.
+    """
+    from datetime import date
+
+    body = {
+        "customer": customer_id,
+        "billingType": "PIX",
+        "value": round(int(value_cents) / 100, 2),
+        "dueDate": date.today().isoformat(),
+        "description": (description or "Pagamento")[:500],
+        "externalReference": external_reference[:255],
+    }
+    st, resp = await _request(api_key, "POST", "/payments", json_body=body)
+    if st not in (200, 201) or not isinstance(resp, dict) or not resp.get("id"):
+        return {"status": "error", "detail": _error_text(resp, st)}
+    payment_id = str(resp["id"])
+    st, qr = await _request(api_key, "GET", f"/payments/{payment_id}/pixQrCode")
+    if st != 200 or not isinstance(qr, dict) or not qr.get("payload"):
+        return {"status": "error", "detail": _error_text(qr, st), "payment_id": payment_id}
+    log.info(f"Asaas Pix criado | id={payment_id} | ref={external_reference} | value={body['value']}")
+    return {
+        "status": "ok", "payment_id": payment_id,
+        "qr_code_base64": str(qr.get("encodedImage") or ""),
+        "qr_code_text": str(qr.get("payload") or ""),
+        "expires_at": str(qr.get("expirationDate") or ""),
+    }
+
+
+def _card_status(raw: str) -> str:
+    raw = (raw or "").upper()
+    if raw in ("CONFIRMED", "RECEIVED"):
+        return "approved"
+    if raw in ("PENDING", "AWAITING_RISK_ANALYSIS", "AUTHORIZED"):
+        return "in_process"
+    return "rejected"
+
+
+async def charge_card(
+    api_key: str,
+    *,
+    customer_id: str,
+    value_cents: int,
+    description: str,
+    external_reference: str,
+    card: dict,
+    holder: dict,
+    remote_ip: str,
+    installments: int = 1,
+) -> dict:
+    """
+    Cobra o cartão NA HORA (tokeniza e cobra numa chamada). card = {number,
+    holder_name, exp_month, exp_year, cvv}; holder = {name, email, cpf_cnpj,
+    postal_code, address_number, phone}. Nada do cartão é logado ou guardado.
+    {"status": "approved"|"in_process"|"rejected"|"error", "payment_id", "detail", "brand", "last4"}
+    """
+    from datetime import date
+
+    number = _digits(card.get("number"))
+    exp_month = _digits(card.get("exp_month"))[:2].zfill(2)
+    exp_year = _digits(card.get("exp_year"))
+    if len(exp_year) == 2:
+        exp_year = "20" + exp_year
+    cvv = _digits(card.get("cvv"))
+    if len(number) < 13 or len(exp_month) != 2 or len(exp_year) != 4 or len(cvv) < 3:
+        return {"status": "rejected", "detail": "Confere os dados do cartão: número, validade e CVV."}
+    doc = _digits(holder.get("cpf_cnpj"))
+    if len(doc) not in (11, 14):
+        return {"status": "rejected", "detail": "CPF do titular é obrigatório no cartão."}
+    postal = _digits(holder.get("postal_code"))
+    phone = _digits(holder.get("phone"))
+    if len(postal) != 8 or not str(holder.get("address_number") or "").strip() or len(phone) < 10:
+        return {"status": "rejected", "detail": "Pra cobrar no cartão preciso do CEP, número e celular do titular."}
+    total = round(int(value_cents) / 100, 2)
+    body: dict = {
+        "customer": customer_id,
+        "billingType": "CREDIT_CARD",
+        "value": total,
+        "dueDate": date.today().isoformat(),
+        "description": (description or "Pagamento")[:500],
+        "externalReference": external_reference[:255],
+        "creditCard": {
+            "holderName": str(card.get("holder_name") or holder.get("name") or "")[:100],
+            "number": number,
+            "expiryMonth": exp_month,
+            "expiryYear": exp_year,
+            "ccv": cvv,
+        },
+        "creditCardHolderInfo": {
+            "name": str(holder.get("name") or "")[:100],
+            "email": str(holder.get("email") or "")[:120],
+            "cpfCnpj": doc,
+            "postalCode": postal,
+            "addressNumber": str(holder.get("address_number") or "")[:20],
+            "phone": phone[-11:],
+        },
+        "remoteIp": str(remote_ip or "")[:45],
+    }
+    installments = max(1, int(installments or 1))
+    if installments > 1:
+        body["installmentCount"] = min(installments, 12)
+        body["totalValue"] = total
+    st, resp = await _request(api_key, "POST", "/payments", json_body=body)
+    if st in (200, 201) and isinstance(resp, dict) and resp.get("id"):
+        status = _card_status(str(resp.get("status") or ""))
+        cc = resp.get("creditCard") if isinstance(resp.get("creditCard"), dict) else {}
+        log.info(f"Asaas cartão | id={resp['id']} | status={resp.get('status')} | ref={external_reference} | value={total}")
+        return {
+            "status": status, "payment_id": str(resp["id"]), "detail": str(resp.get("status") or ""),
+            "brand": str(cc.get("creditCardBrand") or ""), "last4": str(cc.get("creditCardNumber") or ""),
+        }
+    detail = _error_text(resp, st)
+    log.warning(f"Asaas cartão recusado | ref={external_reference} | {detail}")
+    if st == 0:
+        return {"status": "error", "detail": "Não consegui falar com o Asaas agora. Tente de novo."}
+    return {"status": "rejected", "detail": detail if detail and not detail.startswith("http_") else "O cartão foi recusado. Tente outro cartão ou pague com Pix."}
+
+
 def method_from_billing_type(billing_type: str) -> str:
     bt = (billing_type or "").upper()
     return {"PIX": "pix", "BOLETO": "boleto", "CREDIT_CARD": "credit_card"}.get(bt, "link")

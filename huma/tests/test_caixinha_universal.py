@@ -81,7 +81,10 @@ class TestPuro:
         monkeypatch.setattr(ps, "MERCADOPAGO_ACCESS_TOKEN", "GLOBAL")
         assert caixinha_enabled(_identity(mercadopago_access_token=""))  # global (legado)
         assert not caixinha_enabled(_identity(capabilities=["schedule"]))  # não vende
-        assert not caixinha_enabled(_identity(payment_provider="asaas"))  # Asaas cobra por link próprio
+        # Asaas conectado = trilho próprio embutido (2026-09-10); "asaas" sem chave cai no MP
+        monkeypatch.setattr(ps, "MERCADOPAGO_ACCESS_TOKEN", "")
+        assert caixinha_enabled(_identity(payment_provider="asaas", asaas_api_key="k", mercadopago_access_token=""))
+        assert not caixinha_enabled(_identity(payment_provider="asaas", mercadopago_access_token=""))
         _public_url(monkeypatch, "")
         assert not caixinha_enabled(_identity())  # sem URL pública
 
@@ -306,7 +309,7 @@ class TestCartaoViraCaixinha:
         assert seen["create_payment"] == 1 and seen["cards"] == []
 
     def test_sem_caixinha_cai_no_caminho_antigo(self, monkeypatch):
-        out, seen, _, _ = self._run(monkeypatch, _identity(payment_provider="asaas"))
+        out, seen, _, _ = self._run(monkeypatch, _identity(capabilities=["schedule"]))  # não vende
         assert seen["create_payment"] == 1 and seen["cards"] == []
 
 
@@ -345,7 +348,7 @@ class TestWebVende:
         conv = Conversation(client_id="cli_cx", phone="web:abc", history=[])
         cards, closing = asyncio.run(wc._web_checkout_cards(_identity(), conv, "web:abc", [{"type": "generate_payment", "amount_cents": 0}], None))
         assert cards == [] and closing is False
-        cards, closing = asyncio.run(wc._web_checkout_cards(_identity(payment_provider="asaas"), conv, "web:abc", [{"type": "generate_payment", "amount_cents": 100}], None))
+        cards, closing = asyncio.run(wc._web_checkout_cards(_identity(capabilities=["schedule"]), conv, "web:abc", [{"type": "generate_payment", "amount_cents": 100}], None))
         assert cards == [] and conv.history == []
 
     def test_widget_abre_caixinha_na_bolha(self):
