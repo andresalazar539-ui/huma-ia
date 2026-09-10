@@ -19,6 +19,79 @@ function pipelineTabs(client) {
   return { agenda: schedules || !sells, vendas: sells };
 }
 
+// Bloco "agora" da sidebar: números REAIS (2026-09-10; antes era texto fixo).
+// Conversas ativas = com mensagem nas últimas 24h e ainda em andamento
+// (inclui "aguardando você" e confirmadas); agendamentos = os de hoje na
+// agenda. Busca própria a cada 60s pra não depender do filtro da tela.
+const _ACTIVE_STATUSES = ['andamento', 'aguardando', 'confirmado'];
+const _sidebarIsoToday = () => { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`; };
+function useLiveNow(client) {
+  const [now, setNow] = React.useState({ state: 'loading', active: 0, appts: 0 });
+  const tabs = pipelineTabs(client);
+  const wantAgenda = tabs.agenda;
+  React.useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const [convs, events] = await Promise.all([
+          fetchConversations('todas').then(d => (d.items || []).map(mapListItem)).catch(() => null),
+          wantAgenda ? fetchAppointments().catch(() => null) : Promise.resolve([]),
+        ]);
+        if (!alive) return;
+        if (!convs) { setNow(n => ({ ...n, state: 'error' })); return; }
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        const active = convs.filter(c => {
+          const t = c.last_message_at ? new Date(c.last_message_at).getTime() : NaN;
+          return _ACTIVE_STATUSES.includes(c.status) && !isNaN(t) && t >= cutoff;
+        }).length;
+        const todayIso = _sidebarIsoToday();
+        const appts = Array.isArray(events) ? events.filter(e => e.date === todayIso).length : null;
+        setNow({ state: 'ready', active, appts });
+      } catch (e) {
+        if (alive) setNow(n => ({ ...n, state: 'error' }));
+      }
+    };
+    load();
+    const t = setInterval(load, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, [wantAgenda]);
+  return now;
+}
+
+const LiveNowBlock = ({ client }) => {
+  const now = useLiveNow(client);
+  const loadingClient = !client;
+  const hasChannel = Boolean(client && (['meta', 'evolution'].includes(client.whatsapp_provider) || client.instagram_connected));
+  const tabs = pipelineTabs(client);
+  const plural = (n, s, p) => `${n} ${n === 1 ? s : p}`;
+  let dot, title, detail;
+  if (loadingClient || now.state === 'loading') {
+    dot = 'var(--ink-4)'; title = 'Carregando…'; detail = '';
+  } else if (!hasChannel) {
+    dot = 'var(--ink-4)'; title = 'HUMA sem canal'; detail = 'Conecte o WhatsApp em Integrações pra HUMA atender.';
+  } else if (now.state === 'error') {
+    dot = 'var(--success, #4F7A4A)'; title = 'HUMA atendendo'; detail = 'Não consegui carregar os números agora.';
+  } else {
+    dot = 'var(--success, #4F7A4A)'; title = 'HUMA atendendo';
+    const parts = [plural(now.active, 'conversa ativa', 'conversas ativas') + ' nas últimas 24h'];
+    if (tabs.agenda && now.appts !== null) parts.push(plural(now.appts, 'agendamento hoje', 'agendamentos hoje'));
+    detail = parts.join(' · ');
+  }
+  const on = dot !== 'var(--ink-4)';
+  return (
+    <div style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 12, background: 'var(--paper-raised)' }}>
+      <Eyebrow style={{ marginBottom: 8 }}>agora</Eyebrow>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ width: 7, height: 7, borderRadius: 999, background: dot, boxShadow: on ? '0 0 0 3px var(--sage-tint, #EAF0E7)' : 'none' }} />
+        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', fontWeight: 500 }}>{title}</span>
+      </div>
+      {detail && (
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.4 }}>{detail}</div>
+      )}
+    </div>
+  );
+};
+
 // client = /api/integrations/status (business_name, category, owner_email...)
 // waitingCount = conversas aguardando você (handoff) — badge real.
 const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
@@ -140,16 +213,7 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
       {/* Tema + live status block */}
       <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
         <ThemeToggle />
-        <div style={{ padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 12, background: 'var(--paper-raised)' }}>
-          <Eyebrow style={{ marginBottom: 8 }}>agora</Eyebrow>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <span style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--success, #4F7A4A)', boxShadow: '0 0 0 3px var(--sage-tint, #EAF0E7)' }} />
-            <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', fontWeight: 500 }}>HUMA atendendo</span>
-          </div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.4 }}>
-            3 conversas ativas · 14 agendamentos hoje
-          </div>
-        </div>
+        <LiveNowBlock client={client} />
       </div>
     </aside>
   );

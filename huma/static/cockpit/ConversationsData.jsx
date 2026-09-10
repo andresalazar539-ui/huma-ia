@@ -114,6 +114,7 @@ function mapListItem(item) {
     preview: item.last_message_preview || '',
     status: deriveStatus(item),
     // brutos, caso precise depois
+    last_message_at: item.last_message_at || null,
     channel: isWeb ? 'web' : isIg ? 'instagram' : (item.channel || 'whatsapp'),
     lead_whatsapp: item.lead_whatsapp || '',
     stage: item.stage,
