@@ -220,31 +220,96 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
   );
 };
 
-const Message = ({ from, text, time, responseTime, audio, audio_url }) => {
+// Card igual ao que o lead viu (WhatsApp: foto+legenda; Instagram: template;
+// site: card do widget). Botões são só rótulo — mostram o que o lead tinha
+// pra clicar; o link de "Comprar" abre a loja, o da Caixinha é do lead.
+const MessageCard = ({ card, dark }) => {
+  const kind = card.kind || 'product';
+  const btns = kind === 'checkout'
+    ? [{ title: (card.buttons && card.buttons[0] && card.buttons[0].title) || 'Finalizar pedido', primary: true }]
+    : kind === 'order'
+      ? []
+      : [...(card.url ? [{ title: 'Comprar', href: card.url }] : []), { title: 'Quero esse' }];
+  const fg = dark ? 'var(--paper-raised)' : 'var(--ink)';
+  const sub = dark ? 'rgba(251,248,243,0.75)' : 'var(--ink-3)';
+  const edge = dark ? 'rgba(251,248,243,0.28)' : 'var(--paper-edge)';
+  return (
+    <div style={{ width: 236, flex: '0 0 auto', border: `1px solid ${edge}`, borderRadius: 12, overflow: 'hidden', background: dark ? 'rgba(0,0,0,0.12)' : 'var(--paper-sunk)' }}>
+      {card.image_url ? (
+        <img src={card.image_url} alt={card.title || ''} loading="lazy" style={{ display: 'block', width: '100%', height: 150, objectFit: 'cover', background: 'rgba(0,0,0,0.06)' }} />
+      ) : (
+        <div style={{ height: 96, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, background: 'rgba(0,0,0,0.06)' }}>{kind === 'order' ? '🧾' : kind === 'checkout' ? '🔒' : '🛍️'}</div>
+      )}
+      <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, lineHeight: 1.3, color: fg }}>{card.title}</div>
+        {card.subtitle && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, lineHeight: 1.35, color: sub }}>{card.subtitle}</div>}
+        {btns.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+            {btns.map((b, i) => {
+              const st = {
+                fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500, padding: '5px 10px', borderRadius: 999, textDecoration: 'none',
+                border: `1px solid ${edge}`, color: b.primary ? (dark ? 'var(--terracotta)' : 'var(--paper-raised)') : fg,
+                background: b.primary ? (dark ? 'var(--paper-raised)' : 'var(--terracotta)') : 'transparent',
+              };
+              return b.href
+                ? <a key={i} href={b.href} target="_blank" rel="noopener" style={st}>{b.title}</a>
+                : <span key={i} style={st}>{b.title}</span>;
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url }) => {
   const isClient = from === 'client';
   const isHuma = from === 'huma';
+  const hasCards = Array.isArray(cards) && cards.length > 0;
+  const hasMedia = Boolean(image_url || video_url || file_url);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: isClient ? 'flex-start' : 'flex-end', gap: 4 }}>
       <div style={{
-        maxWidth: '72%',
+        maxWidth: hasCards ? '86%' : '72%',
         background: isClient ? 'var(--paper-raised)' : 'var(--terracotta)',
         border: isClient ? '1px solid var(--paper-edge)' : 'none',
         color: isClient ? 'var(--ink)' : 'var(--paper-raised)',
         fontFamily: 'var(--font-sans)', fontSize: 14, lineHeight: 1.45,
-        padding: (audio || audio_url) ? '10px 14px' : '9px 13px',
+        padding: (audio || audio_url) ? '10px 14px' : (hasCards || hasMedia) ? '8px' : '9px 13px',
         borderRadius: isClient ? '14px 14px 14px 4px' : '14px 14px 4px 14px',
       }}>
-        {audio_url ? (
-          // Áudio real enviado pela HUMA: player + o que foi falado.
+        {hasCards ? (
+          // Cards que o lead viu: 1 = card; vários = carrossel com rolagem.
+          <div style={{ display: 'flex', gap: 8, overflowX: 'auto', maxWidth: '100%', paddingBottom: cards.length > 1 ? 4 : 0 }}>
+            {cards.map((c, i) => <MessageCard key={i} card={c} dark={!isClient} />)}
+          </div>
+        ) : audio_url ? (
+          // Áudio real: player + o que foi falado (da HUMA) ou a transcrição (do lead).
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', opacity: 0.85 }}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/>
               </svg>
-              Áudio com a sua voz
+              {isClient ? 'Áudio do lead' : 'Áudio com a sua voz'}
             </div>
             <audio controls preload="none" src={audio_url} style={{ width: 260, maxWidth: '100%', height: 36 }} />
             {text && <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.95 }}>{text}</div>}
+          </div>
+        ) : hasMedia ? (
+          // Foto, vídeo ou arquivo + legenda, igual ao que apareceu no canal.
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {image_url && (
+              <a href={image_url} target="_blank" rel="noopener" style={{ display: 'block' }}>
+                <img src={image_url} alt={text || 'imagem'} loading="lazy" style={{ display: 'block', maxWidth: 280, maxHeight: 320, width: '100%', objectFit: 'cover', borderRadius: 8, background: 'rgba(0,0,0,0.06)' }} />
+              </a>
+            )}
+            {video_url && <video controls preload="metadata" src={video_url} style={{ display: 'block', maxWidth: 280, width: '100%', borderRadius: 8 }} />}
+            {file_url && (
+              <a href={file_url} target="_blank" rel="noopener" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'inherit', fontSize: 13, textDecoration: 'underline', padding: '2px 6px' }}>
+                <Icon name="link" size={13} /> Abrir arquivo
+              </a>
+            )}
+            {text && <div style={{ fontSize: 13, lineHeight: 1.45, padding: '0 6px 2px' }}>{text}</div>}
           </div>
         ) : audio ? (
           <VoiceClipInline dark={!isClient} duration={audio} />

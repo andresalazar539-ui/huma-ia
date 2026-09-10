@@ -133,11 +133,16 @@ function mapListItem(item) {
 //    salvam estado mas não foram pro WhatsApp. Não exigimos `]` próximo porque
 //    o conteúdo do marker pode ter em-dash, parênteses, números.
 const INTERNAL_MARKER = /^\[[A-Z][A-Z_ ]+/;
+// Prefixos que o motor põe no texto do lead pra IA saber que veio mídia.
+// O dono vê a mídia em si (conversa idêntica, 2026-09-10), não o prefixo.
+const LEAD_MEDIA_PREFIX = /^\[(imagem enviada pelo lead|áudio do lead[^\]]*|imagem do lead[^\]]*)\]\s*/i;
 function mapHistory(history) {
   return (history || [])
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .filter(m => {
       const c = (m.content || '').trim();
+      const hasRich = (Array.isArray(m.cards) && m.cards.length) || m.image_url || m.video_url || m.file_url || m.audio_url;
+      if (hasRich) return true;  // card/mídia sem texto ainda é uma mensagem que o lead viu
       return c && !INTERNAL_MARKER.test(c);
     })
     .flatMap(m => {
@@ -146,6 +151,16 @@ function mapHistory(history) {
         time: formatTime(m.timestamp),
         by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
       };
+      // Cards que o lead viu (produto, carrossel, "Finalizar pedido", "Pagar",
+      // resumo do pedido): a bolha desenha o card, não o texto "📦 …".
+      if (Array.isArray(m.cards) && m.cards.length) {
+        return [{ ...base, text: '', cards: m.cards }];
+      }
+      // Áudio do lead: um balão com o player e a transcrição embaixo.
+      if (m.audio_url && m.role === 'user') {
+        const spoken = (m.content || '').replace(LEAD_MEDIA_PREFIX, '').trim();
+        return [{ ...base, text: m.audio_text || spoken, audio_url: m.audio_url }];
+      }
       // Áudio da HUMA: balão de texto (o que saiu escrito) + balão com o player
       // e a transcrição completa do que foi falado.
       if (m.audio_url) {
@@ -154,6 +169,11 @@ function mapHistory(history) {
         if (spoken) out.push({ ...base, text: spoken });
         out.push({ ...base, text: m.audio_text || '', audio_url: m.audio_url });
         return out;
+      }
+      // Foto, vídeo ou arquivo (do lead ou da HUMA): mídia + legenda.
+      if (m.image_url || m.video_url || m.file_url) {
+        const caption = (m.content || '').replace(LEAD_MEDIA_PREFIX, '').trim();
+        return [{ ...base, text: caption, image_url: m.image_url || '', video_url: m.video_url || '', file_url: m.file_url || '' }];
       }
       // Resposta enviada em partes: um balão por parte, igual ao que o lead viu.
       const parts = Array.isArray(m.parts) ? m.parts.filter(p => typeof p === 'string' && p.trim()) : [];
