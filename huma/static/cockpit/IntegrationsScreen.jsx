@@ -1,8 +1,10 @@
-// IntegrationsScreen.jsx — grid de integrações conectadas
+// IntegrationsScreen.jsx — integrações agrupadas por categoria (2026-09-10)
+// A tela é dividida em SEÇÕES (SECTIONS abaixo): canais, agenda, loja,
+// pagamentos, CRM, anúncios/automação. Cada card declara `category` com o
+// MESMO rótulo da seção em que aparece — não invente rótulo novo no card.
 // Cards estáticos = integrações que AINDA não têm conector. Sem conta
 // sugerida, sem "últ. sinc" inventada: só o que a integração faria.
-// Google Calendar, RD Station, Bling, Pipedrive, WhatsApp e Balcão são
-// dinâmicos (status real) dentro do IntegrationsScreen.
+// Os demais são dinâmicos (status real) dentro do IntegrationsScreen.
 const INTEGRATIONS = [
   {
     id: 'doctoralia',
@@ -19,7 +21,7 @@ const INTEGRATIONS = [
   {
     id: 'tray',
     name: 'Tray',
-    category: 'E-commerce',
+    category: 'Loja e estoque',
     glyph: { type: 'tray' },
     status: 'disconnected',
     meta: [
@@ -28,6 +30,18 @@ const INTEGRATIONS = [
     ],
     note: 'Conecta catálogo e pedidos da Tray às conversas da HUMA',
   },
+];
+
+// Ordem das seções e dos cards dentro delas. 'whatsapp' é o WhatsAppCard
+// (componente próprio, com status buscado por ele mesmo); os outros ids
+// apontam pros cards montados no IntegrationsScreen.
+const SECTIONS = [
+  { id: 'canais', title: 'Canais de atendimento', desc: 'Por onde o lead fala com a HUMA. O mesmo clone, funil e memória em todos.', ids: ['whatsapp', 'instagram', 'balcao'] },
+  { id: 'agenda', title: 'Agenda', desc: 'A HUMA só confirma horário que a sua agenda diz que está livre.', ids: ['gcal', 'doctoralia'] },
+  { id: 'loja', title: 'Loja e estoque', desc: 'Catálogo, preço e estoque reais dentro da conversa.', ids: ['nuvemshop', 'bling', 'tray'] },
+  { id: 'pagamentos', title: 'Pagamentos', desc: 'Pix, boleto e cartão na conversa. O dinheiro cai na sua conta.', ids: ['mercadopago', 'asaas'] },
+  { id: 'crm', title: 'CRM', desc: 'Lead qualificado vira negócio no seu funil, sem digitar nada.', ids: ['hubspot', 'pipedrive', 'rdstation'] },
+  { id: 'anuncios', title: 'Anúncios e automação', desc: 'Resultados de volta pros seus anúncios e cada lead no seu sistema.', ids: ['pixel', 'webhook'] },
 ];
 
 const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
@@ -56,7 +70,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const blingCard = {
     id: 'bling',
     name: 'Bling ERP',
-    category: 'Estoque & Frete',
+    category: 'Loja e estoque',
     glyph: { type: 'bling' },
     status: blingConnected ? 'connected' : 'disconnected',
     meta: blingConnected
@@ -149,7 +163,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const gcalCard = {
     id: 'gcal',
     name: 'Google — Agenda + Planilha',
-    category: 'Agenda & Leads',
+    category: 'Agenda',
     glyph: { type: 'gcal' },
     status: gcalConnected ? 'connected' : 'disconnected',
     meta: googleOauth
@@ -221,7 +235,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const nuvemshopCard = {
     id: 'nuvemshop',
     name: 'Nuvemshop',
-    category: 'Loja virtual',
+    category: 'Loja e estoque',
     glyph: { type: 'nuvemshop' },
     status: nsConnected ? 'connected' : 'disconnected',
     meta: nsConnected
@@ -372,7 +386,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const rdCard = {
     id: 'rdstation',
     name: 'RD Station',
-    category: 'CRM & Marketing',
+    category: 'CRM',
     glyph: { type: 'rdstation' },
     status: rdConnected ? 'connected' : 'disconnected',
     meta: rdConnected
@@ -387,8 +401,20 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     instagramCard, balcaoCard, gcalCard, pixelCard, webhookCard,
     nuvemshopCard, blingCard, mpCard, asaasCard, hubspotCard, pipedriveCard, rdCard, ...INTEGRATIONS,
   ];
-  const connectedCount = integrations.filter(i => i.status === 'connected' || i.status === 'active').length;
+  const isOn = (i) => i.status === 'connected' || i.status === 'active';
+  const connectedCount = integrations.filter(isOn).length;
   const availableCount = integrations.length - connectedCount;
+  const byId = Object.fromEntries(integrations.map(i => [i.id, i]));
+  // WhatsApp busca o próprio status dentro do WhatsAppCard; pro contador da
+  // seção usamos o marcador que o /api/integrations/status já devolve.
+  const waOn = Boolean(client && ['meta', 'evolution'].includes(client.whatsapp_provider));
+  // Cada seção resolve seus cards pela ordem declarada em SECTIONS; id sem
+  // card (ex.: removido) é ignorado em vez de quebrar a tela.
+  const sections = SECTIONS.map(sec => ({
+    ...sec,
+    cards: sec.ids.filter(id => id === 'whatsapp' || byId[id]),
+    on: sec.ids.filter(id => id === 'whatsapp' ? waOn : (byId[id] && isOn(byId[id]))).length,
+  })).filter(sec => sec.cards.length > 0);
 
   return (
     <div style={{
@@ -420,13 +446,14 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
         </div>
       </div>
 
-      <div style={{
-        padding: '24px 32px 40px',
-        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: 14, maxWidth: 1280,
-      }}>
-        <WhatsAppCard key="whatsapp" />
-        {integrations.map(i => <IntegrationCard key={i.id} {...i} />)}
+      <div style={{ padding: '8px 32px 40px', maxWidth: 1280, display: 'flex', flexDirection: 'column' }}>
+        {sections.map(sec => (
+          <IntegrationSection key={sec.id} title={sec.title} desc={sec.desc} on={sec.on} total={sec.cards.length}>
+            {sec.cards.map(id => id === 'whatsapp'
+              ? <WhatsAppCard key="whatsapp" />
+              : <IntegrationCard key={id} {...byId[id]} />)}
+          </IntegrationSection>
+        ))}
       </div>
       {calModal && (
         <GoogleCalendarModal
@@ -441,6 +468,30 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     </div>
   );
 };
+
+// Seção da tela: título + uma linha do que ela faz + "x de y conectadas",
+// e a grade de 3 colunas dos cards daquela categoria.
+const IntegrationSection = ({ title, desc, on, total, children }) => (
+  <section style={{ padding: '22px 0 6px', borderBottom: '1px solid var(--paper-edge)' }}>
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 17, letterSpacing: '-0.015em', color: 'var(--ink)' }}>{title}</div>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 2 }}>{desc}</div>
+      </div>
+      <span style={{
+        fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 500, letterSpacing: '0.04em', whiteSpace: 'nowrap',
+        padding: '3px 9px', borderRadius: 999,
+        background: on > 0 ? 'var(--sage-tint)' : 'var(--paper-sunk)',
+        color: on > 0 ? 'var(--sage-ink)' : 'var(--ink-3)',
+      }}>
+        {on} de {total} {total === 1 ? 'conectada' : 'conectadas'}
+      </span>
+    </div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 18 }}>
+      {children}
+    </div>
+  </section>
+);
 
 // ── Estilos compartilhados dos modais de integração ──
 const _modalInput = {
