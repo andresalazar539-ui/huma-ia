@@ -2741,6 +2741,14 @@ async def _ingest_media_message(
     text = caption or ""
     image_url = ""
 
+    # Conversa idêntica (2026-09-10): o arquivo do lead vai pro Storage e a
+    # URL espera o orchestrator gravar a mensagem no histórico (Cockpit
+    # mostra o player/a foto). Falha aqui nunca segura a mensagem.
+    if raw_bytes and media_type in ("audio", "image"):
+        from huma.services import lead_media
+        _url = await lead_media.upload(client_id, phone, media_type, raw_bytes, content_type)
+        await lead_media.push_pending(client_id, phone, media_type, _url)
+
     if media_type == "audio":
         if raw_bytes:
             from huma.services.transcription_service import transcribe_bytes

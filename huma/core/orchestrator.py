@@ -44,6 +44,7 @@ from huma.services import billing_service as billing
 from huma.services import campaign_shield as shield
 from huma.services import message_buffer as buffer
 from huma.services import loop_detector
+from huma.services import lead_media
 from huma.providers.inventory import get_provider_for as _inventory_provider_for
 from huma.services import lead_events
 from huma.utils.logger import get_logger
@@ -278,7 +279,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 f"IA suprimida, msg registrada no histórico"
             )
             try:
-                conv.history.append({"role": "user", "content": unified_text})
+                conv.history.append(await lead_media.user_entry(client_id, phone, unified_text))
                 await db.save_conversation(conv)
             except Exception as e:
                 log.error(
@@ -368,7 +369,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 user_content = unified_text
                 if unified_image:
                     user_content = f"[imagem enviada pelo lead] {unified_text}".strip()
-                conv.history.append({"role": "user", "content": user_content})
+                conv.history.append(await lead_media.user_entry(client_id, phone, user_content))
                 conv.last_message_at = datetime.utcnow()
                 await db.save_conversation(conv)
 
@@ -781,7 +782,10 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         if unified_image:
             user_content = f"[imagem enviada pelo lead] {unified_text}".strip()
 
-        conv.history.append({"role": "user", "content": user_content})
+        # Conversa idêntica (2026-09-10): áudio/foto do lead (URL pendente
+        # deixada pelo webhook) entram na mesma entrada — o Cockpit mostra
+        # o player e a foto; o prompt segue lendo só o texto.
+        conv.history.append(await lead_media.user_entry(client_id, phone, user_content))
 
         audio_text_for_history = ai_result.get("audio_text", "").strip()
         if audio_text_for_history:

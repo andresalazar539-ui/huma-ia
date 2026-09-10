@@ -105,3 +105,53 @@ class TestPagamentoNoHistorico:
         assert "Segue o Pix de R$ 250,00" in contents
         assert "00020126BR.GOV.BCB.PIX" in contents
         assert sent[:2] == ["Segue o Pix de R$ 250,00", "00020126BR.GOV.BCB.PIX"]
+
+
+class TestMidiaDoLead:
+    def test_attach_anexa_primeiro_audio_e_primeira_foto(self):
+        from huma.services import lead_media
+        entry = {"role": "user", "content": "oi quero agendar"}
+        media = [{"kind": "image", "url": "https://s/a.jpg"}, {"kind": "audio", "url": "https://s/v.ogg"},
+                 {"kind": "image", "url": "https://s/b.jpg"}]
+        out = lead_media.attach(entry, media, text="oi quero agendar")
+        assert out["image_url"] == "https://s/a.jpg"
+        assert out["audio_url"] == "https://s/v.ogg" and out["audio_text"] == "oi quero agendar"
+        assert out["content"] == "oi quero agendar"  # o prompt continua lendo só o texto
+
+    def test_attach_sem_midia_nao_muda_nada(self):
+        from huma.services import lead_media
+        assert lead_media.attach({"role": "user", "content": "x"}, []) == {"role": "user", "content": "x"}
+
+    def test_user_entry_consome_a_pendencia_uma_vez(self, monkeypatch):
+        from huma.services import lead_media
+        _redis(monkeypatch)
+        asyncio.run(lead_media.push_pending("cli", "5511999990000", "audio", "https://s/v.ogg"))
+        e1 = asyncio.run(lead_media.user_entry("cli", "5511999990000", "oi"))
+        e2 = asyncio.run(lead_media.user_entry("cli", "5511999990000", "de novo"))
+        assert e1["audio_url"] == "https://s/v.ogg" and e1["audio_text"] == "oi"
+        assert e2 == {"role": "user", "content": "de novo"}
+
+    def test_upload_nunca_levanta_sem_storage(self):
+        from huma.services import lead_media
+        # conftest usa credencial falsa: create_client explode; upload devolve "" e a mensagem segue.
+        assert asyncio.run(lead_media.upload("cli", "5511999990000", "audio", b"x" * 600, "audio/ogg")) == ""
+        assert asyncio.run(lead_media.upload("cli", "5511999990000", "video", b"x", "video/mp4")) == ""
+        assert asyncio.run(lead_media.upload("cli", "5511999990000", "image", None, "image/jpeg")) == ""
+
+    def test_webhook_deixa_a_url_pendente_e_a_mensagem_segue(self, monkeypatch):
+        import huma.routes.api as api
+        import huma.services.transcription_service as ts
+        from huma.services import lead_media
+        _redis(monkeypatch)
+        captured = {}
+
+        async def fake_handle(payload, bg): captured["payload"] = payload
+        async def fake_transcribe(b): return "oi quero agendar"
+        async def fake_upload(client_id, phone, kind, raw, ct): return "https://s/lead.ogg"
+        monkeypatch.setattr(api, "handle_message", fake_handle)
+        monkeypatch.setattr(ts, "transcribe_bytes", fake_transcribe)
+        monkeypatch.setattr(lead_media, "upload", fake_upload)
+
+        asyncio.run(api._ingest_media_message("cli", "5511999998888", "audio", "", b"x" * 600, "audio/ogg", None))
+        assert captured["payload"].text == "oi quero agendar"
+        assert asyncio.run(lead_media.pop_pending("cli", "5511999998888")) == [{"kind": "audio", "url": "https://s/lead.ogg"}]
