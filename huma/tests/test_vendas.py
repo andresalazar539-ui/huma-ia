@@ -4,7 +4,8 @@
 # Cobre:
 #   - _sale_state: pago / pendente / link_enviado / recusado / cancelado
 #   - _sale_row: valor formatado, método, provedor (MP × Asaas)
-#   - _sales_totals: hoje × mês em BRT, pendentes e links
+#   - _sales_totals: hoje × mês em BRT, pendentes e links, período (2026-09-10)
+#   - _sales_window: janela 7/30/90 × datas personalizadas (dia final inclusivo)
 #   - GET /api/sales: auth, validação de days, shape, 502 amigável
 #   - /api/integrations/status devolve capabilities_resolved
 # ================================================================
@@ -106,6 +107,43 @@ class TestSalesTotals:
         t = api_mod._sales_totals([{"state": "pago", "amount_cents": 10, "paid_at": "xx", "created_at": None}])
         assert t["today_cents"] == 0
 
+    def test_sem_janela_periodo_zero(self):
+        now = datetime.now(timezone.utc).isoformat()
+        t = api_mod._sales_totals([{"state": "pago", "amount_cents": 500, "paid_at": now, "created_at": now}])
+        assert t["period_cents"] == 0 and t["period_count"] == 0
+
+    def test_periodo_soma_so_o_que_cai_na_janela(self):
+        # Pago às 12:00 BRT (15:00Z) em dias fixos — sem ambiguidade de fuso
+        items = [
+            {"state": "pago", "amount_cents": 100, "paid_at": "2026-06-10T15:00:00+00:00", "created_at": "2026-06-10T15:00:00+00:00"},
+            {"state": "pago", "amount_cents": 200, "paid_at": "2026-06-20T15:00:00+00:00", "created_at": "2026-06-20T15:00:00+00:00"},
+            {"state": "pago", "amount_cents": 400, "paid_at": "2026-07-01T15:00:00+00:00", "created_at": "2026-07-01T15:00:00+00:00"},
+            {"state": "pendente", "amount_cents": 999, "created_at": "2026-06-15T15:00:00+00:00"},
+        ]
+        t = api_mod._sales_totals(items, period_from="2026-06-10", period_to="2026-06-20")
+        assert t["period_cents"] == 300 and t["period_count"] == 2  # dia final inclusivo
+
+    def test_periodo_usa_data_local_brt(self):
+        # 01:00Z do dia 21 = 22:00 BRT do dia 20 → conta no dia 20
+        items = [{"state": "pago", "amount_cents": 100, "paid_at": "2026-06-21T01:00:00+00:00", "created_at": None}]
+        t = api_mod._sales_totals(items, period_from="2026-06-20", period_to="2026-06-20")
+        assert t["period_cents"] == 100
+
+
+class TestSalesWindow:
+
+    def test_sem_datas_ultimos_dias_sem_teto(self):
+        since, until, pf, pt = api_mod._sales_window(7, "", "")
+        assert until == ""
+        assert pt >= pf
+        assert (datetime.fromisoformat(pt) - datetime.fromisoformat(pf)).days == 6
+
+    def test_com_datas_dia_final_inclusivo_em_utc(self):
+        since, until, pf, pt = api_mod._sales_window(30, "2026-06-10", "2026-06-20")
+        assert (pf, pt) == ("2026-06-10", "2026-06-20")
+        assert since == "2026-06-10T03:00:00"   # 00:00 BRT (UTC-3)
+        assert until == "2026-06-21T03:00:00"   # 00:00 BRT do dia seguinte
+
 
 # ────────────────────────────────────────────────────────────────
 # Rota
@@ -142,7 +180,10 @@ def _mock(monkeypatch, rows=None, fail: str = "", identity: ClientIdentity | Non
     async def get_client(cid):
         return ident if cid == "cli_vendas" else None
 
-    async def list_payments(cid, since_iso="", limit=300):
+    calls: list[dict] = []
+
+    async def list_payments(cid, since_iso="", limit=300, **kw):
+        calls.append({"since_iso": since_iso, **kw})
         if fail:
             raise RuntimeError(fail)
         return list(rows or [])
@@ -150,6 +191,7 @@ def _mock(monkeypatch, rows=None, fail: str = "", identity: ClientIdentity | Non
     monkeypatch.setattr(auth_mod, "get_client", get_client)
     monkeypatch.setattr(api_mod.db, "get_client", get_client)
     monkeypatch.setattr(api_mod.db, "list_payments_for_cockpit", list_payments)
+    return calls
 
 
 class TestSalesRoute:
@@ -188,6 +230,38 @@ class TestSalesRoute:
         _mock(monkeypatch)
         r = _client().get("/api/sales", params={"client_id": "cli_vendas"}, cookies=_session_cookie(monkeypatch, "cli_outro"))
         assert r.status_code == 403
+
+    def test_sem_datas_nao_passa_until(self, monkeypatch):
+        calls = _mock(monkeypatch)
+        r = _client().get("/api/sales", params={"client_id": "cli_vendas", "days": 30}, cookies=_session_cookie(monkeypatch))
+        assert r.status_code == 200, r.text
+        assert "until_iso" not in calls[-1]  # mocks legados com assinatura fixa continuam funcionando
+        assert r.json()["date_to"] >= r.json()["date_from"]
+
+    def test_periodo_personalizado(self, monkeypatch):
+        calls = _mock(monkeypatch, rows=[
+            {"id": 1, "phone": "5511999998888", "lead_name": "Ana", "method": "pix", "amount_cents": 20000,
+             "description": "Consulta", "status": "approved", "metadata": {},
+             "paid_at": "2026-06-15T15:00:00+00:00", "created_at": "2026-06-15T15:00:00+00:00"},
+        ])
+        r = _client().get(
+            "/api/sales",
+            params={"client_id": "cli_vendas", "date_from": "2026-06-10", "date_to": "2026-06-20"},
+            cookies=_session_cookie(monkeypatch),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["date_from"] == "2026-06-10" and body["date_to"] == "2026-06-20"
+        assert body["totals"]["period_cents"] == 20000 and body["totals"]["period_count"] == 1
+        assert calls[-1]["since_iso"] == "2026-06-10T03:00:00"
+        assert calls[-1]["until_iso"] == "2026-06-21T03:00:00"
+
+    def test_datas_invalidas_400(self, monkeypatch):
+        _mock(monkeypatch)
+        ck = _session_cookie(monkeypatch)
+        assert _client().get("/api/sales", params={"client_id": "cli_vendas", "date_from": "10/06/2026", "date_to": "2026-06-20"}, cookies=ck).status_code == 400
+        assert _client().get("/api/sales", params={"client_id": "cli_vendas", "date_from": "2026-06-20", "date_to": "2026-06-10"}, cookies=ck).status_code == 400
+        assert _client().get("/api/sales", params={"client_id": "cli_vendas", "date_from": "2020-01-01", "date_to": "2020-01-31"}, cookies=ck).status_code == 400
 
 
 class TestStatusCapabilities:

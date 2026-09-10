@@ -1393,8 +1393,15 @@ def _sale_row(r: dict) -> dict:
     }
 
 
-def _sales_totals(items: list[dict]) -> dict:
-    """Totais em BRT: pago hoje / pago no mês, mais contagens de pendente e link."""
+def _sales_totals(items: list[dict], period_from: str = "", period_to: str = "") -> dict:
+    """
+    Totais em BRT: pago hoje / pago no mês, mais contagens de pendente e link.
+
+    period_from/period_to (yyyy-mm-dd, opcionais, 2026-09-10): janela da
+    tela — soma `period_cents`/`period_count` (pago com data local dentro
+    da janela, inclusiva). É o número que a comparação "vs outro período"
+    usa. Sem janela, os dois ficam em 0 (comportamento antigo intacto).
+    """
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo("America/Sao_Paulo")
@@ -1403,6 +1410,7 @@ def _sales_totals(items: list[dict]) -> dict:
     totals = {
         "today_cents": 0, "today_count": 0,
         "month_cents": 0, "month_count": 0,
+        "period_cents": 0, "period_count": 0,
         "pending_count": 0, "link_count": 0,
         "pending_cents": 0,
     }
@@ -1422,6 +1430,9 @@ def _sales_totals(items: list[dict]) -> dict:
             if local.year == today.year and local.month == today.month:
                 totals["month_cents"] += it["amount_cents"]
                 totals["month_count"] += 1
+            if period_from and period_to and period_from <= local.isoformat() <= period_to:
+                totals["period_cents"] += it["amount_cents"]
+                totals["period_count"] += 1
         elif it["state"] == "pendente":
             totals["pending_count"] += 1
             totals["pending_cents"] += it["amount_cents"]
@@ -1431,35 +1442,82 @@ def _sales_totals(items: list[dict]) -> dict:
     return totals
 
 
+def _sales_window(days: int, date_from: str, date_to: str) -> tuple[str, str, str, str]:
+    """
+    Janela da aba Vendas → (since_iso, until_iso, period_from, period_to).
+
+    Sem datas: últimos `days` até agora (until_iso vazio = sem teto, como
+    antes). Com datas (yyyy-mm-dd, já validadas): dia inicial 00:00 e dia
+    final INCLUSIVO, ambos em horário de Brasília convertidos pra UTC.
+    period_from/period_to são as datas locais usadas pelos totais.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Sao_Paulo")
+    if date_from and date_to:
+        start_local = datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=tz)
+        end_local = datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=tz) + timedelta(days=1)
+        since_iso = start_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None).isoformat()
+        until_iso = end_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None).isoformat()
+        return since_iso, until_iso, date_from, date_to
+    today_local = datetime.now(tz).date()
+    period_from = (today_local - timedelta(days=days - 1)).isoformat()
+    since_iso = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    return since_iso, "", period_from, today_local.isoformat()
+
+
 @router.get("/api/sales", tags=["Cockpit"])
 async def list_sales_cockpit(
     client_id: str,
     days: int = 30,
+    date_from: str = "",
+    date_to: str = "",
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     huma_session: Optional[str] = Cookie(None),
 ) -> dict:
     """
     Aba Vendas — pedidos gerados pela HUMA (tabela payments), com estado
     humano (pago / pendente / link enviado / recusado / cancelado),
-    método (Pix, boleto, cartão; Mercado Pago ou Asaas) e totais do dia e
-    do mês. `days` limita a lista (1–365); os totais do mês consideram o
-    mês corrente dentro dessa janela.
+    método (Pix, boleto, cartão; Mercado Pago ou Asaas) e totais do dia,
+    do mês e do período. `days` limita a lista (1–365); os totais do mês
+    consideram o mês corrente dentro dessa janela.
+
+    date_from/date_to (yyyy-mm-dd, opcionais, 2026-09-10): período
+    personalizado e comparação com outra época (mesmo contrato dos
+    Relatórios: máx. 12 meses atrás, dia final inclusivo).
     """
     await verify_api_key_manual(client_id, creds, huma_session)
     if days < 1 or days > 365:
         raise HTTPException(400, "days deve estar entre 1 e 365")
+    if date_from or date_to:
+        import re as _re
+        if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_from or "") or not _re.match(r"^\d{4}-\d{2}-\d{2}$", date_to or ""):
+            raise HTTPException(400, "Datas no formato AAAA-MM-DD")
+        if date_from > date_to:
+            raise HTTPException(400, "A data inicial precisa vir antes da final")
+        limite = (datetime.utcnow() - timedelta(days=366)).strftime("%Y-%m-%d")
+        if date_from < limite:
+            raise HTTPException(400, "Período máximo: 12 meses atrás")
 
-    since_iso = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    since_iso, until_iso, period_from, period_to = _sales_window(days, date_from, date_to)
+    # until_iso só entra como kwarg quando existe (mocks legados têm assinatura fixa)
+    extra = {"until_iso": until_iso} if until_iso else {}
     try:
-        rows = await db.list_payments_for_cockpit(client_id, since_iso=since_iso)
+        rows = await db.list_payments_for_cockpit(client_id, since_iso=since_iso, **extra)
     except Exception as e:
         log.error(f"Cockpit list_sales | client_id={client_id} | {type(e).__name__}: {e}")
         raise HTTPException(502, "Não consegui carregar as vendas agora.")
 
     items = [_sale_row(r) for r in rows]
-    totals = _sales_totals(items)
-    log.info(f"Cockpit list_sales | client_id={client_id} | days={days} | count={len(items)}")
-    return {"items": items, "total": len(items), "totals": totals, "days": days}
+    totals = _sales_totals(items, period_from=period_from, period_to=period_to)
+    log.info(
+        f"Cockpit list_sales | client_id={client_id} | days={days} | "
+        f"range={period_from}..{period_to} | count={len(items)}"
+    )
+    return {
+        "items": items, "total": len(items), "totals": totals, "days": days,
+        "date_from": period_from, "date_to": period_to,
+    }
 
 
 # ── Cockpit — Clientes (CRM do dono, 2026-09-07) ──

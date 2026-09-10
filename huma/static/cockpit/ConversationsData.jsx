@@ -247,8 +247,10 @@ async function saveOwnerNotes(phone, ownerNotes) {
 Object.assign(window, { fetchCustomers, downloadCustomersCsv, setCustomerFlag, saveOwnerNotes });
 
 /* ---------------- Vendas (pedidos gerados pela HUMA) ---------------- */
-async function fetchSales(days = 30) {
+// dateFrom/dateTo (AAAA-MM-DD, opcionais): período personalizado e comparação
+async function fetchSales(days = 30, dateFrom = '', dateTo = '') {
   const params = new URLSearchParams({ client_id: CLIENT_ID, days: String(days) });
+  if (dateFrom && dateTo) { params.set('date_from', dateFrom); params.set('date_to', dateTo); }
   const r = await fetch(`/api/sales?${params}`, { headers: AUTH_HEADERS });
   if (!r.ok) throw new Error(await _readApiError(r));
   return r.json();

@@ -612,10 +612,17 @@ async def list_customers_for_cockpit(client_id: str, limit: int = 500) -> list[d
     return resp.data or []
 
 
-async def list_payments_for_cockpit(client_id: str, since_iso: str = "", limit: int = 300) -> list[dict]:
+async def list_payments_for_cockpit(
+    client_id: str,
+    since_iso: str = "",
+    limit: int = 300,
+    until_iso: str = "",
+) -> list[dict]:
     """
     Aba Vendas — cobranças geradas pela HUMA (tabela payments) do negócio,
-    mais recentes primeiro. `since_iso` limita por created_at (>=).
+    mais recentes primeiro. `since_iso` limita por created_at (>=);
+    `until_iso` (opcional, 2026-09-10) fecha a janela por created_at (<)
+    pro período personalizado e pra comparação com outra época.
     Levanta se a tabela não existir (a rota traduz em erro amigável).
     """
     def query():
@@ -630,6 +637,8 @@ async def list_payments_for_cockpit(client_id: str, since_iso: str = "", limit: 
         )
         if since_iso:
             q = q.gte("created_at", since_iso)
+        if until_iso:
+            q = q.lt("created_at", until_iso)
         return q.order("created_at", desc=True).limit(limit).execute()
 
     resp = await run_in_threadpool(query)
