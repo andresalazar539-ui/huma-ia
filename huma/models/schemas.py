@@ -1203,6 +1203,23 @@ class Conversation(BaseModel):
         ),
     )
 
+    # Roteamento por vendedor (2026-09-10) — pra quem da equipe o lead
+    # qualificado foi entregue (core/lead_routing). Vazio = foi pro dono
+    # (owner_phone) ou ainda não houve handoff. Mesmo contrato do bsuid no
+    # save_conversation (migration scripts/migration_lead_routing.sql).
+    assigned_to: str = Field(
+        default="",
+        description="E-mail do membro da equipe que recebeu o lead. Vazio = dono/nenhum.",
+    )
+    assigned_name: str = Field(
+        default="",
+        description="Nome exibido de quem recebeu o lead (Cockpit, relatório, planilha).",
+    )
+    assigned_at: Optional[datetime] = Field(
+        default=None,
+        description="Quando o lead foi entregue a essa pessoa (UTC).",
+    )
+
 
 # ================================================================
 # APROVAÇÃO PENDENTE

@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from huma.config import PUBLIC_BASE_URL
+from huma.core import lead_routing
 from huma.core.auth import verify_api_key
 from huma.services import db_service as db
 from huma.services import email_service
@@ -33,6 +34,7 @@ router = APIRouter(tags=["Negócio"])
 MAX_TEAM_MEMBERS = 10
 TEAM_ROLE_LABELS = {
     "dono": "Dono",
+    "vendedor": "Vendas",
     "recepcao": "Recepção",
     "admin": "Administrativo",
     "equipe": "Equipe",
@@ -43,6 +45,37 @@ class TeamInviteBody(BaseModel):
     email: str = Field(..., max_length=254)
     name: str = Field(default="", max_length=80)
     role: str = Field(default="equipe", max_length=20)
+    # Roteamento por vendedor (core/lead_routing): quem recebe os leads
+    # qualificados no WhatsApp e o que atende (rodízio quando não casa).
+    phone: str = Field(default="", max_length=30)
+    receives_leads: bool = Field(default=False)
+    specialty: str = Field(default="", max_length=200)
+
+
+class TeamUpdateBody(BaseModel):
+    """PATCH de um membro — só o que vier preenchido muda."""
+    name: Optional[str] = Field(default=None, max_length=80)
+    role: Optional[str] = Field(default=None, max_length=20)
+    phone: Optional[str] = Field(default=None, max_length=30)
+    receives_leads: Optional[bool] = Field(default=None)
+    specialty: Optional[str] = Field(default=None, max_length=200)
+
+
+def _routing_fields(phone: str, receives_leads: bool, specialty: str) -> dict:
+    """
+    Normaliza os campos de roteamento. Receber leads exige WhatsApp válido
+    (é pra lá que a HUMA manda o lead) — sem número, 400 que ensina.
+    """
+    digits = lead_routing.normalize_phone(phone)
+    if (phone or "").strip() and not digits:
+        raise HTTPException(400, "WhatsApp inválido. Use DDD + número, ex.: 11 98888-7777.")
+    if receives_leads and not digits:
+        raise HTTPException(400, "Pra receber leads, informe o WhatsApp dessa pessoa (DDD + número).")
+    return {
+        "phone": digits,
+        "receives_leads": bool(receives_leads),
+        "specialty": (specialty or "").strip()[:200],
+    }
 
 
 def _norm_email(raw: str) -> str:
@@ -146,6 +179,12 @@ def _team_payload(client) -> dict:
         "members": _members(client),
         "max_members": MAX_TEAM_MEMBERS,
         "roles": [{"id": k, "label": v} for k, v in TEAM_ROLE_LABELS.items()],
+        # Roteamento: quantas pessoas recebem leads. 0 = tudo vai pro dono.
+        "routing": {
+            "enabled": lead_routing.routing_enabled(client),
+            "sellers": len(lead_routing.sellers(client)),
+            "owner_phone_set": bool((client.owner_phone or "").strip()),
+        },
     }
 
 
@@ -214,11 +253,50 @@ async def team_invite(client_id: str, body: TeamInviteBody, client=Depends(verif
         "role": role,
         "invited_at": datetime.now(timezone.utc).isoformat(),
         "status": "invited",
+        **_routing_fields(body.phone, body.receives_leads, body.specialty),
     }
     await _persist(client_id, {"team_members": members + [member]})
     email_sent = await _send_invite(email, client, TEAM_ROLE_LABELS[role])
-    log.info(f"Equipe | convite | client={client_id} | role={role} | email_sent={email_sent} | total={len(members) + 1}")
+    log.info(
+        f"Equipe | convite | client={client_id} | role={role} | email_sent={email_sent} | "
+        f"receives_leads={member['receives_leads']} | total={len(members) + 1}"
+    )
     return {"status": "ok", "member": member, "email_sent": email_sent}
+
+
+@router.patch("/api/clients/{client_id}/team/{email}")
+async def team_update(client_id: str, email: str, body: TeamUpdateBody, client=Depends(verify_api_key)) -> dict:
+    """
+    Edita um membro (nome, papel, WhatsApp, recebe leads, atende).
+
+    É aqui que o dono liga o roteamento por vendedor: marca quem recebe
+    leads e o WhatsApp de cada um. Efeito imediato no próximo handoff.
+    """
+    target = (email or "").strip().lower()
+    members = _members(client)
+    idx = next((i for i, m in enumerate(members) if str(m.get("email") or "").lower() == target), -1)
+    if idx < 0:
+        raise HTTPException(404, "Essa pessoa não está na equipe.")
+
+    current = dict(members[idx])
+    if body.name is not None:
+        current["name"] = body.name.strip()[:80]
+    if body.role is not None:
+        role = body.role.strip().lower()
+        current["role"] = role if role in TEAM_ROLE_LABELS else "equipe"
+    phone = body.phone if body.phone is not None else str(current.get("phone") or "")
+    receives = body.receives_leads if body.receives_leads is not None else bool(current.get("receives_leads"))
+    specialty = body.specialty if body.specialty is not None else str(current.get("specialty") or "")
+    current.update(_routing_fields(phone, receives, specialty))
+
+    members[idx] = current
+    await _persist(client_id, {"team_members": members})
+    sellers_now = sum(1 for m in members if m.get("receives_leads") and lead_routing.normalize_phone(m.get("phone")))
+    log.info(
+        f"Equipe | membro editado | client={client_id} | receives_leads={current['receives_leads']} | "
+        f"vendedores={sellers_now}"
+    )
+    return {"status": "ok", "member": current, "members": members, "sellers": sellers_now}
 
 
 @router.delete("/api/clients/{client_id}/team/{email}")

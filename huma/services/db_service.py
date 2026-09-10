@@ -424,6 +424,9 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             customer_since=d.get("customer_since"),
             customer_reason=d.get("customer_reason", "") or "",
             owner_notes=d.get("owner_notes", "") or "",
+            assigned_to=d.get("assigned_to", "") or "",
+            assigned_name=d.get("assigned_name", "") or "",
+            assigned_at=d.get("assigned_at"),
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -530,13 +533,30 @@ async def save_conversation(conv: Conversation):
         data["customer_reason"] = conv.customer_reason or ""
     if conv.owner_notes:
         data["owner_notes"] = conv.owner_notes
+    # Roteamento por vendedor: mesmo contrato — só entra quando o lead foi
+    # entregue a alguém. Limpar (devolver pra HUMA) é via clear_assignment,
+    # update direto. Sem a migration, retry sem os campos (WARNING).
+    if conv.assigned_to:
+        data["assigned_to"] = conv.assigned_to
+        data["assigned_name"] = conv.assigned_name or ""
+        data["assigned_at"] = conv.assigned_at.isoformat() if conv.assigned_at else None
     try:
         await run_in_threadpool(
             lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
         )
     except Exception as e:
         err = str(e)
-        if "lead_state" in data and "lead_state" in err:
+        if "assigned_to" in data and any(k in err for k in _ASSIGN_COLUMNS):
+            log.warning(
+                f"save_conversation | colunas de roteamento ausentes (rodar scripts/migration_lead_routing.sql) | "
+                f"client={conv.client_id} | phone={conv.phone} | retry sem assigned_*"
+            )
+            for k in _ASSIGN_COLUMNS:
+                data.pop(k, None)
+            await run_in_threadpool(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            )
+        elif "lead_state" in data and "lead_state" in err:
             log.warning(
                 f"save_conversation | coluna lead_state ausente (rodar scripts/migration_lead_state.sql) | "
                 f"client={conv.client_id} | phone={conv.phone} | retry sem lead_state"
@@ -560,6 +580,38 @@ async def save_conversation(conv: Conversation):
 
 
 _CUSTOMER_COLUMNS = ("is_customer", "customer_since", "customer_reason", "owner_notes")
+_ASSIGN_COLUMNS = ("assigned_to", "assigned_name", "assigned_at")
+
+
+async def set_assignment(client_id: str, phone: str, assigned_to: str, assigned_name: str) -> None:
+    """
+    Grava/limpa direto quem está com o lead (roteamento por vendedor).
+
+    Update direto (não passa pelo upsert do save_conversation) porque
+    limpar exige escrever "" — o save só grava quando preenchido.
+    Sem a migration, só WARNING (a conversa continua).
+    """
+    now_iso = datetime.utcnow().isoformat()
+    updates = {
+        "assigned_to": assigned_to or "",
+        "assigned_name": assigned_name or "",
+        "assigned_at": now_iso if assigned_to else None,
+        "updated_at": now_iso,
+    }
+    try:
+        await run_in_threadpool(
+            lambda: get_supabase().table("conversations")
+            .update(updates)
+            .eq("client_id", client_id)
+            .eq("phone", phone)
+            .execute()
+        )
+        log.info(f"Assignment | client={client_id} | phone={phone} | assigned_to={assigned_to or '-'}")
+    except Exception as e:
+        log.warning(
+            f"set_assignment | falhou (rodou scripts/migration_lead_routing.sql?) | "
+            f"client={client_id} | phone={phone} | {type(e).__name__}: {e}"
+        )
 
 
 async def set_customer_flag(
@@ -1136,22 +1188,36 @@ async def list_conversations_for_cockpit(
     # Busca tudo do cliente (até 200) e filtra em Python.
     fetch_limit = max(limit, 200) if filter_mode != "todas" else limit
 
-    def query():
+    base_cols = (
+        "phone,stage,handoff_status,last_message_at,history,"
+        "lead_name_canonical,active_appointment_datetime,"
+        "active_appointment_service,channel,lead_whatsapp"
+    )
+
+    def query(cols: str):
         return (
             get_supabase()
             .table("conversations")
-            .select(
-                "phone,stage,handoff_status,last_message_at,history,"
-                "lead_name_canonical,active_appointment_datetime,"
-                "active_appointment_service,channel,lead_whatsapp"
-            )
+            .select(cols)
             .eq("client_id", client_id)
             .order("last_message_at", desc=True)
             .limit(fetch_limit)
             .execute()
         )
 
-    resp = await run_in_threadpool(query)
+    # assigned_name (roteamento por vendedor) só existe após
+    # scripts/migration_lead_routing.sql — sem a coluna, refaz sem ela
+    # em vez de derrubar a lista inteira do Cockpit.
+    try:
+        resp = await run_in_threadpool(lambda: query(base_cols + ",assigned_name"))
+    except Exception as e:
+        if "assigned_name" not in str(e):
+            raise
+        log.warning(
+            f"list_conversations_for_cockpit | coluna assigned_name ausente "
+            f"(rodar scripts/migration_lead_routing.sql) | client={client_id} | retry sem ela"
+        )
+        resp = await run_in_threadpool(lambda: query(base_cols))
     rows = resp.data or []
 
     if filter_mode == "todas":

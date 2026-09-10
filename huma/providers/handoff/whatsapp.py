@@ -72,6 +72,11 @@ class WhatsAppHandoffProvider(HandoffProvider):
         facts = payload.get("lead_facts") or []
 
         urgency_tag = "🔥 URGENTE" if urgency == "urgent" else "✅ Novo lead pronto"
+        # Roteamento por vendedor: a pessoa sabe que o lead é DELA (não um
+        # broadcast pra equipe inteira).
+        assigned_name = (payload.get("assigned_name") or "").strip()
+        if assigned_name:
+            urgency_tag = f"{urgency_tag} pra você, {assigned_name}"
 
         lines = [
             f"{urgency_tag}",

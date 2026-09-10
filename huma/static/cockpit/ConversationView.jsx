@@ -115,6 +115,17 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           )}
         </div>
         {!mobile && <StatusPill status={conversation.status || 'andamento'} />}
+        {conversation.assigned_name && (
+          <span title="Quem da equipe recebeu este lead" style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0,
+            padding: '5px 10px', borderRadius: 999,
+            border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)',
+            fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)', whiteSpace: 'nowrap',
+          }}>
+            <Icon name="userPlus" size={12} stroke={2} />
+            {mobile ? conversation.assigned_name : `Com ${conversation.assigned_name}`}
+          </span>
+        )}
         <button onClick={toggleCustomer} disabled={customerBusy}
           title={isCustomer ? 'Cliente da casa — clique pra remover da lista' : 'Marcar como cliente (aparece na aba Clientes)'}
           style={{

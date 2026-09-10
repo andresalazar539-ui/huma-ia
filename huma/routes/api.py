@@ -1114,6 +1114,8 @@ async def list_conversations_cockpit(
             # site" em vez de mascarar web:<sid> como telefone falso.
             "channel": r.get("channel", "whatsapp") or "whatsapp",
             "lead_whatsapp": r.get("lead_whatsapp", "") or "",
+            # Roteamento por vendedor: quem está com o lead (vazio = dono/ninguém)
+            "assigned_name": r.get("assigned_name", "") or "",
         })
 
     log.info(
@@ -1166,6 +1168,10 @@ async def get_conversation_cockpit(
         "customer_reason": conv.customer_reason or "",
         "owner_notes": conv.owner_notes or "",
         "lead_source": conv.lead_source or "",
+        # Roteamento por vendedor
+        "assigned_to": conv.assigned_to or "",
+        "assigned_name": conv.assigned_name or "",
+        "assigned_at": conv.assigned_at.isoformat() if conv.assigned_at else None,
         "history": conv.history,
     }
 
@@ -1755,6 +1761,10 @@ class HandoffPayload(BaseModel):
     """Payload pra assumir/devolver conversa."""
     takeover: bool = Field(..., description="True = humano assume; False = devolve pra IA")
     summary: str = Field(default="", max_length=500, description="Resumo opcional do contexto pro humano")
+    assigned_to: str = Field(
+        default="", max_length=254,
+        description="E-mail de quem da equipe fica com o lead (roteamento por vendedor). Vazio = não muda.",
+    )
 
 
 class CockpitSendPayload(BaseModel):
@@ -1787,26 +1797,59 @@ async def conversation_handoff_cockpit(
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
 
+    assigned_changed = False
     if payload.takeover:
         conv.handoff_status = "handed_off"
         conv.handed_off_at = datetime.utcnow()
         if payload.summary:
             conv.handoff_summary = payload.summary
+        # Roteamento por vendedor: o dono escolhe quem fica com o lead.
+        # O e-mail precisa ser de alguém da equipe (ou do próprio dono).
+        wanted = (payload.assigned_to or "").strip().lower()
+        if wanted:
+            client_data = await db.get_client(client_id)
+            members = [
+                m for m in (getattr(client_data, "team_members", None) or [])
+                if isinstance(m, dict) and str(m.get("email") or "").lower() == wanted
+            ]
+            owner_email = (getattr(client_data, "owner_email", "") or "").strip().lower()
+            if members:
+                from huma.core import lead_routing
+                conv.assigned_to = wanted
+                conv.assigned_name = lead_routing.seller_label(members[0])
+            elif owner_email and wanted == owner_email:
+                conv.assigned_to = wanted
+                conv.assigned_name = (getattr(client_data, "owner_name", "") or "").strip() or "Dono"
+            else:
+                raise HTTPException(400, "Essa pessoa não está na equipe.")
+            conv.assigned_at = datetime.utcnow()
+            assigned_changed = True
     else:
         conv.handoff_status = "active"
         conv.handed_off_at = None
         conv.handoff_summary = ""
+        # Devolver pra HUMA solta o lead de quem estava com ele. O save só
+        # grava assigned_* quando preenchido, então limpar é update direto.
+        if conv.assigned_to:
+            conv.assigned_to = ""
+            conv.assigned_name = ""
+            conv.assigned_at = None
+            assigned_changed = True
 
     await db.save_conversation(conv)
+    if assigned_changed:
+        await db.set_assignment(client_id, phone, conv.assigned_to, conv.assigned_name)
 
     log.info(
         f"Cockpit handoff | client_id={client_id} | phone={phone} | "
-        f"takeover={payload.takeover}"
+        f"takeover={payload.takeover} | assigned_to={conv.assigned_to or '-'}"
     )
     return {
         "status": "ok",
         "handoff_status": conv.handoff_status,
         "handed_off_at": conv.handed_off_at.isoformat() if conv.handed_off_at else None,
+        "assigned_to": conv.assigned_to or "",
+        "assigned_name": conv.assigned_name or "",
     }
 
 

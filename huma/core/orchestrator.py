@@ -25,6 +25,7 @@ from fastapi import BackgroundTasks
 from huma.config import SAFE_MODE, HISTORY_MAX_BEFORE_COMPRESS
 from huma.core.ai_schedule import resolve_effective_mode
 from huma.core.funnel import get_stages
+from huma.core import lead_routing
 from huma.core.customers import mark_as_customer
 from huma.models.schemas import (
     Conversation, MessagePayload,
@@ -3391,6 +3392,36 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
     # indiretamente em alguns paths)
     from huma.providers.handoff import get_default_provider
 
+    # ── Roteamento por vendedor (core/lead_routing) ──
+    # Sem ninguém marcado "recebe leads" na equipe → target = owner_phone
+    # (comportamento original). Com equipe: especialidade casa → essa
+    # pessoa; senão rodízio (contador Redis por cliente; Redis off = 0,
+    # ou seja, sempre o primeiro — degrada, não quebra).
+    target = client_data.owner_phone or ""
+    seller = None
+    candidates = lead_routing.sellers(client_data)
+    if candidates:
+        counter = 0
+        try:
+            counter = await cache.incr_with_ttl(
+                f"handoff_rr:{client_data.client_id}", ttl=365 * 24 * 3600
+            )
+        except Exception as e:
+            log.warning(
+                f"Handoff routing | contador Redis falhou | client={client_data.client_id} | "
+                f"{type(e).__name__}: {e}"
+            )
+        # incr devolve o valor PÓS-incremento (1, 2, 3…); -1 = Redis off.
+        rr_index = counter - 1 if counter > 0 else 0
+        seller = lead_routing.pick_seller(candidates, conv, summary, rr_index)
+        if seller:
+            target = seller["phone"]
+            log.info(
+                f"Handoff routing | {phone} | client={client_data.client_id} | "
+                f"vendedores={len(candidates)} | escolhido={seller.get('name') or seller.get('email')} | "
+                f"contador={counter}"
+            )
+
     provider = get_default_provider()
     payload = {
         "lead_phone": phone,
@@ -3399,18 +3430,36 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
         "lead_facts": list(conv.lead_facts or [])[:10],
         "urgency": urgency,
         "stage": conv.stage,
+        "assigned_name": (seller or {}).get("name", ""),
     }
     notif_result = await provider.notify_human(
-        target=client_data.owner_phone or "",
+        target=target,
         client_id=client_data.client_id,
         payload=payload,
     )
     owner_notified = notif_result.get("status") == "ok"
 
+    if not owner_notified and seller and client_data.owner_phone and client_data.owner_phone != target:
+        # O WhatsApp do vendedor falhou (número errado, canal fora) — o lead
+        # não pode ficar no vácuo: cai pro dono, como antes do roteamento.
+        log.warning(
+            f"Handoff routing | aviso ao vendedor falhou, caindo pro dono | {phone} | "
+            f"client={client_data.client_id} | status={notif_result.get('status')}"
+        )
+        seller = None
+        target = client_data.owner_phone
+        payload["assigned_name"] = ""
+        notif_result = await provider.notify_human(
+            target=target,
+            client_id=client_data.client_id,
+            payload=payload,
+        )
+        owner_notified = notif_result.get("status") == "ok"
+
     if not owner_notified:
         log.error(
-            f"Handoff: notificação dono falhou | {phone} | "
-            f"client={client_data.client_id} | "
+            f"Handoff: notificação humano falhou | {phone} | "
+            f"client={client_data.client_id} | target={'vendedor' if seller else 'dono'} | "
             f"status={notif_result.get('status')} | "
             f"detail={notif_result.get('detail', '')}"
         )
@@ -3429,34 +3478,34 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
     conv.handoff_summary = summary
     if conv.stage not in TERMINAL_STAGES:
         conv.stage = "won"
+    if seller:
+        conv.assigned_to = seller.get("email") or seller["phone"]
+        conv.assigned_name = seller.get("name") or ""
+        conv.assigned_at = datetime.utcnow()
 
     # Manda última mensagem ao lead pra ele saber que tá vindo gente
-    if urgency == "urgent":
-        final_msg = (
-            "Vou te passar agora pro nosso especialista que já vai te chamar "
-            "pra resolver isso rapidinho. Tá tudo anotado!"
-        )
-    else:
-        final_msg = (
-            "Já chamei nosso especialista pra te dar atenção total. "
-            "Em alguns minutos ele te chama por aqui mesmo. Tá tudo anotado!"
-        )
+    # (com o nome de quem vai chamar, quando houve roteamento).
+    final_msg = lead_routing.final_message(seller, urgency)
 
     try:
         await wa.send_text(phone, final_msg, client_id=client_data.client_id)
         conv.history.append({"role": "assistant", "content": final_msg})
         # Marker técnico pra debug/auditoria
+        who = (
+            f"{seller.get('name') or seller.get('email')} ({target})"
+            if seller else f"dono ({client_data.owner_phone})"
+        )
         conv.history.append({
             "role": "assistant",
             "content": (
-                f"[HANDOFF EXECUTADO — humano notificado via WhatsApp ({client_data.owner_phone}). "
+                f"[HANDOFF EXECUTADO — humano notificado via WhatsApp: {who}. "
                 f"IA suprimida até reset manual. Resumo: {summary}]"
             ),
         })
         await db.save_conversation(conv)
         log.info(
             f"Handoff executado | {phone} | client={client_data.client_id} | "
-            f"urgency={urgency} | stage→won"
+            f"urgency={urgency} | stage→won | assigned_to={conv.assigned_to or '-'}"
         )
     except Exception as e:
         log.error(
@@ -3476,13 +3525,36 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
         activity_kind="note",
         activity_summary=summary,
     )
+    # Dono recebe uma linha quando o lead foi pra outra pessoa da equipe
+    # (visibilidade sem duplicar o aviso completo). Best-effort.
+    if seller and client_data.owner_phone and client_data.owner_phone != target:
+        try:
+            await wa.notify_owner(
+                client_data.owner_phone,
+                lead_routing.owner_notice(seller, conv.lead_name_canonical or "", phone, summary),
+                client_id=client_data.client_id,
+            )
+        except Exception as e:
+            log.warning(
+                f"Handoff routing | cópia pro dono falhou | {phone} | "
+                f"client={client_data.client_id} | {type(e).__name__}: {e}"
+            )
+
     # Webhook / planilha / pixel do cliente (fire-and-forget)
-    lead_events.fire(client_data, conv, "lead.qualified", summary=summary, extra={"urgency": urgency})
+    lead_events.fire(
+        client_data, conv, "lead.qualified", summary=summary,
+        extra={
+            "urgency": urgency,
+            "assigned_to": conv.assigned_to or "",
+            "assigned_name": conv.assigned_name or "",
+        },
+    )
 
     return {
         "executed": True,
         "status": "ok",
         "owner_notified": True,
+        "assigned_to": conv.assigned_to or "",
     }
 
 

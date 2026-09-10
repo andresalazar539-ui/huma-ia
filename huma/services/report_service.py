@@ -128,17 +128,34 @@ async def build_report(
     qualifies = Capability.QUALIFY in caps
 
     # ── Conversas ativas no período ──
-    resp = await run_in_threadpool(
-        lambda: supa.table("conversations").select(
-            "phone,stage,created_at,last_message_at,follow_up_count,"
-            "handoff_status,crm_deal_id,crm_synced_at,"
-            "active_appointment_datetime,active_appointment_service,"
-            "lead_name_canonical,lead_email,lead_facts,"
-            "lead_source,is_outbound"
-        ).eq("client_id", client_id).gte("last_message_at", since_iso)
-         .lte("last_message_at", until_iso)
-         .limit(1000).execute()
+    conv_cols = (
+        "phone,stage,created_at,last_message_at,follow_up_count,"
+        "handoff_status,crm_deal_id,crm_synced_at,"
+        "active_appointment_datetime,active_appointment_service,"
+        "lead_name_canonical,lead_email,lead_facts,"
+        "lead_source,is_outbound"
     )
+
+    def _convs_query(cols: str):
+        return (
+            supa.table("conversations").select(cols)
+            .eq("client_id", client_id).gte("last_message_at", since_iso)
+            .lte("last_message_at", until_iso)
+            .limit(1000).execute()
+        )
+
+    # assigned_name (roteamento por vendedor) só existe após
+    # scripts/migration_lead_routing.sql — sem a coluna, refaz sem ela.
+    try:
+        resp = await run_in_threadpool(lambda: _convs_query(conv_cols + ",assigned_name"))
+    except Exception as e:
+        if "assigned_name" not in str(e):
+            raise
+        log.warning(
+            f"Report | coluna assigned_name ausente (rodar scripts/migration_lead_routing.sql) | "
+            f"client={client_id} | retry sem ela"
+        )
+        resp = await run_in_threadpool(lambda: _convs_query(conv_cols))
     convs = resp.data or []
 
     novas = [
@@ -218,10 +235,20 @@ async def build_report(
             if c.get("crm_deal_id") or (_parse_dt(c.get("crm_synced_at")) or since) > since
         )
         handoffs = sum(1 for c in convs if c.get("handoff_status") == "handed_off")
+        # Roteamento por vendedor: quantos leads cada pessoa recebeu (só
+        # aparece quando o dono ligou o roteamento — vazio = nada a mostrar).
+        por_vendedor: dict[str, int] = {}
+        for c in convs:
+            if c.get("handoff_status") != "handed_off":
+                continue
+            who = (c.get("assigned_name") or "").strip()
+            if who:
+                por_vendedor[who] = por_vendedor.get(who, 0) + 1
         sections["qualificacao"] = {
             "leads_com_dados": com_dados,
             "enviados_crm": enviados_crm,
             "passados_pro_humano": handoffs,
+            "por_vendedor": dict(sorted(por_vendedor.items(), key=lambda kv: -kv[1])),
         }
 
     # ── Origem (sempre) — de onde vêm as conversas e as CONVERSÕES ──
@@ -355,6 +382,11 @@ def _report_lines(report: dict) -> tuple[list[str], str]:
         if q.get("passados_pro_humano", 0):
             partes.append(f"{q['passados_pro_humano']} entregues quentes pra você")
         lines.append("🎯 " + " · ".join(partes))
+        por_vendedor = q.get("por_vendedor") or {}
+        if por_vendedor:
+            lines.append(
+                "👥 Por vendedor: " + " · ".join(f"{n} → {who}" for who, n in por_vendedor.items())
+            )
 
     f = s.get("follow_up", {})
     if f.get("leads_reengajados", 0):

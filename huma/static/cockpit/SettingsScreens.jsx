@@ -2309,16 +2309,88 @@ const PerfilSecurity = ({ settings }) => {
 // e-mail neste negócio (login cai em team_members quando não é dono).
 // ============================================================
 const TEAM_ROLES = [
+  { id: 'vendedor', label: 'Vendas',         desc: 'Recebe os leads que a HUMA qualifica' },
   { id: 'recepcao', label: 'Recepção',       desc: 'Conversas, agenda e clientes' },
   { id: 'admin',    label: 'Administrativo', desc: 'Relatórios e faturamento' },
   { id: 'dono',     label: 'Sócio / dono',   desc: 'Tudo, inclusive ajustes do negócio' },
 ];
 const teamRoleLabel = (id) => (TEAM_ROLES.find(r => r.id === id) || { label: 'Equipe' }).label;
+const fmtWa = (digits) => {
+  const d = String(digits || '').replace(/\D/g, '');
+  if (d.length === 13 && d.startsWith('55')) return `(${d.slice(2, 4)}) ${d.slice(4, 9)}-${d.slice(9)}`;
+  if (d.length === 12 && d.startsWith('55')) return `(${d.slice(2, 4)}) ${d.slice(4, 8)}-${d.slice(8)}`;
+  return d;
+};
+
+// Linha de um membro com edição inline (WhatsApp, recebe leads, atende).
+// É aqui que o dono liga o roteamento por vendedor — efeito no próximo lead.
+const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
+  const [editing, setEditing] = useStateS(false);
+  const [phone, setPhone] = useStateS(m.phone || '');
+  const [receives, setReceives] = useStateS(!!m.receives_leads);
+  const [specialty, setSpecialty] = useStateS(m.specialty || '');
+  const [saving, setSaving] = useStateS(false);
+  const fmtSince = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }); };
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true); onError('');
+    try {
+      await updateTeamMember(m.email, { phone, receives_leads: receives, specialty });
+      setEditing(false);
+      await onChanged();
+    } catch (e) { onError(e.message); }
+    setSaving(false);
+  };
+
+  return (
+    <div style={{ padding: '10px 0', borderTop: '1px solid var(--paper-edge)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <Avatar initials={initialsFrom(m.name || m.email)} tone={tone} size={28}/>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {m.name || m.email}
+            {m.receives_leads && m.phone && (
+              <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--sage-ink)', background: 'var(--sage-tint)', padding: '1px 7px', borderRadius: 999 }}>recebe leads</span>
+            )}
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {teamRoleLabel(m.role)}{m.name ? ` · ${m.email}` : ''}{m.phone ? ` · ${fmtWa(m.phone)}` : ''}{m.specialty ? ` · atende: ${m.specialty}` : ''}{m.invited_at ? ` · desde ${fmtSince(m.invited_at)}` : ''}
+          </div>
+        </div>
+        <Button variant="plain" size="sm" onClick={() => setEditing(!editing)}>{editing ? 'Fechar' : 'Editar'}</Button>
+        <Button variant="plain" size="sm" onClick={onRemove}>Remover</Button>
+      </div>
+      {editing && (
+        <div style={{ marginTop: 10, marginLeft: 40, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+            <Field label="WhatsApp" half>
+              <Input placeholder="11 98888-7777" value={phone} onChange={e => setPhone(e.target.value)}/>
+            </Field>
+            <Field label="Atende (opcional)" half hint="Assuntos separados por vírgula. Quando o lead fala disso, vai pra essa pessoa.">
+              <Input placeholder="implantes, ortodontia" value={specialty} onChange={e => setSpecialty(e.target.value)}/>
+            </Field>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)' }}>
+            <input type="checkbox" checked={receives} onChange={e => setReceives(e.target.checked)} style={{ accentColor: 'var(--ink)' }}/>
+            Recebe os leads qualificados pela HUMA no WhatsApp
+          </label>
+          <div>
+            <Button variant="dark" size="sm" onClick={save} disabled={saving}>{saving ? 'Salvando…' : 'Salvar'}</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const InviteModal = ({ onClose }) => {
   const [email, setEmail] = useStateS('');
   const [name, setName] = useStateS('');
   const [role, setRole] = useStateS('recepcao');
+  const [phone, setPhone] = useStateS('');
+  const [receives, setReceives] = useStateS(false);
+  const [specialty, setSpecialty] = useStateS('');
   const [team, setTeam] = useStateS(null);
   const [err, setErr] = useStateS('');
   const [notice, setNotice] = useStateS('');
@@ -2330,15 +2402,18 @@ const InviteModal = ({ onClose }) => {
   };
   useEffectS(() => { load(); }, []);
 
+  // Papel "Vendas" já sugere que a pessoa recebe leads (o dono pode desmarcar).
+  const pickRole = (id) => { setRole(id); if (id === 'vendedor') setReceives(true); };
+
   const invite = async () => {
     if (!email.trim() || busy) return;
     setBusy(true); setErr(''); setNotice('');
     try {
-      const r = await inviteTeamMember({ email, name, role });
+      const r = await inviteTeamMember({ email, name, role, phone, receives_leads: receives, specialty });
       setNotice(r.email_sent
         ? `Convite enviado pra ${r.member.email}. A pessoa recebe o e-mail pra criar a senha e entra com ele.`
         : `${r.member.email} já pode entrar: basta usar "Esqueci minha senha" na tela de login com esse e-mail.`);
-      setEmail(''); setName('');
+      setEmail(''); setName(''); setPhone(''); setSpecialty(''); setReceives(false);
       await load();
     } catch (e) { setErr(e.message); }
     setBusy(false);
@@ -2353,7 +2428,7 @@ const InviteModal = ({ onClose }) => {
 
   const owner = (team && team.owner) || {};
   const members = (team && team.members) || [];
-  const fmtSince = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }); };
+  const routing = (team && team.routing) || { enabled: false, sellers: 0 };
   const tones = ['sage', 'ink', 'terracotta'];
 
   return (
@@ -2404,7 +2479,7 @@ const InviteModal = ({ onClose }) => {
                   border: '1px solid ' + (role === r.id ? 'var(--ink)' : 'var(--paper-edge)'),
                   background: role === r.id ? 'var(--paper-sunk)' : 'transparent',
                 }}>
-                  <input type="radio" checked={role === r.id} onChange={() => setRole(r.id)} style={{ accentColor: 'var(--ink)' }}/>
+                  <input type="radio" checked={role === r.id} onChange={() => pickRole(r.id)} style={{ accentColor: 'var(--ink)' }}/>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{r.label}</div>
                     <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>{r.desc}</div>
@@ -2413,6 +2488,20 @@ const InviteModal = ({ onClose }) => {
               ))}
             </div>
           </Field>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)' }}>
+            <input type="checkbox" checked={receives} onChange={e => setReceives(e.target.checked)} style={{ accentColor: 'var(--ink)' }}/>
+            Recebe os leads qualificados pela HUMA no WhatsApp
+          </label>
+          {receives && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+              <Field label="WhatsApp dessa pessoa" half>
+                <Input placeholder="11 98888-7777" value={phone} onChange={e => setPhone(e.target.value)}/>
+              </Field>
+              <Field label="Atende (opcional)" half hint="Assuntos separados por vírgula. Quando o lead fala disso, vai pra essa pessoa; senão, rodízio.">
+                <Input placeholder="implantes, ortodontia" value={specialty} onChange={e => setSpecialty(e.target.value)}/>
+              </Field>
+            </div>
+          )}
           {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
           {notice && <VoiceMsg kind="ok">{notice}</VoiceMsg>}
           <div>
@@ -2438,21 +2527,8 @@ const InviteModal = ({ onClose }) => {
               </div>
             </div>
             {members.map((m, i) => (
-              <div key={m.email} style={{
-                display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0',
-                borderTop: '1px solid var(--paper-edge)',
-              }}>
-                <Avatar initials={initialsFrom(m.name || m.email)} tone={tones[i % 3]} size={28}/>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {m.name || m.email}
-                  </div>
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', marginTop: 1 }}>
-                    {teamRoleLabel(m.role)}{m.name ? ` · ${m.email}` : ''}{m.invited_at ? ` · desde ${fmtSince(m.invited_at)}` : ''}
-                  </div>
-                </div>
-                <Button variant="plain" size="sm" onClick={() => remove(m)}>Remover</Button>
-              </div>
+              <TeamMemberRow key={m.email} m={m} tone={tones[i % 3]}
+                onChanged={load} onRemove={() => remove(m)} onError={setErr}/>
             ))}
             {team && members.length === 0 && (
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', padding: '6px 0 0' }}>
@@ -2460,6 +2536,13 @@ const InviteModal = ({ onClose }) => {
               </div>
             )}
           </div>
+          {team && (
+            <div style={{ marginTop: 12, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+              {routing.enabled
+                ? `Leads qualificados vão pra ${routing.sellers} ${routing.sellers === 1 ? 'pessoa' : 'pessoas'} da equipe: quem "atende" o assunto leva; sem casar, rodízio. Você recebe uma linha avisando quem ficou com cada lead.`
+                : 'Hoje todo lead qualificado vai pro seu WhatsApp. Marque "recebe leads" em quem vende pra HUMA distribuir entre a equipe.'}
+            </div>
+          )}
         </div>
       </div>
     </div>

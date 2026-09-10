@@ -84,6 +84,9 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
                   <StatusPill status={c.status} />
                   {c.channel === 'web' && <ChannelChip captured={!!c.lead_whatsapp} />}
                   {c.channel === 'instagram' && <ChannelChip channel="instagram" />}
+                  {c.assigned_name && (
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>→ {c.assigned_name}</span>
+                  )}
                 </div>
               </div>
             </button>

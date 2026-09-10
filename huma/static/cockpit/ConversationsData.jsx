@@ -119,6 +119,8 @@ function mapListItem(item) {
     lead_whatsapp: item.lead_whatsapp || '',
     stage: item.stage,
     handoff_status: item.handoff_status,
+    // Roteamento por vendedor: quem da equipe está com o lead ('' = dono/ninguém)
+    assigned_name: item.assigned_name || '',
     appointment: item.active_appointment_datetime
       ? { datetime: item.active_appointment_datetime, service: item.active_appointment_service }
       : null,
@@ -201,6 +203,9 @@ function mapDetail(d) {
     status: deriveStatus(d),
     stage: d.stage,
     handoff_status: d.handoff_status,
+    // Roteamento por vendedor
+    assigned_to: d.assigned_to || '',
+    assigned_name: d.assigned_name || '',
     // Clientes (CRM do dono)
     is_customer: !!d.is_customer,
     customer_since: d.customer_since || null,
@@ -825,11 +830,23 @@ async function fetchTeam() {
   return r.json();
 }
 
-async function inviteTeamMember({ email, name = '', role = 'equipe' }) {
+async function inviteTeamMember({ email, name = '', role = 'equipe', phone = '', receives_leads = false, specialty = '' }) {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team/invite`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
-    body: JSON.stringify({ email, name, role }),
+    body: JSON.stringify({ email, name, role, phone, receives_leads, specialty }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Roteamento por vendedor: edita WhatsApp / "recebe leads" / "atende" de um membro.
+// Só os campos presentes em `patch` mudam.
+async function updateTeamMember(email, patch) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team/${encodeURIComponent(email)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify(patch || {}),
   });
   if (!r.ok) throw await _readApiError(r);
   return r.json();
@@ -856,7 +873,7 @@ async function requestPasswordReset(email) {
 
 Object.assign(window, {
   fetchKnowledge, uploadKnowledgeDoc, deleteKnowledgeDoc,
-  fetchTeam, inviteTeamMember, removeTeamMember, requestPasswordReset,
+  fetchTeam, inviteTeamMember, updateTeamMember, removeTeamMember, requestPasswordReset,
 });
 
 /* ---------------- Perguntas sem resposta + Playbook (Como a HUMA vende) ---------------- */
