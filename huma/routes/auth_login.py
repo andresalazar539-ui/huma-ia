@@ -409,8 +409,24 @@ async def _resolve_or_provision_client(email: str, business_name: str = "", ref:
     if len(clients) == 1:
         return clients[0]
     if len(clients) > 1:
-        log.warning(f"Login | e-mail vinculado a 2+ clientes | email=***@{email.split('@')[-1]}")
-        raise HTTPException(403, "Este e-mail está vinculado a mais de uma conta. Fale com o suporte.")
+        # Duplicidade (caso real 2026-09-10: cadastro abandonado em "pending"
+        # + a conta de verdade em "active"). Se só UMA está ativa, é ela; a
+        # pessoa não pode ficar trancada fora por causa de um rascunho vazio.
+        active = [
+            c for c in clients
+            if str(getattr(c.onboarding_status, "value", c.onboarding_status)) == "active"
+        ]
+        if len(active) == 1:
+            log.warning(
+                f"Login | e-mail em {len(clients)} contas, entrando na única ativa | "
+                f"client={active[0].client_id} | email=***@{email.split('@')[-1]}"
+            )
+            return active[0]
+        log.warning(f"Login | e-mail vinculado a 2+ clientes ativos | email=***@{email.split('@')[-1]}")
+        raise HTTPException(
+            403,
+            "Este e-mail é dono de mais de uma conta ativa na HUMA. Fale com o suporte pra escolher qual manter.",
+        )
 
     # Membro convidado pelo dono (Cockpit → Convidar equipe): entra no
     # negócio da equipe em vez de ganhar um negócio novo e vazio.

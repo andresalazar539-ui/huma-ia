@@ -342,3 +342,39 @@ class TestInviteFlow:
         r = _client().post("/auth/invite/accept", json={"token": "x" * 30, "password": "senhaForte123"})
         assert r.status_code == 400
         assert "convite" in r.json()["detail"].lower()
+
+
+# ================================================================
+# Login com e-mail dono de 2 contas: entra na única ativa
+# ================================================================
+
+
+class TestDuplicateOwnerLogin:
+
+    def _two(self, monkeypatch, statuses):
+        import huma.routes.auth_login as al
+        clients = [
+            _identity(client_id=f"cli_{i}", onboarding_status=st, business_name=f"Neg {i}")
+            for i, st in enumerate(statuses)
+        ]
+
+        async def by_email(email):
+            return clients
+
+        monkeypatch.setattr(al.db, "get_clients_by_owner_email", by_email)
+        return al, clients
+
+    def test_one_active_one_pending_enters_active(self, monkeypatch):
+        al, clients = self._two(monkeypatch, [OnboardingStatus.PENDING, OnboardingStatus.ACTIVE])
+        got = asyncio.run(al._resolve_or_provision_client("dona@x.com"))
+        assert got.client_id == "cli_1"
+
+    def test_two_active_still_refuses(self, monkeypatch):
+        from fastapi import HTTPException
+        al, _ = self._two(monkeypatch, [OnboardingStatus.ACTIVE, OnboardingStatus.ACTIVE])
+        try:
+            asyncio.run(al._resolve_or_provision_client("dona@x.com"))
+            assert False, "deveria recusar"
+        except HTTPException as e:
+            assert e.status_code == 403
+            assert "mais de uma conta ativa" in e.detail
