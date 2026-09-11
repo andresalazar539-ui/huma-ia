@@ -635,8 +635,11 @@ const NegocioScreen = ({ onNavMain }) => {
       await saveSettings(payload);
       setDirty({});
       setSaveLabel('Salvo ✓');
+      // Capabilities mudam as abas da barra lateral (Agenda / Vendas):
+      // avisa o Cockpit pra recarregar o status sem precisar de F5.
+      try { window.dispatchEvent(new CustomEvent('huma:settings-saved', { detail: payload })); } catch (e) {}
     } catch (e) {
-      setSaveLabel('Erro — tente de novo');
+      setSaveLabel('Erro. Tente de novo');
     }
     setTimeout(() => setSaveLabel('Salvar'), 2200);
   };
@@ -1753,8 +1756,11 @@ const PerfilScreen = () => {
       await saveSettings(payload);
       setDirty({});
       setSaveLabel('Salvo ✓');
+      // Capabilities mudam as abas da barra lateral (Agenda / Vendas):
+      // avisa o Cockpit pra recarregar o status sem precisar de F5.
+      try { window.dispatchEvent(new CustomEvent('huma:settings-saved', { detail: payload })); } catch (e) {}
     } catch (e) {
-      setSaveLabel('Erro — tente de novo');
+      setSaveLabel('Erro. Tente de novo');
     }
     setTimeout(() => setSaveLabel('Salvar'), 2200);
   };

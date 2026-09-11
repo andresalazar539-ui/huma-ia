@@ -261,6 +261,13 @@ function App() {
     }
   }, []);
   useEffect(() => { reloadIntegrationsStatus(); }, [reloadIntegrationsStatus]);
+  // Salvou a Missão (capabilities) em Ajustes → Negócio: as abas Agenda /
+  // Vendas da barra lateral vêm deste status, então recarrega na hora.
+  useEffect(() => {
+    const onSaved = () => reloadIntegrationsStatus();
+    window.addEventListener('huma:settings-saved', onSaved);
+    return () => window.removeEventListener('huma:settings-saved', onSaved);
+  }, [reloadIntegrationsStatus]);
   useEffect(() => {
     if (route === 'integracoes') reloadIntegrationsStatus();
   }, [route, reloadIntegrationsStatus]);
