@@ -124,7 +124,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const balcaoUrl = (window.getBalcaoUrl && window.getBalcaoUrl()) || '';
   const balcaoCard = {
     id: 'balcao',
-    name: 'Balcão — Chat no navegador',
+    name: 'Balcão: Chat no navegador',
     category: 'Canal',
     glyph: { type: 'balcao' },
     status: 'active',
@@ -133,7 +133,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       ['CLONE', 'O mesmo do WhatsApp'],
       ['ONDE USAR', 'Bio do Instagram · site'],
     ],
-    note: 'Visitantes conversam com a HUMA direto no navegador — o WhatsApp que deixarem aparece nas suas conversas.',
+    note: 'Visitantes conversam com a HUMA direto no navegador, o WhatsApp que deixarem aparece nas suas conversas.',
     actions: <BalcaoActions url={balcaoUrl} />,
   };
 
@@ -162,7 +162,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   };
   const gcalCard = {
     id: 'gcal',
-    name: 'Google — Agenda + Planilha',
+    name: 'Google: Agenda + Planilha',
     category: 'Agenda',
     glyph: { type: 'gcal' },
     status: gcalConnected ? 'connected' : 'disconnected',
@@ -170,7 +170,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       ? [
           ['CONTA', client.google_oauth_email || 'conectada'],
           ['AGENDA', 'Principal · bidirecional'],
-          ['PLANILHA', client.google_sheet_url ? 'HUMA — Leads' : 'Pendente'],
+          ['PLANILHA', client.google_sheet_url ? 'HUMA, Leads' : 'Pendente'],
         ]
       : gcalManual
         ? [['AGENDA', client.google_calendar_id], ['MODO', 'Compartilhada']]
@@ -244,7 +244,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     note: nsConnected
       ? 'A HUMA responde com o catálogo real da sua loja e manda o link de compra do produto certo.'
       : (nsServer
-          ? 'Conecte sua loja: sua vitrine e seu WhatsApp viram a mesma coisa — preço, estoque e link de compra na conversa.'
+          ? 'Conecte sua loja: sua vitrine e seu WhatsApp viram a mesma coisa, preço, estoque e link de compra na conversa.'
           : 'O servidor ainda não tem o app de parceiro da Nuvemshop. Fale com o suporte HUMA.'),
     onConnect: nsServer ? () => { window.location.href = oauthStartUrl('nuvemshop'); } : undefined,
     onDisconnect: nsConnected ? () => handleDisconnect('nuvemshop') : undefined,
@@ -274,7 +274,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const whConnected = Boolean(client && client.webhook_url);
   const webhookCard = {
     id: 'webhook',
-    name: 'Webhook — Make, n8n, Zapier',
+    name: 'Webhook: Make, n8n, Zapier',
     category: 'Automação',
     glyph: { type: 'webhook' },
     status: whConnected ? 'connected' : 'disconnected',
@@ -283,7 +283,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       : [['ENVIA', 'Lead novo, qualificado, agendou, pagou'], ['FORMATO', 'JSON assinado']],
     note: whConnected
       ? 'Cada evento de lead é enviado pra sua automação em tempo real, assinado com o seu segredo.'
-      : 'Cole a URL da sua automação e receba cada lead da HUMA no seu sistema, planilha ou CRM — sem programar.',
+      : 'Cole a URL da sua automação e receba cada lead da HUMA no seu sistema, planilha ou CRM, sem programar.',
     actions: (
       <div style={{ display: 'flex', gap: 8 }}>
         <Button variant={whConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setWebhookModal(true)}>
@@ -299,7 +299,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const pxConnected = Boolean(client && client.meta_pixel_id);
   const pixelCard = {
     id: 'pixel',
-    name: 'Pixel da Meta — seus anúncios',
+    name: 'Pixel da Meta: seus anúncios',
     category: 'Anúncios',
     glyph: { type: 'pixel' },
     status: pxConnected ? 'connected' : 'disconnected',
@@ -307,7 +307,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       ? [['PIXEL', client.meta_pixel_id], ['DEVOLVE', 'Lead · Agendou · Comprou']]
       : [['DEVOLVE', 'Lead, agendamento e compra'], ['PRA QUÊ', 'Meta otimiza pra quem fecha']],
     note: pxConnected
-      ? 'A HUMA avisa a Meta quando o lead do seu anúncio qualifica, agenda ou paga — a campanha aprende a trazer quem compra.'
+      ? 'A HUMA avisa a Meta quando o lead do seu anúncio qualifica, agenda ou paga, a campanha aprende a trazer quem compra.'
       : 'Conecte o Pixel dos seus anúncios: a HUMA devolve pra Meta quem qualificou, agendou e pagou, e a campanha passa a otimizar pra venda.',
     actions: (
       <div style={{ display: 'flex', gap: 8 }}>
@@ -603,7 +603,7 @@ const PixelModal = ({ client, onClose, onSaved }) => {
       <ModalText>
         No <b>Gerenciador de Eventos</b> da Meta, abra o seu Pixel e copie o <b>ID</b> (só números).
         {hasWa
-          ? ' Como seu WhatsApp oficial está conectado, a HUMA tenta usar essa mesma autorização — só cole o token se der erro.'
+          ? ' Como seu WhatsApp oficial está conectado, a HUMA tenta usar essa mesma autorização, só cole o token se der erro.'
           : ' Em Configurações → API de Conversões → Gerar token de acesso, copie o token e cole abaixo.'}
       </ModalText>
       <div>{_modalLabel('ID do Pixel')}<input value={pixelId} onChange={e => setPixelId(e.target.value)} placeholder="123456789012345" style={_modalInput}/></div>
@@ -767,7 +767,7 @@ const WhatsAppCard = () => {
   });
 
   const finishOfficial = async (code) => {
-    setMetaMsg({ kind: 'progress', text: 'Quase lá — ativando seu número na HUMA...' });
+    setMetaMsg({ kind: 'progress', text: 'Quase lá, ativando seu número na HUMA...' });
     // O popup envia waba_id/phone_number_id via message event; costuma chegar
     // antes do callback do login, mas espera até 4s pra garantir.
     let es = window.__humaEsData;
@@ -823,7 +823,7 @@ const WhatsAppCard = () => {
       FB.login((response) => {
         const code = response && response.authResponse && response.authResponse.code;
         if (!code) {
-          setMetaMsg({ kind: 'error', text: 'Conexão cancelada antes do final. Sem problema — clique em Tentar de novo quando quiser.' });
+          setMetaMsg({ kind: 'error', text: 'Conexão cancelada antes do final. Sem problema, clique em Tentar de novo quando quiser.' });
           return;
         }
         finishOfficial(code);
@@ -890,7 +890,7 @@ const WhatsAppCard = () => {
     ? [
         ['STATUS', 'Conectado'],
         ['CANAL', 'WhatsApp Oficial (Meta)'],
-        ['NÚMERO', (metaInfo && (metaInfo.display_phone_number || metaInfo.verified_name)) || '—'],
+        ['NÚMERO', (metaInfo && (metaInfo.display_phone_number || metaInfo.verified_name)) || '-'],
       ]
     : state === 'evolution'
       ? [['STATUS', 'Conectado'], ['CANAL', 'WhatsApp (Evolution)']]
@@ -899,7 +899,7 @@ const WhatsAppCard = () => {
     ? 'Número oficial da Meta: atendimento, campanhas e templates liberados'
     : state === 'evolution'
       ? 'HUMA atende seu WhatsApp em tempo real. Para campanhas em massa, conecte o canal oficial da Meta.'
-      : 'Conecte pelo canal oficial da Meta (recomendado) ou escaneie um QR code — nos dois casos a HUMA começa a atender sozinha';
+      : 'Conecte pelo canal oficial da Meta (recomendado) ou escaneie um QR code, nos dois casos a HUMA começa a atender sozinha';
 
   return (
     <div style={{

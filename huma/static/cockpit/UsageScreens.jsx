@@ -26,7 +26,7 @@ const UsoScreen = ({ onGoto }) => {
       bg: 'var(--terracotta-tint)', fg: 'var(--terracotta-ink)', dot: 'var(--terracotta)',
     };
     if (billing.trial_expired) return {
-      text: 'Teste encerrado — IA pausada',
+      text: 'Teste encerrado, IA pausada',
       bg: 'var(--ember-soft)', fg: 'var(--ember-ink)', dot: 'var(--ember)',
     };
     if (billing.subscription_status === 'active') return {
@@ -65,7 +65,7 @@ const UsoScreen = ({ onGoto }) => {
   const subline = (() => {
     if (!billing) return '';
     if (billing.trial) return 'Aproveite: sua IA está no ar de cortesia. Assine antes do fim pra não pausar o atendimento.';
-    if (billing.trial_expired) return 'Assine um plano pra reativar sua IA — o saldo que sobrou do teste continua seu.';
+    if (billing.trial_expired) return 'Assine um plano pra reativar sua IA, o saldo que sobrou do teste continua seu.';
     if (billing.subscription_status === 'active') return 'Assinatura mensal no cartão, renovação automática.';
     return 'Escolha um plano pra colocar sua IA no ar.';
   })();
@@ -98,7 +98,7 @@ const UsoScreen = ({ onGoto }) => {
           )}
         </div>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)', marginTop: 6, letterSpacing: '0.02em' }}>
-          {loadErr ? 'Não consegui carregar seu plano agora — recarregue a página.' : subline}
+          {loadErr ? 'Não consegui carregar seu plano agora, recarregue a página.' : subline}
         </div>
       </div>
 
@@ -106,7 +106,7 @@ const UsoScreen = ({ onGoto }) => {
 
         {/* Saldo por balde: indicação → extra → plano (ordem de consumo).
             Barras de indicação/extra só existem quando o balde tem crédito
-            de verdade — nada de número decorativo. */}
+            de verdade, nada de número decorativo. */}
         <section>
           <div style={{
             border: '1px solid var(--paper-edge)', borderRadius: 16,
@@ -128,7 +128,7 @@ const UsoScreen = ({ onGoto }) => {
               <InviteRow
                 icon="gift"
                 label="crédito por indicação"
-                text={`Indique um negócio e ganhe ${billing ? (billing.referral_reward || 100) : 100} conversas quando ele assinar — quem chega ganha +${billing ? (billing.referral_welcome_bonus || 50) : 50} no teste.`}
+                text={`Indique um negócio e ganhe ${billing ? (billing.referral_reward || 100) : 100} conversas quando ele assinar, quem chega ganha +${billing ? (billing.referral_welcome_bonus || 50) : 50} no teste.`}
                 ctaLabel="Indicar"
                 ctaTone="sage"
                 onCta={() => onGoto('indicacao')}
@@ -178,11 +178,11 @@ const UsoScreen = ({ onGoto }) => {
             {(refCredited > 0 || extraCredited > 0)
               ? 'Créditos de indicação são consumidos primeiro, depois créditos extras, depois o plano base. '
               : ''}
-            Uma conversa é uma janela de 24h com um lead e só conta a partir da 2ª resposta da HUMA — pergunta rápida não gasta saldo.
+            Uma conversa é uma janela de 24h com um lead e só conta a partir da 2ª resposta da HUMA, pergunta rápida não gasta saldo.
           </div>
         </section>
 
-        {/* CONTROLE DE GASTO — o dono decide: travado / com limite / liberado */}
+        {/* CONTROLE DE GASTO, o dono decide: travado / com limite / liberado */}
         <section>
           <SpendControlCard
             billing={billing}
@@ -198,7 +198,7 @@ const UsoScreen = ({ onGoto }) => {
                 icon="sparkle" tone={billing && billing.trial_expired ? 'ember' : 'terracotta'}
                 title={billing && billing.trial_expired ? 'Reative sua IA agora' : 'Garanta sua IA sem pausa'}
                 subtitle={billing && billing.trial
-                  ? `Seu teste termina em ${billing.trial_days_left ?? '?'} ${billing.trial_days_left === 1 ? 'dia' : 'dias'} — assinando, o saldo restante continua seu.`
+                  ? `Seu teste termina em ${billing.trial_days_left ?? '?'} ${billing.trial_days_left === 1 ? 'dia' : 'dias'}, assinando, o saldo restante continua seu.`
                   : 'Escolha o plano e sua IA volta a atender na hora, com o saldo que sobrou do teste.'}
                 cta="Ver planos"
                 onClick={() => onGoto('planos')}
@@ -207,7 +207,7 @@ const UsoScreen = ({ onGoto }) => {
           </section>
         )}
 
-        {/* PARA VOCÊ — indicações e resultado, com dados reais */}
+        {/* PARA VOCÊ, indicações e resultado, com dados reais */}
         <section>
           <div style={{ marginBottom: 12 }}><Eyebrow>para você</Eyebrow></div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
@@ -382,7 +382,7 @@ const ParaVoceIndicacao = ({ refStats, onGoto }) => {
       <UpsellCard
         icon="gift" tone="terracotta"
         title="Indique e ganhe conversas"
-        subtitle={`Cada negócio que assinar pelo seu link vale +${reward} conversas pra você — e quem chega ganha +${welcome} no teste grátis.`}
+        subtitle={`Cada negócio que assinar pelo seu link vale +${reward} conversas pra você, e quem chega ganha +${welcome} no teste grátis.`}
         cta="Começar a indicar"
         onClick={() => onGoto('indicacao')}
       />
@@ -475,7 +475,7 @@ const TrialBanner = ({ billing, onGoto }) => {
     }}>
       <span style={{ flex: 1, minWidth: 0 }}>
         {expired
-          ? 'Seu teste grátis terminou — a IA está pausada e seus leads estão esperando.'
+          ? 'Seu teste grátis terminou, a IA está pausada e seus leads estão esperando.'
           : `Teste grátis: ${days ?? '?'} ${days === 1 ? 'dia restante' : 'dias restantes'}. Assine e sua IA não para.`}
       </span>
       <button onClick={() => onGoto && onGoto('planos')} style={{
@@ -716,7 +716,7 @@ const IndicacaoScreen = ({ onBack }) => {
 
       <div style={{ padding: '24px 32px 48px', maxWidth: 900, display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-        {/* BLOCO 1 — Nível e progresso */}
+        {/* BLOCO 1, Nível e progresso */}
         <div style={{
           border: '1px solid var(--paper-edge)', borderRadius: 16,
           background: 'var(--paper-raised)', padding: 24,
@@ -750,7 +750,7 @@ const IndicacaoScreen = ({ onBack }) => {
 
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
             Você ganha <strong style={{ color: 'var(--ink)' }}>{reward} conversas</strong> quando
-            um negócio indicado vira assinante — e quem chega pelo seu link ganha{' '}
+            um negócio indicado vira assinante, e quem chega pelo seu link ganha{' '}
             <strong style={{ color: 'var(--ink)' }}>+{welcome} conversas</strong> no teste grátis.
             Os créditos aparecem na tela Uso e são consumidos antes do seu plano.
           </div>
@@ -776,7 +776,7 @@ const IndicacaoScreen = ({ onBack }) => {
           </div>
         </div>
 
-        {/* BLOCO 2 — Link */}
+        {/* BLOCO 2, Link */}
         <div style={{
           border: '1px solid var(--paper-edge)', borderRadius: 16,
           background: 'var(--paper-raised)', padding: 24,
@@ -821,7 +821,7 @@ const IndicacaoScreen = ({ onBack }) => {
           </button>
         </div>
 
-        {/* BLOCO 3 — Lista de indicações */}
+        {/* BLOCO 3, Lista de indicações */}
         <div style={{
           border: '1px solid var(--paper-edge)', borderRadius: 16,
           background: 'var(--paper-raised)', overflow: 'hidden',
@@ -838,7 +838,7 @@ const IndicacaoScreen = ({ onBack }) => {
               padding: '28px 20px', textAlign: 'center',
               fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5,
             }}>
-              Nenhuma indicação ainda. Compartilhe seu link — quando alguém criar conta por ele, aparece aqui.
+              Nenhuma indicação ainda. Compartilhe seu link, quando alguém criar conta por ele, aparece aqui.
             </div>
           ) : referrals.map((r, i) => (
             <div key={i} style={{
@@ -860,7 +860,7 @@ const IndicacaoScreen = ({ onBack }) => {
                 width: 90, textAlign: 'right',
                 fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
                 color: r.converted ? 'var(--sage-ink)' : 'var(--ink-4)',
-              }}>{r.converted ? `+${reward} conversas` : '—'}</span>
+              }}>{r.converted ? `+${reward} conversas` : '-'}</span>
             </div>
           ))}
           <div style={{
@@ -958,7 +958,7 @@ const CreditosScreen = ({ onBack }) => {
 
   const _mpReady = () => {
     if (!window.MercadoPago || !billing || !billing.mp_public_key) {
-      setErr('Pagamento indisponível agora — recarregue a página e tente de novo.');
+      setErr('Pagamento indisponível agora, recarregue a página e tente de novo.');
       return null;
     }
     return new window.MercadoPago(billing.mp_public_key);
@@ -998,7 +998,7 @@ const CreditosScreen = ({ onBack }) => {
     setFlow('busy'); setErr('');
     try {
       const token = await mp.createCardToken({ cardId: savedCard.card_id, securityCode: cvvSalvo });
-      if (!token || !token.id) throw new Error('Cartão não validado — confere o CVV.');
+      if (!token || !token.id) throw new Error('Cartão não validado, confere o CVV.');
       const r = await window.buyExtraPack(packs[selected].id, {
         method: 'card', card_token_id: token.id, payment_method_id: savedCard.brand,
       });
@@ -1006,7 +1006,7 @@ const CreditosScreen = ({ onBack }) => {
       _finaliza(r);
     } catch (e) {
       setFlow('idle');
-      setErr(String(e.message || 'Não deu certo — confere o CVV e tenta de novo.'));
+      setErr(String(e.message || 'Não deu certo, confere o CVV e tenta de novo.'));
     }
   };
 
@@ -1035,10 +1035,10 @@ const CreditosScreen = ({ onBack }) => {
       // payment_method_id vem do BIN (6 primeiros dígitos)
       const pms = await mp.getPaymentMethods({ bin: cardNumber.slice(0, 6) });
       const pmId = pms && pms.results && pms.results[0] && pms.results[0].id;
-      if (!pmId) throw new Error('Não reconheci a bandeira do cartão — confere o número.');
+      if (!pmId) throw new Error('Não reconheci a bandeira do cartão, confere o número.');
 
       const token = await mp.createCardToken(formData);
-      if (!token || !token.id) throw new Error('Cartão não validado — confere os dados.');
+      if (!token || !token.id) throw new Error('Cartão não validado, confere os dados.');
 
       // Token do MP é de uso único: um pra pagar, outro pra salvar.
       let saveTokenId = '';
@@ -1056,8 +1056,8 @@ const CreditosScreen = ({ onBack }) => {
       _finaliza(r);
     } catch (e) {
       setFlow('idle');
-      const msg = String((e && e.message) || 'Não deu certo — confere os dados do cartão.');
-      setErr(msg.includes('cardNumber') || msg.includes('security') ? 'Dados do cartão inválidos — confere número, validade e CVV.' : msg);
+      const msg = String((e && e.message) || 'Não deu certo, confere os dados do cartão.');
+      setErr(msg.includes('cardNumber') || msg.includes('security') ? 'Dados do cartão inválidos, confere número, validade e CVV.' : msg);
     }
   };
 
@@ -1194,7 +1194,7 @@ const CreditosScreen = ({ onBack }) => {
               Pagamento em análise pelo banco
             </div>
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)', maxWidth: 400, lineHeight: 1.5 }}>
-              As conversas entram sozinhas assim que aprovar — você recebe a confirmação no seu WhatsApp.
+              As conversas entram sozinhas assim que aprovar, você recebe a confirmação no seu WhatsApp.
             </div>
             <button onClick={onBack} style={{
               marginTop: 8, padding: '10px 20px', borderRadius: 10, cursor: 'pointer',
@@ -1249,7 +1249,7 @@ const CreditosScreen = ({ onBack }) => {
               )}
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', textAlign: 'center', lineHeight: 1.5, maxWidth: 360 }}>
                 Abra o app do seu banco, escolha <strong style={{ color: 'var(--ink-2)' }}>pagar com Pix</strong> e
-                aponte a câmera — ou copie o código abaixo.
+                aponte a câmera, ou copie o código abaixo.
               </div>
               <button onClick={copiarPix} style={{
                 padding: '11px 20px', borderRadius: 10, border: 'none', cursor: 'pointer',
@@ -1440,9 +1440,9 @@ const HUMA_PLANS = [
     popular: true,
     features: [
       'Sua sócia de vendas no WhatsApp 24/7, com funil de verdade',
-      'WhatsApp oficial incluso — sem conta na Meta, sem fatura em dólar',
+      'WhatsApp oficial incluso, sem conta na Meta, sem fatura em dólar',
       'Agenda verificada no Google Agenda (nunca marca em cima)',
-      'Pix, boleto e cartão na conversa — o dinheiro cai na sua conta',
+      'Pix, boleto e cartão na conversa, o dinheiro cai na sua conta',
       'Follow-up automático, voz clonada, campanhas e CRM',
       'Cockpit completo: conversas, agenda, relatórios, placar',
     ],
@@ -1477,7 +1477,7 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
       if (data.valid) {
         setCouponInfo(data);
         setOk(data.percent_off >= 100
-          ? `Cupom ${code.toUpperCase()} válido: 100% — 1 mês de cortesia ao assinar.`
+          ? `Cupom ${code.toUpperCase()} válido: 100%, 1 mês de cortesia ao assinar.`
           : `Cupom ${code.toUpperCase()} válido: ${data.percent_off}% de desconto todo mês.`);
       } else {
         setCouponInfo(null);
@@ -1540,14 +1540,14 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
           letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 4,
         }}>Planos HUMA</div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-          Assinatura mensal no cartão, renovação automática. Cancele quando quiser — conversas já pagas continuam valendo.
+          Assinatura mensal no cartão, renovação automática. Cancele quando quiser, conversas já pagas continuam valendo.
         </div>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
           fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)',
         }}>
           <Icon name="lock" size={12}/>
-          Pagamento processado pelo <strong style={{ color: 'var(--ink-2)' }}>Mercado Pago</strong> sem sair da HUMA — os dados do cartão vão direto pra eles, nunca pro nosso servidor.
+          Pagamento processado pelo <strong style={{ color: 'var(--ink-2)' }}>Mercado Pago</strong> sem sair da HUMA, os dados do cartão vão direto pra eles, nunca pro nosso servidor.
         </div>
         {billing && billing.trial && (
           <div style={{
@@ -1565,7 +1565,7 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
             background: 'var(--ember-soft)', color: 'var(--ember-ink)',
             fontFamily: 'var(--font-sans)', fontSize: 13,
           }}>
-            Seu teste grátis terminou e a IA está pausada — assinar reativa o atendimento na hora.
+            Seu teste grátis terminou e a IA está pausada, assinar reativa o atendimento na hora.
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, marginTop: 14, maxWidth: 420 }}>
@@ -1647,7 +1647,7 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
                 {p.name}
               </div>
               {/* Cupom aplicado: preço original riscado + preço real que
-                  será cobrado — o dono PRECISA ver o desconto acontecer. */}
+                  será cobrado, o dono PRECISA ver o desconto acontecer. */}
               {couponInfo && couponInfo.percent_off < 100 ? (
                 <div style={{ marginTop: 6 }}>
                   <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textDecoration: 'line-through' }}>
@@ -1810,7 +1810,7 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
     if (cvv.length < 3) { setErr('Confere o código de segurança (CVV).'); return; }
     if (cpfD.length !== 11) { setErr('Confere o CPF do titular.'); return; }
     if (!window.MercadoPago || !billing || !billing.mp_public_key) {
-      setErr('Pagamento indisponível agora — recarregue a página e tente de novo.');
+      setErr('Pagamento indisponível agora, recarregue a página e tente de novo.');
       return;
     }
     setBusy(true);
@@ -1825,7 +1825,7 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
         identificationType: 'CPF',
         identificationNumber: cpfD,
       });
-      if (!token || !token.id) throw new Error('Cartão não validado — confere os dados.');
+      if (!token || !token.id) throw new Error('Cartão não validado, confere os dados.');
       const sub = await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id);
       // Analytics: assinatura paga (purchase). transaction_id = preapproval_id
       // do MP — o MESMO id que o backend manda server-side, então GA4/Meta
@@ -1838,8 +1838,8 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
       setDone(true);
       setTimeout(() => onDone && onDone(), 2600);
     } catch (e) {
-      const msg = String((e && e.message) || 'Não deu certo — confere os dados do cartão.');
-      setErr(msg.includes('cardNumber') || msg.includes('security') ? 'Dados do cartão inválidos — confere número, validade e CVV.' : msg);
+      const msg = String((e && e.message) || 'Não deu certo, confere os dados do cartão.');
+      setErr(msg.includes('cardNumber') || msg.includes('security') ? 'Dados do cartão inválidos, confere número, validade e CVV.' : msg);
       setBusy(false);
     }
   };
@@ -1860,7 +1860,7 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
           Assinatura ativa! 🎉
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textAlign: 'center', maxWidth: 380 }}>
-          Plano {plan.name} por {_fmtBRL(price)}/mês. Suas conversas entram em instantes — te levando pro Início…
+          Plano {plan.name} por {_fmtBRL(price)}/mês. Suas conversas entram em instantes, te levando pro Início…
         </div>
       </div>
     );
@@ -1960,7 +1960,7 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
             fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)',
           }}>
             <Icon name="lock" size={12}/>
-            Processado pelo Mercado Pago — seus dados não passam pela HUMA.
+            Processado pelo Mercado Pago, seus dados não passam pela HUMA.
           </div>
         </div>
       </div>

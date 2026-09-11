@@ -620,7 +620,7 @@ async function sendAnalyticsIds() {
       headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
       body: JSON.stringify({ ga, ga_stream: gaStream, fbp, fbc }),
     });
-  } catch (e) { /* analytics é bônus — nunca quebra o Cockpit */ }
+  } catch (e) { /* analytics é bônus, nunca quebra o Cockpit */ }
 }
 
 Object.assign(window, { sendAnalyticsIds });
@@ -728,7 +728,7 @@ async function voiceApiError(r) {
   try {
     const j = await r.json();
     if (j && j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
-  } catch (e) { /* corpo não-JSON — mantém msg genérica */ }
+  } catch (e) { /* corpo não-JSON, mantém msg genérica */ }
   const err = new Error(msg);
   err.status = r.status;
   return err;

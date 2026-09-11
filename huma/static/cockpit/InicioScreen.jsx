@@ -80,7 +80,7 @@ function chipDoObjetivo(objetivo, s1, s2) {
   if (objetivo === 'vendas') return deltaPctI((s1.vendas || {}).receita_cents, (s2.vendas || {}).receita_cents);
   if (objetivo === 'agenda') return deltaPctI((s1.agenda || {}).agendamentos, (s2.agenda || {}).agendamentos);
   if (objetivo === 'atendimento') return deltaPctI((s1.atendimento || {}).conversas_novas, (s2.atendimento || {}).conversas_novas);
-  return null; // qualificação: métrica não-aditiva confiável — sem comparação
+  return null; // qualificação: métrica não-aditiva confiável, sem comparação
 }
 
 // ---------- componentes visuais (estilo do Design, dados reais) ----------
@@ -133,7 +133,7 @@ const IniHero = ({ r1, periodo }) => {
         <div style={iniHeroStyle}>
           {lead} a HUMA conversou com <IniNum>{leadsTxt}</IniNum> e fechou <IniNum>{v.receita_display}</IniNum> em vendas
           {(v.fechadas_sem_humano || 0) > 0
-            ? <> — <IniNum>{v.fechadas_sem_humano}</IniNum> {v.fechadas_sem_humano === 1 ? 'dela' : 'delas'} sem você tocar no telefone.</>
+            ? <>, <IniNum>{v.fechadas_sem_humano}</IniNum> {v.fechadas_sem_humano === 1 ? 'dela' : 'delas'} sem você tocar no telefone.</>
             : <>.</>}
         </div>
       );
@@ -141,7 +141,7 @@ const IniHero = ({ r1, periodo }) => {
     if ((at.conversas_novas || 0) > 0) {
       return (
         <div style={iniHeroStyle}>
-          {lead} a HUMA conversou com <IniNum>{leadsTxt}</IniNum> — nenhuma venda fechada ainda, funil em andamento.
+          {lead} a HUMA conversou com <IniNum>{leadsTxt}</IniNum>, nenhuma venda fechada ainda, funil em andamento.
         </div>
       );
     }
@@ -152,7 +152,7 @@ const IniHero = ({ r1, periodo }) => {
     if ((a.agendamentos || 0) > 0) {
       return (
         <div style={iniHeroStyle}>
-          {lead} a HUMA encheu <IniNum>{pluralI(a.agendamentos, 'horário', 'horários')}</IniNum> da sua agenda —{' '}
+          {lead} a HUMA encheu <IniNum>{pluralI(a.agendamentos, 'horário', 'horários')}</IniNum> da sua agenda,{' '}
           <IniNum>{a.realizados || 0}</IniNum> já {(a.realizados || 0) === 1 ? 'realizado' : 'realizados'}, o resto confirmado e lembrado.
         </div>
       );
@@ -164,7 +164,7 @@ const IniHero = ({ r1, periodo }) => {
     if ((q.leads_com_dados || 0) > 0) {
       return (
         <div style={iniHeroStyle}>
-          {lead} a HUMA entregou <IniNum>{pluralI(q.leads_com_dados, 'lead qualificado', 'leads qualificados')}</IniNum> direto no seu CRM — nome, contato e interesse já anotados.
+          {lead} a HUMA entregou <IniNum>{pluralI(q.leads_com_dados, 'lead qualificado', 'leads qualificados')}</IniNum> direto no seu CRM, nome, contato e interesse já anotados.
         </div>
       );
     }
@@ -174,14 +174,14 @@ const IniHero = ({ r1, periodo }) => {
   if ((at.conversas_novas || 0) > 0) {
     return (
       <div style={iniHeroStyle}>
-        {lead} a HUMA conversou com <IniNum>{pluralI(at.conversas_novas, 'lead novo', 'leads novos')}</IniNum> —{' '}
+        {lead} a HUMA conversou com <IniNum>{pluralI(at.conversas_novas, 'lead novo', 'leads novos')}</IniNum>,{' '}
         <IniNum>{pluralI(at.conversas_ativas || 0, 'conversa', 'conversas')}</IniNum> no total no período.
       </div>
     );
   }
   return (
     <div style={iniHeroStyle}>
-      {lead} a HUMA ficou de plantão o tempo todo — nenhuma conversa nova chegou no período.
+      {lead} a HUMA ficou de plantão o tempo todo, nenhuma conversa nova chegou no período.
     </div>
   );
 };
@@ -216,7 +216,7 @@ const IniFora = ({ at, fu }) => {
 const IniPendencias = ({ itens, indisponivel, onOpenConversa }) => {
   if (indisponivel) return (
     <div style={{ ...iniCard, padding: '20px', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
-      Não deu pra checar as conversas agora — veja na aba Conversas.
+      Não deu pra checar as conversas agora, veja na aba Conversas.
     </div>
   );
   if (itens.length === 0) return (
@@ -304,8 +304,8 @@ const IniDiaZero = ({ setup, onGoto }) => {
       label: 'CRM',
       ok: setup.crm_access_token === 'ok',
       sub: setup.crm_access_token === 'ok'
-        ? `${setup.crm_provider || 'CRM'} conectado — leads cadastrados sozinhos`
-        : 'opcional — conecte pra HUMA cadastrar leads sozinha',
+        ? `${setup.crm_provider || 'CRM'} conectado, leads cadastrados sozinhos`
+        : 'opcional, conecte pra HUMA cadastrar leads sozinha',
     },
   ] : [];
   return (
@@ -453,7 +453,7 @@ const InicioScreen = ({ onOpenConversa, onGoto }) => {
         setSetup(await fetchIntegrationsStatus());
       } catch (e) {
         console.error('Início | falha no status de integrações', e);
-        setSetup(null); // card "saúde do setup" é omitido — nunca inventa status
+        setSetup(null); // card "saúde do setup" é omitido, nunca inventa status
       }
       return;
     }
@@ -566,7 +566,7 @@ const InicioScreen = ({ onOpenConversa, onGoto }) => {
               <IniPendencias itens={pendentes} indisponivel={convs === null} onOpenConversa={onOpenConversa} />
             </div>
 
-            {/* 4 · Seu dia hoje — só pra quem agenda e quando o fetch funcionou */}
+            {/* 4 · Seu dia hoje, só pra quem agenda e quando o fetch funcionou */}
             {temAgenda && appts !== null && (
               <div>
                 <Eyebrow style={{ marginBottom: 8 }}>seu dia hoje</Eyebrow>
@@ -576,7 +576,7 @@ const InicioScreen = ({ onOpenConversa, onGoto }) => {
           </div>
         )}
 
-        {/* Rodapé — contador vitalício */}
+        {/* Rodapé, contador vitalício */}
         {rodape && (
           <div style={{ marginTop: 'auto', paddingTop: 28 }}>
             <div style={{ borderTop: '1px solid var(--paper-edge)', paddingTop: 12 }}>

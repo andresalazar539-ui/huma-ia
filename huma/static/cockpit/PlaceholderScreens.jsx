@@ -211,7 +211,7 @@ const CustomerSheet = ({ customer: c, onClose, onOpenConversation, onChanged, on
   const Row = ({ label, children }) => (
     <div style={{ display: 'flex', gap: 12, padding: '8px 0', borderBottom: '1px solid var(--paper-edge)' }}>
       <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)', width: 120, flexShrink: 0, paddingTop: 2 }}>{label}</div>
-      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', minWidth: 0, flex: 1, lineHeight: 1.45, wordBreak: 'break-word' }}>{children || <span style={{ color: 'var(--ink-3)' }}>—</span>}</div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', minWidth: 0, flex: 1, lineHeight: 1.45, wordBreak: 'break-word' }}>{children || <span style={{ color: 'var(--ink-3)' }}>-</span>}</div>
     </div>
   );
 
@@ -326,7 +326,7 @@ const AjustesScreen = ({ onNav, onInvite }) => {
   const rows = [
     { title: 'Conta', desc: s ? `${s.business_name || 'Sem nome'} · ${s.owner_email || 'sem e-mail de login'}` : '…', go: () => onNav && onNav('negocio'), label: 'Editar' },
     { title: 'Plano', desc: b ? planDesc(b) : '…', go: () => onNav && onNav('uso'), label: 'Ver uso' },
-    { title: 'Horário de atendimento', desc: s ? (s.working_hours || 'Não definido — a HUMA responde a qualquer hora') : '…', go: () => onNav && onNav('negocio'), label: 'Editar' },
+    { title: 'Horário de atendimento', desc: s ? (s.working_hours || 'Não definido: a HUMA responde a qualquer hora') : '…', go: () => onNav && onNav('negocio'), label: 'Editar' },
     // Só quem pode gerir a equipe (papel dono) vê o atalho; o backend barra o resto.
     ...((!Array.isArray(window.HUMA_PERMS) || window.HUMA_PERMS.includes('equipe'))
       ? [{ title: 'Equipe', desc: t ? teamDesc(t) : '…', go: () => onInvite && onInvite(), label: 'Convidar' }]

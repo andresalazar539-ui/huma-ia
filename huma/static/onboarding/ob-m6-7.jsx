@@ -49,7 +49,7 @@ function Moment6({ onDone }) {
         <ObButton variant="sage" onClick={onDone}>Última coisa e te libero</ObButton>
       </div>}
       {phase === 'unavailable' && <div className="stack g20">
-        <HumaSays>A conexão com o WhatsApp tá indisponível agora. Sem pressa — dá pra conectar depois, direto pelo Cockpit.</HumaSays>
+        <HumaSays>A conexão com o WhatsApp tá indisponível agora. Sem pressa, dá pra conectar depois, direto pelo Cockpit.</HumaSays>
         <ObButton variant="ghost" onClick={connect}>Tentar de novo</ObButton>
         <div style={{ textAlign: 'center' }}><LinkBtn onClick={onDone}>Pular e conectar depois</LinkBtn></div>
       </div>}
@@ -103,7 +103,7 @@ function Moment7({ onFinish }) {
             <div className="stack g6">
               <span className="hd">{c.headline}{c.recommended && <span className="tagrec">indicado</span>}</span>
               <span className="ds">{c.description}</span>
-              {!c.ready && c.blocking_providers.map(b => <span className="later" key={b.provider}>falta conectar {b.label} — a gente resolve depois, pelo Cockpit</span>)}
+              {!c.ready && c.blocking_providers.map(b => <span className="later" key={b.provider}>falta conectar {b.label}, a gente resolve depois, pelo Cockpit</span>)}
             </div>
           </div>
         </Reveal>)}
@@ -125,7 +125,7 @@ function FinalScreen({ summary }) {
         {summary.products > 0 && <div className="sumrow"><span>Serviços que eu já sei vender</span><b>{summary.products}</b></div>}
         {summary.faqs > 0 && <div className="sumrow" style={{ borderBottom: 'none' }}><span>Perguntas que eu já sei responder</span><b>{summary.faqs}</b></div>}
       </div></Reveal>
-      <Reveal delay={450}><p className="ob-sub">Qualquer coisa que eu aprender de novo, você vê — e aprova — no Cockpit.</p></Reveal>
+      <Reveal delay={450}><p className="ob-sub">Qualquer coisa que eu aprender de novo, você vê, e aprova, no Cockpit.</p></Reveal>
       <Reveal delay={600}><a href="/cockpit" style={{ textDecoration: 'none' }}><ObButton>Abrir meu Cockpit</ObButton></a></Reveal>
     </div>
   </div>;

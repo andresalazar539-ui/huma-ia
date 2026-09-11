@@ -239,7 +239,7 @@ const VendasScreen = ({ onOpenConversa } = {}) => {
                 <Eyebrow>comparar com</Eyebrow>
                 {[
                   ['anterior', 'Período anterior', `${_vFmtBr(prevFrom)} – ${_vFmtBr(prevTo)} · mesma duração`],
-                  ['custom', 'Escolher datas', 'compare com qualquer época — mês passado, ano passado…'],
+                  ['custom', 'Escolher datas', 'compare com qualquer época, mês passado, ano passado…'],
                 ].map(([id, title, sub]) => {
                   const on = compareMode === id;
                   return (

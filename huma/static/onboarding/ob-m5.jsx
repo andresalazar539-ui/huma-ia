@@ -22,7 +22,7 @@ function CorrectionBox({ aiSaid, context, onDone, onCancel }) {
 
 function Moment5({ businessName, onDone }) {
   const [msgs, setMsgs] = useState([{ from: 'huma', text: "Pronto. Agora finge que você é um cliente seu. Manda um 'oi', pergunta preço, tenta me derrubar." , meta: true }]);
-  const [history, setHistory] = useState([]); // {role, content} — stateless no servidor
+  const [history, setHistory] = useState([]); // {role, content}, stateless no servidor
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState(false);
   const [fixing, setFixing] = useState(null); // índice da msg em correção

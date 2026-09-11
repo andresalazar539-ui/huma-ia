@@ -31,14 +31,14 @@ const CampaignsLocked = ({ provider, onNav }) => (
         fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 22,
         letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 18,
       }}>
-        Disparos em massa — exclusivo do WhatsApp oficial
+        Disparos em massa, exclusivo do WhatsApp oficial
       </div>
       <div style={{
         fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-2)',
         lineHeight: 1.6, marginTop: 12,
       }}>
         Seu WhatsApp está conectado {provider === 'evolution' ? 'via QR code (canal não-oficial)' : 'por um canal não-oficial'}.
-        Enviar mensagens em massa por esse canal faz o WhatsApp <strong>banir o seu número</strong> —
+        Enviar mensagens em massa por esse canal faz o WhatsApp <strong>banir o seu número</strong> ,
         e número banido é cliente parado. Por isso a HUMA trava esta função.
       </div>
       <div style={{
@@ -65,7 +65,7 @@ const CampaignsLocked = ({ provider, onNav }) => (
 // Cores do semáforo do Escudo HUMA (análise antiban da mensagem)
 const SHIELD_COLORS = {
   verde:    { dot: '#16a34a', bg: '#e8f3ea', ink: '#14532d', label: 'Mensagem segura' },
-  amarelo:  { dot: '#d97706', bg: '#fdf3e0', ink: '#7c4a03', label: 'Atenção — risco moderado' },
+  amarelo:  { dot: '#d97706', bg: '#fdf3e0', ink: '#7c4a03', label: 'Atenção: risco moderado' },
   vermelho: { dot: '#dc2626', bg: '#fdecea', ink: '#7f1d1d', label: 'Alto risco de bloqueio' },
 };
 
@@ -114,7 +114,7 @@ const CampaignsForm = () => {
     let vivo = true;
     fetchWhatsappHealth()
       .then(h => { if (vivo) setHealth(h); })
-      .catch(() => {}); // badge é informativo — sem saúde, sem badge
+      .catch(() => {}); // badge é informativo, sem saúde, sem badge
     return () => { vivo = false; };
   }, []);
 
@@ -203,7 +203,7 @@ const CampaignsForm = () => {
           letterSpacing: '-0.02em', color: 'var(--ink)',
         }}>Disparos em massa</div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-          Canal oficial da Meta ativo — seus disparos usam a infraestrutura aprovada do WhatsApp.
+          Canal oficial da Meta ativo, seus disparos usam a infraestrutura aprovada do WhatsApp.
         </div>
         <HealthBadge health={health}/>
       </div>
@@ -216,7 +216,7 @@ const CampaignsForm = () => {
             fontSize: 13, color: '#7f1d1d', lineHeight: 1.6,
           }}>
             <strong>A Meta rebaixou a nota do seu número pra vermelha.</strong> A HUMA
-            pausou os disparos pra proteger seu número — disparar agora aceleraria o
+            pausou os disparos pra proteger seu número, disparar agora aceleraria o
             bloqueio. O atendimento normal segue funcionando, e as campanhas voltam
             sozinhas quando a nota se recuperar (normalmente alguns dias respondendo
             bem e sem envios em massa).
@@ -250,7 +250,7 @@ const CampaignsForm = () => {
         </div>
 
         <div style={field}>
-          <label style={label}>Contatos — um por linha ({parsedLeads.length} válidos)</label>
+          <label style={label}>Contatos, um por linha ({parsedLeads.length} válidos)</label>
           <textarea style={{ ...input, resize: 'vertical', fontFamily: 'var(--font-mono)', fontSize: 13 }} rows={7}
                     value={phones} onChange={e => setPhones(e.target.value)}
                     placeholder={'5511999998888, Maria\n5511988887777, João\n5521977776666'}/>
@@ -288,7 +288,7 @@ const CampaignsForm = () => {
                   {verdict.motivos.map((m, i) => (
                     <div key={i} style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: c.ink, lineHeight: 1.5 }}>
                       {m.trecho && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, background: '#ffffff88', padding: '1px 6px', borderRadius: 6 }}>“{m.trecho}”</span>}
-                      {m.trecho ? ' — ' : ''}{m.explicacao}
+                      {m.trecho ? ': ' : ''}{m.explicacao}
                     </div>
                   ))}
                 </div>
@@ -313,12 +313,12 @@ const CampaignsForm = () => {
                     padding: '10px 16px', borderRadius: 9, cursor: busy ? 'default' : 'pointer',
                     background: 'transparent', color: c.ink, border: `1px solid ${c.dot}66`,
                     fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, opacity: busy ? 0.6 : 1,
-                  }}>Enviar assim mesmo — o risco é meu</button>
+                  }}>Enviar assim mesmo, o risco é meu</button>
                 )}
               </div>
               {verdict.bloqueio_definitivo && (
                 <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: c.ink }}>
-                  Esse conteúdo é proibido pelas políticas do WhatsApp — a HUMA não envia, pra proteger seu número e sua conta.
+                  Esse conteúdo é proibido pelas políticas do WhatsApp, a HUMA não envia, pra proteger seu número e sua conta.
                 </div>
               )}
             </div>

@@ -85,7 +85,7 @@ function Moment2({ onDone, onSkip }) {
   return <div className="moment ob-stage" style={{ justifyContent: phase === 'looking' ? 'center' : undefined }}>
     {phase === 'ask' && <div className="stack g20">
       <HumaSays>Seu negócio tá na internet? Me dá o Instagram ou o site.</HumaSays>
-      <p className="ob-micro">Eu dou uma olhada e já chego sabendo das coisas — você só confere.</p>
+      <p className="ob-micro">Eu dou uma olhada e já chego sabendo das coisas, você só confere.</p>
       <input className="input" type="url" inputMode="url" placeholder="@seunegocio ou seusite.com.br" value={url}
         onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && look()} aria-label="Instagram ou site do seu negócio" />
       {err && <ErrNote onRetry={look}>{err}</ErrNote>}

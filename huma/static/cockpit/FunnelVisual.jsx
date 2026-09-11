@@ -198,7 +198,7 @@ const downloadFunnelPng = (meta, periodoLabel, metaId, periodo) => {
   const fy = headH + g.H + 34;
   ctx.strokeStyle = C.edge; ctx.beginPath(); ctx.moveTo(padX, fy - 20); ctx.lineTo(cw - padX, fy - 20); ctx.stroke();
   ctx.fillStyle = C.sageInk; ctx.font = `500 13px ${sans}`;
-  ctx.fillText(`Conversão total: ${total}% — de ${fmtN(meta.counts[0])} que entraram, ${fmtN(meta.counts[3])} viraram ${meta.goalWord}.`, padX, fy);
+  ctx.fillText(`Conversão total: ${total}%, de ${fmtN(meta.counts[0])} que entraram, ${fmtN(meta.counts[3])} viraram ${meta.goalWord}.`, padX, fy);
   ctx.fillStyle = C.ink4; ctx.font = `10.5px ${mono}`;
   const lostTxt = meta.lost != null ? `${fmtN(meta.lost)} ${meta.lostLabel} · ` : '';
   ctx.fillText(`${lostTxt}gerado pela HUMA em ${new Date().toLocaleDateString('pt-BR')}`, padX, fy + 22);
@@ -264,7 +264,7 @@ const FunnelVisual = ({ sections, periodo, periodoLabel }) => {
           padding: '40px 20px', textAlign: 'center',
           fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5,
         }}>
-          Ainda sem conversas no período — quando os leads chegarem, o funil ganha forma aqui.
+          Ainda sem conversas no período, quando os leads chegarem, o funil ganha forma aqui.
         </div>
       ) : (
         <FunnelShape key={metaId + periodo} meta={meta}></FunnelShape>
@@ -275,7 +275,7 @@ const FunnelVisual = ({ sections, periodo, periodoLabel }) => {
           borderTop: '1px solid var(--paper-edge)', marginTop: 14, paddingTop: 12,
         }}>
           <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--sage-ink)', fontWeight: 500 }}>
-            Conversão total: {total}% — de {fmtN(meta.counts[0])} que entraram, {fmtN(meta.counts[3])} viraram {meta.goalWord}.
+            Conversão total: {total}%, de {fmtN(meta.counts[0])} que entraram, {fmtN(meta.counts[3])} viraram {meta.goalWord}.
           </span>
           {meta.lost != null && (
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-4)' }}>

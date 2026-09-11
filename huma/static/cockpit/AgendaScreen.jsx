@@ -697,7 +697,7 @@ const AppointmentDetail = ({ ev, onClose, onOpenConversa }) => {
         {/* Quando + serviço */}
         <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 14, borderBottom: '1px solid var(--paper-edge)' }}>
           <DetailRow icon="calendar" label="Quando" value={`${dateLabel} · ${ev.start}–${ev.end}`} sub={`${durLabel}`} />
-          <DetailRow icon="sparkle" label="Serviço" value={ev.service || '—'} />
+          <DetailRow icon="sparkle" label="Serviço" value={ev.service || '-'} />
         </div>
 
         {/* Resumo da HUMA (briefing) */}
@@ -719,7 +719,7 @@ const AppointmentDetail = ({ ev, onClose, onOpenConversa }) => {
               padding: '18px 16px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8,
             }}>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-4)', background: 'var(--paper-sunk)', padding: '2px 7px', borderRadius: 4 }}>Em breve</span>
-              A HUMA vai escrever aqui um resumo do que o lead quer, pra você já chegar no atendimento sabendo o contexto — igual ao briefing que ela manda no Google Agenda.
+              A HUMA vai escrever aqui um resumo do que o lead quer, pra você já chegar no atendimento sabendo o contexto, igual ao briefing que ela manda no Google Agenda.
             </div>
           )}
         </div>

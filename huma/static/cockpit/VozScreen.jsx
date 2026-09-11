@@ -62,7 +62,7 @@ const VozPlayer = ({ state, onToggle, hint }) => {
 };
 
 // Texto guiado da gravação — lido com calma dá ~40-60s de amostra limpa.
-const VOZ_SCRIPT = '"Oi! Que bom falar com você. Me conta o que você precisa, que eu já vejo o melhor horário por aqui. A gente costuma responder rapidinho... e se surgir qualquer dúvida no caminho, pode perguntar sem cerimônia, tá bom? Ah, e se preferir, te mando as opções por mensagem mesmo — do jeito que ficar mais fácil pra você."';
+const VOZ_SCRIPT = '"Oi! Que bom falar com você. Me conta o que você precisa, que eu já vejo o melhor horário por aqui. A gente costuma responder rapidinho... e se surgir qualquer dúvida no caminho, pode perguntar sem cerimônia, tá bom? Ah, e se preferir, te mando as opções por mensagem mesmo, do jeito que ficar mais fácil pra você."';
 
 // Modal de clonagem — gravação REAL (MediaRecorder) ou arquivo; treina na ElevenLabs.
 const ClonarModal = ({ onClose, onDone }) => {
@@ -178,7 +178,7 @@ const ClonarModal = ({ onClose, onDone }) => {
                 </span>
                 <span style={{ flex: 1 }}>
                   <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>Gravar agora</span>
-                  <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>leia um texto curto — a gente mostra na tela</span>
+                  <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>leia um texto curto, a gente mostra na tela</span>
                 </span>
               </button>
               <button onClick={() => fileRef.current && fileRef.current.click()} style={{
@@ -191,7 +191,7 @@ const ClonarModal = ({ onClose, onDone }) => {
                 </span>
                 <span style={{ flex: 1 }}>
                   <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>Enviar arquivo de áudio</span>
-                  <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>mp3, wav, m4a ou ogg que você já tem — até 6 arquivos</span>
+                  <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>mp3, wav, m4a ou ogg que você já tem, até 6 arquivos</span>
                 </span>
               </button>
               <input ref={fileRef} type="file" accept="audio/*" multiple style={{ display: 'none' }} onChange={arquivos}/>
@@ -212,7 +212,7 @@ const ClonarModal = ({ onClose, onDone }) => {
                 </span>
               </button>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', marginTop: 4, lineHeight: 1.6 }}>
-                sua voz é só sua — nunca é usada em outro negócio
+                sua voz é só sua, nunca é usada em outro negócio
               </div>
             </div>
           )}
@@ -226,7 +226,7 @@ const ClonarModal = ({ onClose, onDone }) => {
                 {VOZ_SCRIPT}
               </div>
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, maxWidth: 360 }}>
-                Leia com calma, do seu jeito de falar. Se acabar o texto, continua falando natural — quanto mais amostra, mais parecida a voz.
+                Leia com calma, do seu jeito de falar. Se acabar o texto, continua falando natural, quanto mais amostra, mais parecida a voz.
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <span style={{ width: 10, height: 10, borderRadius: 999, background: 'var(--ember)', animation: 'vozPulse 1s infinite' }}></span>
@@ -442,7 +442,7 @@ const VozScreen = () => {
                     )}
                   </div>
                   <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--sage-ink)', marginTop: 2 }}>
-                    {cloneAtiva ? 'treinada com os seus áudios — os clientes acham que é você' : vozDesc(vozAtual)}
+                    {cloneAtiva ? 'treinada com os seus áudios, os clientes acham que é você' : vozDesc(vozAtual)}
                   </div>
                 </div>
                 {cloneAtiva && (
@@ -465,12 +465,12 @@ const VozScreen = () => {
               border: '1px dashed var(--ink-line)', borderRadius: 16, padding: '18px 22px',
               fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)', lineHeight: 1.55,
             }}>
-              Nenhuma voz ativa ainda — clone a sua abaixo ou escolha uma voz pronta. Enquanto isso, a HUMA responde só em texto.
+              Nenhuma voz ativa ainda, clone a sua abaixo ou escolha uma voz pronta. Enquanto isso, a HUMA responde só em texto.
             </div>
           )}
         </section>
 
-        {/* CLONAR — aparece enquanto o cliente ainda não tem clone ativo */}
+        {/* CLONAR, aparece enquanto o cliente ainda não tem clone ativo */}
         {!cloneAtiva && (
           <section>
             <div className="mono-label" style={{ marginBottom: 12 }}>clonar sua voz</div>
@@ -490,7 +490,7 @@ const VozScreen = () => {
                   Áudios com a SUA voz
                 </div>
                 <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.5 }}>
-                  1 minuto de gravação basta — os clientes nunca vão saber que não era você
+                  1 minuto de gravação basta, os clientes nunca vão saber que não era você
                 </div>
               </div>
               {clone ? (
@@ -518,7 +518,7 @@ const VozScreen = () => {
               {clone && (
                 <VozCard
                   nome="Sua voz clonada" tag="sua voz" tagClonada={true}
-                  desc="treinada com os seus áudios — os clientes acham que é você"
+                  desc="treinada com os seus áudios, os clientes acham que é você"
                   ativa={cloneAtiva}
                   playerState={playing === clone.voice_id ? 'playing' : (loadingPrev === clone.voice_id ? 'loading' : 'idle')}
                   onPlay={() => play(clone.voice_id)}
@@ -546,7 +546,7 @@ const VozScreen = () => {
             </div>
           )}
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', marginTop: 12 }}>
-            a troca vale só pra áudios novos — conversas em andamento não mudam de voz no meio
+            a troca vale só pra áudios novos, conversas em andamento não mudam de voz no meio
           </div>
         </section>
       </div>

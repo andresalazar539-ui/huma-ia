@@ -127,7 +127,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           </span>
         )}
         <button onClick={toggleCustomer} disabled={customerBusy}
-          title={isCustomer ? 'Cliente da casa — clique pra remover da lista' : 'Marcar como cliente (aparece na aba Clientes)'}
+          title={isCustomer ? 'Cliente da casa: clique pra remover da lista' : 'Marcar como cliente (aparece na aba Clientes)'}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0,
             padding: mobile ? '6px 9px' : '6px 11px', borderRadius: 999, cursor: customerBusy ? 'wait' : 'pointer',
@@ -147,7 +147,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
         </Button>
       </div>
 
-      {/* Balcão: contexto do canal web — respostas chegam com a página aberta */}
+      {/* Balcão: contexto do canal web, respostas chegam com a página aberta */}
       {isWeb && (
         <div style={{
           padding: mobile ? '6px 12px' : '7px 20px', borderBottom: '1px solid var(--paper-edge)',
@@ -155,7 +155,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--sage-ink)',
         }}>
           <Icon name="globe" size={12} stroke={2.2} />
-          <span style={{ minWidth: 0 }}>Conversa pelo chat do site — o visitante vê suas respostas enquanto a página estiver aberta no navegador.</span>
+          <span style={{ minWidth: 0 }}>Conversa pelo chat do site, o visitante vê suas respostas enquanto a página estiver aberta no navegador.</span>
         </div>
       )}
 
@@ -193,7 +193,7 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
             value={draft}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendIt(); }}}
-            placeholder={handoff ? "Você assumiu a conversa — escreva como você mesmo…" : "HUMA está respondendo. Digite para assumir."}
+            placeholder={handoff ? "Você assumiu a conversa, escreva como você mesmo…" : "HUMA está respondendo. Digite para assumir."}
             rows={1}
             style={{
               flex: 1, border: 'none', outline: 'none', resize: 'none',

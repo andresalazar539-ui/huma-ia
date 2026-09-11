@@ -65,7 +65,7 @@ const RDPreview = ({ cfg, sections }) => {
   if (s.agenda) partes.push(<React.Fragment key="a">, {s.agenda.agendamentos} agendamentos</React.Fragment>);
   if (s.vendas && s.vendas.receita_cents > 0) {
     partes.push(<React.Fragment key="v"> e <strong style={{ color: 'var(--sage-ink)', fontWeight: 600 }}>{s.vendas.receita_display} confirmados</strong></React.Fragment>);
-    if (s.vendas.fechadas_sem_humano > 0) partes.push(<React.Fragment key="f"> — {s.vendas.fechadas_sem_humano} vendas eu fechei sozinha</React.Fragment>);
+    if (s.vendas.fechadas_sem_humano > 0) partes.push(<React.Fragment key="f">, {s.vendas.fechadas_sem_humano} vendas eu fechei sozinha</React.Fragment>);
   }
   return (
     <div style={{
@@ -398,7 +398,7 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
               )}
             </div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', marginTop: 8 }}>
-              sócio, gerente, contador — WhatsApp ou e-mail, todo mundo na mesma página
+              sócio, gerente, contador, WhatsApp ou e-mail, todo mundo na mesma página
             </div>
           </div>
 

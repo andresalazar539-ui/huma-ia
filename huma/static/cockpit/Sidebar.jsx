@@ -323,7 +323,7 @@ const WorkspaceSwitcher = ({ onNav, onInvite, client }) => {
           boxShadow: '0 12px 32px rgba(28, 23, 20, 0.10), 0 2px 6px rgba(28, 23, 20, 0.05)',
           padding: 6,
         }}>
-          {/* BLOCO 1 — Workspaces */}
+          {/* BLOCO 1, Workspaces */}
           <div style={{ padding: '6px 10px 4px' }}>
             <Eyebrow>workspaces</Eyebrow>
           </div>

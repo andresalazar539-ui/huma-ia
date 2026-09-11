@@ -117,7 +117,7 @@ const OrigemTable = ({ fontes }) => {
       background: 'var(--paper-raised)', padding: '18px 20px',
       display: 'flex', flexDirection: 'column', gap: 0,
     }}>
-      <div style={{ ...th, marginBottom: 12 }}>De onde veio cada conversa — e o que virou</div>
+      <div style={{ ...th, marginBottom: 12 }}>De onde veio cada conversa, e o que virou</div>
       <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
         <div style={th}>Origem</div>
         <div/>
@@ -146,10 +146,10 @@ const OrigemTable = ({ fontes }) => {
             }}/>
           </div>
           <div style={num}>{f.conversas || 0}</div>
-          <div style={num}>{f.agendamentos ? f.agendamentos : '—'}</div>
-          <div style={num}>{f.ganhos ? f.ganhos : '—'}</div>
+          <div style={num}>{f.agendamentos ? f.agendamentos : '-'}</div>
+          <div style={num}>{f.ganhos ? f.ganhos : '-'}</div>
           <div style={{ ...num, fontWeight: f.receita_cents ? 600 : 400 }}>
-            {f.receita_cents ? f.receita_display : '—'}
+            {f.receita_cents ? f.receita_display : '-'}
           </div>
         </div>
       ))}
@@ -287,7 +287,7 @@ const ReportsScreen = () => {
 
   return (
     <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
-      {/* Header — modelo do design: entrega automática · exportar · comparar · período */}
+      {/* Header, modelo do design: entrega automática · exportar · comparar · período */}
       <div style={{
         padding: '20px 32px', borderBottom: '1px solid var(--paper-edge)',
         display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16,
@@ -299,11 +299,11 @@ const ReportsScreen = () => {
             letterSpacing: '-0.02em', color: 'var(--ink)',
           }}>O que a HUMA fez por você</div>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-            Números reais do seu negócio — {periodoLabel}.
+            Números reais do seu negócio, {periodoLabel}.
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          {/* Entrega automática — abre o drawer do design (report_frequency REAL) */}
+          {/* Entrega automática, abre o drawer do design (report_frequency REAL) */}
           <button onClick={() => setDeliveryOpen(true)} style={{
             display: 'inline-flex', alignItems: 'center', gap: 7,
             fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500,
@@ -345,7 +345,7 @@ const ReportsScreen = () => {
                 <Eyebrow>comparar com</Eyebrow>
                 {[
                   ['anterior', 'Período anterior', `${_fmtBr(prevFrom)} – ${_fmtBr(prevTo)} · mesma duração`],
-                  ['custom', 'Escolher datas', 'compare com qualquer época — mês passado, ano passado…'],
+                  ['custom', 'Escolher datas', 'compare com qualquer época, mês passado, ano passado…'],
                 ].map(([id, title, sub]) => {
                   const on = compareMode === id;
                   return (
@@ -443,7 +443,7 @@ const ReportsScreen = () => {
 
         {state === 'ready' && (
           <>
-            {/* Atendimento — sempre */}
+            {/* Atendimento, sempre */}
             <SectionTitle>Atendimento</SectionTitle>
             <Grid cols={3}>
               <StatTile label="Conversas atendidas" value={at.conversas_ativas ?? 0} delta={dl.conversas}/>
@@ -452,7 +452,7 @@ const ReportsScreen = () => {
                         sub="Atendidos enquanto você não estava trabalhando"/>
             </Grid>
 
-            {/* Vendas — meta SELL */}
+            {/* Vendas, meta SELL */}
             {s.vendas && (
               <>
                 <SectionTitle>Vendas</SectionTitle>
@@ -466,7 +466,7 @@ const ReportsScreen = () => {
               </>
             )}
 
-            {/* Agenda — meta SCHEDULE */}
+            {/* Agenda, meta SCHEDULE */}
             {s.agenda && (
               <>
                 <SectionTitle>Agenda</SectionTitle>
@@ -478,7 +478,7 @@ const ReportsScreen = () => {
               </>
             )}
 
-            {/* Qualificação — meta QUALIFY */}
+            {/* Qualificação, meta QUALIFY */}
             {s.qualificacao && (
               <>
                 <SectionTitle>Qualificação</SectionTitle>
@@ -490,7 +490,7 @@ const ReportsScreen = () => {
               </>
             )}
 
-            {/* Funil — sempre. Visual do design (proporcional + PNG) com
+            {/* Funil, sempre. Visual do design (proporcional + PNG) com
                 toggle pros cartões por etapa de sempre. */}
             <SectionTitle>Funil</SectionTitle>
             <FunnelSection
@@ -508,7 +508,7 @@ const ReportsScreen = () => {
               )}
             />
 
-            {/* Origem — sempre: de onde vêm as conversas e as conversões */}
+            {/* Origem, sempre: de onde vêm as conversas e as conversões */}
             {s.origem && (s.origem.fontes || []).length > 0 && (
               <>
                 <SectionTitle>Origem dos leads</SectionTitle>
@@ -516,14 +516,14 @@ const ReportsScreen = () => {
               </>
             )}
 
-            {/* Follow-up — sempre */}
+            {/* Follow-up, sempre */}
             <SectionTitle>Follow-up (o trabalho chato que a HUMA faz por você)</SectionTitle>
             <Grid cols={2}>
               <StatTile label="Leads sumidos reengajados" value={fu.leads_reengajados ?? 0} delta={dl.reengajados}/>
               <StatTile label="Voltaram a negociar" value={fu.voltaram_a_negociar ?? 0} accent/>
             </Grid>
 
-            {/* Inteligência — sempre */}
+            {/* Inteligência, sempre */}
             <SectionTitle>O que seus leads mais pediram</SectionTitle>
             {(intel.top_assuntos || []).length === 0 ? (
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>

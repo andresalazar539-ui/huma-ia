@@ -27,7 +27,7 @@ function OnboardingApp() {
   };
   return <div className="ob-app">
     {/* Sprint Billing: quem quer assinar direto não precisa esperar o
-        trial — link discreto e sempre visível durante o onboarding. */}
+        trial, link discreto e sempre visível durante o onboarding. */}
     {moment <= 7 && (
       <a href="/cockpit?screen=planos" style={{
         position: 'fixed', top: 14, right: 18, zIndex: 50,

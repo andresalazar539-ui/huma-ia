@@ -127,7 +127,7 @@ const LinksScreen = () => {
             fontSize: 30, margin: 0, color: 'var(--ink)',
           }}>Divulgação</h1>
           <p style={{ margin: '6px 0 0', fontSize: 14, color: 'var(--ink-3)', maxWidth: '58ch' }}>
-            Os links que trazem leads pra sua HUMA — e mostram de onde cada venda veio.
+            Os links que trazem leads pra sua HUMA, e mostram de onde cada venda veio.
           </p>
         </div>
 
@@ -157,7 +157,7 @@ const LinksScreen = () => {
           </div>
           <p style={{ margin: '0 0 16px', fontSize: 13.5, color: 'var(--ink-3)', maxWidth: '60ch', lineHeight: 1.5 }}>
             Cada canal ganha um link próprio. Quando o lead manda a primeira mensagem,
-            a HUMA reconhece de onde ele veio — e o relatório mostra qual canal vende.
+            a HUMA reconhece de onde ele veio, e o relatório mostra qual canal vende.
             Anúncio do Instagram/Facebook (click-to-WhatsApp) não precisa: a origem já chega sozinha.
           </p>
 
@@ -200,7 +200,7 @@ const LinksScreen = () => {
               <span style={linksLabel}>Seu link rastreável</span>
               <LinkBox url={result.link} />
               <p style={{ margin: 0, fontSize: 12.5, color: 'var(--ink-4)' }}>
-                O texto da primeira mensagem já vem preenchido com o código {result.code ? `(${result.code})` : 'de origem'} —
+                O texto da primeira mensagem já vem preenchido com o código {result.code ? `(${result.code})` : 'de origem'} ,
                 é ele que identifica o canal. Não edite o final da mensagem.
               </p>
             </div>

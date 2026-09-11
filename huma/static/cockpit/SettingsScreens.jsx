@@ -418,7 +418,7 @@ const AIScheduleCard = ({ settings, patch, businessHours }) => {
           desc="Sua equipe responde enquanto a empresa está aberta (usa o horário de atendimento cadastrado acima). A HUMA assume à noite, no almoço e no fim de semana."/>
         {choice === 'custom' && (
           <QaqOption selected={true} onSelect={() => {}} label="Personalizado"
-            desc="Suas janelas, do seu jeito — dia a dia, horário a horário."/>
+            desc="Suas janelas, do seu jeito, dia a dia, horário a horário."/>
         )}
       </div>
       {choice !== 'custom' && (
@@ -435,7 +435,7 @@ const AIScheduleCard = ({ settings, patch, businessHours }) => {
           )}
           {custom.windows.length === 0 && (
             <div style={{ border: '1.5px dashed var(--paper-edge)', borderRadius: 12, padding: '24px 20px', textAlign: 'center' }}>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Nenhuma janela programada. Por enquanto, vale o modo abaixo — o tempo todo.</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Nenhuma janela programada. Por enquanto, vale o modo abaixo, o tempo todo.</div>
               <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center' }}>
                 <Button variant="ghost" size="sm" icon={<Icon name="plus" size={13}/>} onClick={addWin}>Adicionar primeira janela</Button>
               </div>
@@ -514,7 +514,7 @@ const RowActions = ({ onEdit, onRemove }) => (
 
 const SaveReminder = () => (
   <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>
-    Clique em Salvar no topo — a HUMA usa a lista nova já na próxima conversa.
+    Clique em Salvar no topo, a HUMA usa a lista nova já na próxima conversa.
   </div>
 );
 
@@ -564,7 +564,7 @@ const ProfessionalsCard = ({ settings, patch }) => {
   const fields = [
     { key: 'name', label: 'Nome', half: true, placeholder: 'Dra. Ana Lima' },
     { key: 'specialty', label: 'Especialidade / função', half: true, placeholder: 'Dermatologia estética' },
-    { key: 'registry', label: 'Registro profissional (opcional)', placeholder: 'CRM-SP 123.456', hint: 'A HUMA só cita profissionais desta lista — nunca inventa nome ou registro.' },
+    { key: 'registry', label: 'Registro profissional (opcional)', placeholder: 'CRM-SP 123.456', hint: 'A HUMA só cita profissionais desta lista: nunca inventa nome ou registro.' },
   ];
   return (
     <Card title="Equipe técnica" action={ed.editing === null
@@ -572,7 +572,7 @@ const ProfessionalsCard = ({ settings, patch }) => {
       : null}>
       {list.length === 0 && ed.editing === null && (
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-          Ninguém cadastrado. Se o lead perguntar "quem atende?", a HUMA diz que confirma e retorna — cadastre a equipe pra ela responder na hora.
+          Ninguém cadastrado. Se o lead perguntar "quem atende?", a HUMA diz que confirma e retorna, cadastre a equipe pra ela responder na hora.
         </div>
       )}
       {list.length > 0 && (
@@ -857,7 +857,7 @@ const NegocioKnowledge = ({ settings, patch }) => {
           fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
           color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance',
         }}>
-          HUMA aprendeu estas coisas sobre {settings.business_name || 'seu negócio'} no onboarding. Você pode ajustar a qualquer momento — quanto mais HUMA sabe, melhor ela atende.
+          HUMA aprendeu estas coisas sobre {settings.business_name || 'seu negócio'} no onboarding. Você pode ajustar a qualquer momento, quanto mais HUMA sabe, melhor ela atende.
         </div>
       </div>
 
@@ -918,7 +918,7 @@ const NegocioKnowledge = ({ settings, patch }) => {
               padding: '16px 14px', borderTop: '1px solid var(--paper-edge)',
               fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)',
             }}>
-              Nenhum produto ou serviço cadastrado ainda — a HUMA não fala preço que não conhece.
+              Nenhum produto ou serviço cadastrado ainda, a HUMA não fala preço que não conhece.
             </div>
           )}
           {products.map((p, i) => prodEd.editing === i ? (
@@ -932,9 +932,9 @@ const NegocioKnowledge = ({ settings, patch }) => {
               borderTop: '1px solid var(--paper-edge)',
               fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)',
             }}>
-              <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{p.name || '—'}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>{p.duration || '—'}</div>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>{p.price ? `R$ ${p.price}` : '—'}</div>
+              <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{p.name || '-'}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>{p.duration || '-'}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)' }}>{p.price ? `R$ ${p.price}` : '-'}</div>
               <div style={{ color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.description || ''}</div>
               <RowActions onEdit={() => prodEd.start(i)} onRemove={() => prodEd.remove(i)}/>
             </div>
@@ -954,7 +954,7 @@ const NegocioKnowledge = ({ settings, patch }) => {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {faq.length === 0 && faqEd.editing !== 'new' && (
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
-              Nenhuma pergunta frequente cadastrada — a HUMA responde na hora o que estiver aqui, sem gastar IA.
+              Nenhuma pergunta frequente cadastrada, a HUMA responde na hora o que estiver aqui, sem gastar IA.
             </div>
           )}
           {faq.map((p, i) => faqEd.editing === i ? (
@@ -1236,7 +1236,7 @@ const NegocioVende = ({ settings, reloadSettings }) => {
       <div style={{ padding: 20, border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
           {pb.has_playbook
-            ? <>É assim que a HUMA vende pra {settings.business_name || 'seu negócio'}: montado a partir do cadastro{pb.website ? ' e do site' : ''}. Tudo aqui é seu — edite à vontade.</>
+            ? <>É assim que a HUMA vende pra {settings.business_name || 'seu negócio'}: montado a partir do cadastro{pb.website ? ' e do site' : ''}. Tudo aqui é seu, edite à vontade.</>
             : <>A HUMA ainda não tem um playbook pra {settings.business_name || 'seu negócio'}. Preencha o tipo de negócio e a descrição em Informações e clique em Gerar.</>}
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1516,7 +1516,7 @@ const NegocioKB = () => {
         {msg && <VoiceMsg kind={msg.kind}>{msg.text}</VoiceMsg>}
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
           Cada documento é lido UMA vez: a HUMA extrai os fatos úteis (preços, prazos, regras, políticas) e guarda só o resumo.
-          Nas conversas ela responde com base nesses fatos — e, se a dúvida não estiver aqui, diz que vai confirmar em vez de inventar.
+          Nas conversas ela responde com base nesses fatos, e, se a dúvida não estiver aqui, diz que vai confirmar em vez de inventar.
         </div>
       </Card>
 
@@ -1659,7 +1659,7 @@ const NegocioChannels = ({ onNavMain }) => {
         : <Button variant="primary" size="sm" icon={<Icon name="link" size={13}/>} onClick={() => onNavMain && onNavMain('integracoes')}>Conectar</Button>,
     },
     {
-      name: 'Balcão — chat no navegador', sub: balcao.replace(/^https?:\/\//, '') || 'Link do seu chat', glyph: 'site', status: 'connected',
+      name: 'Balcão: chat no navegador', sub: balcao.replace(/^https?:\/\//, '') || 'Link do seu chat', glyph: 'site', status: 'connected',
       extra: 'O mesmo clone do WhatsApp. Cole na bio do Instagram ou no site.',
       action: (
         <div style={{ display: 'flex', gap: 8 }}>
@@ -1808,7 +1808,7 @@ const PerfilYou = ({ settings, patch }) => {
           fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
           color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640,
         }}>
-          Olá{first ? `, ${first}` : ''}. É pra você que a HUMA manda os avisos — e é em seu nome que ela responde.
+          Olá{first ? `, ${first}` : ''}. É pra você que a HUMA manda os avisos, e é em seu nome que ela responde.
         </div>
       </div>
 
@@ -2097,7 +2097,7 @@ const PerfilVoice = () => {
 
           {!voice && (
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
-              Não consegui confirmar essa voz na ElevenLabs agora — a prévia pode falhar. Se persistir, treine de novo ou escolha outra voz.
+              Não consegui confirmar essa voz na ElevenLabs agora, a prévia pode falhar. Se persistir, treine de novo ou escolha outra voz.
             </div>
           )}
 
@@ -2130,7 +2130,7 @@ const PerfilVoice = () => {
       {/* ── Clonar / treinar novamente ── */}
       <Card title={status && status.is_cloned ? 'Treinar novamente' : 'Clonar sua voz'}>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-          Grave <b>1 a 3 minutos</b> falando natural, como se estivesse mandando áudio pra um cliente —
+          Grave <b>1 a 3 minutos</b> falando natural, como se estivesse mandando áudio pra um cliente ,
           ambiente silencioso, sem ler robotizado. Pode gravar aqui mesmo ou enviar áudios que você já tem
           (mp3, wav, m4a, ogg). Quanto mais natural a amostra, mais a HUMA soa como você.
         </div>
@@ -2291,7 +2291,7 @@ const PerfilSecurity = ({ settings }) => {
           {!email
             ? 'Sua conta ainda não tem e-mail de login cadastrado. Fale com o suporte HUMA.'
             : state === 'sent'
-              ? `Enviamos um link pra ${email}. Abra o e-mail e escolha a nova senha — o link vale por pouco tempo.`
+              ? `Enviamos um link pra ${email}. Abra o e-mail e escolha a nova senha, o link vale por pouco tempo.`
               : `Você recebe um link por e-mail em ${email} pra definir uma senha nova. A senha atual continua valendo até você trocar.`}
         </div>
         {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
