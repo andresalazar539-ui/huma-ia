@@ -1013,7 +1013,7 @@ async def invite_page(token: str) -> HTMLResponse:
     authorize_url = ""
     if SUPABASE_URL and PUBLIC_BASE_URL:
         callback = f"{PUBLIC_BASE_URL.rstrip('/')}/auth/callback"
-        authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to={callback}"
+        authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?provider=google&prompt=select_account&redirect_to={callback}"
 
     if not valid:
         body = """
@@ -1135,7 +1135,7 @@ async def login_page() -> HTMLResponse:
     authorize_url = ""
     if SUPABASE_URL and PUBLIC_BASE_URL:
         callback = f"{PUBLIC_BASE_URL.rstrip('/')}/auth/callback"
-        authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to={callback}"
+        authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?provider=google&prompt=select_account&redirect_to={callback}"
 
     html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
