@@ -208,6 +208,42 @@ async def _gotrue_recover(email: str) -> None:
         log.error(f"Login | erro http | service=supabase_auth | op=recover | {type(e).__name__}: {e}")
 
 
+async def _gotrue_generate_link(email: str, link_type: str = "recovery") -> str:
+    """
+    Gera (sem enviar e-mail) o link de ação do GoTrue pra este e-mail.
+
+    Usado pelo convite de equipe: a HUMA manda UM e-mail seu ("você foi
+    convidado") com o botão apontando pra este link, em vez de deixar o
+    Supabase disparar o "Redefinir sua senha" genérico. A conta precisa
+    existir (chamar _gotrue_admin_ensure_user antes). Vazio = falhou
+    (o caller decide o fallback).
+    """
+    redirect = f"{PUBLIC_BASE_URL.rstrip('/')}/auth/reset" if PUBLIC_BASE_URL else "/auth/reset"
+    url = f"{SUPABASE_URL}/auth/v1/admin/generate_link"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.post(
+                url,
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"type": link_type, "email": email, "redirect_to": redirect},
+            )
+        if resp.status_code not in (200, 201):
+            log.warning(f"Login | generate_link status={resp.status_code} | type={link_type} | email=***")
+            return ""
+        data = resp.json() if resp.content else {}
+        return str(data.get("action_link") or "")
+    except httpx.TimeoutException:
+        log.error("Login | timeout | service=supabase_auth | op=generate_link")
+        return ""
+    except (httpx.HTTPError, ValueError) as e:
+        log.error(f"Login | erro | service=supabase_auth | op=generate_link | {type(e).__name__}: {e}")
+        return ""
+
+
 async def _gotrue_signup(email: str, password: str, business_name: str = "") -> dict | str | None:
     """
     Cria conta no GoTrue (signup self-service).
@@ -331,10 +367,15 @@ def _post_login_redirect(client) -> str:
     return "/onboarding/page"
 
 
-def _session_response(client, remember: bool) -> JSONResponse:
-    """Monta a resposta de login OK: cookie de sessão + redirect."""
+def _session_response(client, remember: bool, email: str = "") -> JSONResponse:
+    """
+    Monta a resposta de login OK: cookie de sessão + redirect.
+
+    `email` entra no token pra o middleware de permissões saber o papel
+    de quem logou (dono ou membro da equipe).
+    """
     client_id = client.client_id
-    session = create_session_token(client_id)
+    session = create_session_token(client_id, email=email)
     resp = JSONResponse({"status": "ok", "redirect": _post_login_redirect(client)})
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -383,7 +424,7 @@ async def login(payload: LoginRequest) -> JSONResponse:
     client = await _resolve_or_provision_client(user_email)
 
     log.info(f"Login | senha ok | client={client.client_id}")
-    return _session_response(client, payload.remember)
+    return _session_response(client, payload.remember, email=user_email)
 
 
 # ================================================================
@@ -414,7 +455,7 @@ async def session_from_supabase(payload: SupabaseSessionRequest) -> JSONResponse
     client = await _resolve_or_provision_client(email, business_name, ref=payload.ref)
 
     log.info(f"Login | sessão via supabase token | client={client.client_id}")
-    return _session_response(client, payload.remember)
+    return _session_response(client, payload.remember, email=email)
 
 
 # ================================================================
@@ -491,12 +532,12 @@ async def signup(payload: SignupRequest) -> JSONResponse:
         log.info(f"Signup | aguardando confirmação | email=***@{email.split('@')[-1]}")
         return JSONResponse({
             "status": "confirm_email",
-            "message": "Conta criada! Enviamos um link de confirmação pro seu e-mail — clica nele pra entrar.",
+            "message": "Conta criada! Enviamos um link de confirmação pro seu e-mail. Clica nele pra entrar.",
         })
 
     client = await _resolve_or_provision_client(email, payload.business_name, ref=payload.ref)
     log.info(f"Signup | conta criada e logada | client={client.client_id}")
-    return _session_response(client, remember=True)
+    return _session_response(client, remember=True, email=email)
 
 
 # ================================================================
@@ -799,7 +840,7 @@ async def login_page() -> HTMLResponse:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HUMA IA — Entrar</title>
+  <title>Entrar · HUMA IA</title>
   {_TOKENS_LINK}
   <style>{_BASE_STYLE}</style>
 </head>
@@ -979,7 +1020,7 @@ async def oauth_callback_page() -> HTMLResponse:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HUMA IA — Entrando...</title>
+  <title>Entrando · HUMA IA</title>
   {_TOKENS_LINK}
   <style>{_BASE_STYLE}</style>
 </head>
@@ -1042,7 +1083,7 @@ async def reset_password_page() -> HTMLResponse:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HUMA IA — Definir senha</title>
+  <title>Definir senha · HUMA IA</title>
   {_TOKENS_LINK}
   <style>{_BASE_STYLE}</style>
 </head>

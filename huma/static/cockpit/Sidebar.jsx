@@ -94,9 +94,23 @@ const LiveNowBlock = ({ client }) => {
 
 // client = /api/integrations/status (business_name, category, owner_email...)
 // waitingCount = conversas aguardando você (handoff) — badge real.
+// Permissões por papel (injetadas por /cockpit em window.HUMA_PERMS /
+// HUMA_SCREEN_PERMS). Sem injeção (dev, ?client_id=) tudo aparece; quem
+// barra de verdade é o middleware do backend.
+const canSee = (screenId) => {
+  const perms = window.HUMA_PERMS;
+  const map = window.HUMA_SCREEN_PERMS;
+  if (!Array.isArray(perms) || !map) return true;
+  const need = map[screenId];
+  return !need || perms.includes(need);
+};
+const filterAllowed = (items) => items
+  .filter(it => canSee(it.id))
+  .map(it => (it.children ? { ...it, children: it.children.filter(c => canSee(c.id)) } : it));
+
 const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
   const tabs = pipelineTabs(client);
-  const items = [
+  const items = filterAllowed([
     { id: 'inicio',       label: 'Início',       icon: 'home',     count: null },
     { id: 'conversas',    label: 'Conversas',    icon: 'message',  count: waitingCount || null },
     ...(tabs.agenda ? [{ id: 'agenda', label: 'Agenda', icon: 'calendar', count: null }] : []),
@@ -113,7 +127,7 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
         { id: 'ajustes',   label: 'Conta & plano' },
       ],
     },
-  ];
+  ]);
 
   // Ajustes group expanded if active is one of its children or ajustes itself
   const ajustesGroup = ['ajustes', 'uso'];
@@ -376,7 +390,7 @@ const MOBILE_MORE_ITEMS = [
 
 const MobileTabBar = ({ active, onNav, client }) => {
   const [moreOpen, setMoreOpen] = React.useState(false);
-  const MOBILE_TABS = mobileTabsFor(client);
+  const MOBILE_TABS = filterAllowed(mobileTabsFor(client));
   const tabs = pipelineTabs(client);
   const mainIds = MOBILE_TABS.map(t => t.id);
   const moreActive = !mainIds.includes(active);
@@ -449,7 +463,7 @@ const MobileMoreSheet = ({ active, onNav, onClose, extraItems = [] }) => {
         boxShadow: '0 -12px 40px rgba(28,23,20,0.18)',
       }}>
         <div style={{ width: 36, height: 4, borderRadius: 999, background: 'var(--paper-edge)', margin: '4px auto 10px' }} />
-        {[...extraItems, ...MOBILE_MORE_ITEMS].map(it => (
+        {filterAllowed([...extraItems, ...MOBILE_MORE_ITEMS]).map(it => (
           <Row key={it.id} icon={it.icon} label={it.label} on={active === it.id} onClick={() => onNav(it.id)} />
         ))}
         <div style={{ height: 1, background: 'var(--paper-edge)', margin: '6px 4px' }} />

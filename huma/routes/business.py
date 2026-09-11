@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from huma.config import PUBLIC_BASE_URL
-from huma.core import lead_routing
+from huma.core import lead_routing, permissions
 from huma.core.auth import verify_api_key
 from huma.services import db_service as db
 from huma.services import email_service
@@ -32,13 +32,8 @@ log = get_logger("business")
 router = APIRouter(tags=["Negócio"])
 
 MAX_TEAM_MEMBERS = 10
-TEAM_ROLE_LABELS = {
-    "dono": "Dono",
-    "vendedor": "Vendas",
-    "recepcao": "Recepção",
-    "admin": "Administrativo",
-    "equipe": "Equipe",
-}
+# Papéis e permissões: fonte única em core/permissions.py
+TEAM_ROLE_LABELS = permissions.ROLE_LABELS
 
 
 class TeamInviteBody(BaseModel):
@@ -202,25 +197,38 @@ async def _send_invite(email: str, client, role_label: str) -> bool:
     'Esqueci minha senha' no login.
     """
     sent = False
+    action_url = ""
     try:
-        from huma.routes.auth_login import _gotrue_admin_ensure_user, _gotrue_ready, _gotrue_recover
+        from huma.routes.auth_login import (
+            _gotrue_admin_ensure_user, _gotrue_generate_link, _gotrue_ready, _gotrue_recover,
+        )
 
         if _gotrue_ready():
             await _gotrue_admin_ensure_user(email)
-            await _gotrue_recover(email)
+            # UM e-mail só: o link de criar senha vai dentro do convite da
+            # HUMA. Só se o GoTrue não devolver o link caímos no e-mail
+            # genérico de recuperação dele (antes o convidado recebia
+            # "Redefinir sua senha" sem contexto nenhum).
+            action_url = await _gotrue_generate_link(email, "recovery")
+            if not action_url:
+                log.warning("Equipe | generate_link vazio, caindo pro e-mail de recover do Supabase")
+                await _gotrue_recover(email)
         else:
-            log.warning("Equipe | GoTrue não configurado — convite sem e-mail de senha")
+            log.warning("Equipe | GoTrue não configurado, convite sem link de senha")
     except Exception as e:
         log.error(f"Equipe | auth do convidado falhou | {type(e).__name__}: {e}")
 
     try:
         login_url = f"{PUBLIC_BASE_URL.rstrip('/')}/login" if PUBLIC_BASE_URL else "https://app.humaia.com.br/login"
+        role_id = next((k for k, v in TEAM_ROLE_LABELS.items() if v == role_label), "equipe")
         sent = await email_service.send_team_invite(
             to=email,
             business_name=client.business_name or "",
             inviter_name=client.owner_name or "",
             role_label=role_label,
             login_url=login_url,
+            action_url=action_url,
+            role_description=permissions.ROLE_DESCRIPTIONS.get(role_id, permissions.ROLE_DESCRIPTIONS["recepcao"]),
         )
     except Exception as e:
         log.error(f"Equipe | e-mail de convite falhou | {type(e).__name__}: {e}")

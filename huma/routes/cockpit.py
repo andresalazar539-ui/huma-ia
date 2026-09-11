@@ -10,8 +10,13 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
 
-from huma.core.auth import SESSION_COOKIE_NAME, verify_session_token
+from huma.core import permissions
+from huma.core.auth import SESSION_COOKIE_NAME, session_actor, verify_session_token
+from huma.services.db_service import get_client
 from huma.utils.analytics import inject_gtm
+from huma.utils.logger import get_logger
+
+log = get_logger("cockpit")
 
 router = APIRouter(tags=["cockpit"])
 
@@ -82,9 +87,24 @@ async def cockpit_page(request: Request) -> HTMLResponse:
     """
     html = COCKPIT_HTML.read_text(encoding="utf-8")
     html = html.replace("__ASSET_V__", ASSET_VERSION)
-    session_client = verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, ""))
+    session_client, session_email = session_actor(request.cookies.get(SESSION_COOKIE_NAME, ""))
     if session_client:
-        inject = f"<script>window.HUMA_CLIENT_ID = {json.dumps(session_client)};</script>"
+        # Papel de quem logou (permissões por papel): o frontend esconde o
+        # que a pessoa não pode ver; o middleware em app.py é quem barra.
+        role = permissions.OWNER_ROLE
+        if session_email:
+            try:
+                client = await get_client(session_client)
+                if client is not None:
+                    role = permissions.role_for(client, session_email)
+            except Exception as e:
+                log.warning(f"Cockpit | falha lendo papel | client={session_client} | {type(e).__name__}: {e}")
+        inject = (
+            f"<script>window.HUMA_CLIENT_ID = {json.dumps(session_client)};"
+            f"window.HUMA_ROLE = {json.dumps(role)};"
+            f"window.HUMA_PERMS = {json.dumps(permissions.permissions_for(role))};"
+            f"window.HUMA_SCREEN_PERMS = {json.dumps(permissions.SCREEN_PERMISSIONS)};</script>"
+        )
         html = html.replace("<head>", "<head>" + inject, 1)
     # GTM por último: o snippet ancora antes de </head> e lê o
     # HUMA_CLIENT_ID já injetado acima (user_id do GA4).

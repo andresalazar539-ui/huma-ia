@@ -95,12 +95,16 @@ SESSION_COOKIE_NAME = "huma_session"
 SESSION_TTL_SECONDS = 30 * 86400  # 30 dias
 
 
-def create_session_token(client_id: str, ttl_seconds: int = SESSION_TTL_SECONDS) -> str:
+def create_session_token(client_id: str, ttl_seconds: int = SESSION_TTL_SECONDS, email: str = "") -> str:
     """
-    Gera token de sessão stateless: base64url("client_id|exp|hmac").
+    Gera token de sessão stateless: base64url("client_id|exp[|email]|hmac").
 
     Assinado com SESSION_SECRET (HMAC-SHA256). Sem estado no servidor —
     revogação individual não existe no T0; o TTL de 30 dias limita a janela.
+
+    `email` (permissões por papel, 2026-09-10) identifica QUEM está logado
+    neste negócio: o middleware de permissões resolve o papel da equipe por
+    ele. Vazio = token no formato antigo (tratado como dono).
 
     Raises:
         RuntimeError: se SESSION_SECRET não configurado.
@@ -108,9 +112,48 @@ def create_session_token(client_id: str, ttl_seconds: int = SESSION_TTL_SECONDS)
     if not SESSION_SECRET:
         raise RuntimeError("SESSION_SECRET não configurado — login por sessão indisponível")
     exp = int(time.time()) + ttl_seconds
-    payload = f"{client_id}|{exp}"
+    email = (email or "").strip().lower().replace("|", "")
+    payload = f"{client_id}|{exp}|{email}" if email else f"{client_id}|{exp}"
     sig = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}|{sig}".encode("utf-8")).decode("ascii")
+
+
+def session_actor(token: str) -> tuple[Optional[str], str]:
+    """
+    Valida o token e devolve (client_id, email). (None, "") se inválido.
+
+    Aceita os dois formatos: "client_id|exp|sig" (sessões antigas, e-mail
+    vazio) e "client_id|exp|email|sig".
+    """
+    if not SESSION_SECRET or not token:
+        return None, ""
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        parts = decoded.split("|")
+    except ValueError:
+        # binascii.Error e UnicodeDecodeError são subclasses de ValueError:
+        # token malformado = inválido, sem log (input não confiável).
+        return None, ""
+    if len(parts) == 3:
+        client_id, exp_str, sig = parts
+        email = ""
+    elif len(parts) == 4:
+        client_id, exp_str, email, sig = parts
+    else:
+        return None, ""
+
+    payload = f"{client_id}|{exp_str}|{email}" if email else f"{client_id}|{exp_str}"
+    expected = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None, ""
+
+    try:
+        if int(exp_str) < time.time():
+            return None, ""
+    except ValueError:
+        return None, ""
+
+    return (client_id or None), email
 
 
 def verify_session_token(token: str) -> Optional[str]:
@@ -120,28 +163,8 @@ def verify_session_token(token: str) -> Optional[str]:
     None também quando SESSION_SECRET está vazio (feature desligada) —
     nunca degrada pra "aceita qualquer um".
     """
-    if not SESSION_SECRET or not token:
-        return None
-    try:
-        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-        client_id, exp_str, sig = decoded.split("|")
-    except ValueError:
-        # binascii.Error e UnicodeDecodeError são subclasses de ValueError:
-        # token malformado = inválido, sem log (input não confiável).
-        return None
-
-    payload = f"{client_id}|{exp_str}"
-    expected = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected):
-        return None
-
-    try:
-        if int(exp_str) < time.time():
-            return None
-    except ValueError:
-        return None
-
-    return client_id or None
+    client_id, _ = session_actor(token)
+    return client_id
 
 
 # ================================================================

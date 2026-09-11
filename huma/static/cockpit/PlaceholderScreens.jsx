@@ -327,7 +327,10 @@ const AjustesScreen = ({ onNav, onInvite }) => {
     { title: 'Conta', desc: s ? `${s.business_name || 'Sem nome'} · ${s.owner_email || 'sem e-mail de login'}` : '…', go: () => onNav && onNav('negocio'), label: 'Editar' },
     { title: 'Plano', desc: b ? planDesc(b) : '…', go: () => onNav && onNav('uso'), label: 'Ver uso' },
     { title: 'Horário de atendimento', desc: s ? (s.working_hours || 'Não definido — a HUMA responde a qualquer hora') : '…', go: () => onNav && onNav('negocio'), label: 'Editar' },
-    { title: 'Equipe', desc: t ? teamDesc(t) : '…', go: () => onInvite && onInvite(), label: 'Convidar' },
+    // Só quem pode gerir a equipe (papel dono) vê o atalho; o backend barra o resto.
+    ...((!Array.isArray(window.HUMA_PERMS) || window.HUMA_PERMS.includes('equipe'))
+      ? [{ title: 'Equipe', desc: t ? teamDesc(t) : '…', go: () => onInvite && onInvite(), label: 'Convidar' }]
+      : []),
     { title: 'Notificações', desc: s ? notifDesc(s) : '…', go: () => onNav && onNav('perfil'), label: 'Editar' },
   ];
 

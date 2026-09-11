@@ -2308,11 +2308,13 @@ const PerfilSecurity = ({ settings }) => {
 // O convidado recebe e-mail pra criar a senha e entra com o próprio
 // e-mail neste negócio (login cai em team_members quando não é dono).
 // ============================================================
+// Espelho de huma/core/permissions.py (ROLE_DESCRIPTIONS). O backend é
+// quem barra; aqui a pessoa escolhe sabendo o que cada papel enxerga.
 const TEAM_ROLES = [
-  { id: 'vendedor', label: 'Vendas',         desc: 'Recebe os leads que a HUMA qualifica' },
-  { id: 'recepcao', label: 'Recepção',       desc: 'Conversas, agenda e clientes' },
-  { id: 'admin',    label: 'Administrativo', desc: 'Relatórios e faturamento' },
-  { id: 'dono',     label: 'Sócio / dono',   desc: 'Tudo, inclusive ajustes do negócio' },
+  { id: 'vendedor', label: 'Vendas',         desc: 'Conversas, agenda e clientes. Recebe os leads que a HUMA qualifica.' },
+  { id: 'recepcao', label: 'Recepção',       desc: 'Conversas, agenda e clientes.' },
+  { id: 'admin',    label: 'Administrativo', desc: 'Conversas, relatórios, vendas, uso e faturamento, disparos e divulgação.' },
+  { id: 'dono',     label: 'Sócio / dono',   desc: 'Tudo, inclusive ajustes do negócio, integrações e equipe.' },
 ];
 const teamRoleLabel = (id) => (TEAM_ROLES.find(r => r.id === id) || { label: 'Equipe' }).label;
 const fmtWa = (digits) => {
@@ -2326,6 +2328,7 @@ const fmtWa = (digits) => {
 // É aqui que o dono liga o roteamento por vendedor — efeito no próximo lead.
 const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
   const [editing, setEditing] = useStateS(false);
+  const [role, setRole] = useStateS(m.role || 'recepcao');
   const [phone, setPhone] = useStateS(m.phone || '');
   const [receives, setReceives] = useStateS(!!m.receives_leads);
   const [specialty, setSpecialty] = useStateS(m.specialty || '');
@@ -2336,7 +2339,7 @@ const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
     if (saving) return;
     setSaving(true); onError('');
     try {
-      await updateTeamMember(m.email, { phone, receives_leads: receives, specialty });
+      await updateTeamMember(m.email, { role, phone, receives_leads: receives, specialty });
       setEditing(false);
       await onChanged();
     } catch (e) { onError(e.message); }
@@ -2363,6 +2366,14 @@ const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
       </div>
       {editing && (
         <div style={{ marginTop: 10, marginLeft: 40, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Field label="Papel" hint={(TEAM_ROLES.find(r => r.id === role) || {}).desc || ''}>
+            <select value={role} onChange={e => setRole(e.target.value)} style={{
+              fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)',
+              padding: '8px 10px', borderRadius: 8, border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)',
+            }}>
+              {TEAM_ROLES.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+          </Field>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
             <Field label="WhatsApp" half>
               <Input placeholder="11 98888-7777" value={phone} onChange={e => setPhone(e.target.value)}/>
@@ -2470,7 +2481,7 @@ const InviteModal = ({ onClose }) => {
               <Input placeholder="Sofia" value={name} onChange={e => setName(e.target.value)}/>
             </Field>
           </div>
-          <Field label="Papel" hint="Por enquanto todo mundo da equipe vê o Cockpit inteiro — o papel serve pra organizar quem é quem.">
+          <Field label="Papel" hint="O papel define o que a pessoa vê e pode mexer no Cockpit. Dá pra mudar depois em Editar.">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {TEAM_ROLES.map(r => (
                 <label key={r.id} style={{

@@ -114,6 +114,47 @@ def create_app() -> FastAPI:
         response.headers["X-Request-ID"] = request.state.request_id
         return response
 
+    # Permissões por papel (equipe do Cockpit, 2026-09-10).
+    # Só age em sessão por cookie cujo token carrega o e-mail de um membro
+    # da equipe (não dono). Bearer api_key, sessões antigas (sem e-mail) e
+    # rotas fora do mapa de core/permissions passam direto. Uma consulta
+    # ao cliente por request só quando há permissão a checar.
+    @app.middleware("http")
+    async def enforce_team_permissions(request: Request, call_next):
+        from huma.core import permissions as perms
+        from huma.core.auth import SESSION_COOKIE_NAME, session_actor
+
+        if request.headers.get("authorization"):
+            return await call_next(request)
+        required = perms.permission_for(request.method, request.url.path)
+        if required is None:
+            return await call_next(request)
+        token = request.cookies.get(SESSION_COOKIE_NAME, "")
+        if not token:
+            return await call_next(request)
+        client_id, email = session_actor(token)
+        if not client_id or not email:
+            return await call_next(request)
+        try:
+            from huma.services.db_service import get_client
+            client = await get_client(client_id)
+        except Exception as e:
+            log.warning(f"Permissões | falha lendo cliente | client={client_id} | {type(e).__name__}: {e}")
+            return await call_next(request)
+        if client is None:
+            return await call_next(request)
+        role = perms.role_for(client, email)
+        if perms.can(role, required):
+            return await call_next(request)
+        log.info(
+            f"Permissões | negado | client={client_id} | role={role} | "
+            f"perm={required} | {request.method} {request.url.path}"
+        )
+        return JSONResponse(
+            status_code=403,
+            content={"status": "error", "detail": perms.denied_message(role, required)},
+        )
+
     # Sprint 1 / item 15 — handler dedicado pra HTTPException antes do generic.
     # Antes o handler genérico engolia HTTPException e transformava 404 em 500.
     @app.exception_handler(StarletteHTTPException)

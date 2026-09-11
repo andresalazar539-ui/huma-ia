@@ -33,13 +33,13 @@ TEMPLATES_DIR = Path(__file__).parent
 # (arquivo html, campo de conteudo na API, campo de assunto na API, assunto PT-BR)
 TEMPLATES: list[tuple[str, str, str, str]] = [
     ("confirmation.html", "mailer_templates_confirmation_content",
-     "mailer_subjects_confirmation", "Confirme seu e-mail — HUMA IA"),
+     "mailer_subjects_confirmation", "Confirme seu e-mail na HUMA IA"),
     ("recovery.html", "mailer_templates_recovery_content",
-     "mailer_subjects_recovery", "Redefinir sua senha — HUMA IA"),
+     "mailer_subjects_recovery", "Redefinir sua senha na HUMA IA"),
     ("magic_link.html", "mailer_templates_magic_link_content",
-     "mailer_subjects_magic_link", "Seu link de acesso — HUMA IA"),
+     "mailer_subjects_magic_link", "Seu link de acesso na HUMA IA"),
     ("email_change.html", "mailer_templates_email_change_content",
-     "mailer_subjects_email_change", "Confirme seu novo e-mail — HUMA IA"),
+     "mailer_subjects_email_change", "Confirme seu novo e-mail na HUMA IA"),
 ]
 
 SMTP_ENV_REQUIRED = ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "SMTP_ADMIN_EMAIL")

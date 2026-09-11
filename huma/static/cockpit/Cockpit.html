@@ -338,8 +338,29 @@ function App() {
   const showAgendaPanel = route === 'conversas';
   const fullBleed = route === 'negocio' || route === 'perfil';
 
+  // Permissões por papel: tela fora do papel de quem logou não desenha
+  // (o backend também barra as rotas; aqui é só pra não mostrar erro cru).
+  const allowedScreen = (id) => {
+    const perms = window.HUMA_PERMS, map = window.HUMA_SCREEN_PERMS;
+    if (!Array.isArray(perms) || !map) return true;
+    const need = map[id];
+    return !need || perms.includes(need);
+  };
+
   let screen;
-  switch (route) {
+  if (!allowedScreen(route)) {
+    screen = (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <div style={{ maxWidth: 420, textAlign: 'center' }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', marginBottom: 8 }}>Essa área não faz parte do seu papel</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', lineHeight: 1.5, marginBottom: 16 }}>
+            Você entra como <strong>{({ vendedor: 'Vendas', recepcao: 'Recepção', admin: 'Administrativo', equipe: 'Equipe' })[window.HUMA_ROLE] || 'Equipe'}</strong>. Se precisa ver isso, peça ao dono da conta pra ajustar seu papel em Convidar equipe.
+          </div>
+          <Button variant="dark" size="md" onClick={() => setRoute('inicio')}>Voltar pro Início</Button>
+        </div>
+      </div>
+    );
+  } else switch (route) {
     case 'inicio':
       screen = <InicioScreen
         onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}

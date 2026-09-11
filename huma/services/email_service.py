@@ -103,33 +103,51 @@ async def send_team_invite(
     inviter_name: str = "",
     role_label: str = "Equipe",
     login_url: str = "https://app.humaia.com.br/login",
+    action_url: str = "",
+    role_description: str = "",
 ) -> bool:
     """
-    Convite pra equipe (Cockpit → Convidar equipe). A senha é definida
-    pelo e-mail de auth do Supabase, disparado em separado pela rota;
-    este e-mail explica o contexto e aponta pro login. Nunca levanta.
+    Convite pra equipe (Cockpit → Convidar equipe). UM e-mail só.
+
+    `action_url` é o link do GoTrue (generate_link) que leva direto à
+    página de criar senha; com ele, o botão é "Aceitar convite e criar
+    senha". Sem ele (fallback), o botão aponta pro login e o texto
+    explica o "Esqueci minha senha". Nunca levanta.
     """
     who = inviter_name.strip() or (business_name.strip() or "O dono do negócio")
     biz = business_name.strip() or "o negócio"
+    button_url = action_url or login_url
+    button_label = "Aceitar convite e criar senha" if action_url else "Entrar no Cockpit"
+    how = (
+        "Clique no botão, crie a sua senha e você já entra no Cockpit desse negócio. "
+        "O link vale por pouco tempo, por segurança."
+        if action_url else
+        "Pra criar a sua senha, use \"Esqueci minha senha\" na tela de login com este mesmo e-mail."
+    )
+    role_line = (
+        f"<p style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:{_INK_SOFT};"
+        f"margin:0 0 16px 0;\">Como <strong>{role_label}</strong>, você vê: {role_description}</p>"
+        if role_description.strip() else ""
+    )
     body = f"""
 <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:{_INK_SOFT};margin:0 0 16px 0;">
-  <strong>{who}</strong> te adicionou à equipe de <strong>{biz}</strong> na HUMA como <strong>{role_label}</strong>.
+  <strong>{who}</strong> convidou você pra equipe de <strong>{biz}</strong> na HUMA como <strong>{role_label}</strong>.
 </p>
-<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:{_INK_SOFT};margin:0 0 16px 0;">
-  Você vai receber (ou já recebeu) um outro e-mail pra definir a sua senha. Depois é só entrar
-  com este mesmo e-mail:
+{role_line}
+<p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:{_INK_SOFT};margin:0 0 20px 0;">
+  {how}
 </p>
 <p style="margin:0 0 20px 0;">
-  <a href="{login_url}" style="display:inline-block;background-color:{_TERRACOTTA};color:#FFFFFF;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:10px;">Entrar no Cockpit</a>
+  <a href="{button_url}" style="display:inline-block;background-color:{_TERRACOTTA};color:#FFFFFF;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:10px;">{button_label}</a>
 </p>
 <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:{_MUTED};margin:0;">
-  Não esperava este convite? Ignore este e-mail — nada acontece sem a sua senha.
+  Não esperava este convite? Pode ignorar este e-mail. Nada acontece sem a sua senha.
 </p>
 """
     return await send_email(
         to=to,
-        subject=f"Você foi convidado pra equipe de {biz} na HUMA",
-        html=_shell("Bem-vindo à equipe", body),
+        subject=f"Convite: entre na equipe de {biz} na HUMA",
+        html=_shell(f"Você foi convidado pra {biz}", body),
     )
 
 
@@ -148,7 +166,7 @@ async def send_subscription_welcome(
     conversas = f"{included_conversations:,}".replace(",", ".")
     body = f"""
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:{_INK_SOFT};margin:0 0 16px 0;">
-          Sua assinatura do plano <strong>{plan_name}</strong> está ativa — e a partir de agora
+          Sua assinatura do plano <strong>{plan_name}</strong> está ativa. A partir de agora
           a IA de <strong>{nome}</strong> trabalha sem prazo de validade: atendendo, agendando
           e vendendo no WhatsApp enquanto você cuida do resto.
         </p>
@@ -156,7 +174,7 @@ async def send_subscription_welcome(
           <tr><td style="padding:16px 18px;">
             <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.8;color:{_INK_SOFT};margin:0;">
               ✅ <strong>{conversas} conversas</strong> novas todo mês<br>
-              ✅ Renovação automática — sem boleto pra lembrar<br>
+              ✅ Renovação automática, sem boleto pra lembrar<br>
               ✅ Saldo que sobra continua seu<br>
               ✅ Cancele quando quiser, sem multa e sem drama
             </p>
@@ -169,13 +187,13 @@ async def send_subscription_welcome(
         </table>
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{_MUTED};margin:0;">
           Dica de quem viu muita venda acontecer: os donos que mais faturam com a HUMA
-          olham a aba <strong>Conversas</strong> uma vez por dia — a IA vende sozinha,
+          olham a aba <strong>Conversas</strong> uma vez por dia. A IA vende sozinha,
           mas quem conhece seus leads vende ainda mais.
         </p>
     """
     return await send_email(
         to,
-        f"Sua IA agora é oficial — bem-vindo ao {plan_name} 🚀",
+        f"Sua IA agora é oficial. Bem-vindo ao {plan_name} 🚀",
         _shell(f"Agora é pra valer, {nome}!", body),
     )
 
