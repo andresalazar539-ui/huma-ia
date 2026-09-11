@@ -1051,7 +1051,7 @@ const NegocioMissao = ({ settings, patch }) => {
             const on = caps.includes(c.id);
             const blocked = c.needs === 'store' && !storeOn && !on;
             const warn = c.needs === 'store' && !storeOn ? 'Conecte a Nuvemshop ou o Bling em Integrações pra ligar.'
-              : (c.needs === 'gcal' && on && integ && !gcalOn ? 'A agenda ainda não tem credencial no servidor: a HUMA vai pedir pra confirmar com você.' : '');
+              : (c.needs === 'gcal' && on && integ && !gcalOn ? 'Sua agenda do Google ainda não está conectada. Até conectar em Integrações, a HUMA não marca horário sozinha: ela pede ao lead 2 ou 3 opções e deixa a confirmação com você.' : '');
             return (
               <label key={c.id} style={{
                 display: 'flex', alignItems: 'flex-start', gap: 12, cursor: blocked ? 'not-allowed' : 'pointer',
