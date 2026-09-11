@@ -244,6 +244,85 @@ async def _gotrue_generate_link(email: str, link_type: str = "recovery") -> str:
         return ""
 
 
+async def _gotrue_generate_link_full(email: str, link_type: str = "recovery") -> dict:
+    """Igual ao _gotrue_generate_link, mas devolve a resposta inteira (tem hashed_token). {} = falhou."""
+    redirect = f"{PUBLIC_BASE_URL.rstrip('/')}/auth/reset" if PUBLIC_BASE_URL else "/auth/reset"
+    url = f"{SUPABASE_URL}/auth/v1/admin/generate_link"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.post(
+                url,
+                headers={
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"type": link_type, "email": email, "redirect_to": redirect},
+            )
+        if resp.status_code not in (200, 201):
+            log.warning(f"Login | generate_link_full status={resp.status_code} | type={link_type} | email=***")
+            return {}
+        return resp.json() if resp.content else {}
+    except httpx.TimeoutException:
+        log.error("Login | timeout | service=supabase_auth | op=generate_link_full")
+        return {}
+    except (httpx.HTTPError, ValueError) as e:
+        log.error(f"Login | erro | service=supabase_auth | op=generate_link_full | {type(e).__name__}: {e}")
+        return {}
+
+
+async def _gotrue_verify_token_hash(token_hash: str, link_type: str = "recovery") -> Optional[dict]:
+    """
+    Troca o hashed_token de um generate_link por uma sessão do GoTrue
+    (POST /verify). É o mesmo passo que o navegador faria ao clicar no
+    link do e-mail, só que no servidor. None = inválido/expirado.
+    """
+    url = f"{SUPABASE_URL}/auth/v1/verify"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.post(
+                url,
+                headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+                json={"type": link_type, "token_hash": token_hash},
+            )
+        if resp.status_code != 200:
+            log.warning(f"Login | verify token_hash status={resp.status_code}")
+            return None
+        return resp.json()
+    except httpx.TimeoutException:
+        log.error("Login | timeout | service=supabase_auth | op=verify_token_hash")
+        return None
+    except (httpx.HTTPError, ValueError) as e:
+        log.error(f"Login | erro | service=supabase_auth | op=verify_token_hash | {type(e).__name__}: {e}")
+        return None
+
+
+async def _gotrue_set_password(access_token: str, password: str) -> bool:
+    """Define a senha do usuário logado (PUT /user). False = recusou (fraca) ou erro."""
+    url = f"{SUPABASE_URL}/auth/v1/user"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.put(
+                url,
+                headers={
+                    "apikey": SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json",
+                },
+                json={"password": password},
+            )
+        if resp.status_code != 200:
+            log.warning(f"Login | set_password status={resp.status_code}")
+            return False
+        return True
+    except httpx.TimeoutException:
+        log.error("Login | timeout | service=supabase_auth | op=set_password")
+        return False
+    except httpx.HTTPError as e:
+        log.error(f"Login | erro | service=supabase_auth | op=set_password | {type(e).__name__}: {e}")
+        return False
+
+
 async def _gotrue_signup(email: str, password: str, business_name: str = "") -> dict | str | None:
     """
     Cria conta no GoTrue (signup self-service).
@@ -825,6 +904,213 @@ _GOOGLE_ICON = (
     '<path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99'
     ' 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/></svg>'
 )
+
+
+# ================================================================
+# CONVITE DE EQUIPE — GET /convite/{token} + POST /auth/invite/accept
+#
+# O e-mail de convite aponta pra cá. A pessoa ACEITA: entra com Google
+# (mesma conta que já usa), com e-mail e senha da HUMA, ou, se nunca
+# teve senha, cria uma na mesma tela. Nenhum e-mail extra do Supabase.
+# O acesso ao negócio é decidido pelo e-mail estar em team_members
+# (login de membro em _resolve_or_provision_client), não pelo token.
+# ================================================================
+
+
+class InviteAcceptRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=600)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+@router.post("/auth/invite/accept")
+async def invite_accept(payload: InviteAcceptRequest) -> JSONResponse:
+    """
+    Convidado sem senha cria a senha e já entra.
+
+    Fluxo servidor-a-servidor no GoTrue: garante a conta → generate_link
+    (recovery) → /verify com o token_hash vira sessão → PUT /user define a
+    senha → cookie da HUMA. Zero e-mail do Supabase.
+    """
+    if not _gotrue_ready():
+        raise HTTPException(503, "Serviço temporariamente indisponível. Tente mais tarde.")
+    from huma.core.auth import verify_invite_token
+
+    client_id, email = verify_invite_token(payload.token)
+    if not client_id:
+        raise HTTPException(400, "Este convite expirou ou não é válido. Peça um novo convite.")
+
+    invited_client = await db.get_client(client_id)
+    is_member = bool(invited_client) and any(
+        isinstance(m, dict) and str(m.get("email") or "").lower() == email
+        for m in (invited_client.team_members or [])
+    )
+    if not is_member:
+        raise HTTPException(400, "Este convite foi cancelado. Peça um novo convite ao dono da conta.")
+
+    attempts = await cache.incr_with_ttl(f"login:invite:{email}", LOGIN_RATE_LIMIT_WINDOW)
+    if attempts > LOGIN_RATE_LIMIT_MAX:
+        raise HTTPException(429, "Muitas tentativas. Aguarde alguns minutos e tente de novo.")
+
+    await _gotrue_admin_ensure_user(email)
+    link = await _gotrue_generate_link_full(email, "recovery")
+    token_hash = str(link.get("hashed_token") or "")
+    if not token_hash:
+        log.error(f"Convite | generate_link sem hashed_token | client={client_id}")
+        raise HTTPException(503, "Não consegui preparar sua conta agora. Tente de novo em instantes.")
+    session = await _gotrue_verify_token_hash(token_hash, "recovery")
+    access_token = str((session or {}).get("access_token") or "")
+    if not access_token:
+        raise HTTPException(503, "Não consegui preparar sua conta agora. Tente de novo em instantes.")
+    if not await _gotrue_set_password(access_token, payload.password):
+        raise HTTPException(400, "Senha recusada. Use pelo menos 8 caracteres, misturando letras e números.")
+
+    client = await _resolve_or_provision_client(email)
+    log.info(f"Convite | aceito com senha nova | client={client.client_id}")
+    return _session_response(client, remember=True, email=email)
+
+
+@router.get("/convite/{token}", response_class=HTMLResponse)
+async def invite_page(token: str) -> HTMLResponse:
+    """Página de aceite do convite: Google, e-mail+senha, ou criar senha."""
+    from huma.core import permissions
+    from huma.core.auth import verify_invite_token
+
+    client_id, email = verify_invite_token(token)
+    business_name, role_label, role_desc, inviter = "", "Equipe", "", ""
+    valid = False
+    if client_id:
+        client = await db.get_client(client_id)
+        if client:
+            member = next(
+                (m for m in (client.team_members or [])
+                 if isinstance(m, dict) and str(m.get("email") or "").lower() == email),
+                None,
+            )
+            if member:
+                valid = True
+                business_name = client.business_name or "o negócio"
+                inviter = client.owner_name or ""
+                role_id = permissions.normalize_role(member.get("role"))
+                role_label = permissions.ROLE_LABELS.get(role_id, "Equipe")
+                role_desc = permissions.ROLE_DESCRIPTIONS.get(role_id, "")
+
+    authorize_url = ""
+    if SUPABASE_URL and PUBLIC_BASE_URL:
+        callback = f"{PUBLIC_BASE_URL.rstrip('/')}/auth/callback"
+        authorize_url = f"{SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to={callback}"
+
+    if not valid:
+        body = """
+    <h1>Este convite não vale mais</h1>
+    <p class="sub">Ele expirou ou foi cancelado. Peça um novo convite a quem te chamou, ou entre com sua conta.</p>
+    <a class="primary" href="/login" style="display:block;text-align:center;text-decoration:none;">Ir pro login</a>"""
+        script = ""
+    else:
+        who = f"<strong>{inviter}</strong> convidou você" if inviter else "Você foi convidado"
+        body = f"""
+    <h1>Entre na equipe de {business_name}</h1>
+    <p class="sub">{who} pra entrar como <strong>{role_label}</strong>. {role_desc}</p>
+
+    <button class="google" id="google">{_GOOGLE_ICON} Aceitar com Google</button>
+    <p class="sub" style="margin-top:8px;">Use a conta Google do e-mail <strong>{email}</strong>.</p>
+
+    <div class="divider">ou</div>
+
+    <div class="tabs">
+      <button class="tab active" id="tab-login">Já tenho senha</button>
+      <button class="tab" id="tab-new">Criar senha</button>
+    </div>
+
+    <div id="pane-login">
+      <label for="email">E-mail</label>
+      <input id="email" type="email" value="{email}" readonly>
+      <label for="password">Senha</label>
+      <input id="password" type="password" placeholder="••••••••" autocomplete="current-password">
+      <button class="primary" id="enter">Aceitar e entrar</button>
+    </div>
+
+    <div id="pane-new" class="hidden">
+      <label for="n-password">Crie uma senha (mínimo 8 caracteres)</label>
+      <input id="n-password" type="password" autocomplete="new-password">
+      <label for="n-password2">Repita a senha</label>
+      <input id="n-password2" type="password" autocomplete="new-password">
+      <button class="primary" id="create">Aceitar e criar senha</button>
+    </div>
+
+    <div id="msg" class="msg"></div>"""
+        script = f"""
+<script>
+const $ = (id) => document.getElementById(id);
+const AUTHORIZE_URL = {authorize_url!r};
+const INVITE_TOKEN = {token!r};
+function show(kind, text) {{ $("msg").className = "msg " + kind; $("msg").textContent = text; }}
+function setTab(create) {{
+  $("pane-login").className = create ? "hidden" : "";
+  $("pane-new").className = create ? "" : "hidden";
+  $("tab-login").className = "tab" + (create ? "" : " active");
+  $("tab-new").className = "tab" + (create ? " active" : "");
+  $("msg").className = "msg";
+}}
+$("tab-login").addEventListener("click", () => setTab(false));
+$("tab-new").addEventListener("click", () => setTab(true));
+$("google").addEventListener("click", () => {{
+  if (!AUTHORIZE_URL) {{ show("err", "Login com Google não configurado neste ambiente."); return; }}
+  location.href = AUTHORIZE_URL;
+}});
+async function post(url, body) {{
+  const r = await fetch(url, {{ method: "POST", headers: {{"Content-Type": "application/json"}}, body: JSON.stringify(body) }});
+  let data = {{}};
+  try {{ data = await r.json(); }} catch (e) {{}}
+  return {{ ok: r.ok, data }};
+}}
+async function doLogin() {{
+  const password = $("password").value;
+  if (!password) {{ show("err", "Digite sua senha."); return; }}
+  $("enter").disabled = true;
+  try {{
+    const {{ ok, data }} = await post("/auth/login", {{ email: $("email").value, password, remember: true }});
+    if (ok) {{ location.href = data.redirect; return; }}
+    show("err", data.detail || "Não foi possível entrar. Se nunca criou senha, use a aba Criar senha.");
+  }} catch (e) {{ show("err", "Erro de conexão. Tente de novo."); }}
+  $("enter").disabled = false;
+}}
+async function doCreate() {{
+  const p1 = $("n-password").value, p2 = $("n-password2").value;
+  if (p1.length < 8) {{ show("err", "A senha precisa ter pelo menos 8 caracteres."); return; }}
+  if (p1 !== p2) {{ show("err", "As senhas não são iguais."); return; }}
+  $("create").disabled = true;
+  try {{
+    const {{ ok, data }} = await post("/auth/invite/accept", {{ token: INVITE_TOKEN, password: p1 }});
+    if (ok) {{ location.href = data.redirect; return; }}
+    show("err", data.detail || "Não foi possível criar a senha. Tente de novo.");
+  }} catch (e) {{ show("err", "Erro de conexão. Tente de novo."); }}
+  $("create").disabled = false;
+}}
+$("enter").addEventListener("click", doLogin);
+$("password").addEventListener("keydown", (e) => {{ if (e.key === "Enter") doLogin(); }});
+$("create").addEventListener("click", doCreate);
+$("n-password2").addEventListener("keydown", (e) => {{ if (e.key === "Enter") doCreate(); }});
+</script>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Convite · HUMA IA</title>
+  {_TOKENS_LINK}
+  <style>{_BASE_STYLE}</style>
+</head>
+<body>
+  {_BACKDROP_HTML}
+  <div class="card">
+    {_BRAND_HTML}
+    {body}
+  </div>
+{script}
+</body>
+</html>"""
+    return HTMLResponse(content=inject_gtm(html), status_code=200 if valid else 410)
 
 
 @router.get("/login", response_class=HTMLResponse)

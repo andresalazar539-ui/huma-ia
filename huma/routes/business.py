@@ -198,25 +198,19 @@ async def _send_invite(email: str, client, role_label: str) -> bool:
     """
     sent = False
     action_url = ""
+    # UM e-mail só, e é um CONVITE: o botão leva pra /convite/<token> (página
+    # da HUMA), onde a pessoa entra com Google ou e-mail+senha; quem ainda
+    # não tem senha cria ali mesmo (POST /auth/invite/accept). Nada de
+    # "Redefinir sua senha" do Supabase. Token assinado, 7 dias.
     try:
-        from huma.routes.auth_login import (
-            _gotrue_admin_ensure_user, _gotrue_generate_link, _gotrue_ready, _gotrue_recover,
-        )
+        from huma.core.auth import create_invite_token
 
-        if _gotrue_ready():
-            await _gotrue_admin_ensure_user(email)
-            # UM e-mail só: o link de criar senha vai dentro do convite da
-            # HUMA. Só se o GoTrue não devolver o link caímos no e-mail
-            # genérico de recuperação dele (antes o convidado recebia
-            # "Redefinir sua senha" sem contexto nenhum).
-            action_url = await _gotrue_generate_link(email, "recovery")
-            if not action_url:
-                log.warning("Equipe | generate_link vazio, caindo pro e-mail de recover do Supabase")
-                await _gotrue_recover(email)
+        if PUBLIC_BASE_URL:
+            action_url = f"{PUBLIC_BASE_URL.rstrip('/')}/convite/{create_invite_token(client.client_id, email)}"
         else:
-            log.warning("Equipe | GoTrue não configurado, convite sem link de senha")
-    except Exception as e:
-        log.error(f"Equipe | auth do convidado falhou | {type(e).__name__}: {e}")
+            log.warning("Equipe | PUBLIC_BASE_URL vazio, convite sem link de aceite")
+    except RuntimeError as e:
+        log.warning(f"Equipe | convite sem link de aceite | {e}")
 
     try:
         login_url = f"{PUBLIC_BASE_URL.rstrip('/')}/login" if PUBLIC_BASE_URL else "https://app.humaia.com.br/login"

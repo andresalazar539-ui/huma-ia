@@ -156,6 +156,51 @@ def session_actor(token: str) -> tuple[Optional[str], str]:
     return (client_id or None), email
 
 
+INVITE_TTL_SECONDS = 7 * 86400  # convite de equipe vale 7 dias
+
+
+def create_invite_token(client_id: str, email: str, ttl_seconds: int = INVITE_TTL_SECONDS) -> str:
+    """
+    Token do convite de equipe: base64url("inv|client_id|exp|email|hmac").
+
+    Vai no link "Aceitar convite" do e-mail. O prefixo "inv" impede que um
+    token de convite seja aceito como sessão (e vice-versa).
+    """
+    if not SESSION_SECRET:
+        raise RuntimeError("SESSION_SECRET não configurado — convite indisponível")
+    exp = int(time.time()) + ttl_seconds
+    email = (email or "").strip().lower().replace("|", "")
+    payload = f"inv|{client_id}|{exp}|{email}"
+    sig = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{sig}".encode("utf-8")).decode("ascii")
+
+
+def verify_invite_token(token: str) -> tuple[Optional[str], str]:
+    """Valida o token do convite. Devolve (client_id, email) ou (None, "")."""
+    if not SESSION_SECRET or not token:
+        return None, ""
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        parts = decoded.split("|")
+    except ValueError:
+        return None, ""
+    if len(parts) != 5 or parts[0] != "inv":
+        return None, ""
+    _, client_id, exp_str, email, sig = parts
+    payload = f"inv|{client_id}|{exp_str}|{email}"
+    expected = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None, ""
+    try:
+        if int(exp_str) < time.time():
+            return None, ""
+    except ValueError:
+        return None, ""
+    if not client_id or not email:
+        return None, ""
+    return client_id, email
+
+
 def verify_session_token(token: str) -> Optional[str]:
     """
     Valida token de sessão. Retorna client_id se válido, None caso contrário.

@@ -6,8 +6,8 @@
 #   - core/permissions: papel por e-mail, matriz, mapa de rotas, mensagem
 #   - Middleware em app.py: membro barrado (403 em PT), dono passa, Bearer
 #     e sessão antiga passam direto, GETs livres passam
-#   - Convite de equipe: UM e-mail com o link de criar senha (generate_link);
-#     fallback pro recover do Supabase só quando o link não vem
+#   - Convite de equipe: UM e-mail com botão "Aceitar convite" → /convite/<token>;
+#     página aceita com Google, senha existente ou cria senha sem e-mail extra
 # ================================================================
 
 import asyncio
@@ -206,75 +206,42 @@ class TestMiddleware:
 
 
 # ================================================================
-# Convite: um e-mail só, com link de criar senha
+# Convite: um e-mail só, botão "Aceitar convite" → /convite/<token>
 # ================================================================
 
 
-class TestInviteEmail:
+class TestInviteFlow:
 
-    def test_send_invite_uses_generate_link_and_skips_recover(self, monkeypatch):
-        import huma.routes.auth_login as al
-        from huma.routes import business
+    def test_invite_token_roundtrip(self, monkeypatch):
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "SESSION_SECRET", "segredo-teste")
+        tok = auth.create_invite_token("cli_perm", "Novo@X.com")
+        assert auth.verify_invite_token(tok) == ("cli_perm", "novo@x.com")
+        # token de sessão NÃO vale como convite, nem o contrário
+        assert auth.verify_invite_token(auth.create_session_token("cli_perm", email="novo@x.com")) == (None, "")
+        assert auth.session_actor(tok) == (None, "")
+        assert auth.verify_invite_token(auth.create_invite_token("cli_perm", "novo@x.com", ttl_seconds=-5)) == (None, "")
+
+    def test_send_invite_points_to_accept_page_without_supabase_email(self, monkeypatch):
+        import huma.core.auth as auth
+        import huma.routes.business as business
         from huma.services import email_service
 
+        monkeypatch.setattr(auth, "SESSION_SECRET", "segredo-teste")
+        monkeypatch.setattr(business, "PUBLIC_BASE_URL", "https://app.humaia.com.br")
         calls: dict = {}
-
-        async def ensure(email):
-            calls["ensure"] = email
-
-        async def gen(email, link_type="recovery"):
-            calls["gen"] = (email, link_type)
-            return "https://supa/verify?token=abc"
-
-        async def recover(email):
-            calls["recover"] = email
 
         async def send(**kw):
             calls["mail"] = kw
             return True
 
-        monkeypatch.setattr(al, "_gotrue_ready", lambda: True)
-        monkeypatch.setattr(al, "_gotrue_admin_ensure_user", ensure)
-        monkeypatch.setattr(al, "_gotrue_generate_link", gen)
-        monkeypatch.setattr(al, "_gotrue_recover", recover)
         monkeypatch.setattr(email_service, "send_team_invite", send)
-
         ok = asyncio.run(business._send_invite("novo@x.com", _identity(), "Vendas"))
         assert ok is True
-        assert calls["gen"] == ("novo@x.com", "recovery")
-        assert "recover" not in calls
-        assert calls["mail"]["action_url"] == "https://supa/verify?token=abc"
+        url = calls["mail"]["action_url"]
+        assert url.startswith("https://app.humaia.com.br/convite/")
+        assert auth.verify_invite_token(url.rsplit("/", 1)[1]) == ("cli_perm", "novo@x.com")
         assert "leads" in calls["mail"]["role_description"]
-
-    def test_send_invite_falls_back_to_recover(self, monkeypatch):
-        import huma.routes.auth_login as al
-        from huma.routes import business
-        from huma.services import email_service
-
-        calls: dict = {}
-
-        async def ensure(email):
-            return None
-
-        async def gen(email, link_type="recovery"):
-            return ""
-
-        async def recover(email):
-            calls["recover"] = email
-
-        async def send(**kw):
-            calls["mail"] = kw
-            return True
-
-        monkeypatch.setattr(al, "_gotrue_ready", lambda: True)
-        monkeypatch.setattr(al, "_gotrue_admin_ensure_user", ensure)
-        monkeypatch.setattr(al, "_gotrue_generate_link", gen)
-        monkeypatch.setattr(al, "_gotrue_recover", recover)
-        monkeypatch.setattr(email_service, "send_team_invite", send)
-
-        asyncio.run(business._send_invite("novo@x.com", _identity(), "Recepção"))
-        assert calls["recover"] == "novo@x.com"
-        assert calls["mail"]["action_url"] == ""
 
     def test_invite_email_copy(self, monkeypatch):
         from huma.services import email_service
@@ -288,11 +255,90 @@ class TestInviteEmail:
         monkeypatch.setattr(email_service, "send_email", fake_send_email)
         asyncio.run(email_service.send_team_invite(
             to="novo@x.com", business_name="Clínica Perm", inviter_name="Marina",
-            role_label="Vendas", action_url="https://supa/verify?token=abc",
+            role_label="Vendas", action_url="https://app.humaia.com.br/convite/abc",
             role_description="Conversas, agenda e clientes.",
         ))
         assert "Convite" in captured["subject"]
-        assert "Aceitar convite e criar senha" in captured["html"]
-        assert "https://supa/verify?token=abc" in captured["html"]
+        assert ">Aceitar convite<" in captured["html"]
+        assert "criar senha" not in captured["html"].split(">Aceitar convite<")[0].lower().split("clique em aceitar")[0]
+        assert "Google" in captured["html"]
+        assert "https://app.humaia.com.br/convite/abc" in captured["html"]
         assert "Marina" in captured["html"] and "Vendas" in captured["html"]
         assert "—" not in captured["html"] and "—" not in captured["subject"]
+
+    def test_invite_page_valid_and_invalid(self, monkeypatch):
+        import huma.core.auth as auth
+        ident = _identity(team_members=[{"email": "novo@x.com", "name": "Novo", "role": "vendedor"}])
+        _mock_db(monkeypatch, ident)
+        tok = auth.create_invite_token("cli_perm", "novo@x.com")
+        c = _client()
+        r = c.get(f"/convite/{tok}")
+        assert r.status_code == 200
+        assert "Clínica Perm" in r.text and "Vendas" in r.text
+        assert "Aceitar com Google" in r.text and "Criar senha" in r.text
+        assert "—" not in r.text.split("<body>")[1]
+        r2 = c.get("/convite/naoexiste")
+        assert r2.status_code == 410
+        assert "não vale mais" in r2.text
+        # convidado removido da equipe → convite morto
+        tok2 = auth.create_invite_token("cli_perm", "fora@x.com")
+        assert c.get(f"/convite/{tok2}").status_code == 410
+
+    def test_invite_accept_creates_password_and_logs_in(self, monkeypatch):
+        import huma.core.auth as auth
+        import huma.routes.auth_login as al
+
+        ident = _identity(team_members=[{"email": "novo@x.com", "name": "Novo", "role": "vendedor"}])
+        _mock_db(monkeypatch, ident)
+        monkeypatch.setattr(al, "_gotrue_ready", lambda: True)
+        steps: list = []
+
+        async def ensure(email):
+            steps.append(("ensure", email))
+
+        async def gen(email, link_type="recovery"):
+            steps.append(("gen", email, link_type))
+            return {"hashed_token": "hash123", "action_link": "x"}
+
+        async def verify(token_hash, link_type="recovery"):
+            steps.append(("verify", token_hash))
+            return {"access_token": "acc-token"}
+
+        async def setpw(access_token, password):
+            steps.append(("setpw", access_token, password))
+            return True
+
+        async def by_owner(email):
+            return []
+
+        async def by_team(email):
+            return ident if email == "novo@x.com" else None
+
+        async def incr(key, ttl):
+            return 1
+
+        monkeypatch.setattr(al, "_gotrue_admin_ensure_user", ensure)
+        monkeypatch.setattr(al, "_gotrue_generate_link_full", gen)
+        monkeypatch.setattr(al, "_gotrue_verify_token_hash", verify)
+        monkeypatch.setattr(al, "_gotrue_set_password", setpw)
+        monkeypatch.setattr(al.db, "get_clients_by_owner_email", by_owner)
+        monkeypatch.setattr(al.db, "get_client_by_team_email", by_team)
+        monkeypatch.setattr(al.cache, "incr_with_ttl", incr)
+
+        tok = auth.create_invite_token("cli_perm", "novo@x.com")
+        r = _client().post("/auth/invite/accept", json={"token": tok, "password": "senhaForte123"})
+        assert r.status_code == 200, r.text
+        assert r.json()["redirect"] == "/cockpit"
+        assert [s[0] for s in steps] == ["ensure", "gen", "verify", "setpw"]
+        assert steps[3][2] == "senhaForte123"
+        # cookie de sessão carrega o e-mail do membro (permissões por papel)
+        cookie = r.cookies.get("huma_session")
+        assert auth.session_actor(cookie) == ("cli_perm", "novo@x.com")
+
+    def test_invite_accept_rejects_bad_token(self, monkeypatch):
+        import huma.routes.auth_login as al
+        _mock_db(monkeypatch, _identity())
+        monkeypatch.setattr(al, "_gotrue_ready", lambda: True)
+        r = _client().post("/auth/invite/accept", json={"token": "x" * 30, "password": "senhaForte123"})
+        assert r.status_code == 400
+        assert "convite" in r.json()["detail"].lower()

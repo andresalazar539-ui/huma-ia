@@ -109,18 +109,18 @@ async def send_team_invite(
     """
     Convite pra equipe (Cockpit → Convidar equipe). UM e-mail só.
 
-    `action_url` é o link do GoTrue (generate_link) que leva direto à
-    página de criar senha; com ele, o botão é "Aceitar convite e criar
-    senha". Sem ele (fallback), o botão aponta pro login e o texto
-    explica o "Esqueci minha senha". Nunca levanta.
+    `action_url` é a página de aceite da HUMA (/convite/<token>): lá a
+    pessoa entra com Google ou com e-mail e senha, e quem ainda não tem
+    senha cria uma ali mesmo. Sem ele (fallback), o botão aponta pro login
+    e o texto explica o "Esqueci minha senha". Nunca levanta.
     """
     who = inviter_name.strip() or (business_name.strip() or "O dono do negócio")
     biz = business_name.strip() or "o negócio"
     button_url = action_url or login_url
-    button_label = "Aceitar convite e criar senha" if action_url else "Entrar no Cockpit"
+    button_label = "Aceitar convite" if action_url else "Entrar no Cockpit"
     how = (
-        "Clique no botão, crie a sua senha e você já entra no Cockpit desse negócio. "
-        "O link vale por pouco tempo, por segurança."
+        "Clique em aceitar e entre com a sua conta Google ou com e-mail e senha. "
+        "Se ainda não tem senha na HUMA, você cria uma na mesma tela. O convite vale por 7 dias."
         if action_url else
         "Pra criar a sua senha, use \"Esqueci minha senha\" na tela de login com este mesmo e-mail."
     )
