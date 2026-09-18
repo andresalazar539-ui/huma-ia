@@ -14,8 +14,12 @@
 # esses IDs — GA4/Meta atribuem a compra à campanha que trouxe o dono.
 #
 # Dedup: o GA4 deduplica `purchase` por transaction_id e a Meta por
-# event_id — o frontend usa os MESMOS ids (payment_id/preapproval_id),
-# então navegador + servidor reportando a mesma venda contam UMA vez.
+# event_id. Pacotes extras: o frontend usa o MESMO id (payment_id), então
+# navegador + servidor reportando a mesma venda contam UMA vez.
+# Assinatura (2026-09-17): reportada SÓ pelo servidor, na cobrança
+# aprovada (kind="assinatura" na 1ª cobrança paga, "renovacao" depois).
+# O navegador não dispara purchase no checkout do cartão: cartão válido
+# não é dinheiro, e o id do preapproval nunca casaria com o da cobrança.
 #
 # Regra da casa: NUNCA levanta exceção (roda em fluxo de webhook de
 # pagamento) e sem env vars configuradas vira no-op silencioso.

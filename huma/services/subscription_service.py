@@ -1004,7 +1004,8 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     )
     asyncio.create_task(ae.track_purchase(
         client_id, str(authorized_payment_id), _charged,
-        item_id=plan_value, item_name=f"Plano {config['name']}", kind="renovacao",
+        item_id=plan_value, item_name=f"Plano {config['name']}",
+        kind="assinatura" if first_paid else "renovacao",
     ))
     log.info(
         f"RENOVAÇÃO PAGA | client={client_id} | plan={plan_value} | "
@@ -1488,7 +1489,8 @@ async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_s
         from huma.services import analytics_events as ae
         asyncio.create_task(ae.track_purchase(
             client_id, str(mp_payment_id), float(config["price_brl"]),
-            item_id=plan_value, item_name=f"Plano {config['name']}", kind="renovacao",
+            item_id=plan_value, item_name=f"Plano {config['name']}",
+        kind="assinatura" if first_paid else "renovacao",
         ))
         log.info(
             f"RENOVAÇÃO PAGA (topic payment) | client={client_id} | plan={plan_value} | "

@@ -216,6 +216,41 @@ class TestAuthorizedPayment:
         assert len(effects["credits"]) == 1
         assert "_send_subscription_welcome_bg" not in scheduled
 
+    def _capture_purchase(self, monkeypatch):
+        """track_purchase vira gravador síncrono (a task só espera um no-op)."""
+        from huma.services import analytics_events as ae
+        calls = []
+
+        def fake_track(client_id, transaction_id, value_brl, **kw):
+            calls.append({"client_id": client_id, "tx": transaction_id, "value": value_brl, **kw})
+
+            async def _noop():
+                return None
+            return _noop()
+
+        async def no_welcome(cid, plan):
+            return None
+
+        monkeypatch.setattr(ae, "track_purchase", fake_track)
+        monkeypatch.setattr(subs, "_send_subscription_welcome_bg", no_welcome)
+        return calls
+
+    def test_primeira_cobranca_paga_reporta_purchase_como_assinatura(self, monkeypatch):
+        """Venda de assinatura é contada SÓ aqui (servidor, cobrança aprovada), como kind=assinatura."""
+        _setup_renewal(monkeypatch, ever_paid_value=False)
+        calls = self._capture_purchase(monkeypatch)
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+        assert len(calls) == 1
+        assert calls[0]["tx"] == "ap_1"
+        assert calls[0]["kind"] == "assinatura"
+
+    def test_renovacao_reporta_purchase_como_renovacao(self, monkeypatch):
+        _setup_renewal(monkeypatch, ever_paid_value=True)
+        calls = self._capture_purchase(monkeypatch)
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+        assert len(calls) == 1
+        assert calls[0]["kind"] == "renovacao"
+
     def test_reentrega_do_webhook_nao_duplica_credito(self, monkeypatch):
         effects = _setup_renewal(monkeypatch, already=True)
         asyncio.run(subs._handle_authorized_payment("ap_1"))

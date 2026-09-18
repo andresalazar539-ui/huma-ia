@@ -1836,15 +1836,12 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
         identificationNumber: cpfD,
       });
       if (!token || !token.id) throw new Error('Cartão não validado, confere os dados.');
-      const sub = await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id);
-      // Analytics: assinatura paga (purchase). transaction_id = preapproval_id
-      // do MP — o MESMO id que o backend manda server-side, então GA4/Meta
-      // deduplicam e a venda conta uma vez só.
-      window.humaTrack?.('purchase', {
-        currency: 'BRL', value: price,
-        transaction_id: String((sub && sub.preapproval_id) || ('sub_' + ctx.planId + '_' + Date.now())),
-        item_id: ctx.planId, item_name: 'Plano ' + plan.name, kind: 'assinatura',
-      });
+      await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id);
+      // Analytics: NÃO dispara purchase aqui. Cartão validado não é venda:
+      // o Mercado Pago cobra ~1h depois e pode recusar. A venda de
+      // assinatura é registrada SÓ pelo servidor (analytics_events), no
+      // webhook da cobrança aprovada (2026-09-17). Disparar aqui contava
+      // venda sem dinheiro e, com id diferente do servidor, contava em dobro.
       setDone(true);
       setTimeout(() => onDone && onDone(), 2600);
     } catch (e) {
