@@ -69,36 +69,50 @@ function assigneeLabel(value, team) {
   return value.split('@')[0];
 }
 
-const ConversationList = ({
-  items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect, fullWidth = false,
+// Alternância Lista | Quadro (2026-09-17). Mesmas conversas, dois ângulos.
+const ViewToggle = ({ view, onView }) => (
+  <div style={{ display: 'inline-flex', padding: 2, borderRadius: 7, background: 'var(--paper-sunk)', gap: 2, flexShrink: 0 }}>
+    {[['list', 'list', 'Lista'], ['board', 'columns', 'Quadro']].map(([key, icon, label]) => {
+      const on = view === key;
+      return (
+        <button key={key} onClick={() => onView && onView(key)} title={label} aria-label={label} style={{
+          width: 28, height: 26, borderRadius: 5, border: 'none',
+          background: on ? 'var(--paper-raised)' : 'transparent',
+          color: on ? 'var(--ink)' : 'var(--ink-4)',
+          boxShadow: on ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}><Icon name={icon} size={15} stroke={1.9} /></button>
+      );
+    })}
+  </div>
+);
+
+// Barra de busca + filtros + chips. Compartilhada pela lista (coluna
+// estreita) e pelo quadro (largura toda).
+const ConversationFilterBar = ({
   query = '', onQuery, filters, onFilters, team,
+  filter = 'todas', onFilter,
+  view, onView,
+  countLabel = '',
 }) => {
   const [panelOpen, setPanelOpen] = React.useState(false);
   const f = { ...(window.DEFAULT_CONV_FILTERS || {}), ...(filters || {}) };
   const activeCount = window.countActiveConversationFilters ? window.countActiveConversationFilters(f) : 0;
   const setF = (patch) => onFilters && onFilters({ ...f, ...patch });
+  const filtering = activeCount > 0 || !!query || filter !== 'todas';
   const clearAll = () => {
     if (onFilters) onFilters({ ...(window.DEFAULT_CONV_FILTERS || {}) });
     if (onQuery) onQuery('');
+    if (onFilter) onFilter('todas');
   };
   const chips = activeFilterChips(f, team);
-  const matches = window.conversationMatches || (() => true);
-  const visible = query ? items.filter(c => matches(c, query)) : items;
-  const filtering = activeCount > 0 || !!query || filter !== 'todas';
   const members = ((team && team.members) || []).filter(m => m && m.email);
   const ownerName = (team && team.owner && team.owner.name) ? team.owner.name : 'Dono';
 
   return (
-    <div style={{
-      ...(fullWidth
-        ? { flex: 1, minWidth: 0 }
-        : { width: 300, flexShrink: 0, borderRight: '1px solid var(--paper-edge)' }),
-      display: 'flex', flexDirection: 'column',
-      background: 'var(--paper)',
-      height: '100%',
-    }}>
+    <>
       <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--paper-edge)', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ flex: 1, position: 'relative' }}>
+        <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
           <div style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-4)' }}>
             <Icon name="search" size={14} />
           </div>
@@ -134,6 +148,7 @@ const ConversationList = ({
             }}>{activeCount}</span>
           )}
         </button>
+        {onView && <ViewToggle view={view} onView={onView} />}
       </div>
 
       {panelOpen && (
@@ -186,7 +201,7 @@ const ConversationList = ({
         </div>
       )}
 
-      <div style={{ padding: '8px 14px 4px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      <div style={{ padding: '8px 14px 4px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         {LIST_FILTERS.map(({ label, key }) => {
           const on = filter === key;
           return (
@@ -200,34 +215,66 @@ const ConversationList = ({
             }}>{label}</button>
           );
         })}
+        {chips.map(ch => (
+          <span key={ch.key} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+            letterSpacing: '0.04em', textTransform: 'uppercase',
+            padding: '3px 6px 3px 8px', borderRadius: 999,
+            background: 'var(--paper-sunk)', color: 'var(--ink-2)',
+            border: '1px solid var(--paper-edge)', whiteSpace: 'nowrap',
+          }}>
+            {ch.label}
+            <button onClick={() => setF(ch.clear)} title="Remover filtro" style={{
+              border: 'none', background: 'transparent', padding: 0, margin: 0,
+              color: 'var(--ink-3)', cursor: 'pointer', display: 'flex',
+            }}><Icon name="x" size={10} stroke={2.4} /></button>
+          </span>
+        ))}
+        {filtering && countLabel && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-4)', letterSpacing: '0.04em', marginLeft: 'auto' }}>{countLabel}</span>
+        )}
       </div>
+    </>
+  );
+};
 
-      {chips.length > 0 && (
-        <div style={{ padding: '2px 14px 6px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          {chips.map(ch => (
-            <span key={ch.key} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4,
-              fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-              letterSpacing: '0.04em', textTransform: 'uppercase',
-              padding: '3px 6px 3px 8px', borderRadius: 999,
-              background: 'var(--paper-sunk)', color: 'var(--ink-2)',
-              border: '1px solid var(--paper-edge)', whiteSpace: 'nowrap',
-            }}>
-              {ch.label}
-              <button onClick={() => setF(ch.clear)} title="Remover filtro" style={{
-                border: 'none', background: 'transparent', padding: 0, margin: 0,
-                color: 'var(--ink-3)', cursor: 'pointer', display: 'flex',
-              }}><Icon name="x" size={10} stroke={2.4} /></button>
-            </span>
-          ))}
-        </div>
-      )}
+// Conversas que passam na busca local. filtering = algum filtro/busca ativo.
+function useVisibleConversations(items, query, filters, filter) {
+  const matches = window.conversationMatches || (() => true);
+  const visible = query ? items.filter(c => matches(c, query)) : items;
+  const activeCount = window.countActiveConversationFilters ? window.countActiveConversationFilters(filters || {}) : 0;
+  const filtering = activeCount > 0 || !!query || filter !== 'todas';
+  return { visible, filtering };
+}
 
-      {state === 'ready' && filtering && (
-        <div style={{ padding: '2px 16px 6px', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-4)', letterSpacing: '0.04em' }}>
-          {visible.length === 1 ? '1 conversa' : `${visible.length} conversas`}
-        </div>
-      )}
+const ConversationList = ({
+  items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect, fullWidth = false,
+  query = '', onQuery, filters, onFilters, team, view, onView,
+}) => {
+  const { visible, filtering } = useVisibleConversations(items, query, filters, filter);
+  const clearAll = () => {
+    if (onFilters) onFilters({ ...(window.DEFAULT_CONV_FILTERS || {}) });
+    if (onQuery) onQuery('');
+    if (onFilter) onFilter('todas');
+  };
+
+  return (
+    <div style={{
+      ...(fullWidth
+        ? { flex: 1, minWidth: 0 }
+        : { width: 300, flexShrink: 0, borderRight: '1px solid var(--paper-edge)' }),
+      display: 'flex', flexDirection: 'column',
+      background: 'var(--paper)',
+      height: '100%',
+    }}>
+      <ConversationFilterBar
+        query={query} onQuery={onQuery}
+        filters={filters} onFilters={onFilters} team={team}
+        filter={filter} onFilter={onFilter}
+        view={view} onView={onView}
+        countLabel={state === 'ready' ? (visible.length === 1 ? '1 conversa' : `${visible.length} conversas`) : ''}
+      />
 
       <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
         {state === 'loading' ? (
@@ -241,7 +288,7 @@ const ConversationList = ({
           filtering ? (
             <ListMessage
               text="Nenhuma conversa com esses filtros."
-              action={<Button variant="ghost" size="sm" onClick={() => { clearAll(); onFilter && onFilter('todas'); }}>Limpar filtros</Button>}
+              action={<Button variant="ghost" size="sm" onClick={clearAll}>Limpar filtros</Button>}
             />
           ) : (
             <ListMessage text="Nenhuma conversa ainda. Quando um lead te escrever no WhatsApp, aparece aqui." />
@@ -345,4 +392,4 @@ const ListSkeleton = () => (
   </div>
 );
 
-Object.assign(window, { ConversationList, ChannelChip, ListMessage, ListSkeleton });
+Object.assign(window, { ConversationList, ConversationFilterBar, useVisibleConversations, ViewToggle, ChannelChip, ListMessage, ListSkeleton });

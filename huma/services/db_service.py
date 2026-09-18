@@ -1228,19 +1228,25 @@ async def list_conversations_for_cockpit(
             .execute()
         )
 
-    # assigned_to/assigned_name (roteamento por vendedor) só existem após
-    # scripts/migration_lead_routing.sql — sem as colunas, refaz sem elas
-    # em vez de derrubar a lista inteira do Cockpit.
+    # assigned_to/assigned_name (scripts/migration_lead_routing.sql) e
+    # lead_state (scripts/migration_lead_state.sql) só existem após as
+    # migrations — sem as colunas, refaz sem elas em vez de derrubar a
+    # lista inteira do Cockpit. lead_facts/lead_state alimentam o cartão
+    # do quadro (objeção ativa, sinal de compra, fatos do lead).
     try:
-        resp = await run_in_threadpool(lambda: query(base_cols + ",assigned_to,assigned_name"))
+        resp = await run_in_threadpool(
+            lambda: query(base_cols + ",lead_facts,assigned_to,assigned_name,lead_state")
+        )
     except Exception as e:
-        if "assigned_" not in str(e):
+        err = str(e)
+        if "assigned_" not in err and "lead_state" not in err:
             raise
         log.warning(
-            f"list_conversations_for_cockpit | colunas assigned_* ausentes "
-            f"(rodar scripts/migration_lead_routing.sql) | client={client_id} | retry sem elas"
+            f"list_conversations_for_cockpit | colunas assigned_*/lead_state ausentes "
+            f"(rodar scripts/migration_lead_routing.sql e migration_lead_state.sql) | "
+            f"client={client_id} | retry sem elas"
         )
-        resp = await run_in_threadpool(lambda: query(base_cols))
+        resp = await run_in_threadpool(lambda: query(base_cols + ",lead_facts"))
     rows = resp.data or []
 
     if not any_filter:

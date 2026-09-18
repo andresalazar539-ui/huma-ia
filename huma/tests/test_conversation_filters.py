@@ -340,3 +340,119 @@ class TestRoute:
         tc, captured = cockpit_client
         assert self._get(tc, date_to="2026-09-17").status_code == 200
         assert captured["since_iso"] == "" and captured["until_iso"] == "2026-09-18T03:00:00"
+
+    def test_lista_traz_fatos_e_leitura_do_lead(self, monkeypatch, cockpit_client):
+        tc, _ = cockpit_client
+        from huma.routes import api as api_routes
+
+        async def _list(client_id, filter_mode="todas", limit=50, **kw):
+            return [_row(
+                phone="1", history=[{"role": "user", "content": "oi"}],
+                lead_facts=["quer botox em 2 áreas", "", 7, "mora perto", "quarto fato"],
+                lead_state={"objecao_ativa": "preço", "sinal_de_compra": True, "pressa": "alta"},
+            )]
+
+        monkeypatch.setattr(api_routes.db, "list_conversations_for_cockpit", _list)
+        item = self._get(tc).json()["items"][0]
+        assert item["lead_facts"] == ["quer botox em 2 áreas", "mora perto", "quarto fato"]
+        assert item["lead_hints"] == {"objecao": "preço", "sinal_de_compra": True, "pressa": "alta"}
+
+    def test_lead_hints_sem_leitura(self):
+        from huma.routes.api import _lead_hints
+        assert _lead_hints(None) == {"objecao": "", "sinal_de_compra": False, "pressa": ""}
+        assert _lead_hints({}) == {"objecao": "", "sinal_de_compra": False, "pressa": ""}
+
+
+# ────────────────────────────────────────────────────────────────
+# Rota POST /api/conversations/{client_id}/{phone}/stage (quadro)
+# ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def stage_client(monkeypatch):
+    from datetime import datetime
+
+    from fastapi.testclient import TestClient
+    from huma.app import app
+    from huma.models.schemas import Conversation
+    from huma.routes import api as api_routes
+
+    class _Client:
+        client_id = "cli_x"
+        owner_email = "dono@loja.com"
+
+    async def _verify(client_id, creds, huma_session):
+        return _Client()
+
+    monkeypatch.setattr(api_routes, "verify_api_key_manual", _verify)
+
+    store = {
+        "conv": Conversation(
+            client_id="cli_x", phone="5511999990000", stage="offer",
+            history=[{"role": "user", "content": "oi"}],
+            last_message_at=datetime(2026, 9, 17, 12, 0, 0),
+        ),
+        "saved": [],
+        "fail_save": False,
+    }
+
+    async def _get(client_id, phone):
+        if phone == "inexistente":
+            return Conversation(client_id=client_id, phone=phone)
+        return store["conv"]
+
+    async def _save(conv):
+        if store["fail_save"]:
+            raise RuntimeError("supabase fora")
+        store["saved"].append((conv.stage, conv.is_customer, conv.customer_reason))
+
+    monkeypatch.setattr(api_routes.db, "get_conversation", _get)
+    monkeypatch.setattr(api_routes.db, "save_conversation", _save)
+    with TestClient(app) as tc:
+        yield tc, store
+
+
+class TestStageRoute:
+
+    def _post(self, tc, phone, stage):
+        return tc.post(
+            f"/api/conversations/cli_x/{phone}/stage",
+            json={"stage": stage},
+            headers={"Authorization": "Bearer x"},
+        )
+
+    def test_move_e_salva(self, stage_client):
+        tc, store = stage_client
+        r = self._post(tc, "5511999990000", "committed")
+        assert r.status_code == 200, r.text
+        assert r.json() == {"status": "ok", "stage": "committed", "previous": "offer", "changed": True, "is_customer": False}
+        assert store["saved"] == [("committed", False, "")]
+
+    def test_fechar_marca_cliente(self, stage_client):
+        tc, store = stage_client
+        r = self._post(tc, "5511999990000", "WON")
+        assert r.status_code == 200, r.text
+        assert r.json()["is_customer"] is True
+        assert store["saved"] == [("won", True, "manual")]
+
+    def test_mesma_etapa_nao_grava(self, stage_client):
+        tc, store = stage_client
+        r = self._post(tc, "5511999990000", "offer")
+        assert r.status_code == 200
+        assert r.json()["changed"] is False
+        assert store["saved"] == []
+
+    def test_etapa_invalida(self, stage_client):
+        tc, _ = stage_client
+        assert self._post(tc, "5511999990000", "ganhou").status_code == 400
+
+    def test_conversa_inexistente(self, stage_client):
+        tc, _ = stage_client
+        assert self._post(tc, "inexistente", "won").status_code == 404
+
+    def test_falha_ao_salvar_vira_502(self, stage_client):
+        tc, store = stage_client
+        store["fail_save"] = True
+        r = self._post(tc, "5511999990000", "lost")
+        assert r.status_code == 502
+        assert "Tenta de novo" in r.json()["detail"]

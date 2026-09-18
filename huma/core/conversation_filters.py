@@ -27,6 +27,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 CHANNELS = ("whatsapp", "instagram", "web")
+# Etapas do funil (colunas do quadro), na ordem do core/funnel.py
+STAGES = ("discovery", "offer", "closing", "committed", "won", "lost")
 STATUSES = ("andamento", "aguardando", "confirmado", "feito", "cancelado")
 ASSIGNEE_SPECIAL = ("huma", "dono")
 

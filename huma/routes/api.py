@@ -12,7 +12,7 @@
 
 import json
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import (
     APIRouter, BackgroundTasks, Cookie, Depends, File,
@@ -1148,6 +1148,9 @@ async def list_conversations_cockpit(
             # Roteamento por vendedor: quem está com o lead (vazio = dono/ninguém)
             "assigned_to": r.get("assigned_to", "") or "",
             "assigned_name": r.get("assigned_name", "") or "",
+            # Quadro (kanban): o cartão mostra o que a HUMA já sabe do lead.
+            "lead_facts": [f for f in (r.get("lead_facts") or []) if isinstance(f, str) and f.strip()][:3],
+            "lead_hints": _lead_hints(r.get("lead_state")),
         })
 
     log.info(
@@ -1156,6 +1159,75 @@ async def list_conversations_cockpit(
         f"date_from={date_from or '-'} | date_to={date_to or '-'} | count={len(items)}"
     )
     return {"items": items, "total": len(items)}
+
+
+def _lead_hints(lead_state: Any) -> dict:
+    """
+    Resumo do lead_state (F4) pro cartão do quadro: objeção ativa, sinal
+    de compra e pressa. Sem leitura ainda = tudo vazio/neutro.
+    """
+    if not isinstance(lead_state, dict):
+        return {"objecao": "", "sinal_de_compra": False, "pressa": ""}
+    return {
+        "objecao": str(lead_state.get("objecao_ativa") or "").strip()[:80],
+        "sinal_de_compra": bool(lead_state.get("sinal_de_compra")),
+        "pressa": str(lead_state.get("pressa") or "").strip()[:20],
+    }
+
+
+class StagePayload(BaseModel):
+    stage: str = Field(..., max_length=20, description="discovery|offer|closing|committed|won|lost")
+
+
+@router.post("/api/conversations/{client_id}/{phone}/stage", tags=["Cockpit"])
+async def set_stage_cockpit(
+    client_id: str,
+    phone: str,
+    payload: StagePayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Quadro de conversas (2026-09-17): o dono arrasta o cartão pra outra
+    etapa do funil e a HUMA passa a conduzir a conversa a partir dela.
+
+    O dono pode ir pra qualquer etapa, inclusive "won" (venda fechada
+    fora do sistema) e "lost"; a regra "won só o sistema" vale pra IA,
+    não pro dono. Fechar marca o lead como cliente (reason "manual").
+    Mesma etapa = no-op (changed=False).
+    """
+    await verify_api_key_manual(client_id, creds, huma_session)
+
+    from huma.core import conversation_filters as cf
+
+    stage = (payload.stage or "").strip().lower()
+    if stage not in cf.STAGES:
+        raise HTTPException(400, f"stage deve ser um de: {', '.join(cf.STAGES)}")
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+
+    previous = conv.stage or "discovery"
+    if previous == stage:
+        return {"status": "ok", "stage": stage, "previous": previous, "changed": False, "is_customer": bool(conv.is_customer)}
+
+    conv.stage = stage
+    if stage == "won":
+        from huma.core.customers import mark_as_customer
+        mark_as_customer(conv, "manual")
+
+    try:
+        await db.save_conversation(conv)
+    except Exception as e:
+        log.error(f"Cockpit set_stage | client_id={client_id} | phone={phone} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui mover agora. Tenta de novo.")
+
+    log.info(
+        f"Cockpit set_stage | client_id={client_id} | phone={phone} | "
+        f"{previous} -> {stage} | is_customer={conv.is_customer}"
+    )
+    return {"status": "ok", "stage": stage, "previous": previous, "changed": True, "is_customer": bool(conv.is_customer)}
 
 
 @router.get("/api/conversations/{client_id}/{phone}", tags=["Cockpit"])

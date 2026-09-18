@@ -64,6 +64,7 @@
 <script type="text/babel" src="/static/cockpit/ConversationsData.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/Sidebar.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/ConversationList.jsx?v=__ASSET_V__"></script>
+<script type="text/babel" src="/static/cockpit/KanbanBoard.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/ConversationView.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/AgendaPanel.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/InicioScreen.jsx?v=__ASSET_V__"></script>
@@ -116,7 +117,15 @@ function ConversasScreen({
   onSend, handoff, onHandoff, narrow, onOpenAgenda,
   mobile, onBack,
   query, onQuery, filters, onFilters, team,
+  view = 'list', onView, onMove, drawerOpen = false, onCloseDrawer,
 }) {
+  // Quadro (2026-09-17): mesmas conversas por etapa do funil; a busca
+  // local e os filtros valem nas duas visões.
+  const { visible } = useVisibleConversations(conversations, query, filters, filter);
+  const board = view === 'board';
+  const barProps = { query, onQuery, filters, onFilters, team, filter, onFilter, view, onView };
+  const countLabel = listState === 'ready' ? (visible.length === 1 ? '1 conversa' : `${visible.length} conversas`) : '';
+
   // Mobile: padrão WhatsApp — ou a lista em tela cheia, ou a conversa em tela cheia.
   if (mobile) {
     if (active) {
@@ -133,6 +142,14 @@ function ConversasScreen({
         />
       );
     }
+    if (board) {
+      return (
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--paper)' }}>
+          <ConversationFilterBar {...barProps} countLabel={countLabel} />
+          <KanbanBoard items={visible} state={listState} onRetry={onRetryList} onOpen={onSelect} onMove={onMove} activeId={null} mobile />
+        </div>
+      );
+    }
     return (
       <ConversationList
         items={conversations}
@@ -146,7 +163,37 @@ function ConversasScreen({
         query={query} onQuery={onQuery}
         filters={filters} onFilters={onFilters}
         team={team}
+        view={view} onView={onView}
       />
+    );
+  }
+
+  if (board) {
+    return (
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%', position: 'relative', background: 'var(--paper)' }}>
+        <ConversationFilterBar {...barProps} countLabel={countLabel} />
+        <KanbanBoard items={visible} state={listState} onRetry={onRetryList} onOpen={onSelect} onMove={onMove} activeId={drawerOpen ? activeId : null} />
+        {drawerOpen && active && (
+          <>
+            <div onClick={onCloseDrawer} style={{ position: 'absolute', inset: 0, background: 'rgba(20,16,12,0.18)', zIndex: 45 }} />
+            <div style={{
+              position: 'absolute', top: 0, right: 0, bottom: 0, width: 'min(560px, 100%)', zIndex: 46,
+              background: 'var(--paper)', boxShadow: '-12px 0 32px rgba(0,0,0,0.14)',
+              borderLeft: '1px solid var(--paper-edge)', display: 'flex', flexDirection: 'column',
+            }}>
+              <ConversationView
+                conversation={active}
+                detailState={detailState}
+                onRetryDetail={onRetryDetail}
+                onSend={onSend}
+                handoff={handoff}
+                onHandoff={onHandoff}
+                onBack={onCloseDrawer}
+              />
+            </div>
+          </>
+        )}
+      </div>
     );
   }
 
@@ -163,6 +210,7 @@ function ConversasScreen({
         query={query} onQuery={onQuery}
         filters={filters} onFilters={onFilters}
         team={team}
+        view={view} onView={onView}
       />
       {active && (
         <ConversationView
@@ -242,6 +290,17 @@ function App() {
   const [convQuery, setConvQuery] = useState('');
   // Equipe (dono + membros) pro filtro "Quem atende"; falha vira só HUMA/Dono
   const [team, setTeam] = useState(null);
+  // Lista | Quadro (lembrado por cliente neste navegador) + gaveta da conversa no quadro
+  const CONV_VIEW_KEY = `huma:conv_view:${getClientId()}`;
+  const [convView, setConvViewState] = useState(() => {
+    try { return localStorage.getItem(CONV_VIEW_KEY) === 'board' ? 'board' : 'list'; } catch (e) { return 'list'; }
+  });
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const setConvView = (v) => {
+    setConvViewState(v);
+    setDrawerOpen(false);
+    try { localStorage.setItem(CONV_VIEW_KEY, v); } catch (e) { /* navegador sem storage */ }
+  };
   const [conversations, setConversations] = useState([]);
   const [listState, setListState] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [activeId, setActiveId] = useState(null);         // = phone do contato
@@ -371,6 +430,28 @@ function App() {
     } : d);
   };
 
+  // Quadro: mover cartão = mudar a etapa do funil. Otimista com reversão
+  // em falha; a HUMA passa a conduzir a conversa a partir da etapa nova.
+  const restatus = (c, stage) => ({
+    ...c, stage,
+    status: deriveStatus({ stage, handoff_status: c.handoff_status, active_appointment_datetime: c.appointment ? c.appointment.datetime : '' }),
+  });
+  const moveStage = async (phone, stage) => {
+    const before = conversations.find(c => c.id === phone);
+    if (!before || before.stage === stage) return;
+    setConversations(list => list.map(c => (c.id === phone ? restatus(c, stage) : c)));
+    setDetail(d => (d && d.id === phone) ? restatus(d, stage) : d);
+    try {
+      const r = await setConversationStage(phone, stage);
+      if (r && r.is_customer) setDetail(d => (d && d.id === phone) ? { ...d, is_customer: true } : d);
+    } catch (e) {
+      console.error('Quadro | falha ao mover | phone=' + phone + ' | stage=' + stage, e);
+      setConversations(list => list.map(c => (c.id === phone ? restatus(c, before.stage) : c)));
+      setDetail(d => (d && d.id === phone) ? restatus(d, before.stage) : d);
+      throw e;
+    }
+  };
+
   const showAgendaPanel = route === 'conversas';
   const fullBleed = route === 'negocio' || route === 'perfil';
 
@@ -412,13 +493,15 @@ function App() {
         filters={convFilters} onFilters={setConvFilters}
         team={team}
         activeId={activeId}
-        onSelect={id => { setActiveId(id); setHandoff(false); }}
+        onSelect={id => { setActiveId(id); setHandoff(false); if (convView === 'board') setDrawerOpen(true); }}
         active={active} detailState={detailState}
         onRetryDetail={() => loadDetail(activeId)}
         onSend={send} handoff={handoff}
         onHandoff={() => setHandoff(h => !h)}
         narrow={narrow} onOpenAgenda={() => setAgendaOpen(true)}
         mobile={isMobile} onBack={() => { setActiveId(null); setHandoff(false); }}
+        view={convView} onView={setConvView} onMove={moveStage}
+        drawerOpen={drawerOpen} onCloseDrawer={() => setDrawerOpen(false)}
       />;
       break;
     case 'agenda':      screen = <AgendaFullScreen onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }} />; break;

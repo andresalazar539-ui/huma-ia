@@ -145,6 +145,30 @@ function maskPhone(raw) {
   return `${cc}${ddd} ${first}****-${last4}`.trim();
 }
 
+// "agora" / "há 5 min" / "há 2 h" / "há 3 dias" (cartão do quadro)
+function timeAgo(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const mins = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+  if (mins < 2) return 'agora';
+  if (mins < 60) return `há ${mins} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `há ${hours} h`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return days === 1 ? 'há 1 dia' : `há ${days} dias`;
+  const months = Math.round(days / 30);
+  return months === 1 ? 'há 1 mês' : `há ${months} meses`;
+}
+
+// Horas desde a última mensagem (Infinity sem data) — decide o "parado há".
+function idleHours(iso) {
+  if (!iso) return Infinity;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return Infinity;
+  return (Date.now() - d.getTime()) / 3600000;
+}
+
 function formatTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -186,6 +210,9 @@ function mapListItem(item) {
     // Roteamento por vendedor: quem da equipe está com o lead ('' = dono/ninguém)
     assigned_to: item.assigned_to || '',
     assigned_name: item.assigned_name || '',
+    // Quadro: o que a HUMA já sabe do lead (fatos + leitura viva)
+    lead_facts: Array.isArray(item.lead_facts) ? item.lead_facts : [],
+    hints: item.lead_hints || { objecao: '', sinal_de_compra: false, pressa: '' },
     appointment: item.active_appointment_datetime
       ? { datetime: item.active_appointment_datetime, service: item.active_appointment_service }
       : null,
@@ -283,9 +310,22 @@ function mapDetail(d) {
   };
 }
 
+// Quadro: o dono move o cartão pra outra etapa do funil (a HUMA passa a
+// conduzir dali). stage ∈ discovery|offer|closing|committed|won|lost.
+async function setConversationStage(phone, stage) {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/stage`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ stage }),
+  });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+
 Object.assign(window, {
-  fetchConversations, fetchConversationDetail,
-  deriveStatus, initialsFrom, toneFrom, maskPhone, formatTime,
+  fetchConversations, fetchConversationDetail, setConversationStage,
+  deriveStatus, initialsFrom, toneFrom, maskPhone, formatTime, timeAgo, idleHours,
   mapListItem, mapHistory, mapDetail,
   DEFAULT_CONV_FILTERS, toConversationQuery, countActiveConversationFilters, conversationMatches,
   HUMA_CLIENT_ID: CLIENT_ID,
