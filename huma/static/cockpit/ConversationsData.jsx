@@ -12,11 +12,75 @@ const API_KEY = new URLSearchParams(location.search).get('api_key') || '';
 const CLIENT_ID = new URLSearchParams(location.search).get('client_id') || window.HUMA_CLIENT_ID || 'dev';
 const AUTH_HEADERS = API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {};
 
-async function fetchConversations(filter = 'todas') {
-  const url = `/api/conversations?client_id=${encodeURIComponent(CLIENT_ID)}&filter=${encodeURIComponent(filter)}`;
-  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
+// Filtros da aba Conversas (2026-09-17): além do status (filter), o dono
+// recorta por período, canal e quem atende. `opts` = { channel, assignee,
+// date_from, date_to } já no formato da API (ver toConversationQuery).
+async function fetchConversations(filter = 'todas', opts = {}) {
+  const params = new URLSearchParams({ client_id: CLIENT_ID, filter });
+  for (const key of ['channel', 'assignee', 'date_from', 'date_to']) {
+    if (opts && opts[key]) params.set(key, opts[key]);
+  }
+  const r = await fetch(`/api/conversations?${params}`, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
+}
+
+// Estado dos filtros da tela → query params da API.
+// period: 'all' | 'today' | '7' | '30' | 'custom' (from/to yyyy-mm-dd).
+// Datas são do calendário do navegador (o dono está no Brasil); o backend
+// converte pra janela UTC em horário de Brasília.
+const DEFAULT_CONV_FILTERS = { period: 'all', from: '', to: '', channel: '', assignee: '' };
+
+function _localDateStr(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function toConversationQuery(filters) {
+  const f = { ...DEFAULT_CONV_FILTERS, ...(filters || {}) };
+  const out = { channel: f.channel || '', assignee: f.assignee || '', date_from: '', date_to: '' };
+  const today = new Date();
+  if (f.period === 'today') {
+    out.date_from = out.date_to = _localDateStr(today);
+  } else if (f.period === '7' || f.period === '30') {
+    const days = Number(f.period);
+    const start = new Date(today);
+    start.setDate(today.getDate() - (days - 1));
+    out.date_from = _localDateStr(start);
+    out.date_to = _localDateStr(today);
+  } else if (f.period === 'custom') {
+    out.date_from = f.from || '';
+    out.date_to = f.to || '';
+  }
+  return out;
+}
+
+// Quantos filtros estão ativos (pra badge do botão e "Limpar filtros").
+function countActiveConversationFilters(filters) {
+  const f = { ...DEFAULT_CONV_FILTERS, ...(filters || {}) };
+  let n = 0;
+  if (f.period && f.period !== 'all') n += 1;
+  if (f.channel) n += 1;
+  if (f.assignee) n += 1;
+  return n;
+}
+
+// Busca local (nome, telefone, prévia). Ignora acento e caixa; dígitos
+// batem contra o telefone cru (o card mostra o número mascarado).
+function _fold(str) {
+  return String(str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+function conversationMatches(item, query) {
+  const q = _fold(query).trim();
+  if (!q) return true;
+  const hay = _fold(`${item.name} ${item.preview} ${item.phone} ${item.assigned_name || ''}`);
+  if (hay.includes(q)) return true;
+  const digits = q.replace(/\D/g, '');
+  if (digits.length >= 3) {
+    const raw = `${item.id || ''} ${item.lead_whatsapp || ''}`.replace(/\D/g, '');
+    if (raw.includes(digits)) return true;
+  }
+  return false;
 }
 
 async function fetchConversationDetail(phone) {
@@ -120,6 +184,7 @@ function mapListItem(item) {
     stage: item.stage,
     handoff_status: item.handoff_status,
     // Roteamento por vendedor: quem da equipe está com o lead ('' = dono/ninguém)
+    assigned_to: item.assigned_to || '',
     assigned_name: item.assigned_name || '',
     appointment: item.active_appointment_datetime
       ? { datetime: item.active_appointment_datetime, service: item.active_appointment_service }
@@ -222,6 +287,7 @@ Object.assign(window, {
   fetchConversations, fetchConversationDetail,
   deriveStatus, initialsFrom, toneFrom, maskPhone, formatTime,
   mapListItem, mapHistory, mapDetail,
+  DEFAULT_CONV_FILTERS, toConversationQuery, countActiveConversationFilters, conversationMatches,
   HUMA_CLIENT_ID: CLIENT_ID,
 });
 

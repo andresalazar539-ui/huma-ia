@@ -1164,6 +1164,11 @@ async def list_conversations_for_cockpit(
     client_id: str,
     filter_mode: str = "todas",
     limit: int = 50,
+    channel: str = "",
+    assignee: str = "",
+    since_iso: str = "",
+    until_iso: str = "",
+    owner_email: str = "",
 ) -> list[dict]:
     """
     T2 (Cockpit) — lista conversas pra renderizar no cockpit do dono.
@@ -1181,12 +1186,24 @@ async def list_conversations_for_cockpit(
       5. "andamento":  default — conversa rolando
       0. "todas":      sem filtro (default)
 
+    Filtros extras (2026-09-17, organizar a aba Conversas):
+      - channel: "whatsapp" | "instagram" | "web" | "" (todos)
+      - assignee: "huma" | "dono" | e-mail de quem está com o lead | ""
+        (owner_email faz "dono" pegar também o lead atribuído ao dono)
+      - since_iso/until_iso: janela UTC [since, until) sobre
+        last_message_at (ISO naive) — aplicada NA QUERY (gte/lt), então
+        o teto de 200 linhas conta só dentro do período.
+    A regra dos filtros vive em huma/core/conversation_filters.py.
+
     Returns:
         Lista de dicts com phone, stage, handoff_status, last_message_at,
         history (raw), lead_name_canonical, active_appointment_*.
     """
+    from huma.core import conversation_filters as cf
+
+    any_filter = bool(filter_mode != "todas" or channel or assignee)
     # Busca tudo do cliente (até 200) e filtra em Python.
-    fetch_limit = max(limit, 200) if filter_mode != "todas" else limit
+    fetch_limit = max(limit, 200) if any_filter else limit
 
     base_cols = (
         "phone,stage,handoff_status,last_message_at,history,"
@@ -1195,53 +1212,45 @@ async def list_conversations_for_cockpit(
     )
 
     def query(cols: str):
-        return (
+        q = (
             get_supabase()
             .table("conversations")
             .select(cols)
             .eq("client_id", client_id)
-            .order("last_message_at", desc=True)
+        )
+        if since_iso:
+            q = q.gte("last_message_at", since_iso)
+        if until_iso:
+            q = q.lt("last_message_at", until_iso)
+        return (
+            q.order("last_message_at", desc=True)
             .limit(fetch_limit)
             .execute()
         )
 
-    # assigned_name (roteamento por vendedor) só existe após
-    # scripts/migration_lead_routing.sql — sem a coluna, refaz sem ela
+    # assigned_to/assigned_name (roteamento por vendedor) só existem após
+    # scripts/migration_lead_routing.sql — sem as colunas, refaz sem elas
     # em vez de derrubar a lista inteira do Cockpit.
     try:
-        resp = await run_in_threadpool(lambda: query(base_cols + ",assigned_name"))
+        resp = await run_in_threadpool(lambda: query(base_cols + ",assigned_to,assigned_name"))
     except Exception as e:
-        if "assigned_name" not in str(e):
+        if "assigned_" not in str(e):
             raise
         log.warning(
-            f"list_conversations_for_cockpit | coluna assigned_name ausente "
-            f"(rodar scripts/migration_lead_routing.sql) | client={client_id} | retry sem ela"
+            f"list_conversations_for_cockpit | colunas assigned_* ausentes "
+            f"(rodar scripts/migration_lead_routing.sql) | client={client_id} | retry sem elas"
         )
         resp = await run_in_threadpool(lambda: query(base_cols))
     rows = resp.data or []
 
-    if filter_mode == "todas":
+    if not any_filter:
         return rows[:limit]
 
-    now_iso = datetime.utcnow().isoformat()
-
-    def status_of(r: dict) -> str:
-        stage = r.get("stage", "discovery")
-        appt = (r.get("active_appointment_datetime") or "").strip()
-        handoff = r.get("handoff_status", "active")
-        # Ordem de precedência (primeiro match vence) — espelha frontend deriveStatus
-        if stage == "lost":
-            return "cancelado"
-        if stage == "won":
-            return "feito"
-        if appt:
-            # Comparação ISO-string funciona se ambos no formato YYYY-MM-DDTHH:MM:SS
-            if appt > now_iso:
-                return "confirmado"
-            return "feito"
-        if handoff == "handed_off":
-            return "aguardando"
-        return "andamento"
-
-    filtered = [r for r in rows if status_of(r) == filter_mode]
+    filtered = cf.apply_filters(
+        rows,
+        status=filter_mode,
+        channel=channel,
+        assignee=assignee,
+        owner_email=owner_email,
+    )
     return filtered[:limit]

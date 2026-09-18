@@ -1056,6 +1056,10 @@ async def list_conversations_cockpit(
     client_id: str,
     filter: str = "todas",
     limit: int = 50,
+    channel: str = "",
+    assignee: str = "",
+    date_from: str = "",
+    date_to: str = "",
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     huma_session: Optional[str] = Cookie(None),
 ) -> dict:
@@ -1068,20 +1072,47 @@ async def list_conversations_cockpit(
 
     Query params:
       - client_id (required)
-      - filter: "todas" | "huma" | "aguarda" | "feitas" (default "todas")
+      - filter: "todas" | "andamento" | "aguardando" | "confirmado" |
+        "feito" | "cancelado" (default "todas")
       - limit: 1-200 (default 50)
+      - channel: "whatsapp" | "instagram" | "web" (vazio = todos)
+      - assignee: "huma" | "dono" | e-mail de quem está com o lead
+        (vazio = todos)
+      - date_from / date_to: yyyy-mm-dd em horário de Brasília, sobre
+        a última mensagem; date_to é inclusivo (vazio = sem esse lado)
+
+    Regra dos filtros: huma/core/conversation_filters.py.
 
     Auth: Bearer com api_key do client_id. IDOR enforced em verify_api_key_manual.
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
-    valid_filters = ("todas", "andamento", "confirmado", "feito", "aguardando", "cancelado")
+    from huma.core import conversation_filters as cf
+
+    valid_filters = ("todas",) + cf.STATUSES
     if filter not in valid_filters:
         raise HTTPException(400, f"filter deve ser um de: {', '.join(valid_filters)}")
     if limit < 1 or limit > 200:
         raise HTTPException(400, "limit deve estar entre 1 e 200")
+    channel = (channel or "").strip().lower()
+    if channel and channel not in cf.CHANNELS:
+        raise HTTPException(400, f"channel deve ser um de: {', '.join(cf.CHANNELS)}")
+    assignee = (assignee or "").strip().lower()
+    if len(assignee) > 200:
+        raise HTTPException(400, "assignee inválido")
+    for label, value in (("date_from", date_from), ("date_to", date_to)):
+        if value and not cf.is_valid_date(value):
+            raise HTTPException(400, f"{label} deve ser yyyy-mm-dd")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(400, "date_from não pode ser depois de date_to")
+    since_iso, until_iso = cf.date_window(date_from, date_to)
 
-    rows = await db.list_conversations_for_cockpit(client_id, filter, limit)
+    rows = await db.list_conversations_for_cockpit(
+        client_id, filter, limit,
+        channel=channel, assignee=assignee,
+        since_iso=since_iso, until_iso=until_iso,
+        owner_email=(getattr(client_data, "owner_email", "") or ""),
+    )
 
     import re as _re
     # Markers internos: mensagens que começam com "[MARKER..." (maiúsculas/underline/espaço).
@@ -1115,12 +1146,14 @@ async def list_conversations_cockpit(
             "channel": r.get("channel", "whatsapp") or "whatsapp",
             "lead_whatsapp": r.get("lead_whatsapp", "") or "",
             # Roteamento por vendedor: quem está com o lead (vazio = dono/ninguém)
+            "assigned_to": r.get("assigned_to", "") or "",
             "assigned_name": r.get("assigned_name", "") or "",
         })
 
     log.info(
         f"Cockpit list_conversations | client_id={client_id} | "
-        f"filter={filter} | count={len(items)}"
+        f"filter={filter} | channel={channel or '-'} | assignee={assignee or '-'} | "
+        f"date_from={date_from or '-'} | date_to={date_to or '-'} | count={len(items)}"
     )
     return {"items": items, "total": len(items)}
 

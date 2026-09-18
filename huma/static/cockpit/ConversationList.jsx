@@ -8,7 +8,86 @@ const LIST_FILTERS = [
   { label: 'Cancelado',    key: 'cancelado' },
 ];
 
-const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect, fullWidth = false }) => {
+// Filtros que organizam a lista (2026-09-17): período, canal e quem atende.
+// O status continua nos chips; busca é local (nome, telefone, prévia).
+const PERIOD_OPTIONS = [
+  { key: 'all',    label: 'Todo o período' },
+  { key: 'today',  label: 'Hoje' },
+  { key: '7',      label: 'Últimos 7 dias' },
+  { key: '30',     label: 'Últimos 30 dias' },
+  { key: 'custom', label: 'Período personalizado' },
+];
+const CHANNEL_OPTIONS = [
+  { key: '',          label: 'Todos os canais' },
+  { key: 'whatsapp',  label: 'WhatsApp' },
+  { key: 'instagram', label: 'Instagram' },
+  { key: 'web',       label: 'Chat do site' },
+];
+
+const fieldStyle = {
+  width: '100%', boxSizing: 'border-box',
+  fontFamily: 'var(--font-sans)', fontSize: 13,
+  padding: '7px 10px',
+  border: '1px solid var(--paper-edge)', borderRadius: 6,
+  background: 'var(--paper-raised)', color: 'var(--ink)',
+  outline: 'none',
+};
+
+function _fmtBr(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-');
+  return `${d}/${m}/${y.slice(2)}`;
+}
+
+// Rótulos dos filtros ativos (chips removíveis embaixo dos status).
+function activeFilterChips(filters, team) {
+  const f = { ...(window.DEFAULT_CONV_FILTERS || {}), ...(filters || {}) };
+  const chips = [];
+  if (f.period && f.period !== 'all') {
+    let label = (PERIOD_OPTIONS.find(o => o.key === f.period) || {}).label || '';
+    if (f.period === 'custom') {
+      if (f.from && f.to) label = `${_fmtBr(f.from)} a ${_fmtBr(f.to)}`;
+      else if (f.from) label = `Desde ${_fmtBr(f.from)}`;
+      else if (f.to) label = `Até ${_fmtBr(f.to)}`;
+    }
+    chips.push({ key: 'period', label, clear: { period: 'all', from: '', to: '' } });
+  }
+  if (f.channel) {
+    chips.push({ key: 'channel', label: (CHANNEL_OPTIONS.find(o => o.key === f.channel) || {}).label || f.channel, clear: { channel: '' } });
+  }
+  if (f.assignee) {
+    chips.push({ key: 'assignee', label: assigneeLabel(f.assignee, team), clear: { assignee: '' } });
+  }
+  return chips;
+}
+
+function assigneeLabel(value, team) {
+  if (value === 'huma') return 'HUMA';
+  if (value === 'dono') return (team && team.owner && team.owner.name) ? team.owner.name : 'Dono';
+  const m = ((team && team.members) || []).find(x => String(x.email || '').toLowerCase() === value);
+  if (m) return m.name || String(m.email || '').split('@')[0];
+  return value.split('@')[0];
+}
+
+const ConversationList = ({
+  items, state = 'ready', filter = 'todas', onFilter, onRetry, activeId, onSelect, fullWidth = false,
+  query = '', onQuery, filters, onFilters, team,
+}) => {
+  const [panelOpen, setPanelOpen] = React.useState(false);
+  const f = { ...(window.DEFAULT_CONV_FILTERS || {}), ...(filters || {}) };
+  const activeCount = window.countActiveConversationFilters ? window.countActiveConversationFilters(f) : 0;
+  const setF = (patch) => onFilters && onFilters({ ...f, ...patch });
+  const clearAll = () => {
+    if (onFilters) onFilters({ ...(window.DEFAULT_CONV_FILTERS || {}) });
+    if (onQuery) onQuery('');
+  };
+  const chips = activeFilterChips(f, team);
+  const matches = window.conversationMatches || (() => true);
+  const visible = query ? items.filter(c => matches(c, query)) : items;
+  const filtering = activeCount > 0 || !!query || filter !== 'todas';
+  const members = ((team && team.members) || []).filter(m => m && m.email);
+  const ownerName = (team && team.owner && team.owner.name) ? team.owner.name : 'Dono';
+
   return (
     <div style={{
       ...(fullWidth
@@ -23,16 +102,89 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
           <div style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'var(--ink-4)' }}>
             <Icon name="search" size={14} />
           </div>
-          <input placeholder="Buscar" style={{
-            width: '100%', boxSizing: 'border-box',
-            fontFamily: 'var(--font-sans)', fontSize: 13,
-            padding: '7px 10px 7px 30px',
-            border: '1px solid var(--paper-edge)', borderRadius: 6,
-            background: 'var(--paper-raised)', color: 'var(--ink)',
-            outline: 'none',
-          }}/>
+          <input
+            placeholder="Buscar por nome, telefone ou mensagem"
+            value={query}
+            onChange={e => onQuery && onQuery(e.target.value)}
+            style={{ ...fieldStyle, padding: '7px 28px 7px 30px' }}
+          />
+          {query && (
+            <button onClick={() => onQuery && onQuery('')} title="Limpar busca" style={{
+              position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+              border: 'none', background: 'transparent', color: 'var(--ink-4)', cursor: 'pointer', padding: 4, display: 'flex',
+            }}><Icon name="x" size={12} stroke={2} /></button>
+          )}
         </div>
+        <button onClick={() => setPanelOpen(o => !o)} title="Filtros" style={{
+          position: 'relative', flexShrink: 0,
+          width: 32, height: 32, borderRadius: 6,
+          border: '1px solid var(--paper-edge)',
+          background: panelOpen || activeCount ? 'var(--ink)' : 'var(--paper-raised)',
+          color: panelOpen || activeCount ? 'var(--paper)' : 'var(--ink-2)',
+          cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Icon name="sliders" size={15} stroke={1.8} />
+          {activeCount > 0 && (
+            <span style={{
+              position: 'absolute', top: -5, right: -5,
+              minWidth: 16, height: 16, padding: '0 4px', borderRadius: 999,
+              background: 'var(--ember)', color: 'var(--paper-raised)',
+              fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}>{activeCount}</span>
+          )}
+        </button>
       </div>
+
+      {panelOpen && (
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <Eyebrow>Período</Eyebrow>
+            <select value={f.period} onChange={e => setF({ period: e.target.value })} style={fieldStyle}>
+              {PERIOD_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </select>
+          </label>
+          {f.period === 'custom' && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              {[['De', 'from'], ['Até', 'to']].map(([lab, key]) => (
+                <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                  <Eyebrow>{lab}</Eyebrow>
+                  <input type="date" value={f[key] || ''} onChange={e => setF({ [key]: e.target.value })} style={fieldStyle} />
+                </label>
+              ))}
+            </div>
+          )}
+          {f.period === 'custom' && f.from && f.to && f.from > f.to && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: '#7C2E18' }}>A data inicial precisa vir antes da final.</div>
+          )}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <Eyebrow>Canal</Eyebrow>
+            <select value={f.channel} onChange={e => setF({ channel: e.target.value })} style={fieldStyle}>
+              {CHANNEL_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </select>
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <Eyebrow>Quem atende</Eyebrow>
+            <select value={f.assignee} onChange={e => setF({ assignee: e.target.value })} style={fieldStyle}>
+              <option value="">Todo mundo</option>
+              <option value="huma">HUMA (a IA)</option>
+              <option value="dono">{ownerName}</option>
+              {members.map(m => (
+                <option key={m.email} value={String(m.email).toLowerCase()}>{m.name || String(m.email).split('@')[0]}</option>
+              ))}
+            </select>
+          </label>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <button onClick={clearAll} disabled={!filtering} style={{
+              border: 'none', background: 'transparent', padding: 0,
+              fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+              color: filtering ? 'var(--ink-2)' : 'var(--ink-4)', cursor: filtering ? 'pointer' : 'default',
+              textDecoration: filtering ? 'underline' : 'none',
+            }}>Limpar filtros</button>
+            <Button variant="dark" size="sm" onClick={() => setPanelOpen(false)}>Fechar</Button>
+          </div>
+        </div>
+      )}
 
       <div style={{ padding: '8px 14px 4px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {LIST_FILTERS.map(({ label, key }) => {
@@ -50,6 +202,33 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
         })}
       </div>
 
+      {chips.length > 0 && (
+        <div style={{ padding: '2px 14px 6px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {chips.map(ch => (
+            <span key={ch.key} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+              letterSpacing: '0.04em', textTransform: 'uppercase',
+              padding: '3px 6px 3px 8px', borderRadius: 999,
+              background: 'var(--paper-sunk)', color: 'var(--ink-2)',
+              border: '1px solid var(--paper-edge)', whiteSpace: 'nowrap',
+            }}>
+              {ch.label}
+              <button onClick={() => setF(ch.clear)} title="Remover filtro" style={{
+                border: 'none', background: 'transparent', padding: 0, margin: 0,
+                color: 'var(--ink-3)', cursor: 'pointer', display: 'flex',
+              }}><Icon name="x" size={10} stroke={2.4} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {state === 'ready' && filtering && (
+        <div style={{ padding: '2px 16px 6px', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-4)', letterSpacing: '0.04em' }}>
+          {visible.length === 1 ? '1 conversa' : `${visible.length} conversas`}
+        </div>
+      )}
+
       <div style={{ flex: 1, overflow: 'auto', padding: '4px 0' }}>
         {state === 'loading' ? (
           <ListSkeleton />
@@ -58,10 +237,17 @@ const ConversationList = ({ items, state = 'ready', filter = 'todas', onFilter, 
             text="Não consegui carregar as conversas. Tenta de novo."
             action={onRetry && <Button variant="ghost" size="sm" onClick={onRetry}>Tentar de novo</Button>}
           />
-        ) : items.length === 0 ? (
-          <ListMessage text="Nenhuma conversa ainda. Quando um lead te escrever no WhatsApp, aparece aqui." />
+        ) : visible.length === 0 ? (
+          filtering ? (
+            <ListMessage
+              text="Nenhuma conversa com esses filtros."
+              action={<Button variant="ghost" size="sm" onClick={() => { clearAll(); onFilter && onFilter('todas'); }}>Limpar filtros</Button>}
+            />
+          ) : (
+            <ListMessage text="Nenhuma conversa ainda. Quando um lead te escrever no WhatsApp, aparece aqui." />
+          )
         ) : (
-          items.map(c => (
+          visible.map(c => (
             <button key={c.id} onClick={() => onSelect(c.id)} style={{
               display: 'flex', gap: 10, padding: '12px 16px',
               width: '100%', boxSizing: 'border-box',

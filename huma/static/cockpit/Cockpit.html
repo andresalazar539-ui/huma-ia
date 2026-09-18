@@ -115,6 +115,7 @@ function ConversasScreen({
   activeId, onSelect, active, detailState, onRetryDetail,
   onSend, handoff, onHandoff, narrow, onOpenAgenda,
   mobile, onBack,
+  query, onQuery, filters, onFilters, team,
 }) {
   // Mobile: padrão WhatsApp — ou a lista em tela cheia, ou a conversa em tela cheia.
   if (mobile) {
@@ -142,6 +143,9 @@ function ConversasScreen({
         activeId={null}
         onSelect={onSelect}
         fullWidth
+        query={query} onQuery={onQuery}
+        filters={filters} onFilters={onFilters}
+        team={team}
       />
     );
   }
@@ -156,6 +160,9 @@ function ConversasScreen({
         onRetry={onRetryList}
         activeId={activeId}
         onSelect={onSelect}
+        query={query} onQuery={onQuery}
+        filters={filters} onFilters={onFilters}
+        team={team}
       />
       {active && (
         <ConversationView
@@ -230,6 +237,11 @@ function App() {
 
   // --- Conversas (dados reais via API) ---
   const [filter, setFilter] = useState('todas');
+  // Filtros que organizam a lista (período, canal, quem atende) + busca local
+  const [convFilters, setConvFilters] = useState({ ...(window.DEFAULT_CONV_FILTERS || {}) });
+  const [convQuery, setConvQuery] = useState('');
+  // Equipe (dono + membros) pro filtro "Quem atende"; falha vira só HUMA/Dono
+  const [team, setTeam] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [listState, setListState] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [activeId, setActiveId] = useState(null);         // = phone do contato
@@ -272,11 +284,12 @@ function App() {
     if (route === 'integracoes') reloadIntegrationsStatus();
   }, [route, reloadIntegrationsStatus]);
 
-  // Carrega a lista (silent = atualização de poll, sem piscar skeleton)
-  const loadList = useCallback(async (f, { silent = false } = {}) => {
+  // Carrega a lista (silent = atualização de poll, sem piscar skeleton).
+  // `extra` = filtros de período/canal/atendente (estado convFilters).
+  const loadList = useCallback(async (f, { silent = false } = {}, extra = null) => {
     if (!silent) setListState('loading');
     try {
-      const data = await fetchConversations(f);
+      const data = await fetchConversations(f, toConversationQuery(extra || {}));
       const items = (data.items || []).map(mapListItem);
       setConversations(items);
       setListState('ready');
@@ -288,14 +301,30 @@ function App() {
     }
   }, []);
 
-  // (Re)carrega ao trocar filtro
-  useEffect(() => { loadList(filter); }, [filter, loadList]);
+  // (Re)carrega ao trocar qualquer filtro. Período personalizado só
+  // consulta quando as datas fazem sentido (evita 400 no meio da digitação).
+  const convFiltersKey = JSON.stringify(convFilters);
+  const convFiltersReady = convFilters.period !== 'custom'
+    || !(convFilters.from && convFilters.to && convFilters.from > convFilters.to);
+  useEffect(() => {
+    if (!convFiltersReady) return;
+    loadList(filter, {}, convFilters);
+  }, [filter, convFiltersKey, convFiltersReady, loadList]);
 
   // Poll a cada 15s (silencioso)
   useEffect(() => {
-    const t = setInterval(() => loadList(filter, { silent: true }), 15000);
+    if (!convFiltersReady) return;
+    const t = setInterval(() => loadList(filter, { silent: true }, convFilters), 15000);
     return () => clearInterval(t);
-  }, [filter, loadList]);
+  }, [filter, convFiltersKey, convFiltersReady, loadList]);
+
+  // Equipe pro filtro "Quem atende": carrega uma vez ao abrir Conversas.
+  useEffect(() => {
+    if (route !== 'conversas' || team !== null) return;
+    fetchTeam()
+      .then(t => setTeam({ owner: t.owner || {}, members: t.members || [] }))
+      .catch(e => { console.error('Conversas | falha ao carregar equipe', e); setTeam({ owner: {}, members: [] }); });
+  }, [route, team]);
 
   // Carrega o detalhe da conversa selecionada.
   // silent = poll: não pisca skeleton, falha vira no-op (mantém último ok visível).
@@ -378,7 +407,10 @@ function App() {
       screen = <ConversasScreen
         conversations={conversations} listState={listState}
         filter={filter} onFilter={setFilter}
-        onRetryList={() => loadList(filter)}
+        onRetryList={() => loadList(filter, {}, convFilters)}
+        query={convQuery} onQuery={setConvQuery}
+        filters={convFilters} onFilters={setConvFilters}
+        team={team}
         activeId={activeId}
         onSelect={id => { setActiveId(id); setHandoff(false); }}
         active={active} detailState={detailState}
