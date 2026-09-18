@@ -405,48 +405,45 @@ async def create_subscription_with_card(
     mp_status = (data.get("status") or "").lower()
     local_status = {"authorized": "active", "pending": "pending"}.get(mp_status, "pending")
 
-    await _upsert_subscription(client_id, plan.value, preapproval_id, local_status)
+    # Assinatura nova substitui a anterior (pausada por cartão recusado,
+    # pendente ou ativa): o preapproval antigo é cancelado no MP pra ele
+    # nunca voltar a cobrar em paralelo — uma cobrança por mês, sempre.
+    await _cancel_previous_preapproval(client_id, preapproval_id)
+
+    await _upsert_subscription(client_id, plan.value, preapproval_id, local_status, welcome=False)
     if local_status == "active" and coupon_code:
         # Webhook também registra (dedup por índice único) — aqui é cinto
         # e suspensório pra contagem de usos não depender só da reentrega.
         await _record_redemption(coupon_code, client_id, plan.value, preapproval_id)
 
-    if local_status == "active":
-        # Cartão APROVADO = franquia NA HORA (padrão Netflix — pagou, usou).
-        # O webhook da cobrança que chegar depois reconhece este crédito
-        # pelo marcador "primeira pre=" e não duplica. Exceção consciente
-        # à regra "só credita no webhook": aqui o MP já autorizou e cobrou
-        # o cartão nesta mesma chamada.
-        await billing.add_conversations(
-            client_id, config["included_conversations"],
-            source="mp_primeira_cobranca",
-            description=f"primeira pre={preapproval_id} plano {plan.value}",
-        )
-        await cache.delete_key(f"wallet_bal:{client_id}")
-        # Indicação: cliente virou pagante — credita o indicador (idempotente)
-        await credit_referral_conversion(client_id)
-        # Analytics server-side (GA4/Meta): assinatura nova paga. create_task =
-        # zero latência no checkout; tx = preapproval_id (mesmo id que o
-        # frontend usa no dataLayer — GA4/Meta deduplicam navegador × servidor).
-        from huma.services import analytics_events as ae
-        asyncio.create_task(ae.track_purchase(
-            client_id, preapproval_id, float(amount),
-            item_id=plan.value, item_name=f"Plano {config['name']}", kind="assinatura",
-        ))
-
+    # REGRA DE OURO (reafirmada 2026-09-17): "authorized" no MP quer dizer
+    # só que o cartão é válido. A primeira cobrança acontece ~1h depois e
+    # pode ser RECUSADA (o MP tenta de novo por dias e então pausa a
+    # assinatura). Nada é creditado aqui: as conversas, as boas-vindas,
+    # a indicação e o purchase server-side entram no webhook da cobrança
+    # APROVADA (_handle_authorized_payment / credit_subscription_charge).
+    # Sem pagamento, sem conversa — a assinatura de teste de 14/08 teve o
+    # cartão recusado, o MP pausou em 24/08 e a conta seguiu com franquia.
     log.info(
         f"ASSINATURA TRANSPARENTE | client={client_id} | plan={plan.value} | "
-        f"status={local_status} | preapproval={preapproval_id} | valor={amount}"
+        f"status={local_status} | preapproval={preapproval_id} | valor={amount} | "
+        f"credito=aguardando_cobranca_aprovada"
     )
     if local_status == "active":
-        detail = f"Assinatura {config['name']} ativa! Suas {config['included_conversations']} conversas já estão na conta."
+        detail = (
+            f"Cartão validado. O Mercado Pago faz a primeira cobrança em até 1 hora e suas "
+            f"{config['included_conversations']} conversas entram na conta assim que o pagamento for aprovado."
+        )
     else:
-        detail = "Assinatura criada — aguardando confirmação do cartão. Isso pode levar alguns minutos."
+        detail = "Assinatura criada, aguardando confirmação do cartão. Isso pode levar alguns minutos."
     return {
         "status": "ok", "subscription_status": local_status, "detail": detail,
         # preapproval_id: o frontend usa como transaction_id no dataLayer,
         # casando com o purchase server-side (dedup GA4/Meta por id igual).
         "preapproval_id": preapproval_id,
+        # Aditivo: o Cockpit mostra "aguardando a primeira cobrança" em vez
+        # de "conversas liberadas" — só o webhook da cobrança aprovada libera.
+        "awaiting_first_charge": local_status == "active",
     }
 
 
@@ -724,7 +721,21 @@ async def get_billing_status(client_id: str) -> dict:
     overage_pending = float((sub or {}).get("overage_pending_brl") or 0.0)
     overage_base = float((sub or {}).get("overage_base_amount_brl") or 0.0)
 
+    # Cartão validado mas primeira cobrança ainda não aprovada pelo MP:
+    # a tela avisa "aguardando" em vez de prometer conversas. Só vale pra
+    # preapproval real (cortesia coupon:* credita na hora). Falha de
+    # leitura degrada pra False — nunca derruba o status.
+    provider_id = ((sub or {}).get("payment_provider_id") or "").strip()
+    awaiting_first_charge = False
+    if status == "active" and provider_id and not provider_id.startswith("coupon:"):
+        try:
+            awaiting_first_charge = not await _ever_paid(client_id)
+        except Exception:
+            awaiting_first_charge = False
+
     return {
+        # Aditivo: True entre a autorização do cartão e a 1ª cobrança aprovada
+        "awaiting_first_charge": awaiting_first_charge,
         "spend_mode": spend["mode"],
         "spend_cap_brl": spend["cap_brl"],
         "overage": overage,
@@ -870,14 +881,28 @@ async def _handle_preapproval_change(preapproval_id: str) -> None:
             )
             return
 
-    await _upsert_subscription(client_id, plan, preapproval_id, local_status)
+    # Status anterior ANTES de espelhar: pausa/cancelamento vindos do MP
+    # (cartão recusado) avisam o dono UMA vez, na transição. Cancelamento
+    # feito pelo próprio dono no Cockpit já gravou "cancelled" antes do
+    # webhook chegar — não dispara aviso de problema.
+    previous = await _current_status(client_id)
+
+    # "authorized" = cartão válido, ainda sem dinheiro. As boas-vindas
+    # saem com a primeira cobrança APROVADA (webhook de pagamento).
+    await _upsert_subscription(client_id, plan, preapproval_id, local_status, welcome=False)
 
     # Cupom com desconto %: o resgate conta na ATIVAÇÃO (checkout
     # abandonado não queima cupom). Índice único dedupa reentrega.
     if local_status == "active" and ref.get("coupon"):
         await _record_redemption(ref["coupon"], client_id, plan, preapproval_id)
 
-    log.info(f"Assinatura {local_status} | client={client_id} | plan={plan} | preapproval={preapproval_id}")
+    if local_status in ("paused", "cancelled") and previous not in ("paused", "cancelled"):
+        # O MP pausa (ou cancela) sozinho quando a cobrança do cartão é
+        # recusada repetidas vezes. Sem aviso, o dono só descobre quando
+        # o saldo zera. Fire-and-forget: nunca atrasa o webhook.
+        asyncio.create_task(_notify_payment_problem_bg(client_id, local_status))
+
+    log.info(f"Assinatura {local_status} | client={client_id} | plan={plan} | preapproval={preapproval_id} | antes={previous or '-'}")
 
 
 async def _handle_authorized_payment(authorized_payment_id: str) -> None:
@@ -912,7 +937,9 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         log.info(f"Cobrança já creditada (reentrega) | apid={authorized_payment_id}")
         return
 
-    await _upsert_subscription(client_id, plan_value, preapproval_id, "active")
+    # welcome=False: as boas-vindas saem abaixo, atreladas à primeira
+    # cobrança PAGA (first_paid) — nunca em dobro numa transição paused→active.
+    await _upsert_subscription(client_id, plan_value, preapproval_id, "active", welcome=False)
 
     # Checkout transparente credita a PRIMEIRA cobrança na ativação
     # (padrão Netflix). Se este apid é a primeira cobrança de um
@@ -948,6 +975,11 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         log.info(f"Mês já creditado por outro caminho | client={client_id} | apid={authorized_payment_id}")
         return
 
+    # Primeira cobrança PAGA da vida do cliente? Decidido ANTES de creditar
+    # (depois o razão já tem esta cobrança). É aqui, com dinheiro na conta,
+    # que saem as boas-vindas — nunca na autorização do cartão.
+    first_paid = not await _ever_paid(client_id)
+
     await billing.add_conversations(
         client_id, config["included_conversations"],
         source="mp_renovacao",
@@ -956,6 +988,8 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     # Saldo mudou por fora: derruba o cache de 60s pra quem estava
     # bloqueado (ex.: trial expirado que acabou de assinar) destravar já.
     await cache.delete_key(f"wallet_bal:{client_id}")
+    if first_paid:
+        asyncio.create_task(_send_subscription_welcome_bg(client_id, plan_value))
     # Indicação: se esta foi a PRIMEIRA cobrança paga do cliente, credita
     # o indicador (a marcação referral_credited_at faz só a 1ª agir).
     await credit_referral_conversion(client_id)
@@ -1436,12 +1470,18 @@ async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_s
             log.info(f"Mês já creditado por outro caminho | client={client_id} | payid={mp_payment_id}")
             return
 
+        # Primeira cobrança PAGA da vida do cliente → boas-vindas (ver
+        # _handle_authorized_payment; mesma regra, formato alternativo do MP).
+        first_paid = not await _ever_paid(client_id)
+
         await billing.add_conversations(
             client_id, config["included_conversations"],
             source="mp_renovacao",
             description=f"payid={mp_payment_id} plano {plan_value} (via topic payment)",
         )
         await cache.delete_key(f"wallet_bal:{client_id}")
+        if first_paid:
+            asyncio.create_task(_send_subscription_welcome_bg(client_id, plan_value))
         await credit_referral_conversion(client_id)
         # Analytics server-side (GA4/Meta): mesma renovação, formato
         # alternativo do MP. Dedup herdado do razão (payid credita 1x).
@@ -1499,10 +1539,20 @@ async def _already_credited(client_id: str, authorized_payment_id: str) -> bool:
     return bool(resp.data)
 
 
-async def _upsert_subscription(client_id: str, plan: str, preapproval_id: str, status: str) -> None:
+async def _upsert_subscription(
+    client_id: str,
+    plan: str,
+    preapproval_id: str,
+    status: str,
+    welcome: bool = True,
+) -> None:
     """
     Uma linha por cliente na subscriptions: atualiza se existe, insere se não.
     (upsert cru duplicaria linhas — a tabela não tem unique em client_id.)
+
+    welcome=False: espelha o status sem agendar boas-vindas — usado quando
+    "active" vem só da autorização do cartão (ainda sem cobrança aprovada);
+    nesse caso as boas-vindas saem com a primeira cobrança paga.
     """
     supa = get_supabase()
     try:
@@ -1546,7 +1596,7 @@ async def _upsert_subscription(client_id: str, plan: str, preapproval_id: str, s
     # Boas-vindas de assinatura: só na TRANSIÇÃO pra active (reentrega de
     # webhook com active→active não reenvia). Fire-and-forget: e-mail
     # nunca atrasa nem quebra o fluxo de cobrança.
-    if status == "active" and old_status != "active":
+    if welcome and status == "active" and old_status != "active":
         asyncio.create_task(_send_subscription_welcome_bg(client_id, plan))
 
 
@@ -1608,6 +1658,121 @@ async def _set_subscription_status(client_id: str, status: str) -> None:
     )
     await cache.delete_key(f"sub_gate:{client_id}")
     await cache.delete_key(f"plan_cache:{client_id}")
+
+
+async def _current_status(client_id: str) -> str:
+    """Status atual na tabela subscriptions ('' se não há linha ou falha de leitura)."""
+    try:
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions").select("status")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        return ((resp.data[0].get("status") if resp.data else "") or "").strip()
+    except Exception as e:
+        log.warning(f"Status atual indisponível | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+        return ""
+
+
+async def _ever_paid(client_id: str) -> bool:
+    """
+    True se o cliente já teve ALGUMA cobrança de assinatura aprovada
+    (crédito de mensalidade com amount > 0 no razão). Decide se a cobrança
+    que está sendo creditada é a primeira da vida dele (boas-vindas).
+    Falha de leitura conta como "já pagou" — nunca manda boas-vindas em dobro.
+    """
+    try:
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("credit_transactions").select("id")
+                .eq("client_id", client_id)
+                .in_("source", ["mp_renovacao", "mp_primeira_cobranca"])
+                .gt("amount", 0)
+                .limit(1).execute()
+        )
+        return bool(resp.data)
+    except Exception as e:
+        log.warning(f"Histórico de cobrança indisponível | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+        return True
+
+
+async def _cancel_previous_preapproval(client_id: str, new_preapproval_id: str) -> None:
+    """
+    Cancela no MP o preapproval anterior do cliente quando ele assina de
+    novo (ex.: cartão recusado → MP pausou → dono assina com outro cartão).
+    Sem isso, o antigo pode voltar a cobrar em paralelo. Cortesia
+    (coupon:*) e ausência de preapproval não têm o que cancelar.
+    Best-effort: nunca levanta, nunca bloqueia a assinatura nova.
+    """
+    try:
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions").select("payment_provider_id,status")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        row = resp.data[0] if resp.data else {}
+    except Exception as e:
+        log.warning(f"Preapproval anterior não lido | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+        return
+
+    old_id = ((row.get("payment_provider_id") or "") if row else "").strip()
+    old_status = ((row.get("status") or "") if row else "").strip()
+    if not old_id or old_id == new_preapproval_id or old_id.startswith("coupon:"):
+        return
+    if old_status not in ("active", "paused", "pending"):
+        return
+
+    updated = await _mp_put(f"/preapproval/{old_id}", {"status": "cancelled"})
+    if updated:
+        log.info(
+            f"Preapproval anterior cancelado | client={client_id} | antigo={old_id} | "
+            f"status_antigo={old_status} | novo={new_preapproval_id}"
+        )
+    else:
+        log.warning(
+            f"Preapproval anterior NÃO cancelado (MP recusou) | client={client_id} | "
+            f"antigo={old_id} | novo={new_preapproval_id}"
+        )
+
+
+async def _notify_payment_problem_bg(client_id: str, local_status: str) -> None:
+    """
+    Avisa o dono que o Mercado Pago pausou/cancelou a assinatura por
+    cobrança recusada: e-mail (Resend) + WhatsApp (owner_phone).
+    Task de background — nunca levanta; falha de um canal não impede o outro.
+    """
+    try:
+        from huma.services import email_service
+
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("clients").select("owner_email,business_name,owner_phone")
+                .eq("client_id", client_id).limit(1).execute()
+        )
+        row = resp.data[0] if resp.data else {}
+        paused = local_status == "paused"
+
+        to = (row.get("owner_email") or "").strip()
+        if to:
+            await email_service.send_payment_problem(to, row.get("business_name") or "", paused)
+        else:
+            log.info(f"Aviso de cobrança sem e-mail | client={client_id}")
+
+        owner_phone = (row.get("owner_phone") or "").strip()
+        if owner_phone:
+            from huma.services import whatsapp_service as wa
+
+            estado = "pausou" if paused else "cancelou"
+            await wa.notify_owner(
+                owner_phone,
+                f"⚠️ O Mercado Pago não conseguiu cobrar o cartão da sua assinatura HUMA e {estado} "
+                f"a renovação. Sua IA continua no ar enquanto houver saldo de conversas. "
+                f"Pra não parar, assine de novo com outro cartão em app.HumaIA.com.br (Ajustes, Uso).",
+                client_id=client_id,
+            )
+        log.info(f"Aviso de cobrança recusada enviado | client={client_id} | status={local_status}")
+    except Exception as e:
+        log.error(f"Aviso de cobrança falhou | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
 
 
 # ================================================================

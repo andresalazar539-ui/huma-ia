@@ -29,9 +29,17 @@ const UsoScreen = ({ onGoto }) => {
       text: 'Teste encerrado, IA pausada',
       bg: 'var(--ember-soft)', fg: 'var(--ember-ink)', dot: 'var(--ember)',
     };
+    if (billing.awaiting_first_charge) return {
+      text: 'Aguardando a primeira cobrança',
+      bg: 'var(--terracotta-tint)', fg: 'var(--terracotta-ink)', dot: 'var(--terracotta)',
+    };
     if (billing.subscription_status === 'active') return {
       text: billing.plan_name || 'Ativo',
       bg: 'var(--sage-tint)', fg: 'var(--sage-ink)', dot: 'var(--sage)',
+    };
+    if (billing.subscription_status === 'paused') return {
+      text: 'Cobrança recusada, assinatura pausada',
+      bg: 'var(--ember-soft)', fg: 'var(--ember-ink)', dot: 'var(--ember)',
     };
     return {
       text: 'Sem plano ativo',
@@ -66,7 +74,9 @@ const UsoScreen = ({ onGoto }) => {
     if (!billing) return '';
     if (billing.trial) return 'Aproveite: sua IA está no ar de cortesia. Assine antes do fim pra não pausar o atendimento.';
     if (billing.trial_expired) return 'Assine um plano pra reativar sua IA, o saldo que sobrou do teste continua seu.';
+    if (billing.awaiting_first_charge) return 'Cartão validado. O Mercado Pago faz a primeira cobrança em até 1 hora e suas conversas entram assim que o pagamento for aprovado.';
     if (billing.subscription_status === 'active') return 'Assinatura mensal no cartão, renovação automática.';
+    if (billing.subscription_status === 'paused') return 'O Mercado Pago não conseguiu cobrar seu cartão e pausou a renovação. Sua IA segue no ar enquanto houver saldo. Assine de novo com outro cartão pra não parar.';
     return 'Escolha um plano pra colocar sua IA no ar.';
   })();
 
@@ -1857,10 +1867,10 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
           <Icon name="check" size={30} stroke={2.5}/>
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 26, color: 'var(--ink)' }}>
-          Assinatura ativa! 🎉
+          Cartão validado! ✅
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textAlign: 'center', maxWidth: 380 }}>
-          Plano {plan.name} por {_fmtBRL(price)}/mês. Suas conversas entram em instantes, te levando pro Início…
+          Plano {plan.name} por {_fmtBRL(price)}/mês. O Mercado Pago faz a primeira cobrança em até 1 hora e suas conversas entram assim que o pagamento for aprovado. Te levando pro Início…
         </div>
       </div>
     );

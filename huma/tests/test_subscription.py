@@ -118,7 +118,7 @@ class TestCreateCheckout:
 # AUTHORIZED PAYMENT (renovação mensal)
 # ================================================================
 
-def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, covered=False, recently=False, ext_ref="humasub|cli_x|on"):
+def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, covered=False, recently=False, ext_ref="humasub|cli_x|on", ever_paid_value=True):
     """Mocka a cadeia toda do _handle_authorized_payment e grava efeitos."""
     effects = {"credits": [], "upserts": []}
 
@@ -138,17 +138,21 @@ def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, cov
     async def recently_credited(cid, days=20):
         return recently
 
-    async def upsert(cid, plan, pre_id, status):
+    async def upsert(cid, plan, pre_id, status, welcome=True):
         effects["upserts"].append((cid, plan, pre_id, status))
 
     async def add_conversations(cid, amount, source="", description=""):
         effects["credits"].append((cid, amount, source, description))
         return amount
 
+    async def ever_paid(cid):
+        return ever_paid_value
+
     monkeypatch.setattr(subs, "_mp_get", mp_get)
     monkeypatch.setattr(subs, "_already_credited", already_credited)
     monkeypatch.setattr(subs, "_first_charge_covered", first_charge_covered)
     monkeypatch.setattr(subs, "_recently_credited", recently_credited)
+    monkeypatch.setattr(subs, "_ever_paid", ever_paid)
     monkeypatch.setattr(subs, "_upsert_subscription", upsert)
     monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
     return effects
@@ -186,6 +190,32 @@ class TestAuthorizedPayment:
         assert effects["credits"] == []
         assert effects["upserts"] == []
 
+    def _capture_tasks(self, monkeypatch):
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(getattr(coro, "__name__", str(coro)))
+            coro.close()
+            return None
+
+        monkeypatch.setattr(subs.asyncio, "create_task", fake_create_task)
+        return scheduled
+
+    def test_primeira_cobranca_paga_manda_boas_vindas(self, monkeypatch):
+        """Boas-vindas saem com DINHEIRO na conta (1ª cobrança aprovada), nunca na autorização do cartão."""
+        effects = _setup_renewal(monkeypatch, ever_paid_value=False)
+        scheduled = self._capture_tasks(monkeypatch)
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+        assert len(effects["credits"]) == 1
+        assert "_send_subscription_welcome_bg" in scheduled
+
+    def test_renovacao_nao_repete_boas_vindas(self, monkeypatch):
+        effects = _setup_renewal(monkeypatch, ever_paid_value=True)
+        scheduled = self._capture_tasks(monkeypatch)
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+        assert len(effects["credits"]) == 1
+        assert "_send_subscription_welcome_bg" not in scheduled
+
     def test_reentrega_do_webhook_nao_duplica_credito(self, monkeypatch):
         effects = _setup_renewal(monkeypatch, already=True)
         asyncio.run(subs._handle_authorized_payment("ap_1"))
@@ -203,28 +233,60 @@ class TestAuthorizedPayment:
 
 class TestPreapprovalChange:
 
-    def _setup(self, monkeypatch, mp_status, ext_ref="humasub|cli_x|on"):
-        effects = {"upserts": []}
+    def _setup(self, monkeypatch, mp_status, ext_ref="humasub|cli_x|on", previous="trial"):
+        effects = {"upserts": [], "alerts": []}
 
         async def mp_get(path):
             return {"id": "pre_1", "status": mp_status, "external_reference": ext_ref}
 
-        async def upsert(cid, plan, pre_id, status):
+        async def upsert(cid, plan, pre_id, status, welcome=True):
             effects["upserts"].append((cid, plan, pre_id, status))
+            effects["welcome"] = welcome
+
+        async def current_status(cid):
+            return previous
+
+        def fake_create_task(coro):
+            effects["alerts"].append(getattr(coro, "__name__", str(coro)))
+            coro.close()
+            return None
 
         monkeypatch.setattr(subs, "_mp_get", mp_get)
         monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs, "_current_status", current_status)
+        monkeypatch.setattr(subs.asyncio, "create_task", fake_create_task)
         return effects
 
     def test_authorized_vira_active(self, monkeypatch):
         effects = self._setup(monkeypatch, "authorized")
         asyncio.run(subs._handle_preapproval_change("pre_1"))
         assert effects["upserts"] == [("cli_x", "on", "pre_1", "active")]
+        # Cartão válido ≠ pago: boas-vindas ficam pra 1ª cobrança aprovada
+        assert effects["welcome"] is False
+        assert effects["alerts"] == []
 
     def test_cancelled_espelha(self, monkeypatch):
         effects = self._setup(monkeypatch, "cancelled")
         asyncio.run(subs._handle_preapproval_change("pre_1"))
         assert effects["upserts"] == [("cli_x", "on", "pre_1", "cancelled")]
+
+    def test_paused_pelo_mp_avisa_o_dono(self, monkeypatch):
+        """Cartão recusado → MP pausa sozinho → dono é avisado na transição."""
+        effects = self._setup(monkeypatch, "paused", previous="active")
+        asyncio.run(subs._handle_preapproval_change("pre_1"))
+        assert effects["upserts"] == [("cli_x", "on", "pre_1", "paused")]
+        assert effects["alerts"] == ["_notify_payment_problem_bg"]
+
+    def test_paused_reentrega_nao_avisa_duas_vezes(self, monkeypatch):
+        effects = self._setup(monkeypatch, "paused", previous="paused")
+        asyncio.run(subs._handle_preapproval_change("pre_1"))
+        assert effects["alerts"] == []
+
+    def test_cancelado_pelo_dono_nao_avisa_problema(self, monkeypatch):
+        """Cancelamento pelo Cockpit já gravou 'cancelled' antes do webhook: sem alerta falso."""
+        effects = self._setup(monkeypatch, "cancelled", previous="cancelled")
+        asyncio.run(subs._handle_preapproval_change("pre_1"))
+        assert effects["alerts"] == []
 
     def test_ext_ref_alheio_ignorado(self, monkeypatch):
         effects = self._setup(monkeypatch, "authorized", ext_ref="loja|xyz")
@@ -494,7 +556,7 @@ class TestCheckoutComCupom:
             effects["redemptions"].append((code, cid, plan, pre))
             return True
 
-        async def upsert(cid, plan, pre_id, status):
+        async def upsert(cid, plan, pre_id, status, welcome=True):
             effects["upserts"].append((cid, plan, pre_id, status))
 
         async def add_conversations(cid, amount, source="", description=""):
@@ -547,7 +609,7 @@ class TestRedemptionNaAtivacao:
             return {"id": "pre_1", "status": "authorized",
                     "external_reference": "humasub|cli_x|on|TESTE20"}
 
-        async def upsert(cid, plan, pre_id, status):
+        async def upsert(cid, plan, pre_id, status, welcome=True):
             effects["upserts"].append((cid, plan, pre_id, status))
 
         async def record(code, cid, plan, pre=""):
@@ -569,7 +631,7 @@ class TestRedemptionNaAtivacao:
             return {"id": "pre_1", "status": "cancelled",
                     "external_reference": "humasub|cli_x|on|TESTE20"}
 
-        async def upsert(*a):
+        async def upsert(*a, **kw):
             pass
 
         async def record(*a, **kw):
@@ -610,8 +672,9 @@ class TestSubscribeCard:
 
         monkeypatch.setattr(subs.httpx, "AsyncClient", FakeHTTP)
 
-        async def upsert(cid, plan, pre_id, status):
+        async def upsert(cid, plan, pre_id, status, welcome=True):
             effects["upserts"].append((cid, plan, pre_id, status))
+            effects["welcome"] = welcome
 
         async def add_conversations(cid, amount, source="", description=""):
             effects["credits"].append((cid, amount, source))
@@ -621,9 +684,13 @@ class TestSubscribeCard:
             effects["redemptions"].append((code, cid, pre_id))
             return True
 
+        async def cancel_previous(cid, new_id):
+            effects["cancel_previous"] = (cid, new_id)
+
         monkeypatch.setattr(subs, "_upsert_subscription", upsert)
         monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
         monkeypatch.setattr(subs, "_record_redemption", record)
+        monkeypatch.setattr(subs, "_cancel_previous_preapproval", cancel_previous)
 
         if coupon_valid is not None:
             async def validate(code, plan):
@@ -632,9 +699,10 @@ class TestSubscribeCard:
             monkeypatch.setattr(subs, "validate_coupon", validate)
         return effects, FakeHTTP
 
-    def test_cartao_autorizado_ativa_e_credita_na_hora(self, monkeypatch):
-        """Padrão Netflix: cartão aprovado = franquia na conta NO MESMO instante.
-        (O webhook posterior reconhece o marcador 'primeira pre=' e não duplica.)"""
+    def test_cartao_autorizado_ativa_sem_creditar(self, monkeypatch):
+        """REGRA DE OURO (2026-09-17): 'authorized' = cartão válido, NÃO pago.
+        O MP cobra ~1h depois e pode recusar. Zero crédito aqui; as conversas
+        entram só no webhook da cobrança aprovada."""
         effects, http = self._setup(
             monkeypatch, FakeResp(201, {"id": "pre_c1", "status": "authorized"})
         )
@@ -643,8 +711,14 @@ class TestSubscribeCard:
         ))
         assert out["status"] == "ok"
         assert out["subscription_status"] == "active"
+        assert out["awaiting_first_charge"] is True
+        assert "primeira cobrança" in out["detail"]
         assert effects["upserts"] == [("cli_x", "start", "pre_c1", "active")]
-        assert effects["credits"] == [("cli_x", PLAN_CONFIG[Plan.START]["included_conversations"], "mp_primeira_cobranca")]
+        assert effects["credits"] == []
+        # Boas-vindas só com dinheiro na conta
+        assert effects["welcome"] is False
+        # Preapproval anterior (se houver) é cancelado pra não cobrar em dobro
+        assert effects["cancel_previous"] == ("cli_x", "pre_c1")
         body = http.last_body
         assert body["card_token_id"] == "tok_cartao_123"
         assert body["status"] == "authorized"
@@ -728,7 +802,7 @@ class TestPendingNaoRebaixa:
         async def mp_get(path):
             return {"id": "pre_p", "status": "pending", "external_reference": "humasub|cli_x|on"}
 
-        async def upsert(cid, plan, pre_id, status):
+        async def upsert(cid, plan, pre_id, status, welcome=True):
             effects["upserts"].append((cid, plan, pre_id, status))
 
         class FakeExec:

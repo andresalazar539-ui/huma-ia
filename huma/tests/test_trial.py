@@ -450,7 +450,7 @@ class TestCacheInvalidation:
         async def recently(cid, days=20):
             return False
 
-        async def upsert(cid, plan, pre_id, status):
+        async def upsert(cid, plan, pre_id, status, welcome=True):
             pass
 
         async def add_conversations(cid, amount, source="", description=""):

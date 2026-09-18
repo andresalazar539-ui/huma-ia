@@ -198,6 +198,49 @@ async def send_subscription_welcome(
     )
 
 
+async def send_payment_problem(
+    to: str,
+    business_name: str,
+    paused: bool = True,
+) -> bool:
+    """
+    Aviso de cobrança RECUSADA: o Mercado Pago pausou (ou cancelou) a
+    assinatura porque não conseguiu cobrar o cartão. O dono precisa saber
+    na hora, não quando o saldo zerar. Nunca levanta exceção.
+    """
+    nome = (business_name or "").strip() or "seu negócio"
+    acao = "pausou" if paused else "cancelou"
+    body = f"""
+        <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:{_INK_SOFT};margin:0 0 16px 0;">
+          O Mercado Pago tentou cobrar o cartão da assinatura HUMA de <strong>{nome}</strong>
+          e não conseguiu. Depois de algumas tentativas, ele <strong>{acao} a renovação</strong>.
+        </p>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:{_PAPER};border-radius:10px;margin:0 0 20px 0;">
+          <tr><td style="padding:16px 18px;">
+            <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.8;color:{_INK_SOFT};margin:0;">
+              ✅ Sua IA continua no ar enquanto houver saldo de conversas<br>
+              ⚠️ Nenhuma conversa nova entra até a cobrança ser aprovada<br>
+              💳 Pra resolver, assine de novo com outro cartão em Ajustes, Uso
+            </p>
+          </td></tr>
+        </table>
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px 0;">
+          <tr><td style="background-color:{_EMBER};border-radius:8px;">
+            <a href="https://app.humaia.com.br/cockpit" target="_blank" style="display:inline-block;padding:13px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Atualizar meu cartão</a>
+          </td></tr>
+        </table>
+        <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{_MUTED};margin:0;">
+          Os motivos mais comuns são limite do cartão, cartão vencido ou bloqueio do banco
+          para cobrança recorrente. Se precisar, é só responder este e-mail.
+        </p>
+    """
+    return await send_email(
+        to,
+        "Não conseguimos cobrar o cartão da sua assinatura HUMA",
+        _shell(f"Sua assinatura precisa de você, {nome}", body),
+    )
+
+
 async def send_owner_report(
     to: str,
     subject: str,
