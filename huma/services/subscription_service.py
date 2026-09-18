@@ -361,6 +361,13 @@ async def create_subscription_with_card(
     reason = f"HUMA IA — Plano {config['name']}"
     if coupon_code:
         reason += f" (cupom {coupon_code})"
+
+    # Foto da assinatura ANTERIOR antes de criar a nova no MP: o webhook
+    # "authorized" da nova pode ser processado antes desta função voltar
+    # e já apontar a linha pro id novo — aí o preapproval antigo ficaria
+    # invisível e continuaria cobrando em paralelo.
+    previous_sub = await _current_subscription(client_id)
+
     body = {
         "reason": reason,
         "external_reference": _build_ext_ref(client_id, plan.value, coupon_code),
@@ -405,12 +412,20 @@ async def create_subscription_with_card(
     mp_status = (data.get("status") or "").lower()
     local_status = {"authorized": "active", "pending": "pending"}.get(mp_status, "pending")
 
+    # ORDEM IMPORTA: a linha local passa a apontar pro preapproval NOVO
+    # antes de cancelar o antigo no MP. Assim o webhook "cancelled" do
+    # antigo (chega segundos depois) é reconhecido como obsoleto pelo
+    # _handle_preapproval_change e ignorado — não sobrescreve a assinatura
+    # nova nem dispara alerta falso de cartão recusado ao dono.
+    await _upsert_subscription(client_id, plan.value, preapproval_id, local_status, welcome=False)
+
     # Assinatura nova substitui a anterior (pausada por cartão recusado,
     # pendente ou ativa): o preapproval antigo é cancelado no MP pra ele
     # nunca voltar a cobrar em paralelo — uma cobrança por mês, sempre.
-    await _cancel_previous_preapproval(client_id, preapproval_id)
+    # Excedente já programado na fatura antiga vai junto pra nova.
+    await _cancel_previous_preapproval(client_id, preapproval_id, previous_sub)
+    await _carry_overage_forward(client_id, preapproval_id, float(amount), previous_sub)
 
-    await _upsert_subscription(client_id, plan.value, preapproval_id, local_status, welcome=False)
     if local_status == "active" and coupon_code:
         # Webhook também registra (dedup por índice único) — aqui é cinto
         # e suspensório pra contagem de usos não depender só da reentrega.
@@ -438,8 +453,8 @@ async def create_subscription_with_card(
         detail = "Assinatura criada, aguardando confirmação do cartão. Isso pode levar alguns minutos."
     return {
         "status": "ok", "subscription_status": local_status, "detail": detail,
-        # preapproval_id: o frontend usa como transaction_id no dataLayer,
-        # casando com o purchase server-side (dedup GA4/Meta por id igual).
+        # preapproval_id: informativo (o purchase de assinatura é reportado
+        # SÓ pelo servidor, na cobrança aprovada — o navegador não dispara).
         "preapproval_id": preapproval_id,
         # Aditivo: o Cockpit mostra "aguardando a primeira cobrança" em vez
         # de "conversas liberadas" — só o webhook da cobrança aprovada libera.
@@ -722,16 +737,18 @@ async def get_billing_status(client_id: str) -> dict:
     overage_base = float((sub or {}).get("overage_base_amount_brl") or 0.0)
 
     # Cartão validado mas primeira cobrança ainda não aprovada pelo MP:
-    # a tela avisa "aguardando" em vez de prometer conversas. Só vale pra
+    # a tela avisa "aguardando" em vez de prometer conversas. Decidido POR
+    # PREAPPROVAL (não por cliente): quem trocou de cartão volta a
+    # "aguardando" até a assinatura nova ser cobrada. Só vale pra
     # preapproval real (cortesia coupon:* credita na hora). Falha de
-    # leitura degrada pra False — nunca derruba o status.
+    # leitura em _preapproval_charged conta como cobrado (nunca alarma).
     provider_id = ((sub or {}).get("payment_provider_id") or "").strip()
-    awaiting_first_charge = False
-    if status == "active" and provider_id and not provider_id.startswith("coupon:"):
-        try:
-            awaiting_first_charge = not await _ever_paid(client_id)
-        except Exception:
-            awaiting_first_charge = False
+    awaiting_first_charge = bool(
+        status == "active"
+        and provider_id
+        and not provider_id.startswith("coupon:")
+        and not await _preapproval_charged(client_id, provider_id)
+    )
 
     return {
         # Aditivo: True entre a autorização do cartão e a 1ª cobrança aprovada
@@ -789,6 +806,13 @@ async def cancel_subscription(client_id: str) -> dict:
         return {"status": "error", "detail": "Nenhuma assinatura ativa."}
 
     preapproval_id = sub.get("payment_provider_id", "")
+
+    # Grava "cancelled" ANTES de avisar o MP: o webhook de cancelamento
+    # pode chegar milissegundos depois do PUT e, se ainda lesse "active",
+    # o dono receberia um alerta falso de "cartão recusado" logo após
+    # cancelar por vontade própria. Se o MP recusar, volta pra "active".
+    await _set_subscription_status(client_id, "cancelled")
+
     if preapproval_id:
         try:
             async with httpx.AsyncClient(timeout=15.0) as http:
@@ -799,15 +823,17 @@ async def cancel_subscription(client_id: str) -> dict:
                 )
             if mp_resp.status_code not in (200, 201):
                 log.error(f"MP cancel recusado | client={client_id} | status={mp_resp.status_code} | {mp_resp.text[:200]}")
+                await _set_subscription_status(client_id, "active")
                 return {"status": "error", "detail": "Não foi possível cancelar no Mercado Pago. Tente de novo."}
         except httpx.TimeoutException:
             log.error(f"Timeout | service=mercadopago | op=cancel | client={client_id}")
+            await _set_subscription_status(client_id, "active")
             return {"status": "error", "detail": "Mercado Pago indisponível. Tente de novo."}
         except httpx.HTTPError as e:
             log.error(f"HTTP erro | service=mercadopago | op=cancel | client={client_id} | {type(e).__name__}: {e}")
+            await _set_subscription_status(client_id, "active")
             return {"status": "error", "detail": "Mercado Pago indisponível. Tente de novo."}
 
-    await _set_subscription_status(client_id, "cancelled")
     log.info(f"Assinatura cancelada | client={client_id} | preapproval={preapproval_id}")
     return {"status": "ok", "detail": "Assinatura cancelada. Suas conversas já pagas continuam válidas."}
 
@@ -863,29 +889,35 @@ async def _handle_preapproval_change(preapproval_id: str) -> None:
         log.warning(f"Preapproval status desconhecido | id={preapproval_id} | status={mp_status}")
         return
 
-    # Checkout ABANDONADO não rebaixa estado vivo: um preapproval "pending"
-    # (criado e nunca pago) não pode sobrescrever trial nem assinatura
-    # ativa — descoberto no E2E 2026-08-15, quando um checkout de teste
-    # abandonado apagou o trial da conta.
-    if local_status == "pending":
-        supa = get_supabase()
-        existing = await run_in_threadpool(
-            lambda: supa.table("subscriptions").select("status")
-                .eq("client_id", client_id).limit(1).execute()
-        )
-        current = (existing.data[0].get("status") if existing.data else "") or ""
-        if current in ("trial", "active"):
-            log.info(
-                f"Preapproval pending ignorado (não rebaixa {current}) | "
-                f"client={client_id} | preapproval={preapproval_id}"
-            )
-            return
+    # Foto da linha local ANTES de espelhar: status anterior (pra avisar o
+    # dono UMA vez, na transição) e qual preapproval a conta segue hoje.
+    # None = leitura falhou: espelha como sempre, mas sem guarda nem alerta.
+    current = await _current_subscription(client_id)
+    previous = ((current or {}).get("status") or "").strip() if current is not None else None
+    current_pre = ((current or {}).get("payment_provider_id") or "").strip()
+    same_pre = bool(current_pre) and current_pre == preapproval_id
 
-    # Status anterior ANTES de espelhar: pausa/cancelamento vindos do MP
-    # (cartão recusado) avisam o dono UMA vez, na transição. Cancelamento
-    # feito pelo próprio dono no Cockpit já gravou "cancelled" antes do
-    # webhook chegar — não dispara aviso de problema.
-    previous = await _current_status(client_id)
+    # Evento de OUTRO preapproval nunca rebaixa estado vivo (trial/active):
+    #   - "pending" de checkout abandonado (E2E 2026-08-15: apagou o trial);
+    #   - "cancelled"/"paused" do preapproval ANTIGO, cancelado pela HUMA
+    #     na troca de cartão (o webhook chega segundos depois da nova
+    #     assinatura já estar gravada) ou de um checkout abandonado que o
+    #     MP expirou. Sem esta guarda a assinatura nova era sobrescrita e
+    #     o dono recebia alerta falso de cartão recusado.
+    # "authorized" de um id novo sempre entra (é a ativação do checkout
+    # hospedado ou a corrida do webhook com o checkout transparente).
+    if local_status in ("pending", "paused", "cancelled") and previous in ("trial", "active") and not same_pre:
+        log.info(
+            f"Preapproval {local_status} ignorado (obsoleto, não rebaixa {previous}) | "
+            f"client={client_id} | preapproval={preapproval_id} | vigente={current_pre or '-'}"
+        )
+        return
+    if local_status == "pending" and previous in ("trial", "active"):
+        log.info(
+            f"Preapproval pending ignorado (não rebaixa {previous}) | "
+            f"client={client_id} | preapproval={preapproval_id}"
+        )
+        return
 
     # "authorized" = cartão válido, ainda sem dinheiro. As boas-vindas
     # saem com a primeira cobrança APROVADA (webhook de pagamento).
@@ -896,13 +928,19 @@ async def _handle_preapproval_change(preapproval_id: str) -> None:
     if local_status == "active" and ref.get("coupon"):
         await _record_redemption(ref["coupon"], client_id, plan, preapproval_id)
 
-    if local_status in ("paused", "cancelled") and previous not in ("paused", "cancelled"):
+    if local_status in ("paused", "cancelled") and previous == "active" and same_pre:
         # O MP pausa (ou cancela) sozinho quando a cobrança do cartão é
         # recusada repetidas vezes. Sem aviso, o dono só descobre quando
-        # o saldo zera. Fire-and-forget: nunca atrasa o webhook.
+        # o saldo zera. Só na transição active→paused/cancelled DO MESMO
+        # preapproval: cancelamento pelo Cockpit já gravou "cancelled"
+        # antes do PUT no MP, reentrega lê "paused", leitura falha lê None.
+        # Fire-and-forget: nunca atrasa o webhook.
         asyncio.create_task(_notify_payment_problem_bg(client_id, local_status))
 
-    log.info(f"Assinatura {local_status} | client={client_id} | plan={plan} | preapproval={preapproval_id} | antes={previous or '-'}")
+    log.info(
+        f"Assinatura {local_status} | client={client_id} | plan={plan} | "
+        f"preapproval={preapproval_id} | antes={previous if previous is not None else '?'}"
+    )
 
 
 async def _handle_authorized_payment(authorized_payment_id: str) -> None:
@@ -913,9 +951,20 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     if not data:
         return
 
-    payment_status = ((data.get("payment") or {}).get("status") or "").lower()
+    payment = data.get("payment") or {}
+    payment_status = (payment.get("status") or "").lower()
+    # id do PAGAMENTO por trás desta cobrança: é o mesmo id que chega pelo
+    # topic "payment" (credit_subscription_charge). Dedup EXATA entre os
+    # dois formatos do MP — não uma janela de tempo.
+    pay_id = str(payment.get("id") or "").strip()
+
     if payment_status != "approved":
         log.info(f"Cobrança não aprovada (ainda) | apid={authorized_payment_id} | payment_status={payment_status}")
+        if payment_status in ("rejected", "cancelled"):
+            # Primeira recusa: o dono fica sabendo na hora (o MP tenta de
+            # novo por dias e só então pausa — sem isto ele só descobria
+            # dias depois, com a IA já sem saldo). 1 aviso a cada 3 dias.
+            await _notify_rejected_charge(data)
         return
 
     preapproval_id = data.get("preapproval_id", "")
@@ -932,19 +981,22 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         log.error(f"Cobrança de plano desconhecido | apid={authorized_payment_id} | plan={plan_value}")
         return
 
-    # Dedup: MP reentrega webhooks — o apid só credita uma vez, nunca duas.
-    if await _already_credited(client_id, authorized_payment_id):
-        log.info(f"Cobrança já creditada (reentrega) | apid={authorized_payment_id}")
+    # Dedup: MP reentrega webhooks — o apid só credita uma vez, nunca duas;
+    # e se a MESMA cobrança já entrou pelo topic payment (payid=), idem.
+    if await _already_credited(client_id, authorized_payment_id, pay_id):
+        log.info(f"Cobrança já creditada (reentrega) | apid={authorized_payment_id} | payid={pay_id or '-'}")
         return
 
     # welcome=False: as boas-vindas saem abaixo, atreladas à primeira
     # cobrança PAGA (first_paid) — nunca em dobro numa transição paused→active.
     await _upsert_subscription(client_id, plan_value, preapproval_id, "active", welcome=False)
 
-    # Checkout transparente credita a PRIMEIRA cobrança na ativação
-    # (padrão Netflix). Se este apid é a primeira cobrança de um
-    # preapproval já coberto, grava só o marcador (amount=0) pra
-    # reentrega futura cair no dedup — sem duplicar franquia.
+    # LEGADO (assinaturas ativadas ANTES de 2026-09-17): o checkout
+    # transparente creditava a primeira cobrança na ativação com o
+    # marcador "primeira pre=". Hoje NADA credita na ativação (regra de
+    # ouro: só cobrança aprovada), então isto só absorve a primeira
+    # cobrança daqueles preapprovals antigos — grava o marcador (amount=0)
+    # pra reentrega cair no dedup, sem duplicar franquia.
     if await _first_charge_covered(client_id, preapproval_id):
         await billing.add_conversations(
             client_id, 0,
@@ -960,10 +1012,12 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
         )
         return
 
-    # Janela anti-duplicação: a MESMA cobrança pode chegar também como
-    # topic payment (credit via payid=). Quem chegar por segundo no mês
-    # grava só o marcador — nunca franquia dupla.
-    if await _recently_credited(client_id):
+    # Janela anti-duplicação SÓ quando o MP não informou o id do pagamento
+    # (aí não dá pra casar com o topic payment pelo payid=). Com payid
+    # conhecido a dedup é exata acima — a janela de 20 dias nunca pode
+    # engolir a primeira cobrança de uma assinatura nova feita dias depois
+    # de uma renovação (troca de cartão): cobrar 2x e creditar 1x.
+    if not pay_id and await _recently_credited(client_id):
         await billing.add_conversations(
             client_id, 0,
             source="mp_renovacao",
@@ -980,10 +1034,11 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     # que saem as boas-vindas — nunca na autorização do cartão.
     first_paid = not await _ever_paid(client_id)
 
+    payid_tag = f" payid={pay_id}" if pay_id else ""
     await billing.add_conversations(
         client_id, config["included_conversations"],
         source="mp_renovacao",
-        description=f"apid={authorized_payment_id} pre={preapproval_id} plano {plan_value}",
+        description=f"apid={authorized_payment_id}{payid_tag} pre={preapproval_id} plano {plan_value}",
     )
     # Saldo mudou por fora: derruba o cache de 60s pra quem estava
     # bloqueado (ex.: trial expirado que acabou de assinar) destravar já.
@@ -1015,26 +1070,33 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     asyncio.create_task(settle_overage_after_charge(client_id))
 
 
-async def _recently_credited(client_id: str, days: int = 20) -> bool:
+async def _recently_credited(client_id: str, days: int = 20, unidentified_only: bool = False) -> bool:
     """
     True se este cliente já recebeu crédito de mensalidade (renovação ou
-    primeira cobrança) nos últimos `days` dias. Janela anti-duplicação:
-    o MP pode notificar a MESMA cobrança por dois caminhos (topic
-    subscription_authorized_payment E topic payment) — cada mês credita
-    UMA vez, chegue o aviso como chegar. Renovações reais distam ~30d,
-    então a janela de 20d nunca segura um mês legítimo.
+    primeira cobrança) nos últimos `days` dias. Janela anti-duplicação de
+    ÚLTIMO recurso: o MP pode notificar a MESMA cobrança por dois caminhos
+    (topic subscription_authorized_payment E topic payment). Desde
+    2026-09-17 a dedup principal é exata, pelo id do pagamento (payid=)
+    gravado na descrição — a janela só vale quando esse id não existe.
+
+    unidentified_only=True: considera só créditos SEM payid= na descrição
+    (caminho antigo). Um crédito com payid diferente é OUTRA cobrança
+    (ex.: assinatura nova dias depois de uma renovação) e não bloqueia.
     """
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     supa = get_supabase()
     resp = await run_in_threadpool(
-        lambda: supa.table("credit_transactions").select("id")
+        lambda: supa.table("credit_transactions").select("id,description")
             .eq("client_id", client_id)
             .in_("source", ["mp_renovacao", "mp_primeira_cobranca"])
             .gt("amount", 0)
             .gt("created_at", cutoff)
-            .limit(1).execute()
+            .limit(10).execute()
     )
-    return bool(resp.data)
+    rows = resp.data or []
+    if unidentified_only:
+        rows = [r for r in rows if "payid=" not in ((r.get("description") or "") if isinstance(r, dict) else "")]
+    return bool(rows)
 
 
 # ================================================================
@@ -1459,14 +1521,23 @@ async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_s
             return
 
         # _set (não _upsert): preserva o preapproval_id já gravado —
-        # este topic não traz o id do preapproval.
+        # este topic não traz o id do preapproval. O id vigente entra na
+        # descrição (pre=) pra _preapproval_charged saber que ESTA
+        # assinatura já foi cobrada.
+        current = await _current_subscription(client_id)
+        current_pre = ((current or {}).get("payment_provider_id") or "").strip()
+        pre_tag = f" pre={current_pre}" if current_pre and not current_pre.startswith("coupon:") else ""
         await _set_subscription_status(client_id, "active")
 
-        if await _recently_credited(client_id):
+        # Janela anti-duplicação só contra créditos SEM payid (caminho
+        # antigo): o authorized_payment grava payid= e já foi barrado pelo
+        # dedup exato acima. Sem isto, a primeira cobrança de uma
+        # assinatura nova dias depois de uma renovação era engolida.
+        if await _recently_credited(client_id, unidentified_only=True):
             await billing.add_conversations(
                 client_id, 0,
                 source="mp_renovacao",
-                description=f"payid={mp_payment_id} plano {plan_value} (mês já creditado)",
+                description=f"payid={mp_payment_id}{pre_tag} plano {plan_value} (mês já creditado)",
             )
             log.info(f"Mês já creditado por outro caminho | client={client_id} | payid={mp_payment_id}")
             return
@@ -1478,7 +1549,7 @@ async def credit_subscription_charge(mp_payment_id: str, ext_ref: str, payment_s
         await billing.add_conversations(
             client_id, config["included_conversations"],
             source="mp_renovacao",
-            description=f"payid={mp_payment_id} plano {plan_value} (via topic payment)",
+            description=f"payid={mp_payment_id}{pre_tag} plano {plan_value} (via topic payment)",
         )
         await cache.delete_key(f"wallet_bal:{client_id}")
         if first_paid:
@@ -1529,8 +1600,12 @@ async def _first_charge_covered(client_id: str, preapproval_id: str) -> bool:
     return not consumida.data
 
 
-async def _already_credited(client_id: str, authorized_payment_id: str) -> bool:
-    """True se este authorized_payment já virou crédito (dedup de reentrega)."""
+async def _already_credited(client_id: str, authorized_payment_id: str, payment_id: str = "") -> bool:
+    """
+    True se esta cobrança já virou crédito: pelo apid (reentrega do mesmo
+    webhook) ou, quando informado, pelo id do pagamento (payid=) — a mesma
+    cobrança que já entrou pelo topic payment. Dedup exata, sem janela.
+    """
     supa = get_supabase()
     resp = await run_in_threadpool(
         lambda: supa.table("credit_transactions").select("id")
@@ -1538,7 +1613,17 @@ async def _already_credited(client_id: str, authorized_payment_id: str) -> bool:
             .like("description", f"%apid={authorized_payment_id}%")
             .limit(1).execute()
     )
-    return bool(resp.data)
+    if resp.data:
+        return True
+    if not payment_id:
+        return False
+    by_pay = await run_in_threadpool(
+        lambda: supa.table("credit_transactions").select("id")
+            .eq("client_id", client_id)
+            .like("description", f"%payid={payment_id}%")
+            .limit(1).execute()
+    )
+    return bool(by_pay.data)
 
 
 async def _upsert_subscription(
@@ -1662,18 +1747,47 @@ async def _set_subscription_status(client_id: str, status: str) -> None:
     await cache.delete_key(f"plan_cache:{client_id}")
 
 
-async def _current_status(client_id: str) -> str:
-    """Status atual na tabela subscriptions ('' se não há linha ou falha de leitura)."""
+async def _current_subscription(client_id: str) -> Optional[dict]:
+    """
+    Foto da linha atual em subscriptions: status, payment_provider_id e
+    excedente programado. {} se o cliente não tem linha; None se a
+    leitura falhou (quem chama decide o que fazer sem a informação).
+    """
     try:
         supa = get_supabase()
         resp = await run_in_threadpool(
-            lambda: supa.table("subscriptions").select("status")
+            lambda: supa.table("subscriptions")
+                .select("status,payment_provider_id,overage_pending_brl,overage_base_amount_brl")
                 .eq("client_id", client_id).limit(1).execute()
         )
-        return ((resp.data[0].get("status") if resp.data else "") or "").strip()
+        return dict(resp.data[0]) if resp.data else {}
     except Exception as e:
-        log.warning(f"Status atual indisponível | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
-        return ""
+        log.warning(f"Assinatura atual indisponível | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+        return None
+
+
+async def _preapproval_charged(client_id: str, preapproval_id: str) -> bool:
+    """
+    True se ESTE preapproval já produziu ao menos uma cobrança aprovada
+    (crédito de mensalidade com amount > 0 e "pre=<id>" na descrição).
+    Falha de leitura conta como cobrado — a tela nunca alarma por engano.
+    """
+    if not preapproval_id:
+        return True
+    try:
+        supa = get_supabase()
+        resp = await run_in_threadpool(
+            lambda: supa.table("credit_transactions").select("id")
+                .eq("client_id", client_id)
+                .in_("source", ["mp_renovacao", "mp_primeira_cobranca"])
+                .gt("amount", 0)
+                .like("description", f"%pre={preapproval_id}%")
+                .limit(1).execute()
+        )
+        return bool(resp.data)
+    except Exception as e:
+        log.warning(f"Cobrança do preapproval indisponível | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+        return True
 
 
 async def _ever_paid(client_id: str) -> bool:
@@ -1698,27 +1812,31 @@ async def _ever_paid(client_id: str) -> bool:
         return True
 
 
-async def _cancel_previous_preapproval(client_id: str, new_preapproval_id: str) -> None:
+async def _cancel_previous_preapproval(
+    client_id: str,
+    new_preapproval_id: str,
+    previous: Optional[dict] = None,
+) -> None:
     """
     Cancela no MP o preapproval anterior do cliente quando ele assina de
     novo (ex.: cartão recusado → MP pausou → dono assina com outro cartão).
     Sem isso, o antigo pode voltar a cobrar em paralelo. Cortesia
     (coupon:*) e ausência de preapproval não têm o que cancelar.
-    Best-effort: nunca levanta, nunca bloqueia a assinatura nova.
+
+    `previous` é a foto da linha tirada ANTES de criar o preapproval novo
+    (ver create_subscription_with_card); sem ela lê a linha agora (pode já
+    apontar pro novo se o webhook correu na frente). Best-effort: nunca
+    levanta, nunca bloqueia a assinatura nova; falha vira ERROR no log.
     """
-    try:
-        supa = get_supabase()
-        resp = await run_in_threadpool(
-            lambda: supa.table("subscriptions").select("payment_provider_id,status")
-                .eq("client_id", client_id).limit(1).execute()
-        )
-        row = resp.data[0] if resp.data else {}
-    except Exception as e:
-        log.warning(f"Preapproval anterior não lido | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+    row = previous
+    if row is None:
+        row = await _current_subscription(client_id)
+    if row is None:
+        log.error(f"Preapproval anterior não lido, pode seguir cobrando | client={client_id} | novo={new_preapproval_id}")
         return
 
-    old_id = ((row.get("payment_provider_id") or "") if row else "").strip()
-    old_status = ((row.get("status") or "") if row else "").strip()
+    old_id = (row.get("payment_provider_id") or "").strip()
+    old_status = (row.get("status") or "").strip()
     if not old_id or old_id == new_preapproval_id or old_id.startswith("coupon:"):
         return
     if old_status not in ("active", "paused", "pending"):
@@ -1731,10 +1849,84 @@ async def _cancel_previous_preapproval(client_id: str, new_preapproval_id: str) 
             f"status_antigo={old_status} | novo={new_preapproval_id}"
         )
     else:
-        log.warning(
-            f"Preapproval anterior NÃO cancelado (MP recusou) | client={client_id} | "
-            f"antigo={old_id} | novo={new_preapproval_id}"
+        log.error(
+            f"Preapproval anterior NÃO cancelado (MP recusou), pode cobrar em dobro | "
+            f"client={client_id} | antigo={old_id} | novo={new_preapproval_id}"
         )
+
+
+async def _carry_overage_forward(
+    client_id: str,
+    new_preapproval_id: str,
+    base_amount: float,
+    previous: Optional[dict],
+) -> None:
+    """
+    Excedente já programado na fatura do preapproval ANTIGO (job
+    overage_invoice subiu o valor dele) não pode se perder quando o dono
+    assina de novo: o valor vai pro preapproval NOVO (base + excedente) e
+    settle_overage_after_charge restaura o base após a cobrança, como
+    sempre. Nunca levanta; falha no MP vira ERROR (dinheiro em jogo).
+    """
+    if not previous:
+        return
+    try:
+        pending = float(previous.get("overage_pending_brl") or 0.0)
+    except (TypeError, ValueError):
+        pending = 0.0
+    old_id = (previous.get("payment_provider_id") or "").strip()
+    if pending <= 0 or not old_id or old_id == new_preapproval_id or old_id.startswith("coupon:"):
+        return
+    if base_amount <= 0 or not new_preapproval_id:
+        return
+
+    new_amount = round(base_amount + pending, 2)
+    updated = await _mp_put(f"/preapproval/{new_preapproval_id}", {
+        "auto_recurring": {"transaction_amount": new_amount, "currency_id": "BRL"},
+    })
+    if not updated:
+        log.error(
+            f"Excedente | NÃO carregado pra assinatura nova (MP recusou) | client={client_id} | "
+            f"R$ {pending:.2f} | antigo={old_id} | novo={new_preapproval_id}"
+        )
+        return
+    try:
+        supa = get_supabase()
+        await run_in_threadpool(
+            lambda: supa.table("subscriptions").update({
+                "overage_base_amount_brl": base_amount,
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("client_id", client_id).execute()
+        )
+    except Exception as e:
+        log.error(f"Excedente | base da assinatura nova não gravada | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+    log.info(
+        f"Excedente | carregado pra assinatura nova | client={client_id} | R$ {pending:.2f} | "
+        f"cobrança={new_amount:.2f} | antigo={old_id} | novo={new_preapproval_id}"
+    )
+
+
+async def _notify_rejected_charge(authorized_payment: dict) -> None:
+    """
+    Cobrança de assinatura RECUSADA pelo banco (o MP vai tentar de novo):
+    avisa o dono na primeira recusa, no máximo 1 vez a cada 3 dias por
+    cliente (Redis sub_reject_alert:{client_id}). Nunca levanta.
+    """
+    try:
+        preapproval_id = str(authorized_payment.get("preapproval_id") or "")
+        pre = await _mp_get(f"/preapproval/{preapproval_id}") if preapproval_id else None
+        ref = _parse_ext_ref((pre or {}).get("external_reference", ""))
+        if not ref:
+            return
+        client_id = ref["client_id"]
+        key = f"sub_reject_alert:{client_id}"
+        if await cache.exists(key):
+            return
+        await cache.set_with_ttl(key, preapproval_id, ttl=3 * 86400)
+        asyncio.create_task(_notify_payment_problem_bg(client_id, "rejected"))
+        log.info(f"Cobrança recusada, dono avisado | client={client_id} | preapproval={preapproval_id}")
+    except Exception as e:
+        log.error(f"Aviso de cobrança recusada falhou | {type(e).__name__}: {str(e)[:120]}")
 
 
 async def _notify_payment_problem_bg(client_id: str, local_status: str) -> None:
@@ -1752,11 +1944,17 @@ async def _notify_payment_problem_bg(client_id: str, local_status: str) -> None:
                 .eq("client_id", client_id).limit(1).execute()
         )
         row = resp.data[0] if resp.data else {}
+        retrying = local_status == "rejected"
         paused = local_status == "paused"
 
         to = (row.get("owner_email") or "").strip()
         if to:
-            await email_service.send_payment_problem(to, row.get("business_name") or "", paused)
+            try:
+                await email_service.send_payment_problem(
+                    to, row.get("business_name") or "", paused, retrying=retrying,
+                )
+            except Exception as e:
+                log.error(f"Aviso de cobrança | e-mail falhou | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
         else:
             log.info(f"Aviso de cobrança sem e-mail | client={client_id}")
 
@@ -1764,14 +1962,21 @@ async def _notify_payment_problem_bg(client_id: str, local_status: str) -> None:
         if owner_phone:
             from huma.services import whatsapp_service as wa
 
-            estado = "pausou" if paused else "cancelou"
-            await wa.notify_owner(
-                owner_phone,
-                f"⚠️ O Mercado Pago não conseguiu cobrar o cartão da sua assinatura HUMA e {estado} "
-                f"a renovação. Sua IA continua no ar enquanto houver saldo de conversas. "
-                f"Pra não parar, assine de novo com outro cartão em app.HumaIA.com.br (Ajustes, Uso).",
-                client_id=client_id,
-            )
+            if retrying:
+                texto = (
+                    "⚠️ O banco recusou a cobrança do cartão da sua assinatura HUMA. O Mercado Pago "
+                    "vai tentar de novo nos próximos dias. Sua IA continua no ar enquanto houver saldo "
+                    "de conversas. Se preferir resolver agora, assine de novo com outro cartão em "
+                    "app.HumaIA.com.br (Ajustes, Uso)."
+                )
+            else:
+                estado = "pausou" if paused else "cancelou"
+                texto = (
+                    f"⚠️ O Mercado Pago não conseguiu cobrar o cartão da sua assinatura HUMA e {estado} "
+                    f"a renovação. Sua IA continua no ar enquanto houver saldo de conversas. "
+                    f"Pra não parar, assine de novo com outro cartão em app.HumaIA.com.br (Ajustes, Uso)."
+                )
+            await wa.notify_owner(owner_phone, texto, client_id=client_id)
         log.info(f"Aviso de cobrança recusada enviado | client={client_id} | status={local_status}")
     except Exception as e:
         log.error(f"Aviso de cobrança falhou | client={client_id} | {type(e).__name__}: {str(e)[:120]}")

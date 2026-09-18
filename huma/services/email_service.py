@@ -202,25 +202,38 @@ async def send_payment_problem(
     to: str,
     business_name: str,
     paused: bool = True,
+    retrying: bool = False,
 ) -> bool:
     """
-    Aviso de cobrança RECUSADA: o Mercado Pago pausou (ou cancelou) a
-    assinatura porque não conseguiu cobrar o cartão. O dono precisa saber
-    na hora, não quando o saldo zerar. Nunca levanta exceção.
+    Aviso de cobrança RECUSADA da assinatura. retrying=True: o banco
+    recusou e o Mercado Pago ainda vai tentar de novo. retrying=False: o
+    Mercado Pago desistiu e pausou (paused=True) ou cancelou a renovação.
+    O dono precisa saber na hora, não quando o saldo zerar. Nunca levanta.
     """
     nome = (business_name or "").strip() or "seu negócio"
-    acao = "pausou" if paused else "cancelou"
+    if retrying:
+        situacao = (
+            f"O banco recusou a cobrança do cartão da assinatura HUMA de <strong>{nome}</strong>. "
+            f"O Mercado Pago <strong>vai tentar de novo nos próximos dias</strong>."
+        )
+        dica = "💳 Se preferir resolver agora, assine de novo com outro cartão em Ajustes, Uso"
+    else:
+        acao = "pausou" if paused else "cancelou"
+        situacao = (
+            f"O Mercado Pago tentou cobrar o cartão da assinatura HUMA de <strong>{nome}</strong> "
+            f"e não conseguiu. Depois de algumas tentativas, ele <strong>{acao} a renovação</strong>."
+        )
+        dica = "💳 Pra resolver, assine de novo com outro cartão em Ajustes, Uso"
     body = f"""
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:{_INK_SOFT};margin:0 0 16px 0;">
-          O Mercado Pago tentou cobrar o cartão da assinatura HUMA de <strong>{nome}</strong>
-          e não conseguiu. Depois de algumas tentativas, ele <strong>{acao} a renovação</strong>.
+          {situacao}
         </p>
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:{_PAPER};border-radius:10px;margin:0 0 20px 0;">
           <tr><td style="padding:16px 18px;">
             <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.8;color:{_INK_SOFT};margin:0;">
               ✅ Sua IA continua no ar enquanto houver saldo de conversas<br>
-              ⚠️ Nenhuma conversa nova entra até a cobrança ser aprovada<br>
-              💳 Pra resolver, assine de novo com outro cartão em Ajustes, Uso
+              ⚠️ As conversas do mês só são creditadas quando a cobrança for aprovada<br>
+              {dica}
             </p>
           </td></tr>
         </table>

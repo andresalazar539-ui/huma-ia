@@ -441,13 +441,13 @@ class TestCacheInvalidation:
                 return {"id": "ap_1", "preapproval_id": "pre_1", "payment": {"status": "approved"}}
             return {"id": "pre_1", "status": "authorized", "external_reference": "humasub|cli_x|on"}
 
-        async def already(cid, apid):
+        async def already(cid, apid, payment_id=""):
             return False
 
         async def covered(cid, pre_id):
             return False
 
-        async def recently(cid, days=20):
+        async def recently(cid, days=20, **kw):
             return False
 
         async def upsert(cid, plan, pre_id, status, welcome=True):

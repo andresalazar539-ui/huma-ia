@@ -118,24 +118,28 @@ class TestCreateCheckout:
 # AUTHORIZED PAYMENT (renovação mensal)
 # ================================================================
 
-def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, covered=False, recently=False, ext_ref="humasub|cli_x|on", ever_paid_value=True):
+def _setup_renewal(monkeypatch, *, payment_status="approved", already=False, covered=False, recently=False, ext_ref="humasub|cli_x|on", ever_paid_value=True, pay_id=""):
     """Mocka a cadeia toda do _handle_authorized_payment e grava efeitos."""
-    effects = {"credits": [], "upserts": []}
+    effects = {"credits": [], "upserts": [], "already_args": []}
 
     async def mp_get(path):
         if path.startswith("/authorized_payments/"):
-            return {"id": "ap_1", "preapproval_id": "pre_1", "payment": {"status": payment_status}}
+            payment = {"status": payment_status}
+            if pay_id:
+                payment["id"] = pay_id
+            return {"id": "ap_1", "preapproval_id": "pre_1", "payment": payment}
         if path.startswith("/preapproval/"):
             return {"id": "pre_1", "status": "authorized", "external_reference": ext_ref}
         return None
 
-    async def already_credited(cid, apid):
+    async def already_credited(cid, apid, payment_id=""):
+        effects["already_args"].append((cid, apid, payment_id))
         return already
 
     async def first_charge_covered(cid, pre_id):
         return covered
 
-    async def recently_credited(cid, days=20):
+    async def recently_credited(cid, days=20, **kw):
         return recently
 
     async def upsert(cid, plan, pre_id, status, welcome=True):
@@ -268,18 +272,20 @@ class TestAuthorizedPayment:
 
 class TestPreapprovalChange:
 
-    def _setup(self, monkeypatch, mp_status, ext_ref="humasub|cli_x|on", previous="trial"):
+    def _setup(self, monkeypatch, mp_status, ext_ref="humasub|cli_x|on", previous="trial", current_pre="pre_1", event_pre="pre_1"):
         effects = {"upserts": [], "alerts": []}
 
         async def mp_get(path):
-            return {"id": "pre_1", "status": mp_status, "external_reference": ext_ref}
+            return {"id": event_pre, "status": mp_status, "external_reference": ext_ref}
 
         async def upsert(cid, plan, pre_id, status, welcome=True):
             effects["upserts"].append((cid, plan, pre_id, status))
             effects["welcome"] = welcome
 
-        async def current_status(cid):
-            return previous
+        async def current_subscription(cid):
+            if previous is None:
+                return None
+            return {"status": previous, "payment_provider_id": current_pre}
 
         def fake_create_task(coro):
             effects["alerts"].append(getattr(coro, "__name__", str(coro)))
@@ -288,9 +294,42 @@ class TestPreapprovalChange:
 
         monkeypatch.setattr(subs, "_mp_get", mp_get)
         monkeypatch.setattr(subs, "_upsert_subscription", upsert)
-        monkeypatch.setattr(subs, "_current_status", current_status)
+        monkeypatch.setattr(subs, "_current_subscription", current_subscription)
         monkeypatch.setattr(subs.asyncio, "create_task", fake_create_task)
         return effects
+
+    def test_cancelled_do_preapproval_antigo_nao_sobrescreve_o_novo(self, monkeypatch):
+        """Troca de cartão: a HUMA cancela o preapproval antigo e o webhook
+        dele chega depois da assinatura nova já gravada → ignorado, sem
+        rebaixar a nova e sem alerta falso ao dono."""
+        effects = self._setup(monkeypatch, "cancelled", previous="active", current_pre="pre_novo", event_pre="pre_antigo")
+        asyncio.run(subs._handle_preapproval_change("pre_antigo"))
+        assert effects["upserts"] == []
+        assert effects["alerts"] == []
+
+    def test_cancelled_de_checkout_abandonado_nao_apaga_trial(self, monkeypatch):
+        effects = self._setup(monkeypatch, "cancelled", previous="trial", current_pre="", event_pre="pre_x")
+        asyncio.run(subs._handle_preapproval_change("pre_x"))
+        assert effects["upserts"] == []
+        assert effects["alerts"] == []
+
+    def test_authorized_de_id_novo_sempre_entra(self, monkeypatch):
+        """Webhook da assinatura nova correndo na frente do checkout: ativa."""
+        effects = self._setup(monkeypatch, "authorized", previous="paused", current_pre="pre_antigo", event_pre="pre_novo")
+        asyncio.run(subs._handle_preapproval_change("pre_novo"))
+        assert effects["upserts"] == [("cli_x", "on", "pre_novo", "active")]
+
+    def test_leitura_falhou_espelha_sem_alertar(self, monkeypatch):
+        effects = self._setup(monkeypatch, "paused", previous=None)
+        asyncio.run(subs._handle_preapproval_change("pre_1"))
+        assert effects["upserts"] == [("cli_x", "on", "pre_1", "paused")]
+        assert effects["alerts"] == []
+
+    def test_paused_vindo_de_trial_nao_alerta(self, monkeypatch):
+        """Nunca houve cartão cobrado: sem "cobrança recusada" pra quem estava no trial."""
+        effects = self._setup(monkeypatch, "paused", previous="trial", current_pre="pre_1")
+        asyncio.run(subs._handle_preapproval_change("pre_1"))
+        assert effects["alerts"] == []
 
     def test_authorized_vira_active(self, monkeypatch):
         effects = self._setup(monkeypatch, "authorized")
@@ -686,9 +725,10 @@ class TestRedemptionNaAtivacao:
 
 class TestSubscribeCard:
 
-    def _setup(self, monkeypatch, mp_resp, coupon_valid=None):
+    def _setup(self, monkeypatch, mp_resp, coupon_valid=None, previous_row=None):
         """Mocka MP + upsert + créditos; retorna efeitos gravados."""
         effects = {"upserts": [], "credits": [], "redemptions": []}
+        previous_row = {} if previous_row is None else previous_row
         monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
 
         class FakeHTTP:
@@ -719,13 +759,29 @@ class TestSubscribeCard:
             effects["redemptions"].append((code, cid, pre_id))
             return True
 
-        async def cancel_previous(cid, new_id):
-            effects["cancel_previous"] = (cid, new_id)
+        async def cancel_previous(cid, new_id, previous=None):
+            effects["cancel_previous"] = (cid, new_id, previous)
+            effects["order"].append("cancel_previous")
 
-        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        async def current_subscription(cid):
+            return previous_row
+
+        async def carry_overage(cid, new_id, base, previous):
+            effects["carry_overage"] = (cid, new_id, base, previous)
+
+        effects["order"] = []
+        _orig_upsert = upsert
+
+        async def upsert_ordered(cid, plan, pre_id, status, welcome=True):
+            effects["order"].append("upsert")
+            await _orig_upsert(cid, plan, pre_id, status, welcome)
+
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert_ordered)
         monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
         monkeypatch.setattr(subs, "_record_redemption", record)
         monkeypatch.setattr(subs, "_cancel_previous_preapproval", cancel_previous)
+        monkeypatch.setattr(subs, "_current_subscription", current_subscription)
+        monkeypatch.setattr(subs, "_carry_overage_forward", carry_overage)
 
         if coupon_valid is not None:
             async def validate(code, plan):
@@ -752,11 +808,28 @@ class TestSubscribeCard:
         assert effects["credits"] == []
         # Boas-vindas só com dinheiro na conta
         assert effects["welcome"] is False
-        # Preapproval anterior (se houver) é cancelado pra não cobrar em dobro
-        assert effects["cancel_previous"] == ("cli_x", "pre_c1")
+        # Preapproval anterior (se houver) é cancelado pra não cobrar em dobro,
+        # DEPOIS de a linha local já apontar pro novo (webhook do antigo vira obsoleto)
+        assert effects["cancel_previous"] == ("cli_x", "pre_c1", {})
+        assert effects["order"] == ["upsert", "cancel_previous"]
         body = http.last_body
         assert body["card_token_id"] == "tok_cartao_123"
         assert body["status"] == "authorized"
+
+    def test_troca_de_cartao_cancela_preapproval_antigo_com_foto_anterior(self, monkeypatch):
+        """Foto da assinatura anterior é tirada ANTES do POST no MP e passada
+        adiante: o webhook da nova não consegue esconder o id antigo."""
+        old = {"status": "paused", "payment_provider_id": "pre_antigo", "overage_pending_brl": 0}
+        effects, _ = self._setup(
+            monkeypatch, FakeResp(201, {"id": "pre_novo", "status": "authorized"}), previous_row=old,
+        )
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "tok_novo"
+        ))
+        assert out["status"] == "ok"
+        assert effects["cancel_previous"] == ("cli_x", "pre_novo", old)
+        assert effects["carry_overage"] == ("cli_x", "pre_novo", float(PLAN_CONFIG[Plan.START]["price_brl"]), old)
+        assert effects["credits"] == []
 
     def test_cupom_99_desconta_no_valor(self, monkeypatch):
         effects, http = self._setup(
@@ -942,16 +1015,21 @@ class TestChargeViaPaymentTopic:
         async def set_status(cid, status):
             effects["status_sets"].append((cid, status))
 
-        async def recently_credited(cid, days=20):
+        async def recently_credited(cid, days=20, **kw):
+            effects["recently_kw"] = kw
             return recently
 
         async def add_conversations(cid, amount, source="", description=""):
             effects["credits"].append((cid, amount, source, description))
             return amount
 
+        async def current_subscription(cid):
+            return {"status": "active", "payment_provider_id": "pre_1"}
+
         monkeypatch.setattr(subs, "get_supabase", lambda: _FakeSupaSimples(dup_rows))
         monkeypatch.setattr(subs, "_set_subscription_status", set_status)
         monkeypatch.setattr(subs, "_recently_credited", recently_credited)
+        monkeypatch.setattr(subs, "_current_subscription", current_subscription)
         monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
         return effects
 
@@ -965,6 +1043,10 @@ class TestChargeViaPaymentTopic:
         assert amount == PLAN_CONFIG[Plan.ON]["included_conversations"]
         assert source == "mp_renovacao"
         assert "payid=pay_9" in desc
+        # id do preapproval vigente na descrição (pra _preapproval_charged)
+        assert "pre=pre_1" in desc
+        # janela só contra créditos sem payid (caminho antigo)
+        assert effects["recently_kw"] == {"unidentified_only": True}
 
     def test_mes_ja_creditado_por_outro_topic_nao_duplica(self, monkeypatch):
         effects = self._setup(monkeypatch, recently=True)
@@ -999,6 +1081,108 @@ class TestChargeViaPaymentTopic:
         asyncio.run(subs.credit_subscription_charge("pay_9", "humasub|cli_x|on", "approved"))
 
 
+class TestCancelamentoPeloDono:
+
+    def _setup(self, monkeypatch, put_status):
+        effects = {"status_sets": []}
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+
+        class _Exec:
+            def __init__(self, data):
+                self.data = data
+
+        class _Table:
+            def select(self, *a, **kw):
+                return self
+
+            def eq(self, *a, **kw):
+                return self
+
+            def limit(self, *a, **kw):
+                return self
+
+            def execute(self):
+                return _Exec([{"id": 1, "client_id": "cli_x", "status": "active", "payment_provider_id": "pre_1"}])
+
+        class _Supa:
+            def table(self, name):
+                return _Table()
+
+        async def set_status(cid, status):
+            effects["status_sets"].append((cid, status))
+
+        monkeypatch.setattr(subs, "get_supabase", lambda: _Supa())
+        monkeypatch.setattr(subs, "_set_subscription_status", set_status)
+        _fake_http(monkeypatch, FakeResp(put_status, {}))
+        return effects
+
+    def test_grava_cancelled_antes_do_mp(self, monkeypatch):
+        """Ordem: local primeiro, MP depois — o webhook nunca lê 'active' e
+        nunca manda alerta falso de cartão recusado a quem cancelou."""
+        effects = self._setup(monkeypatch, 200)
+        out = asyncio.run(subs.cancel_subscription("cli_x"))
+        assert out["status"] == "ok"
+        assert effects["status_sets"] == [("cli_x", "cancelled")]
+
+    def test_mp_recusa_volta_pra_active(self, monkeypatch):
+        effects = self._setup(monkeypatch, 500)
+        out = asyncio.run(subs.cancel_subscription("cli_x"))
+        assert out["status"] == "error"
+        assert effects["status_sets"] == [("cli_x", "cancelled"), ("cli_x", "active")]
+
+
+class TestCarryOverageForward:
+
+    def _setup(self, monkeypatch, put_ok=True):
+        effects = {"puts": [], "updates": []}
+
+        async def mp_put(path, body):
+            effects["puts"].append((path, body))
+            return {"id": "x"} if put_ok else None
+
+        class _Q:
+            def __init__(self, store, payload=None):
+                self.store, self.payload = store, payload
+
+            def update(self, payload):
+                return _Q(self.store, payload)
+
+            def eq(self, *a, **kw):
+                return self
+
+            def execute(self):
+                self.store.append(self.payload)
+                return type("R", (), {"data": []})()
+
+        class _Supa:
+            def table(self, name):
+                return _Q(effects["updates"])
+
+        monkeypatch.setattr(subs, "_mp_put", mp_put)
+        monkeypatch.setattr(subs, "get_supabase", lambda: _Supa())
+        return effects
+
+    def test_excedente_pendente_vai_pra_assinatura_nova(self, monkeypatch):
+        effects = self._setup(monkeypatch)
+        old = {"status": "active", "payment_provider_id": "pre_antigo", "overage_pending_brl": "52.50"}
+        asyncio.run(subs._carry_overage_forward("cli_x", "pre_novo", 397.0, old))
+        assert effects["puts"] == [("/preapproval/pre_novo", {
+            "auto_recurring": {"transaction_amount": 449.5, "currency_id": "BRL"},
+        })]
+        assert effects["updates"][0]["overage_base_amount_brl"] == 397.0
+
+    def test_sem_excedente_nao_toca_no_mp(self, monkeypatch):
+        effects = self._setup(monkeypatch)
+        asyncio.run(subs._carry_overage_forward("cli_x", "pre_novo", 397.0, {"payment_provider_id": "pre_antigo", "overage_pending_brl": 0}))
+        assert effects["puts"] == []
+
+    def test_cortesia_ou_mesmo_id_ignorados(self, monkeypatch):
+        effects = self._setup(monkeypatch)
+        asyncio.run(subs._carry_overage_forward("cli_x", "pre_novo", 397.0, {"payment_provider_id": "coupon:X", "overage_pending_brl": 10}))
+        asyncio.run(subs._carry_overage_forward("cli_x", "pre_novo", 397.0, {"payment_provider_id": "pre_novo", "overage_pending_brl": 10}))
+        assert effects["puts"] == []
+
+
 class TestRenovacaoDuplaEntrega:
 
     def test_apid_depois_de_payid_no_mesmo_mes_so_marca(self, monkeypatch):
@@ -1010,6 +1194,21 @@ class TestRenovacaoDuplaEntrega:
         _, amount, _, desc = effects["credits"][0]
         assert amount == 0
         assert "mês já creditado" in desc
+
+    def test_assinatura_nova_dias_apos_renovacao_credita(self, monkeypatch):
+        """REGRESSÃO (revisão 2026-09-17): dono renovou no dia 1, trocou de
+        cartão no dia 10 (assinatura nova) e o MP cobrou de novo. Com o id
+        do pagamento conhecido a dedup é exata — a janela de 20 dias NÃO
+        pode engolir essa cobrança (cobrar 2x e creditar 1x)."""
+        effects = _setup_renewal(monkeypatch, recently=True, pay_id="pay_novo")
+        asyncio.run(subs._handle_authorized_payment("ap_1"))
+
+        assert len(effects["credits"]) == 1
+        _, amount, _, desc = effects["credits"][0]
+        assert amount == PLAN_CONFIG[Plan.ON]["included_conversations"]
+        assert "payid=pay_novo" in desc and "pre=pre_1" in desc
+        # dedup exata consultou o payid
+        assert effects["already_args"] == [("cli_x", "ap_1", "pay_novo")]
 
     def test_renovacao_mes_seguinte_credita_normal(self, monkeypatch):
         """Janela vencida (mês novo) → crédito integral, vida que segue."""

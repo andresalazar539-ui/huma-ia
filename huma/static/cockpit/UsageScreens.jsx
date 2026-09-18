@@ -48,7 +48,11 @@ const UsoScreen = ({ onGoto }) => {
   })();
 
   const balance = billing ? (billing.balance ?? 0) : 0;
-  const included = billing && billing.included_conversations ? billing.included_conversations : 0;
+  // Aguardando a primeira cobrança: a franquia ainda NÃO foi creditada,
+  // então a barra mostra só o saldo real (senão "138 de 150 usadas" com
+  // conversas que o dono nunca recebeu).
+  const included = billing && billing.included_conversations && !billing.awaiting_first_charge
+    ? billing.included_conversations : 0;
   const needsPlan = billing && billing.subscription_status !== 'active';
 
   // Baldes reais do razão (indicação → extra → plano). Backend antigo
