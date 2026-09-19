@@ -282,6 +282,7 @@ class TestGateStatus:
             "trial": False,
             "trial_expired": False,
             "trial_ends_at": None,
+            "awaiting_first_charge": False,
         }
 
     def test_fail_open_em_erro_de_infra(self, monkeypatch):

@@ -184,6 +184,9 @@ async def get_gate_status(client_id: str) -> dict:
         "trial": False,
         "trial_expired": False,
         "trial_ends_at": None,
+        # Cartão validado, primeira cobrança do preapproval ainda não
+        # aprovada pelo MP (2026-09-18). Aditivo: callers antigos ignoram.
+        "awaiting_first_charge": False,
     }
     redis_key = f"sub_gate:{client_id}"
 
@@ -199,7 +202,7 @@ async def get_gate_status(client_id: str) -> dict:
 
         supa = get_supabase()
         resp = await run_in_threadpool(
-            lambda: supa.table("subscriptions").select("status,created_at")
+            lambda: supa.table("subscriptions").select("status,created_at,payment_provider_id")
                 .eq("client_id", client_id)
                 .order("updated_at", desc=True).limit(1).execute()
         )
@@ -209,6 +212,13 @@ async def get_gate_status(client_id: str) -> dict:
         if sub:
             status = sub.get("status", "")
             result["subscription_status"] = status
+            provider_id = (sub.get("payment_provider_id") or "").strip()
+            if status == "active" and provider_id and not provider_id.startswith("coupon:"):
+                # Import local: subscription_service importa este módulo no
+                # topo (ciclo). _preapproval_charged nunca levanta; em falha
+                # de leitura responde "cobrado" (nunca bloqueia por engano).
+                from huma.services.subscription_service import _preapproval_charged
+                result["awaiting_first_charge"] = not await _preapproval_charged(client_id, provider_id)
             if status == "trial":
                 deadline = _compute_trial_deadline(sub.get("created_at", ""))
                 if deadline:
@@ -914,6 +924,24 @@ async def resolve_new_conversation(client_id: str) -> dict:
     trial_expired = conv_check.get("reason") == "trial_expired"
 
     settings = await get_spend_settings(client_id)
+
+    # Cartão validado, primeira cobrança ainda não aprovada (2026-09-18):
+    # sem saldo, NENHUM modo libera (nem excedente) — a franquia chega
+    # com a cobrança aprovada (~1h). O dono recebe a mensagem certa
+    # ("processando a cobrança"), não "suas conversas acabaram" com links
+    # de gasto extra. Com saldo sobrando (trial, troca de cartão) segue normal.
+    if balance <= 0 and not trial_expired:
+        gate = await get_gate_status(client_id)
+        if gate.get("awaiting_first_charge"):
+            return {
+                "allowed": False,
+                "overage_allowed": False,
+                "reason": "awaiting_first_charge",
+                "balance": 0,
+                "mode": settings["mode"],
+                "cap_brl": settings["cap_brl"],
+            }
+
     overage_brl = 0.0
     if settings["mode"] == SPEND_MODE_CAPPED:
         overage_brl = float((await get_cycle_overage(client_id)).get("brl") or 0.0)

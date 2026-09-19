@@ -73,6 +73,50 @@ class TestDecideNewConversation:
 # resolve_new_conversation / debit_engaged_conversation
 # ================================================================
 
+class TestResolveAwaitingFirstCharge:
+    """Cartão validado, 1ª cobrança do MP ainda não aprovada (2026-09-18)."""
+
+    def _setup(self, monkeypatch, *, balance, awaiting, mode=billing.SPEND_MODE_UNLIMITED):
+        async def fake_check(client_id):
+            return {"has_conversations": balance > 0, "balance": balance, "reason": None if balance > 0 else "no_balance"}
+
+        async def fake_settings(client_id):
+            return {"mode": mode, "cap_brl": 0.0}
+
+        async def fake_overage(client_id):
+            return {"conversations": 0, "brl": 0.0, "unit_price_brl": 1.99, "cycle_start": "2026-09-01T00:00:00"}
+
+        async def fake_gate(client_id):
+            return {"subscription_status": "active", "trial": False, "trial_expired": False,
+                    "trial_ends_at": None, "awaiting_first_charge": awaiting}
+
+        monkeypatch.setattr(billing, "check_conversations", fake_check)
+        monkeypatch.setattr(billing, "get_spend_settings", fake_settings)
+        monkeypatch.setattr(billing, "get_cycle_overage", fake_overage)
+        monkeypatch.setattr(billing, "get_gate_status", fake_gate)
+
+    def test_sem_saldo_aguardando_bloqueia_mesmo_no_modo_liberado(self, monkeypatch):
+        """Nenhum modo libera excedente antes da 1ª cobrança aprovar."""
+        self._setup(monkeypatch, balance=0, awaiting=True)
+        d = run(billing.resolve_new_conversation("c1"))
+        assert d["allowed"] is False
+        assert d["overage_allowed"] is False
+        assert d["reason"] == "awaiting_first_charge"
+
+    def test_com_saldo_aguardando_segue_normal(self, monkeypatch):
+        """Sobra do trial ou troca de cartão: atende com o saldo que tem."""
+        self._setup(monkeypatch, balance=7, awaiting=True)
+        d = run(billing.resolve_new_conversation("c1"))
+        assert d["allowed"] is True
+        assert d["reason"] is None
+
+    def test_sem_saldo_ja_cobrado_cai_na_regra_do_modo(self, monkeypatch):
+        self._setup(monkeypatch, balance=0, awaiting=False)
+        d = run(billing.resolve_new_conversation("c1"))
+        assert d["allowed"] is True  # unlimited libera excedente
+        assert d["overage_allowed"] is True
+
+
 class TestResolveAndDebit:
     def test_resolve_costura_saldo_e_modo(self, monkeypatch):
         async def fake_check(client_id):

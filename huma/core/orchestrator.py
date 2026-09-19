@@ -3961,6 +3961,16 @@ async def _handle_blocked_new_conversation(client_data, phone: str, lead_text: s
             f"{'lead está' if waiting == 1 else 'leads estão'} na sua fila esperando resposta. "
             f"Assine pra HUMA voltar a atender: app.HumaIA.com.br"
         )
+    elif reason == "awaiting_first_charge":
+        # Cartão validado, Mercado Pago ainda processando a primeira cobrança
+        # (~1h). Sem links de gasto extra: ele acabou de assinar.
+        owner_msg = (
+            f"⏳ Seu cartão foi validado e o Mercado Pago está processando a primeira cobrança "
+            f"da sua assinatura. Assim que aprovar, suas conversas do mês entram e a HUMA volta "
+            f"a atender sozinha. Enquanto isso, {waiting} "
+            f"{'lead está' if waiting == 1 else 'leads estão'} na sua fila: "
+            f"responda pelo Cockpit ou pelo WhatsApp, ninguém se perdeu."
+        )
     else:
         links = billing.spend_action_links(client_id, PUBLIC_BASE_URL)
         motivo = (
