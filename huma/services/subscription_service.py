@@ -1070,6 +1070,121 @@ async def _handle_authorized_payment(authorized_payment_id: str) -> None:
     asyncio.create_task(settle_overage_after_charge(client_id))
 
 
+# ================================================================
+# RECONCILIAÇÃO COM O MP (2026-09-18)
+#
+# O espelho local (status + crédito) dependia 100% do webhook chegar.
+# Webhook perdido (deploy no meio, assinatura inválida, MP não emitiu)
+# = assinatura pausada sem ninguém saber, ou cobrança PAGA sem crédito.
+# O job subscription_reconcile (scheduler, 6h) confere cada assinatura
+# real direto na API do MP e corrige pelos MESMOS caminhos do webhook
+# (idempotentes, com guarda por id e alerta só na transição). O webhook
+# vira otimização de latência; a verdade é o MP.
+# ================================================================
+
+_MP_STATUS_TO_LOCAL = {
+    "authorized": "active",
+    "paused": "paused",
+    "cancelled": "cancelled",
+    "pending": "pending",
+}
+
+
+async def _reconcile_one(client_id: str, preapproval_id: str, local_status: str) -> dict:
+    """
+    Confere UMA assinatura no MP. Espelha status divergente via
+    _handle_preapproval_change e credita cobrança aprovada que não está
+    no razão via _handle_authorized_payment (ambos idempotentes).
+
+    Returns:
+        {"error": bool, "mirrored": bool, "credited": int}
+    """
+    pre = await _mp_get(f"/preapproval/{preapproval_id}")
+    if not pre:
+        return {"error": True, "mirrored": False, "credited": 0}
+
+    mirrored = False
+    mp_local = _MP_STATUS_TO_LOCAL.get((pre.get("status") or "").lower())
+    if mp_local and mp_local != local_status:
+        log.warning(
+            f"Reconcile | status divergente | client={client_id} | preapproval={preapproval_id} | "
+            f"local={local_status} | mp={pre.get('status')} | espelhando"
+        )
+        await _handle_preapproval_change(preapproval_id)
+        mirrored = True
+
+    credited = 0
+    search = await _mp_get(f"/authorized_payments/search?preapproval_id={preapproval_id}")
+    for inv in (search or {}).get("results") or []:
+        if not isinstance(inv, dict):
+            continue
+        apid = str(inv.get("id") or "").strip()
+        payment = inv.get("payment") or {}
+        pay_status = (payment.get("status") or "").lower()
+        pay_id = str(payment.get("id") or "").strip()
+        if not apid or pay_status != "approved":
+            continue
+        if await _already_credited(client_id, apid, pay_id):
+            continue
+        log.warning(
+            f"Reconcile | cobrança APROVADA sem crédito (webhook perdido) | client={client_id} | "
+            f"preapproval={preapproval_id} | apid={apid} | payid={pay_id or '-'} | creditando"
+        )
+        await _handle_authorized_payment(apid)
+        credited += 1
+
+    return {"error": False, "mirrored": mirrored, "credited": credited}
+
+
+async def reconcile_subscriptions(limit: int = 2000) -> dict:
+    """
+    Job: confere no MP toda assinatura real (preapproval, não cortesia)
+    com status local active/pending/paused. Nunca levanta exceção.
+
+    Returns:
+        {"checked", "mirrored", "credited", "skipped", "errors"}
+    """
+    stats = {"checked": 0, "mirrored": 0, "credited": 0, "skipped": 0, "errors": 0}
+    supa = get_supabase()
+    try:
+        resp = await run_in_threadpool(
+            lambda: supa.table("subscriptions")
+                .select("client_id,status,payment_provider_id")
+                .in_("status", ["active", "pending", "paused"])
+                .limit(limit).execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        log.error(f"Reconcile | subscriptions indisponível | {type(e).__name__}: {str(e)[:160]}")
+        return {**stats, "errors": 1}
+
+    for row in rows:
+        client_id = (row.get("client_id") or "").strip()
+        pre_id = (row.get("payment_provider_id") or "").strip()
+        status = (row.get("status") or "").strip()
+        if not client_id or not pre_id or pre_id.startswith("coupon:"):
+            stats["skipped"] += 1
+            continue
+        try:
+            result = await _reconcile_one(client_id, pre_id, status)
+            stats["checked"] += 1
+            if result.get("error"):
+                stats["errors"] += 1
+            if result.get("mirrored"):
+                stats["mirrored"] += 1
+            stats["credited"] += int(result.get("credited") or 0)
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            stats["errors"] += 1
+            log.error(f"Reconcile | {client_id} | preapproval={pre_id} | {type(e).__name__}: {str(e)[:160]}")
+
+    log.info(
+        f"Reconcile | checked={stats['checked']} | mirrored={stats['mirrored']} | "
+        f"credited={stats['credited']} | skipped={stats['skipped']} | errors={stats['errors']} | subs={len(rows)}"
+    )
+    return stats
+
+
 async def _recently_credited(client_id: str, days: int = 20, unidentified_only: bool = False) -> bool:
     """
     True se este cliente já recebeu crédito de mensalidade (renovação ou

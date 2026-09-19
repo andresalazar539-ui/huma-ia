@@ -1183,6 +1183,124 @@ class TestCarryOverageForward:
         assert effects["puts"] == []
 
 
+class TestReconcile:
+    """Job subscription_reconcile: a verdade é o MP, o webhook é latência."""
+
+    def _setup(self, monkeypatch, rows, mp, *, already=False, mp_down=False):
+        effects = {"mirrored": [], "credited": [], "already": []}
+
+        class _Exec:
+            def __init__(self, data):
+                self.data = data
+
+        class _Table:
+            def select(self, *a, **kw):
+                return self
+
+            def in_(self, *a, **kw):
+                return self
+
+            def limit(self, *a, **kw):
+                return self
+
+            def execute(self):
+                return _Exec(rows)
+
+        class _Supa:
+            def table(self, name):
+                return _Table()
+
+        async def mp_get(path):
+            if mp_down:
+                return None
+            return mp.get(path)
+
+        async def handle_change(pre_id):
+            effects["mirrored"].append(pre_id)
+
+        async def handle_payment(apid):
+            effects["credited"].append(apid)
+
+        async def already_credited(cid, apid, payment_id=""):
+            effects["already"].append((cid, apid, payment_id))
+            return already
+
+        monkeypatch.setattr(subs, "get_supabase", lambda: _Supa())
+        monkeypatch.setattr(subs, "_mp_get", mp_get)
+        monkeypatch.setattr(subs, "_handle_preapproval_change", handle_change)
+        monkeypatch.setattr(subs, "_handle_authorized_payment", handle_payment)
+        monkeypatch.setattr(subs, "_already_credited", already_credited)
+        monkeypatch.setattr(subs.asyncio, "sleep", _no_sleep)
+        return effects
+
+    def test_status_divergente_espelha_pelo_webhook(self, monkeypatch):
+        """Local diz active, MP diz paused (webhook perdido) → mesmo caminho do webhook."""
+        effects = self._setup(
+            monkeypatch,
+            [{"client_id": "cli_x", "status": "active", "payment_provider_id": "pre_1"}],
+            {"/preapproval/pre_1": {"id": "pre_1", "status": "paused"},
+             "/authorized_payments/search?preapproval_id=pre_1": {"results": []}},
+        )
+        stats = asyncio.run(subs.reconcile_subscriptions())
+        assert effects["mirrored"] == ["pre_1"]
+        assert stats["checked"] == 1 and stats["mirrored"] == 1 and stats["errors"] == 0
+
+    def test_cobranca_aprovada_sem_credito_e_creditada(self, monkeypatch):
+        """Webhook de cobrança perdido: o MP diz que cobrou e o razão não tem → credita."""
+        effects = self._setup(
+            monkeypatch,
+            [{"client_id": "cli_x", "status": "active", "payment_provider_id": "pre_1"}],
+            {"/preapproval/pre_1": {"id": "pre_1", "status": "authorized"},
+             "/authorized_payments/search?preapproval_id=pre_1": {"results": [
+                 {"id": 111, "status": "processed", "payment": {"id": 9001, "status": "approved"}},
+                 {"id": 112, "status": "recycling", "payment": {"id": 9002, "status": "rejected"}},
+             ]}},
+        )
+        stats = asyncio.run(subs.reconcile_subscriptions())
+        assert effects["mirrored"] == []
+        assert effects["credited"] == ["111"]
+        assert effects["already"] == [("cli_x", "111", "9001")]
+        assert stats["credited"] == 1
+
+    def test_cobranca_ja_creditada_nao_repete(self, monkeypatch):
+        effects = self._setup(
+            monkeypatch,
+            [{"client_id": "cli_x", "status": "active", "payment_provider_id": "pre_1"}],
+            {"/preapproval/pre_1": {"id": "pre_1", "status": "authorized"},
+             "/authorized_payments/search?preapproval_id=pre_1": {"results": [
+                 {"id": 111, "payment": {"id": 9001, "status": "approved"}},
+             ]}},
+            already=True,
+        )
+        stats = asyncio.run(subs.reconcile_subscriptions())
+        assert effects["credited"] == []
+        assert stats["credited"] == 0
+
+    def test_cortesia_e_sem_preapproval_pulam(self, monkeypatch):
+        effects = self._setup(
+            monkeypatch,
+            [{"client_id": "cli_a", "status": "active", "payment_provider_id": "coupon:TESTE100"},
+             {"client_id": "cli_b", "status": "active", "payment_provider_id": ""}],
+            {},
+        )
+        stats = asyncio.run(subs.reconcile_subscriptions())
+        assert stats["skipped"] == 2 and stats["checked"] == 0
+        assert effects["mirrored"] == [] and effects["credited"] == []
+
+    def test_mp_fora_conta_erro_e_nao_levanta(self, monkeypatch):
+        self._setup(
+            monkeypatch,
+            [{"client_id": "cli_x", "status": "active", "payment_provider_id": "pre_1"}],
+            {}, mp_down=True,
+        )
+        stats = asyncio.run(subs.reconcile_subscriptions())
+        assert stats["errors"] == 1 and stats["mirrored"] == 0
+
+
+async def _no_sleep(*a, **kw):
+    return None
+
+
 class TestRenovacaoDuplaEntrega:
 
     def test_apid_depois_de_payid_no_mesmo_mes_so_marca(self, monkeypatch):

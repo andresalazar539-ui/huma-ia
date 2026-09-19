@@ -947,6 +947,19 @@ async def _run_mercadopago_token_refresh_job() -> None:
         log.error(f"sched | mercadopago_token_refresh | {type(e).__name__}: {e}")
 
 
+async def _run_subscription_reconcile_job() -> None:
+    """
+    Verdade do Mercado Pago (2026-09-18): confere cada assinatura real na
+    API do MP, espelha status divergente e credita cobrança aprovada que o
+    webhook não trouxe. O webhook vira só latência. Nunca levanta.
+    """
+    try:
+        from huma.services import subscription_service as subs
+        await subs.reconcile_subscriptions()
+    except Exception as e:
+        log.error(f"sched | subscription_reconcile | {type(e).__name__}: {e}")
+
+
 async def _run_catalog_refresh_job() -> None:
     """Catálogo da loja/ERP vira conhecimento sozinho (2026-09-07). Nunca levanta."""
     try:
@@ -977,6 +990,9 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("instagram_token_refresh", _run_instagram_token_refresh_job, 86400, 3600),
     # Mercado Pago do cliente — renova 30 dias antes de vencer: 1x/dia, lock 1h
     ("mercadopago_token_refresh", _run_mercadopago_token_refresh_job, 86400, 3600),
+    # Assinatura HUMA — reconcilia status e cobranças com o MP (webhook
+    # perdido não deixa conta sem crédito nem pausa invisível): 6h, lock 30min
+    ("subscription_reconcile", _run_subscription_reconcile_job, 21600, 1800),
     # Loja/ERP conectado — catálogo (produto novo, preço, descrição, foto) vira
     # conhecimento sem reconectar: a cada 30min, lock 15min. Zero IA.
     ("catalog_refresh", _run_catalog_refresh_job, 1800, 900),
