@@ -112,6 +112,7 @@ function Moment3({ onDone }) {
 
 // ── Momento 4 — o dever de casa (compilação 20–40s) ──────────────────────
 const compileLines = ['organizando tudo que você me contou...', 'estudando seu mercado e seus concorrentes...', 'montando meu jeito de falar com seus clientes...', 'pronto. quer me testar?'];
+const compileNodes = ['Suas respostas', 'Produtos', 'Mercado', 'Concorrentes', 'Objeções', 'Seu tom'];
 function Moment4({ onDone }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -135,7 +136,7 @@ function Moment4({ onDone }) {
         <HumaSays>Deu um nó aqui. Me dá outra chance?</HumaSays>
         <ObButton onClick={() => { setFailed(false); setAttempt(a => a + 1); }}>Tentar de novo</ObButton>
       </div>
-      : <WaitNarrative lines={compileLines} interval={2900} />}
+      : <AnalysisCore lines={compileLines} nodes={compileNodes} interval={2900} />}
   </div>;
 }
 Object.assign(window, { Moment3, Moment4 });

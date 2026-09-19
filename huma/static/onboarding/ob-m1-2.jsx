@@ -15,6 +15,8 @@ function Moment1({ onNext }) {
 
 // ── Momento 2 — site/Instagram → proposta ────────────────────────────────
 const lookLines = ['abrindo sua página...', 'lendo o que você vende...', 'entendendo seu jeito de falar...', 'anotando aqui...'];
+// satélites do núcleo de análise = o que a leitura da página extrai de verdade
+const lookNodes = ['Sua página', 'Produtos', 'Preços', 'Jeito de falar', 'Dúvidas', 'Público'];
 
 function ProposalReview({ url, proposal, onApplied, onTellMyself }) {
   const [p, setP] = useState(proposal);
@@ -94,7 +96,7 @@ function Moment2({ onDone, onSkip }) {
         <LinkBtn onClick={onSkip}>Não tenho / pular</LinkBtn>
       </div>
     </div>}
-    {phase === 'looking' && <WaitNarrative lines={lookLines} />}
+    {phase === 'looking' && <AnalysisCore lines={lookLines} nodes={lookNodes} />}
     {phase === 'review' && <ProposalReview url={url.trim()} proposal={proposal} onApplied={p => onDone(p)} onTellMyself={onSkip} />}
     {phase === 'unavailable' && <div className="stack g20">
       <HumaSays>{note}</HumaSays>
