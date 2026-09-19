@@ -1131,6 +1131,103 @@ class TestCancelamentoPeloDono:
         assert effects["status_sets"] == [("cli_x", "cancelled"), ("cli_x", "active")]
 
 
+class TestUpdateSubscriptionCard:
+    """Trocar cartão = PUT no MESMO preapproval; nunca credita; reativa pausada."""
+
+    def _setup(self, monkeypatch, current, mp_resp):
+        effects = {"upserts": [], "deleted": [], "put_body": None}
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+
+        class FakeHTTP:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def put(self, url, headers=None, json=None):
+                effects["put_url"] = url
+                effects["put_body"] = json
+                return mp_resp
+
+        async def current_subscription(cid):
+            return current
+
+        async def upsert(cid, plan, pre_id, status, welcome=True):
+            effects["upserts"].append((cid, plan, pre_id, status, welcome))
+
+        async def add_conversations(*a, **kw):
+            raise AssertionError("trocar cartão NUNCA credita")
+
+        class _Cache:
+            async def delete_key(self, key):
+                effects["deleted"].append(key)
+
+        monkeypatch.setattr(subs.httpx, "AsyncClient", FakeHTTP)
+        monkeypatch.setattr(subs, "_current_subscription", current_subscription)
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
+        monkeypatch.setattr(subs, "cache", _Cache())
+        return effects
+
+    def test_pausada_reativa_no_mesmo_preapproval(self, monkeypatch):
+        effects = self._setup(
+            monkeypatch,
+            {"status": "paused", "plan": "start", "payment_provider_id": "pre_1"},
+            FakeResp(200, {"id": "pre_1", "status": "authorized"}),
+        )
+        out = asyncio.run(subs.update_subscription_card("cli_x", "tok_novo"))
+        assert out["status"] == "ok"
+        assert out["subscription_status"] == "active"
+        assert "reativada" in out["detail"]
+        assert effects["put_url"].endswith("/preapproval/pre_1")
+        assert effects["put_body"] == {"card_token_id": "tok_novo", "status": "authorized"}
+        assert effects["upserts"] == [("cli_x", "start", "pre_1", "active", False)]
+        assert "sub_reject_alert:cli_x" in effects["deleted"]
+
+    def test_ativa_so_troca_o_cartao(self, monkeypatch):
+        effects = self._setup(
+            monkeypatch,
+            {"status": "active", "plan": "start", "payment_provider_id": "pre_1"},
+            FakeResp(200, {"id": "pre_1", "status": "authorized"}),
+        )
+        out = asyncio.run(subs.update_subscription_card("cli_x", "tok_novo"))
+        assert out["status"] == "ok"
+        assert "próximas cobranças" in out["detail"]
+        assert effects["upserts"] == [("cli_x", "start", "pre_1", "active", False)]
+
+    def test_cortesia_ou_cancelada_nao_tem_o_que_trocar(self, monkeypatch):
+        effects = self._setup(
+            monkeypatch,
+            {"status": "active", "plan": "start", "payment_provider_id": "coupon:TESTE100"},
+            FakeResp(200, {}),
+        )
+        out = asyncio.run(subs.update_subscription_card("cli_x", "tok"))
+        assert out["status"] == "error" and effects["put_body"] is None
+
+        effects = self._setup(
+            monkeypatch,
+            {"status": "cancelled", "plan": "start", "payment_provider_id": "pre_1"},
+            FakeResp(200, {}),
+        )
+        out = asyncio.run(subs.update_subscription_card("cli_x", "tok"))
+        assert out["status"] == "error" and effects["put_body"] is None
+
+    def test_cartao_recusado_mensagem_clara(self, monkeypatch):
+        effects = self._setup(
+            monkeypatch,
+            {"status": "paused", "plan": "start", "payment_provider_id": "pre_1"},
+            FakeResp(400, {"message": "Invalid card_token_id"}),
+        )
+        out = asyncio.run(subs.update_subscription_card("cli_x", "tok_ruim"))
+        assert out["status"] == "error"
+        assert "cartão não foi aceito" in out["detail"].lower()
+        assert effects["upserts"] == []
+
+
 class TestCarryOverageForward:
 
     def _setup(self, monkeypatch, put_ok=True):

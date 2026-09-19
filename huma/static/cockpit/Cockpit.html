@@ -513,13 +513,14 @@ function App() {
     case 'divulgacao':  screen = <LinksScreen />; break;
     case 'integracoes': screen = <IntegrationsScreen client={client} onReloadStatus={reloadIntegrationsStatus} />; break;
     case 'ajustes':     screen = <AjustesScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} />; break;
-    case 'uso':         screen = <UsoScreen onGoto={setRoute} />; break;
+    case 'uso':         screen = <UsoScreen onGoto={setRoute}
+                          onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
     case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;
     case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} />; break;
     case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute}
                           onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
     case 'checkout':    screen = <CheckoutScreen ctx={checkoutCtx} billing={billing}
-                          onBack={() => setRoute('planos')}
+                          onBack={() => setRoute(checkoutCtx && checkoutCtx.mode === 'update_card' ? 'uso' : 'planos')}
                           onDone={() => {
                             setCheckoutCtx(null); setRoute('inicio');
                             fetchBillingStatus().then(setBilling).catch(() => {});

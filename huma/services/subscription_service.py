@@ -753,6 +753,10 @@ async def get_billing_status(client_id: str) -> dict:
     return {
         # Aditivo: True entre a autorização do cartão e a 1ª cobrança aprovada
         "awaiting_first_charge": awaiting_first_charge,
+        # Aditivo: assinatura real no cartão (ativa ou pausada) aceita "Trocar cartão"
+        "can_update_card": bool(
+            provider_id and not provider_id.startswith("coupon:") and status in ("active", "paused")
+        ),
         "spend_mode": spend["mode"],
         "spend_cap_brl": spend["cap_brl"],
         "overage": overage,
@@ -787,6 +791,84 @@ async def get_billing_status(client_id: str) -> dict:
         # Checkout transparente: o front usa a public key pro SDK do MP
         # tokenizar o cartão no navegador. Vazia = cai no checkout hospedado.
         "mp_public_key": MERCADOPAGO_PUBLIC_KEY,
+    }
+
+
+async def update_subscription_card(client_id: str, card_token_id: str) -> dict:
+    """
+    Troca o cartão da assinatura VIGENTE no MP (PUT /preapproval/{id} com
+    card_token_id + status authorized), sem cancelar e recriar: mantém o
+    preapproval, o valor (cupom) e o ciclo, e reativa uma assinatura que
+    o MP pausou por cartão recusado. Nada é creditado aqui — a cobrança
+    aprovada (webhook/reconcile) é quem credita. Nunca levanta exceção.
+
+    Returns:
+        {"status": "ok"|"error", "detail", "subscription_status"?, "preapproval_id"?}
+    """
+    if not MERCADOPAGO_ACCESS_TOKEN:
+        return {"status": "error", "detail": "Pagamento não configurado no servidor."}
+    token = (card_token_id or "").strip()
+    if not token:
+        return {"status": "error", "detail": "Cartão não validado. Confira os dados e tente de novo."}
+
+    current = await _current_subscription(client_id)
+    if current is None:
+        return {"status": "error", "detail": "Não consegui ler sua assinatura agora. Tente de novo."}
+    preapproval_id = (current.get("payment_provider_id") or "").strip()
+    old_status = (current.get("status") or "").strip()
+    plan_value = (current.get("plan") or "").strip()
+    if not preapproval_id or preapproval_id.startswith("coupon:"):
+        return {"status": "error", "detail": "Nenhuma assinatura no cartão pra atualizar. Assine um plano."}
+    if old_status not in ("active", "paused", "pending"):
+        return {"status": "error", "detail": "Sua assinatura está cancelada. Assine de novo pra voltar."}
+
+    body = {"card_token_id": token, "status": "authorized"}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.put(f"{MP_BASE}/preapproval/{preapproval_id}", headers=_headers(), json=body)
+    except httpx.TimeoutException:
+        log.error(f"Timeout | service=mercadopago | op=update_card | client={client_id}")
+        return {"status": "error", "detail": "Mercado Pago indisponível. Tente de novo."}
+    except httpx.HTTPError as e:
+        log.error(f"HTTP erro | service=mercadopago | op=update_card | client={client_id} | {type(e).__name__}: {e}")
+        return {"status": "error", "detail": "Mercado Pago indisponível. Tente de novo."}
+
+    if resp.status_code not in (200, 201):
+        log.error(f"MP update_card recusado | client={client_id} | status={resp.status_code} | {resp.text[:300]}")
+        try:
+            mp_msg = str(resp.json().get("message", ""))[:140]
+        except ValueError:
+            mp_msg = ""
+        low = mp_msg.lower()
+        if "card" in low or "token" in low:
+            return {"status": "error", "detail": "O cartão não foi aceito. Confira os dados (número, validade, CVV, CPF) e tente de novo."}
+        detail = f"Mercado Pago recusou: {mp_msg}" if mp_msg else "Não foi possível trocar o cartão. Tente de novo."
+        return {"status": "error", "detail": detail}
+
+    data = resp.json()
+    mp_status = (data.get("status") or "").lower()
+    local_status = _MP_STATUS_TO_LOCAL.get(mp_status, old_status)
+    await _upsert_subscription(client_id, plan_value, preapproval_id, local_status, welcome=False)
+    # Recusa anterior já foi resolvida pelo dono: o próximo "rejected" (se
+    # houver) deve avisar de novo, sem esperar 3 dias.
+    await cache.delete_key(f"sub_reject_alert:{client_id}")
+
+    log.info(
+        f"CARTÃO ATUALIZADO | client={client_id} | preapproval={preapproval_id} | "
+        f"antes={old_status} | mp={mp_status} | local={local_status}"
+    )
+    if old_status == "paused" and local_status == "active":
+        detail = (
+            "Cartão atualizado e assinatura reativada. O Mercado Pago tenta a cobrança pendente "
+            "nas próximas horas e suas conversas entram assim que o pagamento for aprovado."
+        )
+    else:
+        detail = "Cartão atualizado. As próximas cobranças vão nesse cartão."
+    return {
+        "status": "ok",
+        "subscription_status": local_status,
+        "detail": detail,
+        "preapproval_id": preapproval_id,
     }
 
 
@@ -1872,7 +1954,7 @@ async def _current_subscription(client_id: str) -> Optional[dict]:
         supa = get_supabase()
         resp = await run_in_threadpool(
             lambda: supa.table("subscriptions")
-                .select("status,payment_provider_id,overage_pending_brl,overage_base_amount_brl")
+                .select("status,plan,payment_provider_id,overage_pending_brl,overage_base_amount_brl")
                 .eq("client_id", client_id).limit(1).execute()
         )
         return dict(resp.data[0]) if resp.data else {}
@@ -2081,15 +2163,15 @@ async def _notify_payment_problem_bg(client_id: str, local_status: str) -> None:
                 texto = (
                     "⚠️ O banco recusou a cobrança do cartão da sua assinatura HUMA. O Mercado Pago "
                     "vai tentar de novo nos próximos dias. Sua IA continua no ar enquanto houver saldo "
-                    "de conversas. Se preferir resolver agora, assine de novo com outro cartão em "
-                    "app.HumaIA.com.br (Ajustes, Uso)."
+                    "de conversas. Se preferir resolver agora, troque o cartão em app.HumaIA.com.br "
+                    "(Ajustes, Uso, botão Trocar cartão)."
                 )
             else:
                 estado = "pausou" if paused else "cancelou"
                 texto = (
                     f"⚠️ O Mercado Pago não conseguiu cobrar o cartão da sua assinatura HUMA e {estado} "
                     f"a renovação. Sua IA continua no ar enquanto houver saldo de conversas. "
-                    f"Pra não parar, assine de novo com outro cartão em app.HumaIA.com.br (Ajustes, Uso)."
+                    f"Pra não parar, troque o cartão em app.HumaIA.com.br (Ajustes, Uso, botão Trocar cartão)."
                 )
             await wa.notify_owner(owner_phone, texto, client_id=client_id)
         log.info(f"Aviso de cobrança recusada enviado | client={client_id} | status={local_status}")

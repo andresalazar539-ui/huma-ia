@@ -700,7 +700,23 @@ async function fetchUsageLedger(limit = 30) {
   return r.json();
 }
 
-Object.assign(window, { fetchBillingStatus, subscribePlan, subscribeCardPlan, cancelPlan, validateCoupon, updateSpendSettings, fetchUsageLedger });
+// Troca o cartão da assinatura vigente (mesmo preapproval no MP). O token
+// vem do SDK do MP no navegador; o número do cartão nunca passa pela HUMA.
+async function updateSubscriptionCard(card_token_id) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/update-card`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ card_token_id }),
+  });
+  if (!r.ok) {
+    let msg = `${r.status}`;
+    try { const j = await r.json(); msg = j.detail || msg; } catch (e) { /* corpo vazio */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+Object.assign(window, { fetchBillingStatus, subscribePlan, subscribeCardPlan, updateSubscriptionCard, cancelPlan, validateCoupon, updateSpendSettings, fetchUsageLedger });
 
 /* ---------------- Analytics: IDs do navegador → backend ---------------- */
 // Manda os cookies do GA (_ga/_ga_*) e da Meta (_fbp/_fbc) pro backend.

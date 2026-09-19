@@ -4,7 +4,7 @@ const { useState: useStateU, useEffect: useEffectU } = React;
 // ============================================================
 // USO — tela principal (plugada no GET /billing real)
 // ============================================================
-const UsoScreen = ({ onGoto }) => {
+const UsoScreen = ({ onGoto, onCheckout }) => {
   const [billing, setBilling] = useStateU(null);
   const [loadErr, setLoadErr] = useStateU(false);
   // Seção "para você": indicações e resultado — dados REAIS, carregados
@@ -80,7 +80,7 @@ const UsoScreen = ({ onGoto }) => {
     if (billing.trial_expired) return 'Assine um plano pra reativar sua IA, o saldo que sobrou do teste continua seu.';
     if (billing.awaiting_first_charge) return 'Cartão validado. O Mercado Pago faz a primeira cobrança em até 1 hora e suas conversas entram assim que o pagamento for aprovado.';
     if (billing.subscription_status === 'active') return 'Assinatura mensal no cartão, renovação automática.';
-    if (billing.subscription_status === 'paused') return 'O Mercado Pago não conseguiu cobrar seu cartão e pausou a renovação. Sua IA segue no ar enquanto houver saldo. Assine de novo com outro cartão pra não parar.';
+    if (billing.subscription_status === 'paused') return 'O Mercado Pago não conseguiu cobrar seu cartão e pausou a renovação. Sua IA segue no ar enquanto houver saldo. Troque o cartão aqui pra reativar.';
     return 'Escolha um plano pra colocar sua IA no ar.';
   })();
 
@@ -114,6 +114,18 @@ const UsoScreen = ({ onGoto }) => {
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)', marginTop: 6, letterSpacing: '0.02em' }}>
           {loadErr ? 'Não consegui carregar seu plano agora, recarregue a página.' : subline}
         </div>
+        {/* Trocar cartão: mesma assinatura no Mercado Pago (valor, cupom e
+            ciclo preservados). Reativa se o MP pausou por cartão recusado. */}
+        {billing && billing.can_update_card && onCheckout && (
+          <button onClick={() => onCheckout({ planId: billing.plan, mode: 'update_card' })} style={{
+            marginTop: 10, padding: '7px 12px', borderRadius: 9,
+            border: '1px solid var(--paper-edge)', background: 'var(--paper-raised)',
+            color: 'var(--ink)', cursor: 'pointer',
+            fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 600,
+          }}>
+            {billing.subscription_status === 'paused' ? 'Trocar cartão e reativar' : 'Trocar cartão'}
+          </button>
+        )}
       </div>
 
       <div style={{ padding: '24px 32px 48px', maxWidth: 1100, display: 'flex', flexDirection: 'column', gap: 28 }}>
@@ -1776,10 +1788,13 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
   const [busy, setBusy] = useStateU(false);
   const [err, setErr] = useStateU('');
   const [done, setDone] = useStateU(false);
+  const [doneDetail, setDoneDetail] = useStateU('');
+  // Modo "trocar cartão": mesma assinatura no MP, sem nova cobrança agora.
+  const updating = !!(ctx && ctx.mode === 'update_card');
 
   // Analytics: entrada no checkout de assinatura (GA4 begin_checkout)
   useEffectU(() => {
-    if (!ctx) return;
+    if (!ctx || updating) return;
     const p = HUMA_PLANS.find(x => x.id === ctx.planId) || HUMA_PLANS[0];
     const off = ctx.couponInfo ? ctx.couponInfo.percent_off : 0;
     window.humaTrack?.('begin_checkout', {
@@ -1840,6 +1855,13 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
         identificationNumber: cpfD,
       });
       if (!token || !token.id) throw new Error('Cartão não validado, confere os dados.');
+      if (updating) {
+        const res = await updateSubscriptionCard(token.id);
+        setDoneDetail((res && res.detail) || 'Cartão atualizado.');
+        setDone(true);
+        setTimeout(() => onDone && onDone(), 3200);
+        return;
+      }
       await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id);
       // Analytics: NÃO dispara purchase aqui. Cartão validado não é venda:
       // o Mercado Pago cobra ~1h depois e pode recusar. A venda de
@@ -1868,10 +1890,12 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
           <Icon name="check" size={30} stroke={2.5}/>
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 26, color: 'var(--ink)' }}>
-          Cartão validado! ✅
+          {updating ? 'Cartão atualizado! ✅' : 'Cartão validado! ✅'}
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textAlign: 'center', maxWidth: 380 }}>
-          Plano {plan.name} por {_fmtBRL(price)}/mês. O Mercado Pago faz a primeira cobrança em até 1 hora e suas conversas entram assim que o pagamento for aprovado. Te levando pro Início…
+          {updating
+            ? `${doneDetail} Te levando pro Início…`
+            : `Plano ${plan.name} por ${_fmtBRL(price)}/mês. O Mercado Pago faz a primeira cobrança em até 1 hora e suas conversas entram assim que o pagamento for aprovado. Te levando pro Início…`}
         </div>
       </div>
     );
@@ -1886,12 +1910,12 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
           color: 'var(--ink-3)', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
           letterSpacing: '0.04em', textTransform: 'uppercase',
         }}>
-          <Icon name="chevronL" size={12}/> Planos
+          <Icon name="chevronL" size={12}/> {updating ? 'Uso' : 'Planos'}
         </button>
         <div style={{
           fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 26,
           letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 6,
-        }}>Finalizar assinatura</div>
+        }}>{updating ? 'Trocar cartão' : 'Finalizar assinatura'}</div>
 
         {/* Resumo do pedido */}
         <div style={{
@@ -1904,11 +1928,13 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
               Plano {plan.name}
             </div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 3 }}>
-              {plan.limit} · renova todo mês · cancele quando quiser
+              {updating
+                ? 'Mesma assinatura, mesmo valor. As próximas cobranças vão no cartão novo.'
+                : `${plan.limit} · renova todo mês · cancele quando quiser`}
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            {pct > 0 && (
+            {!updating && pct > 0 && (
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', textDecoration: 'line-through', whiteSpace: 'nowrap' }}>
                 {plan.price}
               </div>
@@ -1963,7 +1989,9 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
             color: busy ? 'var(--ink-3)' : '#fff', cursor: busy ? 'default' : 'pointer',
             fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: 600,
           }}>
-            {busy ? 'Ativando sua assinatura…' : `Assinar por ${_fmtBRL(price)}/mês`}
+            {updating
+              ? (busy ? 'Salvando cartão…' : 'Salvar cartão novo')
+              : (busy ? 'Ativando sua assinatura…' : `Assinar por ${_fmtBRL(price)}/mês`)}
           </button>
 
           <div style={{

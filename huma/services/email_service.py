@@ -216,14 +216,14 @@ async def send_payment_problem(
             f"O banco recusou a cobrança do cartão da assinatura HUMA de <strong>{nome}</strong>. "
             f"O Mercado Pago <strong>vai tentar de novo nos próximos dias</strong>."
         )
-        dica = "💳 Se preferir resolver agora, assine de novo com outro cartão em Ajustes, Uso"
+        dica = "💳 Se preferir resolver agora, use Trocar cartão em Ajustes, Uso"
     else:
         acao = "pausou" if paused else "cancelou"
         situacao = (
             f"O Mercado Pago tentou cobrar o cartão da assinatura HUMA de <strong>{nome}</strong> "
             f"e não conseguiu. Depois de algumas tentativas, ele <strong>{acao} a renovação</strong>."
         )
-        dica = "💳 Pra resolver, assine de novo com outro cartão em Ajustes, Uso"
+        dica = "💳 Pra resolver, use Trocar cartão em Ajustes, Uso: a assinatura reativa na hora"
     body = f"""
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:{_INK_SOFT};margin:0 0 16px 0;">
           {situacao}
@@ -239,7 +239,7 @@ async def send_payment_problem(
         </table>
         <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 20px 0;">
           <tr><td style="background-color:{_EMBER};border-radius:8px;">
-            <a href="https://app.humaia.com.br/cockpit" target="_blank" style="display:inline-block;padding:13px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Atualizar meu cartão</a>
+            <a href="https://app.humaia.com.br/cockpit" target="_blank" style="display:inline-block;padding:13px 28px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;">Trocar meu cartão</a>
           </td></tr>
         </table>
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{_MUTED};margin:0;">

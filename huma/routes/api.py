@@ -832,6 +832,10 @@ class SubscribeCardBody(BaseModel):
     card_token_id: str = Field(..., min_length=1, max_length=120)
 
 
+class UpdateCardBody(BaseModel):
+    card_token_id: str = Field(..., min_length=1, max_length=120)
+
+
 class CouponBody(BaseModel):
     plan: str = Field(..., min_length=1, max_length=30)
     coupon: str = Field(..., min_length=1, max_length=40)
@@ -935,6 +939,21 @@ async def billing_extra_pack_status(
     if not payment_id.isdigit() or len(payment_id) > 20:
         raise HTTPException(400, "payment_id inválido")
     return await subs.get_pack_payment_status(client_id, payment_id)
+
+
+@router.post("/api/clients/{client_id}/billing/update-card", tags=["Billing"])
+async def billing_update_card(client_id: str, payload: UpdateCardBody, _=Depends(verify_api_key)) -> dict:
+    """
+    Troca o cartão da assinatura vigente no MP (mesmo preapproval, mesmo
+    valor, mesmo ciclo; reativa se o MP tinha pausado por cartão recusado).
+    O cartão é tokenizado no navegador pelo SDK do MP, nunca passa pela HUMA.
+    Crédito continua vindo só da cobrança aprovada.
+    """
+    from huma.services import subscription_service as subs
+    result = await subs.update_subscription_card(client_id, payload.card_token_id)
+    if result.get("status") != "ok":
+        raise HTTPException(400, result.get("detail", "Não foi possível trocar o cartão."))
+    return result
 
 
 @router.post("/api/clients/{client_id}/billing/cancel", tags=["Billing"])
