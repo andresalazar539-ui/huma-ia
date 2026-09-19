@@ -830,6 +830,10 @@ class SubscribeCardBody(BaseModel):
     plan: str = Field(..., min_length=1, max_length=30)
     coupon: str = Field(default="", max_length=40)
     card_token_id: str = Field(..., min_length=1, max_length=120)
+    # Pagou, usou (2026-09-18): segundo token do mesmo cartão pra cobrar a
+    # 1ª mensalidade na hora + bandeira (payment_method_id) do BIN.
+    first_charge_token_id: str = Field(default="", max_length=120)
+    payment_method_id: str = Field(default="", max_length=40)
 
 
 class UpdateCardBody(BaseModel):
@@ -875,6 +879,8 @@ async def billing_subscribe_card(client_id: str, payload: SubscribeCardBody, cli
     result = await subs.create_subscription_with_card(
         client_id, payload.plan, getattr(client, "owner_email", "") or "",
         payload.card_token_id, payload.coupon,
+        first_charge_token_id=payload.first_charge_token_id,
+        payment_method_id=payload.payment_method_id,
     )
     if result.get("status") != "ok":
         raise HTTPException(400, result.get("detail", "Não foi possível ativar a assinatura."))

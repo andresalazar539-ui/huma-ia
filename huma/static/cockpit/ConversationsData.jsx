@@ -645,11 +645,13 @@ async function subscribePlan(plan, coupon = '') {
 
 // Checkout transparente: assina com cartão tokenizado pelo SDK do MP
 // (o token nasce no navegador; dados do cartão nunca passam por aqui).
-async function subscribeCardPlan(plan, coupon, card_token_id) {
+// extra: { first_charge_token_id, payment_method_id } — segundo token do
+// mesmo cartão pra cobrar a 1ª mensalidade NA HORA (pagou, usou).
+async function subscribeCardPlan(plan, coupon, card_token_id, extra = {}) {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/billing/subscribe-card`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
-    body: JSON.stringify({ plan, coupon, card_token_id }),
+    body: JSON.stringify({ plan, coupon, card_token_id, ...extra }),
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data.detail || 'Erro ao ativar assinatura');

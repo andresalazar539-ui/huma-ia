@@ -30,7 +30,7 @@ const UsoScreen = ({ onGoto, onCheckout }) => {
       bg: 'var(--ember-soft)', fg: 'var(--ember-ink)', dot: 'var(--ember)',
     };
     if (billing.awaiting_first_charge) return {
-      text: 'Aguardando a primeira cobrança',
+      text: 'Aguardando confirmação do pagamento',
       bg: 'var(--terracotta-tint)', fg: 'var(--terracotta-ink)', dot: 'var(--terracotta)',
     };
     if (billing.subscription_status === 'active') return {
@@ -78,7 +78,7 @@ const UsoScreen = ({ onGoto, onCheckout }) => {
     if (!billing) return '';
     if (billing.trial) return 'Aproveite: sua IA está no ar de cortesia. Assine antes do fim pra não pausar o atendimento.';
     if (billing.trial_expired) return 'Assine um plano pra reativar sua IA, o saldo que sobrou do teste continua seu.';
-    if (billing.awaiting_first_charge) return 'Cartão validado. O Mercado Pago faz a primeira cobrança em até 1 hora e suas conversas entram assim que o pagamento for aprovado.';
+    if (billing.awaiting_first_charge) return 'Aguardando a confirmação do pagamento pelo Mercado Pago. Suas conversas entram assim que ele aprovar.';
     if (billing.subscription_status === 'active') return 'Assinatura mensal no cartão, renovação automática.';
     if (billing.subscription_status === 'paused') return 'O Mercado Pago não conseguiu cobrar seu cartão e pausou a renovação. Sua IA segue no ar enquanto houver saldo. Troque o cartão aqui pra reativar.';
     return 'Escolha um plano pra colocar sua IA no ar.';
@@ -1789,6 +1789,7 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
   const [err, setErr] = useStateU('');
   const [done, setDone] = useStateU(false);
   const [doneDetail, setDoneDetail] = useStateU('');
+  const [donePaid, setDonePaid] = useStateU(false);
   // Modo "trocar cartão": mesma assinatura no MP, sem nova cobrança agora.
   const updating = !!(ctx && ctx.mode === 'update_card');
 
@@ -1845,7 +1846,7 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
     setBusy(true);
     try {
       const mp = new window.MercadoPago(billing.mp_public_key);
-      const token = await mp.createCardToken({
+      const formData = {
         cardNumber,
         cardholderName: name.trim(),
         cardExpirationMonth: expD.slice(0, 2),
@@ -1853,7 +1854,8 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
         securityCode: cvv,
         identificationType: 'CPF',
         identificationNumber: cpfD,
-      });
+      };
+      const token = await mp.createCardToken(formData);
       if (!token || !token.id) throw new Error('Cartão não validado, confere os dados.');
       if (updating) {
         const res = await updateSubscriptionCard(token.id);
@@ -1862,7 +1864,18 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
         setTimeout(() => onDone && onDone(), 3200);
         return;
       }
-      await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id);
+      // Pagou, usou: a 1ª mensalidade é cobrada NA HORA (token de uso único,
+      // por isso um segundo token do mesmo cartão) e a bandeira vem do BIN.
+      const pms = await mp.getPaymentMethods({ bin: cardNumber.slice(0, 6) });
+      const pmId = pms && pms.results && pms.results[0] && pms.results[0].id;
+      if (!pmId) throw new Error('Não reconheci a bandeira do cartão, confere o número.');
+      const token2 = await mp.createCardToken(formData);
+      if (!token2 || !token2.id) throw new Error('Cartão não validado, confere os dados.');
+      const sub = await subscribeCardPlan(ctx.planId, ctx.coupon || '', token.id, {
+        first_charge_token_id: token2.id, payment_method_id: pmId,
+      });
+      setDoneDetail((sub && sub.detail) || '');
+      setDonePaid(!!(sub && sub.paid));
       // Analytics: NÃO dispara purchase aqui. Cartão validado não é venda:
       // o Mercado Pago cobra ~1h depois e pode recusar. A venda de
       // assinatura é registrada SÓ pelo servidor (analytics_events), no
@@ -1890,12 +1903,12 @@ const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
           <Icon name="check" size={30} stroke={2.5}/>
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 26, color: 'var(--ink)' }}>
-          {updating ? 'Cartão atualizado! ✅' : 'Cartão validado! ✅'}
+          {updating ? 'Cartão atualizado! ✅' : (donePaid ? 'Assinatura ativa! 🎉' : 'Pagamento em análise ⏳')}
         </div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', textAlign: 'center', maxWidth: 380 }}>
           {updating
             ? `${doneDetail} Te levando pro Início…`
-            : `Plano ${plan.name} por ${_fmtBRL(price)}/mês. O Mercado Pago faz a primeira cobrança em até 1 hora e suas conversas entram assim que o pagamento for aprovado. Te levando pro Início…`}
+            : `Plano ${plan.name} por ${_fmtBRL(price)}/mês. ${doneDetail || (donePaid ? 'Suas conversas já estão na conta.' : 'Suas conversas entram assim que o banco aprovar.')} Te levando pro Início…`}
         </div>
       </div>
     );

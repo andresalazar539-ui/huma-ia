@@ -1131,6 +1131,181 @@ class TestCancelamentoPeloDono:
         assert effects["status_sets"] == [("cli_x", "cancelled"), ("cli_x", "active")]
 
 
+class TestPagouUsou:
+    """1ª mensalidade cobrada NA HORA (avulsa); preapproval só pra renovar (start_date +1 mês)."""
+
+    def _setup(self, monkeypatch, pay_resp, pay_err="", previous_row=None):
+        effects = {"upserts": [], "credits": [], "puts": [], "pay_body": None, "order": [], "tasks": []}
+        previous_row = {} if previous_row is None else previous_row
+        monkeypatch.setattr(subs, "MERCADOPAGO_ACCESS_TOKEN", "tok")
+
+        class FakeHTTP:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                FakeHTTP.pre_body = json
+                return FakeResp(201, {"id": "pre_novo", "status": "authorized"})
+
+        async def mp_post_full(path, body, idem_key=""):
+            effects["pay_path"] = path
+            effects["pay_body"] = body
+            return (pay_resp, pay_err)
+
+        async def mp_put(path, body):
+            effects["puts"].append((path, body))
+            return {"id": "x"}
+
+        async def upsert(cid, plan, pre_id, status, welcome=True):
+            effects["order"].append("upsert")
+            effects["upserts"].append((cid, plan, pre_id, status, welcome))
+
+        async def cancel_previous(cid, new_id, previous=None):
+            effects["order"].append("cancel_previous")
+
+        async def carry(cid, new_id, base, previous):
+            return None
+
+        async def current_subscription(cid):
+            return previous_row
+
+        async def add_conversations(cid, amount, source="", description=""):
+            effects["credits"].append((cid, amount, source, description))
+            return amount
+
+        async def ever_paid(cid):
+            return False
+
+        async def referral(cid):
+            effects["referral"] = True
+
+        class _Cache:
+            async def delete_key(self, key):
+                effects.setdefault("deleted", []).append(key)
+
+        def fake_create_task(coro):
+            effects["tasks"].append(getattr(coro, "__name__", str(coro)))
+            coro.close()
+            return None
+
+        from huma.services import analytics_events as ae
+
+        def fake_track(client_id, transaction_id, value_brl, **kw):
+            effects["purchase"] = {"tx": transaction_id, "value": value_brl, **kw}
+
+            async def _noop():
+                return None
+            return _noop()
+
+        monkeypatch.setattr(subs.httpx, "AsyncClient", FakeHTTP)
+        monkeypatch.setattr(subs, "_mp_post_full", mp_post_full)
+        monkeypatch.setattr(subs, "_mp_put", mp_put)
+        monkeypatch.setattr(subs, "_upsert_subscription", upsert)
+        monkeypatch.setattr(subs, "_cancel_previous_preapproval", cancel_previous)
+        monkeypatch.setattr(subs, "_carry_overage_forward", carry)
+        monkeypatch.setattr(subs, "_current_subscription", current_subscription)
+        monkeypatch.setattr(subs, "_record_redemption", referral)
+        monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
+        monkeypatch.setattr(subs, "_ever_paid", ever_paid)
+        monkeypatch.setattr(subs, "credit_referral_conversion", referral)
+        monkeypatch.setattr(subs, "cache", _Cache())
+        monkeypatch.setattr(subs.asyncio, "create_task", fake_create_task)
+        monkeypatch.setattr(ae, "track_purchase", fake_track)
+        return effects, FakeHTTP
+
+    def _run(self):
+        return asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "tok_sub",
+            first_charge_token_id="tok_pay", payment_method_id="visa",
+        ))
+
+    def test_aprovado_libera_na_hora(self, monkeypatch):
+        effects, http = self._setup(monkeypatch, {"id": 555, "status": "approved", "status_detail": "accredited"})
+        out = self._run()
+        assert out["status"] == "ok" and out["paid"] is True
+        assert out["subscription_status"] == "active"
+        assert out["awaiting_first_charge"] is False
+        assert "já estão na conta" in out["detail"]
+        # preapproval só renova: start_date no mês seguinte, cartão pelo token 1
+        assert http.pre_body["card_token_id"] == "tok_sub"
+        assert http.pre_body["auto_recurring"]["start_date"].endswith("-03:00")
+        # cobrança avulsa pelo token 2, mesmo valor, ext_ref humasub (webhook dedupa por payid)
+        assert effects["pay_path"] == "/v1/payments"
+        assert effects["pay_body"]["token"] == "tok_pay"
+        assert effects["pay_body"]["payment_method_id"] == "visa"
+        assert effects["pay_body"]["transaction_amount"] == float(PLAN_CONFIG[Plan.START]["price_brl"])
+        assert effects["pay_body"]["external_reference"].startswith("humasub|cli_x|start")
+        # crédito imediato com payid= e pre= (dedup do webhook + awaiting por preapproval)
+        assert len(effects["credits"]) == 1
+        cid, amount, source, desc = effects["credits"][0]
+        assert amount == PLAN_CONFIG[Plan.START]["included_conversations"]
+        assert source == "mp_primeira_cobranca"
+        assert "payid=555" in desc and "pre=pre_novo" in desc and "primeira pre=" not in desc
+        assert effects["upserts"] == [("cli_x", "start", "pre_novo", "active", False)]
+        assert effects["order"] == ["upsert", "cancel_previous"]
+        assert "_send_subscription_welcome_bg" in effects["tasks"]
+        assert effects["purchase"]["tx"] == "555" and effects["purchase"]["kind"] == "assinatura"
+        assert effects["puts"] == []  # nada a abortar
+
+    def test_recusado_da_erro_e_nada_fica_criado(self, monkeypatch):
+        effects, _ = self._setup(monkeypatch, {"id": 556, "status": "rejected", "status_detail": "cc_rejected_insufficient_amount"})
+        out = self._run()
+        assert out["status"] == "error"
+        assert out["detail"]  # mensagem em PT do mapa de recusas
+        assert effects["upserts"] == [] and effects["credits"] == []
+        # preapproval recém-criado é cancelado: não pode cobrar no mês seguinte
+        assert effects["puts"] == [("/preapproval/pre_novo", {"status": "cancelled"})]
+
+    def test_erro_do_mp_na_cobranca_aborta(self, monkeypatch):
+        effects, _ = self._setup(monkeypatch, None, pay_err="timeout")
+        out = self._run()
+        assert out["status"] == "error"
+        assert effects["upserts"] == []
+        assert effects["puts"] == [("/preapproval/pre_novo", {"status": "cancelled"})]
+
+    def test_em_analise_ativa_sem_creditar(self, monkeypatch):
+        effects, _ = self._setup(monkeypatch, {"id": 557, "status": "in_process", "status_detail": "pending_review_manual"})
+        out = self._run()
+        assert out["status"] == "ok" and out["paid"] is False
+        assert out["awaiting_first_charge"] is True
+        assert effects["upserts"] == [("cli_x", "start", "pre_novo", "active", False)]
+        assert effects["credits"] == []
+        assert effects["puts"] == []
+
+    def test_sem_bandeira_erro_antes_de_criar_qualquer_coisa(self, monkeypatch):
+        effects, http = self._setup(monkeypatch, {"id": 1, "status": "approved"})
+        out = asyncio.run(subs.create_subscription_with_card(
+            "cli_x", "start", "cliente@negocio.com", "tok_sub", first_charge_token_id="tok_pay",
+        ))
+        assert out["status"] == "error"
+        assert not hasattr(http, "pre_body")
+        assert effects["pay_body"] is None
+
+
+class TestNextCycleStart:
+
+    def test_mesmo_dia_do_mes_seguinte(self):
+        from datetime import datetime, timezone
+        out = subs._next_cycle_start_iso(datetime(2026, 9, 18, 23, 15, tzinfo=timezone.utc))
+        assert out == "2026-10-18T20:15:00.000-03:00"
+
+    def test_dia_31_cai_no_ultimo_dia(self):
+        from datetime import datetime, timezone
+        out = subs._next_cycle_start_iso(datetime(2026, 1, 31, 12, 0, tzinfo=timezone.utc))
+        assert out.startswith("2026-02-28T")
+
+    def test_dezembro_vira_janeiro(self):
+        from datetime import datetime, timezone
+        out = subs._next_cycle_start_iso(datetime(2026, 12, 5, 12, 0, tzinfo=timezone.utc))
+        assert out.startswith("2027-01-05T")
+
+
 class TestUpdateSubscriptionCard:
     """Trocar cartão = PUT no MESMO preapproval; nunca credita; reativa pausada."""
 

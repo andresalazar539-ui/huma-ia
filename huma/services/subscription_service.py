@@ -322,9 +322,19 @@ async def create_subscription_with_card(
     payer_email: str,
     card_token_id: str,
     coupon: str = "",
+    first_charge_token_id: str = "",
+    payment_method_id: str = "",
 ) -> dict:
     """
     Cria assinatura recorrente autorizada com cartão tokenizado.
+
+    PAGOU, USOU (2026-09-18): com `first_charge_token_id` + `payment_method_id`
+    (segundo token do mesmo cartão; token do MP é de uso único), a primeira
+    mensalidade é cobrada NA HORA como pagamento avulso (resposta síncrona:
+    aprovado libera as conversas no mesmo segundo; recusado dá erro e nada
+    fica criado) e o preapproval nasce com start_date daqui a 1 mês, só
+    pra renovação. Sem esses campos, caminho legado: só o preapproval
+    (o MP cobra ~1h depois; conversas entram no webhook da cobrança).
 
     Returns:
         {"status": "ok", "subscription_status": "active"|"pending", "detail": ...}
@@ -368,17 +378,29 @@ async def create_subscription_with_card(
     # invisível e continuaria cobrando em paralelo.
     previous_sub = await _current_subscription(client_id)
 
+    first_token = (first_charge_token_id or "").strip()
+    pm_id = (payment_method_id or "").strip()
+    pay_now = bool(first_token)
+    if pay_now and not pm_id:
+        return {"status": "error", "detail": "Não reconheci a bandeira do cartão. Confira o número e tente de novo."}
+
+    auto_recurring: dict = {
+        "frequency": 1,
+        "frequency_type": "months",
+        "transaction_amount": amount,
+        "currency_id": "BRL",
+    }
+    if pay_now:
+        # A 1ª mensalidade é cobrada agora (avulsa); a recorrência começa
+        # daqui a 1 mês — senão o MP cobraria de novo ~1h depois.
+        auto_recurring["start_date"] = _next_cycle_start_iso()
+
     body = {
         "reason": reason,
         "external_reference": _build_ext_ref(client_id, plan.value, coupon_code),
         "payer_email": payer_email,
         "card_token_id": card_token_id.strip(),
-        "auto_recurring": {
-            "frequency": 1,
-            "frequency_type": "months",
-            "transaction_amount": amount,
-            "currency_id": "BRL",
-        },
+        "auto_recurring": auto_recurring,
         "back_url": f"{PUBLIC_BASE_URL.rstrip('/')}/cockpit" if PUBLIC_BASE_URL else "",
         "status": "authorized",
     }
@@ -411,6 +433,13 @@ async def create_subscription_with_card(
     preapproval_id = data.get("id", "")
     mp_status = (data.get("status") or "").lower()
     local_status = {"authorized": "active", "pending": "pending"}.get(mp_status, "pending")
+
+    if pay_now:
+        return await _activate_paying_now(
+            client_id=client_id, plan=plan, config=config, amount=float(amount),
+            payer_email=payer_email, coupon_code=coupon_code, preapproval_id=preapproval_id,
+            first_token=first_token, pm_id=pm_id, previous_sub=previous_sub,
+        )
 
     # ORDEM IMPORTA: a linha local passa a apontar pro preapproval NOVO
     # antes de cancelar o antigo no MP. Assim o webhook "cancelled" do
@@ -459,6 +488,157 @@ async def create_subscription_with_card(
         # Aditivo: o Cockpit mostra "aguardando a primeira cobrança" em vez
         # de "conversas liberadas" — só o webhook da cobrança aprovada libera.
         "awaiting_first_charge": local_status == "active",
+    }
+
+
+def _next_cycle_start_iso(now: Optional[datetime] = None) -> str:
+    """
+    Início da recorrência quando a 1ª mensalidade foi cobrada avulsa: mesmo
+    dia do mês seguinte (dia ajustado se o mês for mais curto), no fuso de
+    Brasília, no formato ISO que o MP aceita ('2026-10-18T20:15:00.000-03:00').
+    """
+    import calendar
+
+    brt = timezone(timedelta(hours=-3))
+    base = (now or datetime.now(timezone.utc)).astimezone(brt)
+    year = base.year + (1 if base.month == 12 else 0)
+    month = 1 if base.month == 12 else base.month + 1
+    day = min(base.day, calendar.monthrange(year, month)[1])
+    nxt = base.replace(year=year, month=month, day=day, microsecond=0)
+    return nxt.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
+
+
+async def _abort_preapproval(client_id: str, preapproval_id: str, why: str) -> None:
+    """
+    Cancela no MP um preapproval recém-criado cuja 1ª mensalidade avulsa
+    NÃO foi aprovada. Sem isto ele cobraria no mês seguinte um cliente
+    que nunca pagou. Best-effort; falha vira ERROR (preapproval órfão).
+    """
+    if not preapproval_id:
+        return
+    cancelled = await _mp_put(f"/preapproval/{preapproval_id}", {"status": "cancelled"})
+    if cancelled:
+        log.info(f"Preapproval abortado | client={client_id} | preapproval={preapproval_id} | motivo={why}")
+    else:
+        log.error(
+            f"Preapproval ÓRFÃO (não cancelou no MP) | client={client_id} | "
+            f"preapproval={preapproval_id} | motivo={why} | cancelar manualmente"
+        )
+
+
+async def _activate_paying_now(
+    *,
+    client_id: str,
+    plan: Plan,
+    config: dict,
+    amount: float,
+    payer_email: str,
+    coupon_code: str,
+    preapproval_id: str,
+    first_token: str,
+    pm_id: str,
+    previous_sub: Optional[dict],
+) -> dict:
+    """
+    Cobra a 1ª mensalidade AGORA (POST /v1/payments, síncrono) logo após o
+    preapproval ter sido criado com start_date no mês seguinte.
+
+    aprovado  → assinatura ativa + conversas na hora (dinheiro na conta);
+    em análise → assinatura ativa, conversas quando o banco aprovar (webhook);
+    recusado / erro → preapproval cancelado, nada gravado, erro na tela.
+    Nunca levanta exceção.
+    """
+    import uuid as _uuid
+
+    idem = f"humasub-first-{client_id}-{_uuid.uuid4().hex[:12]}"
+    ext_ref = _build_ext_ref(client_id, plan.value, coupon_code)
+    body = {
+        "transaction_amount": round(amount, 2),
+        "description": f"HUMA IA — Plano {config['name']} (1ª mensalidade)",
+        "external_reference": ext_ref,
+        "token": first_token,
+        "payment_method_id": pm_id,
+        "installments": 1,
+        "payer": {"email": payer_email},
+        "metadata": {"preapproval_id": preapproval_id, "kind": "primeira_mensalidade"},
+    }
+    data, mp_err = await _mp_post_full("/v1/payments", body, idem_key=idem)
+    if not data:
+        await _abort_preapproval(client_id, preapproval_id, f"cobrança falhou: {mp_err[:80]}")
+        return {"status": "error", "detail": _friendly_mp_error(mp_err, "cartão")}
+
+    mp_status = (data.get("status") or "").lower()
+    payment_id = str(data.get("id", ""))
+    status_detail = (data.get("status_detail") or "").lower()
+
+    if mp_status not in ("approved", "in_process", "pending"):
+        await _abort_preapproval(client_id, preapproval_id, f"cartão recusado ({status_detail or mp_status})")
+        log.warning(
+            f"ASSINATURA CARTÃO RECUSADO | client={client_id} | plan={plan.value} | "
+            f"payid={payment_id} | {status_detail or mp_status}"
+        )
+        return {
+            "status": "error",
+            "detail": _CARD_DECLINE_PT.get(status_detail, "O cartão foi recusado. Tente outro cartão."),
+        }
+
+    # Cartão cobrado (ou em análise pelo banco): a assinatura existe de
+    # verdade. Linha local aponta pro preapproval novo ANTES de cancelar o
+    # antigo (webhook do antigo vira obsoleto — ver _handle_preapproval_change).
+    await _upsert_subscription(client_id, plan.value, preapproval_id, "active", welcome=False)
+    await _cancel_previous_preapproval(client_id, preapproval_id, previous_sub)
+    await _carry_overage_forward(client_id, preapproval_id, amount, previous_sub)
+    if coupon_code:
+        await _record_redemption(coupon_code, client_id, plan.value, preapproval_id)
+
+    if mp_status != "approved":
+        # Análise antifraude do banco: resolve em minutos. O webhook do
+        # pagamento (topic payment, ext_ref humasub|...) credita ao aprovar.
+        # Se for recusado depois, o gate segura (saldo 0 + aguardando) e o
+        # reconcile/Trocar cartão resolvem — caso raro, logado.
+        log.info(
+            f"ASSINATURA EM ANÁLISE | client={client_id} | plan={plan.value} | "
+            f"payid={payment_id} | preapproval={preapproval_id}"
+        )
+        return {
+            "status": "ok", "subscription_status": "active", "paid": False,
+            "payment_id": payment_id, "preapproval_id": preapproval_id,
+            "awaiting_first_charge": True,
+            "detail": (
+                "Pagamento em análise pelo banco. Suas conversas entram assim que ele aprovar, "
+                "em geral em poucos minutos."
+            ),
+        }
+
+    # APROVADO: dinheiro na conta → conversas, boas-vindas, indicação e
+    # purchase no MESMO instante. O webhook desta cobrança (topic payment)
+    # cai no dedup por payid= e não duplica.
+    first_paid = not await _ever_paid(client_id)
+    await billing.add_conversations(
+        client_id, config["included_conversations"],
+        source="mp_primeira_cobranca",
+        description=f"payid={payment_id} pre={preapproval_id} plano {plan.value} (1ª mensalidade na hora)",
+    )
+    await cache.delete_key(f"wallet_bal:{client_id}")
+    if first_paid:
+        asyncio.create_task(_send_subscription_welcome_bg(client_id, plan.value))
+    await credit_referral_conversion(client_id)
+    from huma.services import analytics_events as ae
+    asyncio.create_task(ae.track_purchase(
+        client_id, payment_id, amount,
+        item_id=plan.value, item_name=f"Plano {config['name']}",
+        kind="assinatura" if first_paid else "renovacao",
+    ))
+    log.info(
+        f"ASSINATURA PAGA NA HORA | client={client_id} | plan={plan.value} | "
+        f"payid={payment_id} | preapproval={preapproval_id} | valor={amount} | "
+        f"+{config['included_conversations']} conversas"
+    )
+    return {
+        "status": "ok", "subscription_status": "active", "paid": True,
+        "payment_id": payment_id, "preapproval_id": preapproval_id,
+        "awaiting_first_charge": False,
+        "detail": f"Assinatura ativa! Suas {config['included_conversations']} conversas já estão na conta.",
     }
 
 
