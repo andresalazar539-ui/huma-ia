@@ -7,8 +7,9 @@
 //     client-side via deriveStatus/mapListItem) e lista dos primeiros dias.
 //   - fetchAppointments() → "Seu dia hoje" (filtra os de hoje, destaca o atual).
 //   - fetchMetrics() → rodapé vitalício + detecção de cold start (total 0 ou 404).
-//   - fetchIntegrationsStatus() → card "saúde do setup" do dia zero (só campos reais:
-//     WhatsApp e CRM; Calendar não existe no payload, então não aparece).
+//   - fetchIntegrationsStatus() → card "saúde do setup" do dia zero (CRM).
+//   - fetchWhatsappRealI() → WhatsApp do dia zero pelo estado REAL da conexão
+//     (Meta oficial ou QR pareado). whatsapp_provider preenchido NÃO é conexão.
 //
 // Props (o shell passa ambas):
 //   - onOpenConversa(phone): abre a conversa na tela de Conversas.
@@ -286,32 +287,65 @@ const IniDia = ({ eventos, onGoto }) => {
   );
 };
 
+// Estado REAL do WhatsApp (mesma regra de Ajustes → Canais): oficial da Meta
+// primeiro, depois o pareamento por QR. Canal configurado NÃO é conexão: só de
+// abrir a tela do QR o servidor já grava whatsapp_provider, sem ninguém ter
+// pareado o celular. Devolve { state: 'meta' | 'qr' | 'off' | 'unknown', number }.
+async function fetchWhatsappRealI() {
+  try {
+    const m = await whatsappMetaStatus();
+    if (m && m.connected) return { state: 'meta', number: m.display_phone_number || '' };
+  } catch (e) {
+    console.error('Início | falha ao checar o WhatsApp oficial', e); // segue pro QR
+  }
+  try {
+    const s = await whatsappStatus();
+    return { state: s && s.connected ? 'qr' : 'off', number: '' };
+  } catch (e) {
+    console.error('Início | falha ao checar o WhatsApp por QR', e);
+    return { state: 'unknown', number: '' }; // não deu pra saber: a tela não afirma nada
+  }
+}
+
 // ============================================================
 // Primeira experiência — dia zero (nenhuma conversa ainda)
 // setup = payload real de GET /api/integrations/status (ou null → card omitido)
+// wa    = estado real do WhatsApp (fetchWhatsappRealI)
 // ============================================================
-const IniDiaZero = ({ setup, onGoto }) => {
-  const provRotulos = { meta: 'API oficial da Meta', evolution: 'Evolution API', twilio: 'Twilio (teste)' };
-  const linhas = setup ? [
-    {
+const IniDiaZero = ({ setup, wa, onGoto }) => {
+  const waState = (wa && wa.state) || 'unknown';
+  const waOn = waState === 'meta' || waState === 'qr';
+  const instaOn = !!(setup && setup.instagram_connected === 'ok');
+  const waLinha = waOn
+    ? {
       label: 'WhatsApp conectado',
-      ok: !!setup.whatsapp_provider,
-      sub: setup.whatsapp_provider
-        ? `respondendo pelo canal ${provRotulos[setup.whatsapp_provider] || setup.whatsapp_provider}`
-        : 'conecte seu número pra HUMA começar a atender',
-    },
-    {
+      ok: true,
+      sub: waState === 'meta'
+        ? `número oficial${wa.number ? ' ' + wa.number : ''}, recebendo mensagens`
+        : 'seu número está pareado e recebendo mensagens',
+    }
+    : waState === 'off'
+      ? { label: 'WhatsApp', ok: false, sub: 'ainda não conectado. Sem ele eu não recebo as mensagens dos seus clientes' }
+      : { label: 'WhatsApp', ok: false, sub: 'não consegui verificar a conexão agora. Confira em Integrações' };
+  // A linha do WhatsApp não depende do status das integrações: mesmo se ele
+  // falhar, o dono ainda vê a verdade sobre o canal e o botão de conectar.
+  const linhas = [
+    waLinha,
+    ...(setup ? [{
       label: 'CRM',
       ok: setup.crm_access_token === 'ok',
       sub: setup.crm_access_token === 'ok'
         ? `${setup.crm_provider || 'CRM'} conectado, leads cadastrados sozinhos`
         : 'opcional, conecte pra HUMA cadastrar leads sozinha',
-    },
-  ] : [];
+    }] : []),
+  ];
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       <div style={iniHeroStyle}>
-        A HUMA está <IniNum>no ar</IniNum> e pronta pra atender. A partir da primeira conversa, este espaço vira o resumo do seu plantão.
+        {waOn && <>A HUMA está <IniNum>no ar</IniNum> e pronta pra atender. A partir da primeira conversa, este espaço vira o resumo do seu plantão.</>}
+        {!waOn && waState === 'off' && instaOn && <>Já estou <IniNum>no ar</IniNum> no seu Instagram. Falta conectar o WhatsApp pra eu atender por lá também.</>}
+        {!waOn && waState === 'off' && !instaOn && <>Falta <IniNum>um passo</IniNum> pra eu começar a atender: conectar o seu WhatsApp. Depois disso, este espaço vira o resumo do seu plantão.</>}
+        {!waOn && waState === 'unknown' && <>A partir da primeira conversa, este espaço vira o resumo do seu plantão.</>}
       </div>
       {linhas.length > 0 && (
         <div>
@@ -332,15 +366,17 @@ const IniDiaZero = ({ setup, onGoto }) => {
           </div>
         </div>
       )}
-      <div style={{ ...iniCard, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
-        <div style={{ width: 38, height: 38, borderRadius: 999, background: 'var(--terracotta-tint)', color: 'var(--terracotta)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <Icon name="send" size={16} />
+      {waOn && (
+        <div style={{ ...iniCard, padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 999, background: 'var(--terracotta-tint)', color: 'var(--terracotta)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Icon name="send" size={16} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 500, fontSize: 14, color: 'var(--ink)' }}>Quer me ver trabalhando?</div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', marginTop: 1 }}>Mande um oi de outro celular pro número conectado e veja como eu atendo um cliente de verdade.</div>
+          </div>
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 500, fontSize: 14, color: 'var(--ink)' }}>Quer me ver trabalhando?</div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', marginTop: 1 }}>Mande um oi do seu próprio celular e veja como eu atendo um cliente de verdade.</div>
-        </div>
-      </div>
+      )}
     </div>
   );
 };
@@ -415,6 +451,7 @@ const InicioScreen = ({ onOpenConversa, onGoto }) => {
   const [appts, setAppts] = useStateI(null); // agendamentos (null = fetch falhou → bloco omitido)
   const [metrics, setMetrics] = useStateI(null);
   const [setup, setSetup] = useStateI(null); // integrações (só dia zero)
+  const [wa, setWa] = useStateI(null);       // estado real do WhatsApp (só dia zero)
   const periodoRef = useRefI(7);             // guarda contra corrida na troca de período
 
   const load = useCallbackI(async (p) => {
@@ -448,13 +485,19 @@ const InicioScreen = ({ onOpenConversa, onGoto }) => {
     setConvs(convItems);
 
     if (total === 0) {
+      // Busca o setup e o estado REAL do WhatsApp antes de desenhar o dia zero:
+      // a tela nunca afirma "conectado"/"no ar" sem ter checado de verdade.
+      const [stRes, waReal] = await Promise.all([
+        fetchIntegrationsStatus().catch((e) => {
+          console.error('Início | falha no status de integrações', e);
+          return null; // linhas de integração são omitidas, nunca inventa status
+        }),
+        fetchWhatsappRealI(),
+      ]);
+      if (periodoRef.current !== p) return;
+      setSetup(stRes);
+      setWa(waReal);
       setEstado('diazero');
-      try {
-        setSetup(await fetchIntegrationsStatus());
-      } catch (e) {
-        console.error('Início | falha no status de integrações', e);
-        setSetup(null); // card "saúde do setup" é omitido, nunca inventa status
-      }
       return;
     }
 
@@ -538,7 +581,7 @@ const InicioScreen = ({ onOpenConversa, onGoto }) => {
 
         {estado === 'carregando' && <IniSkeleton />}
         {estado === 'erro' && <IniErro onRetry={() => load(periodo)} />}
-        {estado === 'diazero' && <IniDiaZero setup={setup} onGoto={onGoto} />}
+        {estado === 'diazero' && <IniDiaZero setup={setup} wa={wa} onGoto={onGoto} />}
         {estado === 'primeiros' && <IniPrimeiras total={totalVitalicio || 0} itens={(convs || []).slice(0, 5)} onOpenConversa={onOpenConversa} />}
 
         {estado === 'pronto' && r1 && (
