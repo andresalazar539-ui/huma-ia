@@ -140,10 +140,45 @@ function AudioRecorder({ onSend, onCancel }) {
   const [sec, setSec] = useState(0);
   const [err, setErr] = useState(null);
   const recRef = useRef(null); const chunksRef = useRef([]); const streamRef = useRef(null); const sendRef = useRef(false);
+  const waveRef = useRef(null); const meterRef = useRef(null);
+  // Barrinhas = volume REAL do microfone (parado no silêncio, mexe quando fala).
+  // Escreve a altura direto no DOM: sem re-render e sem animação CSS em loop.
+  // Sem Web Audio ou com "reduzir animações" ligado, ficam paradas (o timer já
+  // mostra que está gravando).
+  const startMeter = (stream) => {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const calm = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    if (!Ctx || calm) return;
+    try {
+      const ctx = new Ctx();
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64; analyser.smoothingTimeConstant = 0.8;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const bins = new Uint8Array(analyser.frequencyBinCount);
+      const levels = new Array(14).fill(0);
+      let raf = 0, last = 0;
+      const tick = (t) => {
+        raf = requestAnimationFrame(tick);
+        if (t - last < 70) return; // ~14 quadros por segundo: fluido sem tremer
+        last = t;
+        const bars = waveRef.current ? waveRef.current.children : [];
+        analyser.getByteFrequencyData(bins);
+        for (let k = 0; k < bars.length; k++) {
+          const target = Math.min(1, (bins[2 + k] || 0) / 190);
+          levels[k] += (target - levels[k]) * 0.45; // suaviza subida e descida
+          bars[k].style.height = `${Math.round(5 + levels[k] * 19)}px`;
+        }
+      };
+      raf = requestAnimationFrame(tick);
+      meterRef.current = () => { cancelAnimationFrame(raf); ctx.close().catch(() => {}); };
+    } catch (e) { console.warn('Gravador | medidor de volume indisponível', e); }
+  };
   useEffect(() => {
     let timer;
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
       streamRef.current = stream;
+      startMeter(stream);
       const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : (MediaRecorder.isTypeSupported('audio/ogg') ? 'audio/ogg' : '');
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       recRef.current = rec; chunksRef.current = [];
@@ -155,7 +190,7 @@ function AudioRecorder({ onSend, onCancel }) {
       rec.start();
       timer = setInterval(() => setSec(s => s + 1), 1000);
     }).catch(() => setErr('Não consegui usar seu microfone. Pode digitar a resposta que funciona igual.'));
-    return () => { clearInterval(timer); if (recRef.current && recRef.current.state !== 'inactive') recRef.current.stop(); else if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); };
+    return () => { clearInterval(timer); if (meterRef.current) meterRef.current(); if (recRef.current && recRef.current.state !== 'inactive') recRef.current.stop(); else if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); };
   }, []);
   const fmt = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   const stop = (send) => { sendRef.current = send; const r = recRef.current; if (r && r.state !== 'inactive') r.stop(); if (!send) onCancel(); };
@@ -164,7 +199,7 @@ function AudioRecorder({ onSend, onCancel }) {
     <div className="rec">
       <span className="dot" aria-hidden="true"></span>
       <span className="timer">{fmt(sec)}</span>
-      <div className="wave" aria-hidden="true">{Array.from({ length: 14 }, (_, i) => <i key={i} style={{ animationDelay: `${i * 80}ms` }}></i>)}</div>
+      <div className="wave" aria-hidden="true" ref={waveRef}>{Array.from({ length: 14 }, (_, i) => <i key={i}></i>)}</div>
       <button className="linkbtn" style={{ padding: '6px 8px', minHeight: 0 }} onClick={() => stop(false)}>Cancelar</button>
     </div>
     <button className="icon-btn" onClick={() => stop(true)} aria-label="Enviar áudio">
