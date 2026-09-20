@@ -805,6 +805,110 @@ class TestSourceAnalysisParsing:
 
 
 # ================================================================
+# O QUE O DONO COLA DE VERDADE NO CAMPO "SITE" (varredura 2026-09-20)
+# wa.me, Facebook, Maps, iFood com muro, @usuario, domínio errado.
+# ================================================================
+
+
+class TestRealWorldLinks:
+
+    def test_classifica_o_tipo_de_link(self):
+        c = interview.classify_source_url
+        assert c("https://wa.me/5511999999999") == "whatsapp"
+        assert c("https://api.whatsapp.com/send?phone=55") == "whatsapp"
+        assert c("https://www.facebook.com/minhaloja") == "facebook"
+        assert c("https://maps.app.goo.gl/abc") == "maps"
+        assert c("https://www.google.com/maps/place/Loja") == "maps"
+        assert c("https://instagram.com/loja") == "instagram"
+        assert c("https://linktr.ee/loja") == "site"
+        assert c("https://www.lefemmeboutique.com.br/") == "site"
+
+    def test_tela_de_bloqueio_nao_e_conteudo(self):
+        w = interview.looks_like_wall
+        assert w("Explore the things you love. Log into Facebook Log in Forgot password?")
+        assert w("www.ifood.com.br Performing security verification This website uses a security service to protect")
+        assert w("Just a moment... Enable JavaScript and cookies to continue")
+        assert not w("Clínica de estética em Curitiba. Limpeza de pele R$ 180, botox a partir de R$ 650.")
+        # texto longo que cita captcha é conteúdo de verdade, não muro
+        assert not w("captcha " + "texto do negócio " * 200)
+
+    def _no_network(self, monkeypatch, direct=None, reader=None):
+        calls = {"direct": 0, "reader": 0}
+
+        async def fake_direct(_url):
+            calls["direct"] += 1
+            return direct
+
+        async def fake_reader(_url):
+            calls["reader"] += 1
+            return reader
+
+        monkeypatch.setattr(interview, "_fetch_direct", fake_direct)
+        monkeypatch.setattr(interview, "_fetch_via_reader", fake_reader)
+        interview._fail_reason.clear()
+        return calls
+
+    def test_link_do_whatsapp_nem_e_lido_e_a_mensagem_ensina(self, monkeypatch):
+        import asyncio
+        calls = self._no_network(monkeypatch, direct="propaganda do WhatsApp " * 100)
+        out = asyncio.run(interview.analyze_source("https://wa.me/5511999999999"))
+        assert out["status"] == "unavailable"
+        assert "link do seu WhatsApp" in out["detail"]
+        assert calls == {"direct": 0, "reader": 0}
+
+    def test_facebook_e_maps_tem_mensagem_propria(self, monkeypatch):
+        import asyncio
+        self._no_network(monkeypatch)
+        fb = asyncio.run(interview.analyze_source("facebook.com/minhaloja"))
+        mp = asyncio.run(interview.analyze_source("https://maps.app.goo.gl/xyz"))
+        assert "Facebook não deixa" in fb["detail"]
+        assert "no mapa" in mp["detail"]
+
+    def test_muro_nas_duas_rotas_vira_ilegivel(self, monkeypatch):
+        import asyncio
+        muro = "Performing security verification. This website uses a security service to protect itself."
+        self._no_network(monkeypatch, direct=muro, reader=muro)
+        assert asyncio.run(interview.fetch_source_text("https://www.ifood.com.br/delivery/x")) is None
+
+    def test_arroba_no_campo_do_site_vira_instagram(self, monkeypatch):
+        import asyncio
+        self._no_network(monkeypatch)
+        out = asyncio.run(interview.analyze_source("@minhaloja"))
+        assert out["sources"] == {"site": "", "instagram": "failed"}
+        assert "Instagram não deixa" in out["detail"]
+
+    def test_dominio_errado_pede_pra_conferir_a_digitacao(self, monkeypatch):
+        import asyncio
+        calls = self._no_network(monkeypatch)
+
+        async def dns_falhou(url):
+            calls["direct"] += 1
+            interview._fail_reason[url] = "not_found"
+            return None
+
+        monkeypatch.setattr(interview, "_fetch_direct", dns_falhou)
+        out = asyncio.run(interview.analyze_source("www.lojaquenaoexiste.com.br"))
+        assert "Não achei esse endereço" in out["detail"]
+        assert calls["reader"] == 0  # não faz o dono esperar o leitor reserva à toa
+
+    def test_codigo_da_pagina_nao_e_conteudo(self, monkeypatch):
+        import asyncio
+        lixo = 'Instagram | Instagram ' + '{"require":[["Bootloader","handlePayload",null,[{"rsrcMap":{"a":{"type":"js","src":"https:\/\/x.com\/y.js"}}}]]]}' * 60
+        assert interview.looks_like_code(lixo)
+        assert not interview.looks_like_code("Boutique feminina em Blumenau. Conjuntos a partir de R$ 284,91, frete grátis acima de R$ 199,90. " * 12)
+        self._no_network(monkeypatch, direct=lixo)
+        out = asyncio.run(interview.analyze_source("", instagram="@loja"))
+        assert out["sources"] == {"site": "", "instagram": "failed"}
+
+    def test_mensagens_sem_travessao(self):
+        textos = list(interview._UNSUPPORTED_DETAIL.values()) + [
+            interview._unavailable_detail({"site": "failed", "instagram": ""}, site_reason="not_found"),
+            interview._unavailable_detail({"site": "failed", "instagram": ""}),
+        ]
+        assert all("\u2014" not in t for t in textos)
+
+
+# ================================================================
 # HISTÓRICO DO PLAYGROUND (rotas)
 # ================================================================
 

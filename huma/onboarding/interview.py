@@ -143,6 +143,73 @@ def _is_instagram(url: str) -> bool:
     return "instagram.com" in (url or "").lower()
 
 
+# O que o dono de pequeno negócio cola de verdade no campo "site" (varredura
+# de cenários 2026-09-20). Nenhum destes é página legível do negócio: ler
+# devolvia a propaganda do WhatsApp, a tela de login do Facebook ou ícones do
+# Maps, e a IA montava a proposta em cima disso com toda a confiança.
+_UNREADABLE_HOSTS = {
+    "whatsapp": ("wa.me", "api.whatsapp.com", "whatsapp.com", "chat.whatsapp.com"),
+    "maps": ("google.com/maps", "maps.google.", "maps.app.goo.gl", "goo.gl/maps", "g.page", "g.co/kgs"),
+    "facebook": ("facebook.com", "fb.com", "fb.me", "m.me"),
+}
+
+# Telas de bloqueio/login que voltam com HTTP 200 e parecem "conteúdo".
+_WALL_MARKERS = (
+    "log into facebook", "log in to facebook", "performing security verification",
+    "security service to protect", "just a moment", "verifying you are human",
+    "verify you are human", "enable javascript and cookies", "attention required",
+    "access denied", "unusual traffic", "are you a robot", "captcha",
+    "request blocked", "403 forbidden", "acesso negado",
+)
+_WALL_MAX_CHARS = 1500  # muro é página curta; texto longo com a palavra "captcha" é conteúdo
+
+
+def classify_source_url(url: str) -> str:
+    """
+    Que tipo de endereço o dono colou: "instagram" | "whatsapp" | "maps" |
+    "facebook" | "site". Só "site" e "instagram" são lidos.
+    """
+    u = (url or "").strip().lower()
+    if _is_instagram(u):
+        return "instagram"
+    for kind, hosts in _UNREADABLE_HOSTS.items():
+        if any(h in u for h in hosts):
+            return kind
+    return "site"
+
+
+def looks_like_code(text: str) -> bool:
+    """
+    True se o "texto" é código da página (JSON/JS de bootstrap), não conteúdo.
+
+    Caso real: o Instagram às vezes responde 200 e o que sobra depois de tirar
+    as tags são 12 mil caracteres de '{"require":[["Bootloader",...'. Isso era
+    marcado como "Instagram: ok" e mandado pra IA. Texto de gente quase não
+    tem chaves, colchetes, aspas e barras; código é feito disso.
+    """
+    t = (text or "").strip()
+    if len(t) < 200:
+        return False
+    sample = t[:6000]
+    symbols = sum(sample.count(c) for c in ("{", "}", "[", "]", '"', "\\", "/", ":"))
+    return symbols / len(sample) > 0.10
+
+
+def looks_like_wall(text: str) -> bool:
+    """True se o texto é uma tela de bloqueio/login, não o conteúdo do negócio."""
+    t = (text or "").strip().lower()
+    if not t or len(t) > _WALL_MAX_CHARS:
+        return False
+    return any(marker in t for marker in _WALL_MARKERS)
+
+
+# Por que a última leitura de cada URL falhou ("not_found" | "blocked" |
+# "timeout" | "empty"), pra mensagem ao dono dizer a verdade. Canal lateral de
+# propósito: fetch_source_text continua devolvendo só o texto (o playbook e os
+# testes dependem dessa assinatura).
+_fail_reason: dict[str, str] = {}
+
+
 async def fetch_source_text(url: str) -> str | None:
     """
     Lê uma página pública e devolve o texto útil (None se não der).
@@ -163,15 +230,32 @@ async def fetch_source_text(url: str) -> str | None:
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
 
+    if classify_source_url(url) not in ("site", "instagram"):
+        _fail_reason[url] = "unsupported"
+        return None
+
     direct = await _fetch_direct(url)
+    if direct and (looks_like_wall(direct) or looks_like_code(direct)):
+        log.warning(f"Fonte devolveu bloqueio ou código, não conteúdo | url={url} | chars={len(direct)}")
+        _fail_reason[url] = "blocked"
+        direct = None
     if direct and len(direct) >= _THIN_TEXT_CHARS:
         return direct
     if _is_instagram(url):
         return direct
+    if _fail_reason.get(url) == "not_found":
+        return None  # domínio não existe: o leitor reserva só faria o dono esperar
 
     via_reader = await _fetch_via_reader(url)
+    if via_reader and (looks_like_wall(via_reader) or looks_like_code(via_reader)):
+        log.warning(f"Leitor reserva devolveu tela de bloqueio | url={url} | chars={len(via_reader)}")
+        via_reader = None
     best = max((direct or ""), (via_reader or ""), key=len)
-    return best or None
+    if best:
+        _fail_reason.pop(url, None)
+        return best
+    _fail_reason.setdefault(url, "blocked")
+    return None
 
 
 async def _fetch_via_reader(url: str) -> str | None:
@@ -222,13 +306,21 @@ async def _fetch_direct(url: str) -> str | None:
             )
     except httpx.TimeoutException:
         log.warning(f"Fonte timeout | url={url}")
+        _fail_reason[url] = "timeout"
+        return None
+    except httpx.ConnectError as e:
+        # DNS/conexão: quase sempre endereço digitado errado
+        log.warning(f"Fonte não encontrada | url={url} | {type(e).__name__}: {e}")
+        _fail_reason[url] = "not_found"
         return None
     except httpx.HTTPError as e:
         log.warning(f"Fonte inacessível | url={url} | {type(e).__name__}: {e}")
+        _fail_reason[url] = "blocked"
         return None
 
     if resp.status_code != 200:
         log.warning(f"Fonte HTTP {resp.status_code} | url={url}")
+        _fail_reason[url] = "not_found" if resp.status_code == 404 else "blocked"
         return None
 
     html = resp.text[:400_000]
@@ -425,8 +517,31 @@ def _parse_source_response(response, url: str) -> dict | None:
     return salvaged
 
 
-def _unavailable_detail(read: dict) -> str:
+_UNSUPPORTED_DETAIL = {
+    "whatsapp": (
+        "Esse é o link do seu WhatsApp, não do seu site: ali eu não tenho o que ler. "
+        "Se você tem site, me passa ele. Se não tem, pode ser o Instagram, ou me conta você mesmo."
+    ),
+    "maps": (
+        "Esse é o endereço do seu negócio no mapa, não o site: ali eu não consigo ler nada. "
+        "Se você tem site, me passa ele. Se não tem, pode ser o Instagram, ou me conta você mesmo."
+    ),
+    "facebook": (
+        "O Facebook não deixa ninguém de fora ler página, nem eu. "
+        "Se você tem site, me passa ele. Se não tem, me conta você mesmo."
+    ),
+}
+
+
+def _unavailable_detail(read: dict, site_kind: str = "site", site_reason: str = "") -> str:
     """Mensagem honesta de por que nada foi lido (o dono acha que 'nem tentou')."""
+    if site_kind in _UNSUPPORTED_DETAIL:
+        return _UNSUPPORTED_DETAIL[site_kind]
+    if read.get("site") == "failed" and site_reason == "not_found":
+        return (
+            "Não achei esse endereço. Dá uma conferida se digitou certo "
+            "(algo como seusite.com.br) e tenta de novo, ou me conta você mesmo."
+        )
     if read.get("instagram") == "failed" and not read.get("site"):
         return (
             "O Instagram não deixa ninguém de fora ler perfil, nem eu. Se você tiver um site, "
@@ -465,9 +580,15 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
     """
     site_url = (url or "").strip()
     insta_url = _instagram_url(instagram)
-    # Um dono que cola o Instagram no campo do site: trata como Instagram.
-    if site_url and _is_instagram(site_url) and not insta_url:
+    # Um dono que cola o Instagram (link ou @usuario) no campo do site: é Instagram.
+    looks_like_handle = site_url.startswith("@") or (site_url and "." not in site_url and "/" not in site_url)
+    if site_url and (_is_instagram(site_url) or looks_like_handle) and not insta_url:
         site_url, insta_url = "", _instagram_url(site_url)
+    elif site_url and looks_like_handle:
+        site_url = ""
+    if site_url and not site_url.startswith(("http://", "https://")):
+        site_url = f"https://{site_url}"
+    site_kind = classify_source_url(site_url) if site_url else "site"
     parts: list[str] = []
     read = {"site": "", "instagram": ""}  # "" não informado | "ok" | "failed"
     if site_url:
@@ -483,7 +604,12 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
     source_text = "\n\n".join(parts)[:_SOURCE_MAX_CHARS]
     url = " e ".join(u for u in (site_url, insta_url) if u)
     if not source_text:
-        return {"status": "unavailable", "sources": read, "detail": _unavailable_detail(read)}
+        reason = _fail_reason.pop(site_url, "") if site_url else ""
+        log.info(f"Fonte ilegível | url={url} | tipo={site_kind} | motivo={reason or '-'} | fontes={read}")
+        return {
+            "status": "unavailable", "sources": read,
+            "detail": _unavailable_detail(read, site_kind=site_kind, site_reason=reason),
+        }
 
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
