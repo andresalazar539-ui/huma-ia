@@ -169,6 +169,7 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 /* whatsapp connect */
 .qrbox{background:#fff;border:1px solid var(--paper-edge);border-radius:16px;padding:14px;align-self:center;box-shadow:var(--sh-2)}
 .qrbox img{display:block;width:220px;height:220px;image-rendering:pixelated}
+.qrbox .qrwait{width:220px;height:220px;display:flex;align-items:center;justify-content:center;text-align:center;font-family:var(--font-serif);font-size:18px;color:var(--ink-3)}
 .steps{display:flex;flex-direction:column;gap:12px}
 .steps .st{display:flex;gap:12px;align-items:flex-start}
 .steps .n{width:26px;height:26px;border-radius:999px;background:var(--paper-sunk);color:var(--ink-2);font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0}

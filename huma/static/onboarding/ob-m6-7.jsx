@@ -1,6 +1,14 @@
 // ob-m6-7.jsx — Momento 6 (conectar WhatsApp), Momento 7 (capabilities + ativação) e tela final
 const { useState, useEffect, useRef } = React;
 
+// O servidor devolve o QR já como data URL ("data:image/png;base64,...");
+// base64 cru (modo demo / versão antiga) ganha o prefixo. Vazio = sem QR.
+function qrSrc(b64) {
+  const v = (b64 || '').trim();
+  if (!v) return '';
+  return v.startsWith('data:') ? v : `data:image/png;base64,${v}`;
+}
+
 // ── Momento 6 — WhatsApp (só DEPOIS do uau) ──────────────────────────────
 function Moment6({ onDone }) {
   const [phase, setPhase] = useState('loading'); // loading | qr | connected | unavailable | error
@@ -15,7 +23,9 @@ function Moment6({ onDone }) {
       pollRef.current = setInterval(async () => {
         try {
           const s = await HumaAPI.waStatus();
-          if (s.connected) { clearInterval(pollRef.current); setPhase('connected'); }
+          if (s.connected) { clearInterval(pollRef.current); setPhase('connected'); return; }
+          // o QR do WhatsApp expira em ~40s: cada consulta traz o código vigente
+          if (s.qr_base64 || s.pairing_code) setData(d => ({ ...d, qr_base64: s.qr_base64 || d.qr_base64, pairing_code: s.pairing_code || d.pairing_code }));
         } catch (e) { /* poll silencioso; próximo tick tenta de novo */ }
       }, 3000);
     } catch (e) {
@@ -29,7 +39,9 @@ function Moment6({ onDone }) {
       <h2 className="ob-title" style={{ fontSize: 'clamp(28px,7vw,38px)' }}>Agora me coloca no seu WhatsApp.</h2>
       {phase === 'loading' && <WaitNarrative lines={['preparando sua conexão...']} />}
       {phase === 'qr' && <div className="stack g20">
-        <div className="qrbox"><img src={`data:image/png;base64,${data.qr_base64}`} alt="QR code para conectar seu WhatsApp" /></div>
+        <div className="qrbox">{qrSrc(data.qr_base64)
+          ? <img src={qrSrc(data.qr_base64)} alt="QR code para conectar seu WhatsApp" />
+          : <div className="qrwait">gerando seu código...</div>}</div>
         <div className="steps">
           <div className="st"><span className="n">1</span><p className="ob-micro" style={{ fontSize: 14.5, color: 'var(--ink-2)' }}>Abra o WhatsApp no seu celular e toque em <strong>Configurações</strong>.</p></div>
           <div className="st"><span className="n">2</span><p className="ob-micro" style={{ fontSize: 14.5, color: 'var(--ink-2)' }}>Toque em <strong>Aparelhos conectados</strong> → <strong>Conectar aparelho</strong>.</p></div>
