@@ -55,7 +55,7 @@ const lookLines = ['abrindo suas páginas...', 'lendo o que você oferece...', '
 // satélites do núcleo de análise = o que a leitura da página extrai de verdade
 const lookNodes = ['Suas páginas', 'Produtos', 'Preços', 'Jeito de falar', 'Dúvidas', 'Público'];
 
-function ProposalReview({ url, instagram, proposal, onApplied, onTellMyself }) {
+function ProposalReview({ url, instagram, proposal, sources, onApplied, onTellMyself }) {
   const [p, setP] = useState(proposal);
   const [verticals, setVerticals] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -69,6 +69,9 @@ function ProposalReview({ url, instagram, proposal, onApplied, onTellMyself }) {
   };
   return <div className="stack g20">
     <Reveal><HumaSays>{p.summary_for_owner || 'Olha o que eu encontrei. Acertei?'}</HumaSays></Reveal>
+    {/* honestidade: diz de onde veio o que ela sabe (o Instagram não deixa ninguém de fora ler perfil) */}
+    {sources && sources.site === 'ok' && sources.instagram === 'failed' && <p className="ob-micro">Isso eu tirei do seu site. O Instagram não deixa ninguém de fora ler perfil, nem eu, então ele ficou de fora da leitura.</p>}
+    {sources && sources.site === 'failed' && sources.instagram === 'ok' && <p className="ob-micro">Isso eu tirei do seu Instagram. O seu site bloqueou a minha leitura.</p>}
     <Reveal delay={200}><div className="qcard">
       <span className="eyebrow">Seu negócio</span>
       <Field label="Nome" value={p.business_name || ''} onChange={v => set('business_name', v)} />
@@ -107,6 +110,7 @@ function Moment2({ ownerName, onDone, onSkip }) {
   const [url, setUrl] = useState('');
   const [insta, setInsta] = useState('');
   const [proposal, setProposal] = useState(null);
+  const [sources, setSources] = useState(null);
   const [note, setNote] = useState(null);
   const [err, setErr] = useState(null);
   const has = !!(url.trim() || insta.trim());
@@ -118,6 +122,7 @@ function Moment2({ ownerName, onDone, onSkip }) {
     setPhase('looking'); setErr(null);
     try {
       const r = await HumaAPI.source(url.trim(), insta.trim());
+      setSources(r.sources || null);
       if (r.status === 'ok') { setProposal(r.proposal); setPhase('review'); }
       else { setNote(r.detail || 'Não consegui espiar suas páginas, mas sem drama. Me conta você mesmo!'); setPhase('unavailable'); }
     } catch (e) {
@@ -138,14 +143,18 @@ function Moment2({ ownerName, onDone, onSkip }) {
       <div className="field"><label htmlFor="src-insta">Instagram</label>
         <input id="src-insta" className="input" placeholder="@seunegocio" value={insta}
           onChange={e => setInsta(e.target.value)} onKeyDown={e => e.key === 'Enter' && look()} /></div>
+      <p className="ob-micro">O que eu leio de verdade é o site. O Instagram não deixa ninguém de fora ler perfil, então o seu @ fica guardado e, se você não tiver site, eu te faço mais perguntas.</p>
       {err && <ErrNote onRetry={look}>{err}</ErrNote>}
       <ObButton onClick={look} disabled={!has}>Deixa eu dar uma olhada</ObButton>
     </div>}
     {phase === 'looking' && <AnalysisCore lines={lookLines} nodes={lookNodes} />}
-    {phase === 'review' && <ProposalReview url={url.trim()} instagram={insta.trim()} proposal={proposal} onApplied={p => onDone(p)} onTellMyself={tellMyself} />}
+    {phase === 'review' && <ProposalReview url={url.trim()} instagram={insta.trim()} proposal={proposal} sources={sources} onApplied={p => onDone(p)} onTellMyself={tellMyself} />}
     {phase === 'unavailable' && <div className="stack g20">
       <HumaSays>{note}</HumaSays>
-      <ObButton onClick={tellMyself}>Bora, eu te conto</ObButton>
+      <div className="stack g10">
+        <ObButton onClick={() => setPhase('ask')}>Tentar com outro link</ObButton>
+        <ObButton variant="ghost" onClick={tellMyself}>Bora, eu te conto</ObButton>
+      </div>
     </div>}
   </div>;
 }

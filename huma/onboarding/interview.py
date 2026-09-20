@@ -30,7 +30,7 @@ import re
 import anthropic
 import httpx
 
-from huma.config import AI_MODEL_FAST, AI_MODEL_PRIMARY, ANTHROPIC_API_KEY
+from huma.config import AI_MODEL_FAST, AI_MODEL_PRIMARY, ANTHROPIC_API_KEY, SOURCE_READER_URL
 from huma.models.schemas import BusinessCategory, ClientIdentity
 from huma.onboarding.categories import (
     AUTONOMY_QUESTIONS,
@@ -127,20 +127,79 @@ _VALID_PAYMENT_METHODS = {"pix", "boleto", "credit_card"}
 # ================================================================
 
 
+# Abaixo disso a leitura direta é considerada pobre (página montada por
+# JavaScript, tela de bloqueio) e vale tentar o leitor reserva.
+_THIN_TEXT_CHARS = 400
+
+
+def _is_instagram(url: str) -> bool:
+    return "instagram.com" in (url or "").lower()
+
+
 async def fetch_source_text(url: str) -> str | None:
     """
-    Baixa uma página pública (site ou Instagram) e extrai texto útil.
+    Lê uma página pública e devolve o texto útil (None se não der).
 
-    Sem dependência de parser HTML: remove script/style/tags via regex
-    e preserva as meta tags og: (Instagram costuma expor bio/título nelas
-    mesmo sem login). Retorna None se a página não puder ser lida —
-    o chamador degrada pra entrevista pura.
+    Duas rotas (2026-09-20):
+      1. Leitura direta do servidor da HUMA.
+      2. Leitor reserva (SOURCE_READER_URL), quando a direta falha ou vem
+         pobre. Motivo real: lojas atrás de CloudFront/Cloudflare devolvem
+         405/403 pra IP de datacenter (o site abre no navegador do dono e
+         falha no servidor), e sites montados por JavaScript vêm vazios.
+         O leitor busca por outra rota e já devolve o texto renderizado.
+
+    Instagram fica só na rota 1: perfil não é legível sem login por
+    nenhuma rota (401/429), então o leitor reserva seria só espera.
     """
     if not url:
         return None
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
 
+    direct = await _fetch_direct(url)
+    if direct and len(direct) >= _THIN_TEXT_CHARS:
+        return direct
+    if _is_instagram(url):
+        return direct
+
+    via_reader = await _fetch_via_reader(url)
+    best = max((direct or ""), (via_reader or ""), key=len)
+    return best or None
+
+
+async def _fetch_via_reader(url: str) -> str | None:
+    """Leitor reserva: devolve o texto da página já renderizado, ou None."""
+    base = (SOURCE_READER_URL or "").strip()
+    if not base:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=28.0, follow_redirects=True) as http:
+            resp = await http.get(f"{base.rstrip('/')}/{url}", headers={"X-Return-Format": "text"})
+    except httpx.TimeoutException:
+        log.warning(f"Leitor reserva timeout | url={url}")
+        return None
+    except httpx.HTTPError as e:
+        log.warning(f"Leitor reserva inacessível | url={url} | {type(e).__name__}: {e}")
+        return None
+
+    if resp.status_code != 200:
+        log.warning(f"Leitor reserva HTTP {resp.status_code} | url={url}")
+        return None
+    text = re.sub(r"[ \t]+", " ", resp.text or "").strip()
+    if len(text) < 80 or text.lower().endswith("undefined"):
+        log.warning(f"Leitor reserva sem texto útil | url={url} | chars={len(text)}")
+        return None
+    log.info(f"Fonte lida pelo leitor reserva | url={url} | chars={len(text)}")
+    return text[:_SOURCE_MAX_CHARS]
+
+
+async def _fetch_direct(url: str) -> str | None:
+    """
+    Leitura direta: baixa o HTML e extrai texto útil.
+
+    Sem dependência de parser HTML: remove script/style/tags via regex
+    e preserva as meta tags og:. Retorna None se a página não puder ser lida.
+    """
     try:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as http:
             resp = await http.get(
@@ -227,6 +286,21 @@ REGRAS:
 - Tudo em português do Brasil, sem travessão."""
 
 
+def _unavailable_detail(read: dict) -> str:
+    """Mensagem honesta de por que nada foi lido (o dono acha que 'nem tentou')."""
+    if read.get("instagram") == "failed" and not read.get("site"):
+        return (
+            "O Instagram não deixa ninguém de fora ler perfil, nem eu. Se você tiver um site, "
+            "volta e me passa ele que eu leio. Se não tiver, sem problema: me conta você mesmo."
+        )
+    if read.get("site") == "failed":
+        return (
+            "Eu tentei, mas o seu site bloqueou a minha leitura (alguns sites barram robôs). "
+            "Pode conferir o endereço e tentar de novo, ou me contar você mesmo."
+        )
+    return "Não consegui ler essa página. Sem problema, me conta você mesmo."
+
+
 def _instagram_url(handle: str) -> str:
     """'@loja', 'loja' ou URL → URL do perfil ("" se vazio)."""
     h = (handle or "").strip()
@@ -252,22 +326,25 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
     """
     site_url = (url or "").strip()
     insta_url = _instagram_url(instagram)
+    # Um dono que cola o Instagram no campo do site: trata como Instagram.
+    if site_url and _is_instagram(site_url) and not insta_url:
+        site_url, insta_url = "", _instagram_url(site_url)
     parts: list[str] = []
+    read = {"site": "", "instagram": ""}  # "" não informado | "ok" | "failed"
     if site_url:
         site_text = await fetch_source_text(site_url)
+        read["site"] = "ok" if site_text else "failed"
         if site_text:
             parts.append(f"[SITE {site_url}]\n{site_text[:8000]}")
     if insta_url and insta_url != site_url:
         insta_text = await fetch_source_text(insta_url)
+        read["instagram"] = "ok" if insta_text else "failed"
         if insta_text:
             parts.append(f"[INSTAGRAM {insta_url}]\n{insta_text[:6000]}")
     source_text = "\n\n".join(parts)[:_SOURCE_MAX_CHARS]
     url = " e ".join(u for u in (site_url, insta_url) if u)
     if not source_text:
-        return {
-            "status": "unavailable",
-            "detail": "Não consegui ler essa página. Sem problema, me conta você mesmo.",
-        }
+        return {"status": "unavailable", "sources": read, "detail": _unavailable_detail(read)}
 
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -280,7 +357,7 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
         parsed = json.loads(raw.replace("```json", "").replace("```", "").strip())
     except json.JSONDecodeError:
         log.warning(f"Análise de fonte JSON inválido | url={url}")
-        return {"status": "unavailable", "detail": "Não consegui estruturar o que li. Me conta você mesmo."}
+        return {"status": "unavailable", "sources": read, "detail": "Não consegui estruturar o que li. Me conta você mesmo."}
     except anthropic.APIError as e:
         log.error(f"Análise de fonte API erro | url={url} | {type(e).__name__}: {e}")
         return {"status": "unavailable", "detail": "Tive um probleminha agora. Me conta você mesmo."}
@@ -300,10 +377,10 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
         proposal["open_questions"] = [g["question"] for g in gaps]
 
     if not proposal.get("business_description") and not proposal.get("products_or_services"):
-        return {"status": "unavailable", "detail": "A página não tinha informação suficiente. Me conta você mesmo."}
+        return {"status": "unavailable", "sources": read, "detail": "A página não tinha informação suficiente. Me conta você mesmo."}
 
-    log.info(f"Análise de fonte OK | url={url} | fields={list(proposal.keys())}")
-    return {"status": "ok", "proposal": proposal}
+    log.info(f"Análise de fonte OK | url={url} | fields={list(proposal.keys())} | fontes={read}")
+    return {"status": "ok", "proposal": proposal, "sources": read}
 
 
 # ================================================================

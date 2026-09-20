@@ -70,6 +70,13 @@ EVOLUTION_WEBHOOK_TOKEN = clean_secret_env("EVOLUTION_WEBHOOK_TOKEN")
 # na hora de criar a instância do cliente. Sem barra no fim.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 
+# Leitor reserva de páginas do onboarding (2026-09-20). Lojas atrás de
+# CloudFront/Cloudflare devolvem 405/403 pra IP de datacenter e sites em
+# JavaScript vêm vazios na leitura direta; este serviço busca por outra rota
+# e devolve o texto renderizado. Só recebe a URL pública que o dono informou.
+# Vazio ("") desliga e volta ao comportamento antigo (só leitura direta).
+SOURCE_READER_URL = os.getenv("SOURCE_READER_URL", "https://r.jina.ai")
+
 # ── Login do Cockpit (Supabase Auth + cookie de sessão) ──
 # Segredo que assina o cookie de sessão do Cockpit (HMAC-SHA256).
 # Vazio = login por cookie DESABILITADO (só Bearer api_key funciona).

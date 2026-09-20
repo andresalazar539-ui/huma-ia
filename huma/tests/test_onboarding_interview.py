@@ -646,6 +646,76 @@ class TestPrepScheduleShape:
 
 
 # ================================================================
+# LEITURA DA FONTE: rota direta + leitor reserva (2026-09-20)
+# Caso real: loja atrás de CloudFront devolveu 405 pro servidor e o
+# Instagram 429; o dono viu "não consegui ler" em menos de 1 segundo.
+# ================================================================
+
+
+class TestSourceReaderFallback:
+
+    def _mock(self, monkeypatch, direct, reader):
+        calls = {"direct": 0, "reader": 0}
+
+        async def fake_direct(_url):
+            calls["direct"] += 1
+            return direct
+
+        async def fake_reader(_url):
+            calls["reader"] += 1
+            return reader
+
+        monkeypatch.setattr(interview, "_fetch_direct", fake_direct)
+        monkeypatch.setattr(interview, "_fetch_via_reader", fake_reader)
+        return calls
+
+    def test_direta_boa_nao_chama_o_reserva(self, monkeypatch):
+        import asyncio
+        calls = self._mock(monkeypatch, "x" * 900, "y" * 5000)
+        out = asyncio.run(interview.fetch_source_text("https://loja.com.br"))
+        assert out == "x" * 900
+        assert calls == {"direct": 1, "reader": 0}
+
+    def test_direta_bloqueada_cai_no_reserva(self, monkeypatch):
+        import asyncio
+        calls = self._mock(monkeypatch, None, "texto do leitor reserva " * 40)
+        out = asyncio.run(interview.fetch_source_text("loja.com.br"))
+        assert out.startswith("texto do leitor reserva")
+        assert calls == {"direct": 1, "reader": 1}
+
+    def test_direta_pobre_fica_com_o_texto_maior(self, monkeypatch):
+        import asyncio
+        self._mock(monkeypatch, "pouco texto " * 10, "bem mais texto renderizado " * 60)
+        out = asyncio.run(interview.fetch_source_text("https://spa.com.br"))
+        assert out.startswith("bem mais texto")
+
+    def test_instagram_nao_gasta_tempo_no_reserva(self, monkeypatch):
+        import asyncio
+        calls = self._mock(monkeypatch, None, "nunca deveria ser usado " * 40)
+        out = asyncio.run(interview.fetch_source_text("https://www.instagram.com/loja/"))
+        assert out is None
+        assert calls["reader"] == 0
+
+    def test_nada_legivel_explica_o_motivo(self, monkeypatch):
+        import asyncio
+        self._mock(monkeypatch, None, None)
+        so_insta = asyncio.run(interview.analyze_source("", instagram="@loja"))
+        assert so_insta["status"] == "unavailable"
+        assert so_insta["sources"] == {"site": "", "instagram": "failed"}
+        assert "Instagram não deixa" in so_insta["detail"]
+        os_dois = asyncio.run(interview.analyze_source("https://loja.com.br", instagram="@loja"))
+        assert os_dois["sources"] == {"site": "failed", "instagram": "failed"}
+        assert "bloqueou a minha leitura" in os_dois["detail"]
+        assert "—" not in so_insta["detail"] + os_dois["detail"]
+
+    def test_instagram_colado_no_campo_do_site_vira_instagram(self, monkeypatch):
+        import asyncio
+        self._mock(monkeypatch, None, None)
+        out = asyncio.run(interview.analyze_source("instagram.com/loja"))
+        assert out["sources"] == {"site": "", "instagram": "failed"}
+
+
+# ================================================================
 # HISTÓRICO DO PLAYGROUND (rotas)
 # ================================================================
 
