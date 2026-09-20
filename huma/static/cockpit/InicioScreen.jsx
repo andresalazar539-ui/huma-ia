@@ -42,11 +42,15 @@ function pluralI(n, singular, plural) {
   return `${n} ${n === 1 ? singular : plural}`;
 }
 
-function saudacaoI() {
+// "Boa noite, André." (2026-09-20): o nome vem de clients.owner_name, que o
+// onboarding pergunta na primeira tela. Só pro DONO: membro da equipe logado
+// não é chamado pelo nome do dono.
+function saudacaoI(ownerName) {
   const h = new Date().getHours();
-  if (h < 12) return 'Bom dia.';
-  if (h < 18) return 'Boa tarde.';
-  return 'Boa noite.';
+  const base = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+  const isOwner = (window.HUMA_ROLE || 'dono') === 'dono';
+  const first = isOwner ? String(ownerName || '').trim().split(/\s+/)[0] : '';
+  return first ? `${base}, ${first}.` : `${base}.`;
 }
 
 function hojeLocalISO() {
@@ -329,9 +333,44 @@ const IniDiaZero = ({ setup, wa, onGoto }) => {
       : { label: 'WhatsApp', ok: false, sub: 'não consegui verificar a conexão agora. Confira em Integrações' };
   // A linha do WhatsApp não depende do status das integrações: mesmo se ele
   // falhar, o dono ainda vê a verdade sobre o canal e o botão de conectar.
+  // Saúde do setup COMPLETA (2026-09-20): antes só WhatsApp e CRM apareciam e o
+  // dono não sabia que dava pra ligar agenda, pagamento, loja e voz. Cada linha
+  // só entra quando faz sentido pras funções ligadas (capabilities_resolved) e
+  // toda pendência diz a CONSEQUÊNCIA de ficar assim. goto = pra onde o botão leva.
+  const caps = (setup && setup.capabilities_resolved) || [];
+  const sells = caps.includes('sell_digital') || caps.includes('sell_physical');
+  const agendaOn = !!setup && (setup.google_oauth === 'ok' || !!setup.google_calendar);
+  const payOn = !!setup && (setup.mercadopago_connected === 'ok' || setup.asaas_connected === 'ok');
+  const lojaOn = !!setup && (setup.nuvemshop_connected === 'ok' || setup.bling_access_token === 'ok');
   const linhas = [
     waLinha,
+    ...(setup && caps.includes('schedule') ? [{
+      label: 'Agenda',
+      ok: agendaOn,
+      sub: agendaOn ? 'sua agenda está conectada, eu marco direto nela'
+        : 'sem a sua agenda conectada eu não vejo seus horários livres de verdade',
+    }] : []),
+    ...(setup && sells ? [{
+      label: 'Pagamento',
+      ok: payOn,
+      sub: payOn ? 'o dinheiro das vendas cai direto na sua conta'
+        : 'conecte sua conta pra eu cobrar na conversa com o dinheiro indo direto pra você',
+    }] : []),
+    ...(setup && caps.includes('sell_physical') ? [{
+      label: 'Loja',
+      ok: lojaOn,
+      sub: lojaOn ? 'catálogo e estoque lidos em tempo real'
+        : 'sem a loja conectada eu não sei o que tem em estoque',
+    }] : []),
     ...(setup ? [{
+      label: 'Voz',
+      ok: !!setup.voice_id,
+      goto: 'voz',
+      acao: 'Gravar',
+      sub: setup.voice_id
+        ? (setup.enable_audio ? 'sua voz está clonada e os áudios estão ligados' : 'sua voz está clonada, áudios desligados')
+        : 'opcional: grave 2 minutos e eu passo a mandar áudio com a sua voz',
+    }, {
       label: 'CRM',
       ok: setup.crm_access_token === 'ok',
       sub: setup.crm_access_token === 'ok'
@@ -360,7 +399,7 @@ const IniDiaZero = ({ setup, wa, onGoto }) => {
                   <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 500, fontSize: 14, color: s.ok ? 'var(--ink)' : 'var(--ink-2)' }}>{s.label}</div>
                   <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', marginTop: 1 }}>{s.sub}</div>
                 </div>
-                {!s.ok && onGoto && <Button variant="ghost" size="sm" onClick={() => onGoto('integracoes')}>Conectar</Button>}
+                {!s.ok && onGoto && <Button variant="ghost" size="sm" onClick={() => onGoto(s.goto || 'integracoes')}>{s.acao || 'Conectar'}</Button>}
               </div>
             ))}
           </div>
@@ -442,7 +481,7 @@ const IniErro = ({ onRetry }) => (
 // ============================================================
 // Tela
 // ============================================================
-const InicioScreen = ({ onOpenConversa, onGoto }) => {
+const InicioScreen = ({ onOpenConversa, onGoto, ownerName }) => {
   const [periodo, setPeriodo] = useStateI(7);
   const [estado, setEstado] = useStateI('carregando'); // carregando | pronto | erro | diazero | primeiros
   const [r1, setR1] = useStateI(null);       // relatório do período
@@ -575,7 +614,7 @@ const InicioScreen = ({ onOpenConversa, onGoto }) => {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
           <div style={{ flex: 1 }}>
             <Eyebrow>{eyebrowData}</Eyebrow>
-            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 20, letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 3 }}>{saudacaoI()}</div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 20, letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 3 }}>{saudacaoI(ownerName)}</div>
           </div>
         </div>
 

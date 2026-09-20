@@ -1,17 +1,28 @@
 // onboarding.jsx — shell: máquina de momentos 1→7 + tela final, 401 global
+// Ordem (2026-09-20): 1 você · 2 site/Instagram · 3 entrevista · 4 compilação ·
+// 5 teste do clone · 6 "Me prepara" · 7 WhatsApp + ativação · 8 final.
+// O WhatsApp é o ÚLTIMO passo: antes a HUMA ia direto do teste pro número, sem
+// horário, equipe, voz nem autonomia configurados.
 const { useState, useEffect } = React;
 function OnboardingApp() {
   const [moment, setMoment] = useState(1);
   const [authLost, setAuthLost] = useState(false);
   const [facts, setFacts] = useState({ name: '', products: 0, faqs: 0, answers: 0 });
+  // quem é o dono e como ele quer trabalhar (vem do /state; atualizado pelas telas)
+  const [me, setMe] = useState({ ownerName: '', teamSize: '', voicePref: '', cloneMode: 'approval', category: null, capabilities: [] });
+  const [waConnected, setWaConnected] = useState(false);
   useEffect(() => {
     const h = () => setAuthLost(true);
     window.addEventListener('huma-auth', h);
     // retomar de onde parou: se já está em sandbox/active, pula pro ponto certo
     HumaAPI.state().then(st => {
       setFacts(f => ({ ...f, name: st.business_name || '' }));
-      if (st.onboarding_status === 'active') setMoment(8);
-      else if (st.onboarding_status === 'sandbox') setMoment(5);
+      setMe(m => ({ ...m, ownerName: st.owner_name || '', teamSize: st.team_size || '', voicePref: st.voice_pref || '',
+        cloneMode: st.clone_mode || 'approval', category: st.category || null, capabilities: st.capabilities || [] }));
+      if (st.onboarding_status === 'active') {
+        // a tela final só diz "no ar" com o WhatsApp conectado DE VERDADE
+        HumaAPI.waStatus().then(s => setWaConnected(!!s.connected)).catch(() => {}).then(() => setMoment(8));
+      } else if (st.onboarding_status === 'sandbox') setMoment(5);
     }).catch(() => {});
     return () => window.removeEventListener('huma-auth', h);
   }, []);
@@ -23,31 +34,26 @@ function OnboardingApp() {
       products: (p && p.products_or_services && p.products_or_services.length) || 0,
       faqs: (p && p.faq && p.faq.length) || 0,
     }));
+    if (p && p.category) setMe(m => ({ ...m, category: p.category }));
     setMoment(3);
   };
   return <div className="ob-app">
     {/* Sprint Billing: quem quer assinar direto não precisa esperar o
         trial, link discreto e sempre visível durante o onboarding. */}
     {moment <= 7 && (
-      <a href="/cockpit?screen=planos" style={{
-        position: 'fixed', top: 14, right: 18, zIndex: 50,
-        fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 600,
-        color: 'var(--terracotta)', textDecoration: 'none',
-        padding: '6px 12px', borderRadius: 999,
-        background: 'var(--terracotta-tint)',
-      }}>
-        Já quer assinar? Ver planos →
-      </a>
+      <a href="/cockpit?screen=planos" className="ob-subscribe">Já quer assinar? →</a>
     )}
     {moment >= 2 && moment <= 7 && <div className="ob-top"><DotBar step={moment} /></div>}
-    {moment === 1 && <Moment1 onNext={next} key="m1" />}
-    {moment === 2 && <Moment2 onDone={fromProposal} onSkip={() => setMoment(3)} key="m2" />}
+    {moment === 1 && <Moment1 initialName={me.ownerName} initialTeam={me.teamSize} key="m1"
+      onNext={({ name, team }) => { setMe(m => ({ ...m, ownerName: name, teamSize: team })); next(); }} />}
+    {moment === 2 && <Moment2 ownerName={me.ownerName} onDone={fromProposal} onSkip={() => setMoment(3)} key="m2" />}
     {moment === 3 && <Moment3 onDone={(answers) => { setFacts(f => ({ ...f, answers: answers || f.answers })); setMoment(4); }} key="m3" />}
     {moment === 4 && <Moment4 onDone={next} key="m4" />}
     {moment === 5 && <Moment5 businessName={facts.name} onDone={next} key="m5" />}
-    {moment === 6 && <Moment6 onDone={next} key="m6" />}
-    {moment === 7 && <Moment7 onFinish={next} key="m7" />}
-    {moment === 8 && <FinalScreen summary={facts} key="fim" />}
+    {moment === 6 && <Moment6Prepara category={me.category} teamSize={me.teamSize} voicePref={me.voicePref}
+      cloneMode={me.cloneMode} capabilities={me.capabilities} onDone={next} key="m6" />}
+    {moment === 7 && <MomentWhatsApp cloneMode={me.cloneMode} onDone={(connected) => { setWaConnected(!!connected); next(); }} key="m7" />}
+    {moment === 8 && <FinalScreen summary={facts} ownerName={me.ownerName} waConnected={waConnected} key="fim" />}
     {authLost && <div className="authveil" role="alertdialog" aria-label="Sessão expirada">
       <div className="card">
         <HumaAvatar />

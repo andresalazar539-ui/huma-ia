@@ -109,6 +109,10 @@ class TestWelcomeBonus:
         async def delete_key(key):
             return None
 
+        async def is_paying(cid):
+            return True  # indicador assinante (regra do teste grátis em test_trial_locks.py)
+
+        monkeypatch.setattr(subs, "is_paying_subscriber", is_paying)
         monkeypatch.setattr(subs, "TRIAL_TRIGGER", "signup")
         monkeypatch.setattr(subs.cache, "incr_with_ttl", incr)
         monkeypatch.setattr(subs.cache, "delete_key", delete_key)
@@ -163,6 +167,10 @@ class TestConversionCredit:
                 owner_phone = "5511999990000"
             return C()
 
+        async def is_paying(cid):
+            return True  # indicador assinante (regra do teste grátis em test_trial_locks.py)
+
+        monkeypatch.setattr(subs, "is_paying_subscriber", is_paying)
         monkeypatch.setattr(subs, "get_supabase", lambda: _FakeSupa(store))
         monkeypatch.setattr(subs.billing, "add_conversations", add_conversations)
         monkeypatch.setattr(subs.cache, "delete_key", delete_key)

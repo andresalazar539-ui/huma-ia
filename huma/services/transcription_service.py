@@ -47,9 +47,13 @@ async def transcribe_audio(audio_url: str, auth: tuple | None = None) -> str | N
     return await transcribe_bytes(audio_bytes)
 
 
-async def transcribe_bytes(audio_bytes: bytes) -> str | None:
+async def transcribe_bytes(audio_bytes: bytes, hint: str = "") -> str | None:
     """
     Transcreve bytes de áudio (Groq → OpenAI) pra texto em português.
+
+    hint (opcional, 2026-09-20): vocabulário esperado, passado como `prompt`
+    do Whisper pra ele acertar a grafia de nomes próprios (o onboarding usa
+    pra "HUMA", que saía como "uma"). Vazio = comportamento de sempre.
 
     Usado quando o download é feito pelo caller — canais cujo áudio não é
     uma URL pública simples: Meta (precisa Bearer) e Evolution (entrega
@@ -61,12 +65,12 @@ async def transcribe_bytes(audio_bytes: bytes) -> str | None:
         return None
 
     if GROQ_API_KEY:
-        text = await _transcribe_groq(audio_bytes)
+        text = await _transcribe_groq(audio_bytes, hint=hint)
         if text:
             return text
 
     if OPENAI_API_KEY:
-        text = await _transcribe_openai(audio_bytes)
+        text = await _transcribe_openai(audio_bytes, hint=hint)
         if text:
             return text
 
@@ -117,7 +121,7 @@ async def _download_audio(url: str, auth: tuple | None = None) -> bytes | None:
     return None
 
 
-async def _transcribe_groq(audio_bytes: bytes) -> str | None:
+async def _transcribe_groq(audio_bytes: bytes, hint: str = "") -> str | None:
     """Transcreve com Groq Whisper (whisper-large-v3-turbo)."""
     try:
         async with httpx.AsyncClient(timeout=30.0) as http:
@@ -133,6 +137,7 @@ async def _transcribe_groq(audio_bytes: bytes) -> str | None:
                     "model": "whisper-large-v3-turbo",
                     "language": "pt",
                     "response_format": "text",
+                    **({"prompt": hint[:400]} if hint else {}),
                 },
             )
 
@@ -156,7 +161,7 @@ async def _transcribe_groq(audio_bytes: bytes) -> str | None:
         return None
 
 
-async def _transcribe_openai(audio_bytes: bytes) -> str | None:
+async def _transcribe_openai(audio_bytes: bytes, hint: str = "") -> str | None:
     """Transcreve com OpenAI Whisper (fallback)."""
     try:
         async with httpx.AsyncClient(timeout=30.0) as http:
@@ -172,6 +177,7 @@ async def _transcribe_openai(audio_bytes: bytes) -> str | None:
                     "model": "whisper-1",
                     "language": "pt",
                     "response_format": "text",
+                    **({"prompt": hint[:400]} if hint else {}),
                 },
             )
 

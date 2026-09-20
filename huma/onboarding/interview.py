@@ -34,9 +34,9 @@ from huma.config import AI_MODEL_FAST, AI_MODEL_PRIMARY, ANTHROPIC_API_KEY
 from huma.models.schemas import BusinessCategory, ClientIdentity
 from huma.onboarding.categories import (
     AUTONOMY_QUESTIONS,
-    CATEGORY_QUESTIONS,
     COMMON_QUESTIONS,
     FINAL_QUESTION,
+    UNIVERSAL_QUESTIONS,
 )
 from huma.utils.logger import get_logger
 
@@ -47,6 +47,61 @@ _SOURCE_MAX_CHARS = 12_000
 
 # Placeholder criado pelo signup quando o dono não informou nome.
 _SIGNUP_PLACEHOLDER_NAME = "Meu negócio"
+
+# Chaves de METADADO dentro de onboarding_answers (dict que já existe, zero
+# migration). Começam com "_" e NÃO são respostas da entrevista: transcrição,
+# contagem e compilação ignoram. Valores são sempre string.
+META_PREFIX = "_"
+META_GAP_QUESTIONS = "_gap_questions"   # JSON: perguntas de lacuna geradas pela leitura do site
+META_INSTAGRAM = "_instagram"           # Instagram informado junto com o site
+META_TEAM_SIZE = "_team_size"           # solo | 2-5 | 6-10 | 10+
+META_VOICE_PREF = "_voice_pref"         # text | clone
+VALID_TEAM_SIZES = ("solo", "2-5", "6-10", "10+")
+VALID_VOICE_PREFS = ("text", "clone")
+
+_MAX_GAP_QUESTIONS = 4
+_GAP_QUESTION_MAX_CHARS = 240
+
+
+def real_answers(answers: dict | None) -> dict:
+    """Só as respostas da entrevista (sem as chaves de metadado "_...")."""
+    return {k: v for k, v in (answers or {}).items() if not str(k).startswith(META_PREFIX)}
+
+
+def coerce_gap_questions(raw) -> list[dict]:
+    """
+    Valida as perguntas de lacuna vindas da IA (ou relidas do banco).
+
+    Devolve no máximo _MAX_GAP_QUESTIONS itens {"id": "gap_N", "question": str,
+    "field": "custom_rules"}. Item sem texto, curto demais ou grande demais
+    é descartado, nunca propagado.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        text = item.get("question") if isinstance(item, dict) else item
+        if not isinstance(text, str):
+            continue
+        text = text.strip().replace("—", ",")
+        if len(text) < 12 or len(text) > _GAP_QUESTION_MAX_CHARS:
+            continue
+        out.append({"id": f"gap_{len(out) + 1}", "question": text, "field": "custom_rules"})
+        if len(out) >= _MAX_GAP_QUESTIONS:
+            break
+    return out
+
+
+def get_gap_questions(identity: ClientIdentity) -> list[dict]:
+    """Perguntas de lacuna guardadas no /source/apply ([] se não houver)."""
+    raw = (identity.onboarding_answers or {}).get(META_GAP_QUESTIONS, "")
+    if not raw:
+        return []
+    try:
+        return coerce_gap_questions(json.loads(raw))
+    except (TypeError, ValueError):
+        log.warning(f"Perguntas de lacuna ilegíveis | client={identity.client_id}")
+        return []
 
 # Campos que a compilação pode escrever. Nada fora daqui passa —
 # nem tokens, nem status, nem capabilities.
@@ -140,9 +195,9 @@ async def fetch_source_text(url: str) -> str | None:
 def _build_source_prompt(url: str, source_text: str) -> str:
     """Prompt da análise de fonte — devolve proposta de identidade em JSON."""
     valid_categories = ", ".join(c.value for c in BusinessCategory)
-    return f"""Você é a HUMA, IA de vendas brasileira. Um dono de negócio acabou de criar conta e informou este link: {url}
+    return f"""Você é a HUMA, IA de atendimento brasileira. Um dono de negócio acabou de criar conta e informou: {url}
 
-Abaixo está o texto extraído da página. Analise e proponha a identidade inicial do negócio.
+Abaixo está o texto extraído (site e/ou Instagram). Analise e proponha a identidade inicial do negócio.
 
 TEXTO DA PÁGINA:
 {source_text}
@@ -159,25 +214,55 @@ Responda APENAS com JSON válido neste formato:
   "faq": [
     {{"question": "pergunta que um cliente faria", "answer": "resposta baseada SÓ no texto"}}
   ],
-  "summary_for_owner": "1-2 frases NA PRIMEIRA PESSOA confirmando o que você entendeu, pra mostrar ao dono. Ex: 'Deixa eu ver se entendi: você tem uma clínica de estética em Curitiba e seu carro-chefe é harmonização facial.'"
+  "summary_for_owner": "1-2 frases NA PRIMEIRA PESSOA confirmando o que você entendeu, pra mostrar ao dono. Ex: 'Deixa eu ver se entendi: você tem uma clínica de estética em Curitiba e seu carro-chefe é harmonização facial.'",
+  "open_questions": [
+    "pergunta que você faria AO DONO sobre algo que o texto NÃO deixou claro e que muda como você atende os clientes dele"
+  ]
 }}
 
 REGRAS:
 - NUNCA invente preço, endereço ou informação que não está no texto.
 - Se o texto não sustentar um campo, devolva "" ou lista vazia.
+- open_questions: de 2 a 4 perguntas, específicas DESTE negócio, que mostrem que você leu a página (cite o que viu: "Vi que vocês fazem X e Y..."). Só pergunte o que o texto NÃO responde. NÃO pergunte tom de voz, palavras proibidas, horário de atendimento, lista de produtos nem perguntas frequentes: isso já é perguntado em outro momento. Bons temas: qual serviço é a porta de entrada, como falar de preço quando ele não é público, quem é o cliente ideal, o que acontece depois que o cliente demonstra interesse, região atendida, o que diferencia dos concorrentes.
 - Tudo em português do Brasil, sem travessão."""
 
 
-async def analyze_source(url: str) -> dict:
+def _instagram_url(handle: str) -> str:
+    """'@loja', 'loja' ou URL → URL do perfil ("" se vazio)."""
+    h = (handle or "").strip()
+    if not h:
+        return ""
+    if "instagram.com" in h:
+        return h if h.startswith(("http://", "https://")) else f"https://{h}"
+    h = h.lstrip("@").strip("/ ")
+    return f"https://www.instagram.com/{h}/" if h else ""
+
+
+async def analyze_source(url: str, instagram: str = "") -> dict:
     """
-    Lê a fonte (site/Instagram) e propõe a identidade inicial via IA.
+    Lê a fonte (site e/ou Instagram) e propõe a identidade inicial via IA.
+
+    Com as duas fontes, o texto das duas vai pra MESMA chamada de IA (uma
+    análise só, custo de uma). Basta uma delas ser legível pra seguir.
 
     Returns:
         {"status": "ok", "proposal": {...}} com campos já coagidos, ou
         {"status": "unavailable", "detail": "..."} se a página não puder
         ser lida ou a IA falhar. Nunca levanta exceção.
     """
-    source_text = await fetch_source_text(url)
+    site_url = (url or "").strip()
+    insta_url = _instagram_url(instagram)
+    parts: list[str] = []
+    if site_url:
+        site_text = await fetch_source_text(site_url)
+        if site_text:
+            parts.append(f"[SITE {site_url}]\n{site_text[:8000]}")
+    if insta_url and insta_url != site_url:
+        insta_text = await fetch_source_text(insta_url)
+        if insta_text:
+            parts.append(f"[INSTAGRAM {insta_url}]\n{insta_text[:6000]}")
+    source_text = "\n\n".join(parts)[:_SOURCE_MAX_CHARS]
+    url = " e ".join(u for u in (site_url, insta_url) if u)
     if not source_text:
         return {
             "status": "unavailable",
@@ -210,6 +295,9 @@ async def analyze_source(url: str) -> dict:
     summary = str(parsed.get("summary_for_owner", "") or "").strip()
     if summary:
         proposal["summary_for_owner"] = summary
+    gaps = coerce_gap_questions(parsed.get("open_questions"))
+    if gaps:
+        proposal["open_questions"] = [g["question"] for g in gaps]
 
     if not proposal.get("business_description") and not proposal.get("products_or_services"):
         return {"status": "unavailable", "detail": "A página não tinha informação suficiente. Me conta você mesmo."}
@@ -225,17 +313,15 @@ async def analyze_source(url: str) -> dict:
 
 def get_interview_questions(identity: ClientIdentity) -> list[dict]:
     """
-    Perguntas da fase CORE da entrevista (comuns + específicas da vertical).
+    Perguntas da fase CORE da entrevista: comuns + universais + lacunas.
 
-    Autonomia e pergunta final ficam pra depois (checklist do Cockpit) —
-    o objetivo aqui é chegar no playground em poucas perguntas.
+    2026-09-20: saíram as listas fixas por vertical (uma agência ouvia
+    "oferece garantia?"). As de LACUNA vêm da leitura do site/Instagram e
+    são específicas do negócio; sem elas (página ilegível), o roteiro
+    universal sozinho cobre qualquer negócio. Autonomia e pergunta final
+    ficam pra etapa "Me prepara" / Cockpit.
     """
-    questions = list(COMMON_QUESTIONS)
-    if identity.category is not None:
-        questions += CATEGORY_QUESTIONS.get(
-            identity.category, CATEGORY_QUESTIONS[BusinessCategory.OUTROS]
-        )
-    return questions
+    return list(COMMON_QUESTIONS) + list(UNIVERSAL_QUESTIONS) + get_gap_questions(identity)
 
 
 def get_deferred_questions() -> list[dict]:
@@ -260,6 +346,17 @@ def _is_question_skippable(question: dict, identity: ClientIdentity) -> bool:
         return bool((identity.website or "").strip())
     if field == "business_description":
         return bool((identity.business_description or "").strip())
+    # Universais: o que a leitura do site já trouxe não vira pergunta. "offer"
+    # só é pulada quando os produtos vieram COM preço (sem preço, a pergunta
+    # de como falar de valor continua valendo ouro).
+    qid = question.get("id", "")
+    if qid == "offer":
+        products = identity.products_or_services or []
+        return bool(products) and all(str((p or {}).get("price", "")).strip() for p in products)
+    if qid == "hours":
+        return bool((identity.working_hours or "").strip())
+    if qid == "faq_top":
+        return len(identity.faq or []) >= 3
     return False
 
 
@@ -271,7 +368,7 @@ def build_interview_state(identity: ClientIdentity) -> dict:
     texto cru). Uma pergunta é 'skipped' quando o dado já existe
     (signup ou análise de fonte) e o dono ainda não respondeu.
     """
-    answers = identity.onboarding_answers or {}
+    answers = real_answers(identity.onboarding_answers)
     items: list[dict] = []
     next_question: dict | None = None
 
@@ -453,7 +550,7 @@ REGRAS:
 
 def _build_transcript(identity: ClientIdentity) -> str:
     """Monta a transcrição pergunta+resposta a partir de onboarding_answers."""
-    answers = identity.onboarding_answers or {}
+    answers = real_answers(identity.onboarding_answers)
     all_questions = get_interview_questions(identity) + get_deferred_questions()
     question_text = {q["id"]: q["question"] for q in all_questions}
 

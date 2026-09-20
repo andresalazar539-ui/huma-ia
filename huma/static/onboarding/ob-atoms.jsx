@@ -36,6 +36,31 @@ function Field({ label, value, onChange, textarea, placeholder, type = 'text' })
       : <input id={id} className="input" type={type} value={value} placeholder={placeholder} onChange={e => onChange(e.target.value)} />}
   </div>;
 }
+// Chips de escolha por toque. multi=false: value é string; multi=true: value é array.
+function Chips({ options, value, onChange, multi = false, ariaLabel }) {
+  const isOn = (id) => (multi ? (value || []).includes(id) : value === id);
+  const pick = (id) => {
+    if (!multi) return onChange(id);
+    const cur = value || [];
+    onChange(cur.includes(id) ? cur.filter(v => v !== id) : [...cur, id]);
+  };
+  return <div className="chips" role={multi ? 'group' : 'radiogroup'} aria-label={ariaLabel}>
+    {options.map(o => <button key={o.id} type="button" className={`chip${isOn(o.id) ? ' on' : ''}`}
+      role={multi ? 'checkbox' : 'radio'} aria-checked={isOn(o.id)} onClick={() => pick(o.id)}>{o.label}</button>)}
+  </div>;
+}
+// Cartão de opção (escolha única entre poucas alternativas, com explicação)
+function OptionCard({ on, title, desc, onClick, children }) {
+  return <div className={`opt${on ? ' on' : ''}`} role="radio" aria-checked={!!on} tabIndex={0}
+    onClick={onClick} onKeyDown={e => (e.key === ' ' || e.key === 'Enter') && (e.preventDefault(), onClick())}>
+    <span className="dotsel" aria-hidden="true"></span>
+    <div className="stack g6" style={{ flex: 1, minWidth: 0 }}>
+      <span className="hd">{title}</span>
+      {desc && <span className="ds">{desc}</span>}
+      {on && children}
+    </div>
+  </div>;
+}
 function ErrNote({ children, onRetry, retryLabel = 'Tentar de novo' }) {
   return <div className="errnote">{children}{onRetry && <ObButton variant="ghost" onClick={onRetry}>{retryLabel}</ObButton>}</div>;
 }
@@ -201,4 +226,4 @@ const Icons = {
   check: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M20 6 9 17l-5-5"/></svg>,
   shield: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" style={{ flexShrink: 0 }}><path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10Z"/></svg>,
 };
-Object.assign(window, { ObButton, LinkBtn, HumaAvatar, HumaSays, DotBar, Reveal, Typing, Bubble, Field, ErrNote, WaitNarrative, AnalysisCore, Confetti, AudioRecorder, Icons });
+Object.assign(window, { ObButton, LinkBtn, HumaAvatar, HumaSays, DotBar, Reveal, Typing, Bubble, Field, Chips, OptionCard, ErrNote, WaitNarrative, AnalysisCore, Confetti, AudioRecorder, Icons });

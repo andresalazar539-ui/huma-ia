@@ -115,17 +115,53 @@ class TestCoerceIdentityUpdates:
 
 class TestInterviewQuestions:
 
-    def test_without_category_only_common(self):
+    def test_roteiro_e_comum_mais_universal(self):
+        from huma.onboarding.categories import UNIVERSAL_QUESTIONS
         questions = interview.get_interview_questions(_identity())
-        assert [q["id"] for q in questions] == [q["id"] for q in COMMON_QUESTIONS]
-
-    def test_with_category_appends_specific(self):
-        questions = interview.get_interview_questions(
-            _identity(category=BusinessCategory.CLINICA)
+        assert [q["id"] for q in questions] == (
+            [q["id"] for q in COMMON_QUESTIONS] + [q["id"] for q in UNIVERSAL_QUESTIONS]
         )
-        ids = [q["id"] for q in questions]
-        assert "specialties" in ids
-        assert len(questions) > len(COMMON_QUESTIONS)
+
+    def test_vertical_nao_muda_o_roteiro(self):
+        # 2026-09-20: agência caía em "serviços" e ouvia "oferece garantia?".
+        # As listas fixas por vertical saíram da entrevista.
+        clinica = interview.get_interview_questions(_identity(category=BusinessCategory.CLINICA))
+        servicos = interview.get_interview_questions(_identity(category=BusinessCategory.SERVICOS))
+        assert [q["id"] for q in clinica] == [q["id"] for q in servicos]
+        assert "guarantee" not in [q["id"] for q in servicos]
+
+    def test_perguntas_de_lacuna_entram_no_fim(self):
+        import json
+        identity = _identity(onboarding_answers={
+            interview.META_GAP_QUESTIONS: json.dumps([
+                "Vi que vocês fazem tráfego e vídeo. Qual é a porta de entrada mais comum?",
+                "curta",  # descartada: curta demais
+            ]),
+        })
+        questions = interview.get_interview_questions(identity)
+        assert questions[-1]["id"] == "gap_1"
+        assert "porta de entrada" in questions[-1]["question"]
+        assert [q["id"] for q in questions].count("gap_2") == 0
+
+    def test_lacuna_ilegivel_nao_quebra_a_entrevista(self):
+        identity = _identity(onboarding_answers={interview.META_GAP_QUESTIONS: "{não é json"})
+        assert interview.get_gap_questions(identity) == []
+
+    def test_metadados_nao_contam_como_resposta(self):
+        identity = _identity(onboarding_answers={
+            interview.META_TEAM_SIZE: "2-5", interview.META_INSTAGRAM: "https://www.instagram.com/x/",
+            "tone": "falo direto",
+        })
+        state = interview.build_interview_state(identity)
+        assert state["answered_count"] == 1
+        transcript = interview._build_transcript(identity)
+        assert "falo direto" in transcript
+        assert "2-5" not in transcript and "instagram" not in transcript
+
+    def test_instagram_vira_url(self):
+        assert interview._instagram_url("@lab8") == "https://www.instagram.com/lab8/"
+        assert interview._instagram_url("instagram.com/lab8") == "https://instagram.com/lab8"
+        assert interview._instagram_url("  ") == ""
 
     def test_deferred_is_autonomy_plus_final(self):
         deferred = interview.get_deferred_questions()
@@ -408,6 +444,205 @@ class TestCompileMarketInBackground:
         asyncio.run(ob.get_state("cli_interview", None))
 
         assert scheduled == []
+
+
+# ================================================================
+# PULAR O QUE O SITE JÁ RESPONDEU (universais)
+# ================================================================
+
+
+class TestUniversalSkip:
+
+    def _q(self, qid):
+        from huma.onboarding.categories import UNIVERSAL_QUESTIONS
+        return next(q for q in UNIVERSAL_QUESTIONS if q["id"] == qid)
+
+    def test_offer_so_pula_quando_os_produtos_tem_preco(self):
+        sem_preco = _identity(products_or_services=[{"name": "Tráfego pago", "price": "", "description": ""}])
+        com_preco = _identity(products_or_services=[{"name": "Corte", "price": "R$ 50", "description": ""}])
+        assert interview._is_question_skippable(self._q("offer"), sem_preco) is False
+        assert interview._is_question_skippable(self._q("offer"), com_preco) is True
+
+    def test_hours_e_faq_pulam_quando_ja_existem(self):
+        identity = _identity(
+            working_hours="seg a sex, 9h às 18h",
+            faq=[{"question": f"p{i}", "answer": "r"} for i in range(3)],
+        )
+        assert interview._is_question_skippable(self._q("hours"), identity) is True
+        assert interview._is_question_skippable(self._q("faq_top"), identity) is True
+        assert interview._is_question_skippable(self._q("goal"), identity) is False
+
+
+# ================================================================
+# PLAYGROUND EM MODO DEMONSTRAÇÃO (2026-09-20)
+# ================================================================
+
+
+class TestPlaygroundDemo:
+
+    def test_horarios_de_exemplo_caem_em_dia_util(self):
+        from datetime import datetime, timedelta, timezone
+        from huma.core import playground_demo as demo
+        sexta = datetime(2026, 9, 18, 22, 0, tzinfo=timezone(timedelta(hours=-3)))
+        slots = demo.example_slots(sexta)
+        assert slots == ["segunda-feira, 21/09 às 10h", "terça-feira, 22/09 às 15h"]
+
+    def test_marker_e_condicional_e_respeita_capabilities(self):
+        from huma.core import playground_demo as demo
+        agenda = demo.build_demo_marker({"schedule"})
+        assert "SE o cliente pedir horário" in agenda
+        assert "NÃO emita check_availability" in agenda
+        assert "Pix" not in agenda
+        vende = demo.build_demo_marker({"sell_physical"})
+        assert "SE o cliente quiser pagar" in vende
+        assert "SE o cliente pedir horário" not in vende
+        assert "—" not in agenda + vende
+
+    def test_topicos_simulados(self):
+        from huma.core import playground_demo as demo
+        assert demo.detect_demo_topics([], "Tenho segunda-feira, 21/09 às 10h. Serve?") == ["agenda"]
+        assert demo.detect_demo_topics([{"type": "check_availability"}], "um segundo") == ["agenda"]
+        # falar do horário de funcionamento NÃO é simulação de agenda
+        assert demo.detect_demo_topics([], "A gente atende das 9h às 19h.") == []
+        assert demo.detect_demo_topics([], "Te mando o Pix aqui mesmo.") == ["pagamento"]
+
+    def test_rota_injeta_o_marker_e_devolve_os_topicos(self, monkeypatch):
+        import asyncio
+        import huma.routes.onboarding as ob
+        seen: dict = {}
+
+        async def get_client(_cid):
+            return _identity()
+
+        async def fake_generate(identity, conv, text, tier=3):
+            seen["history"] = list(conv.history)
+            return {"reply": "Tenho terça-feira, 22/09 às 15h.", "reply_parts": [], "actions": []}
+
+        monkeypatch.setattr(ob.db, "get_client", get_client)
+        monkeypatch.setattr(ob.ai, "generate_response", fake_generate)
+        ob._playground_rate.clear()
+
+        payload = ob.PlaygroundChatPayload(message="tem horário?", history=[{"role": "user", "content": "oi"}])
+        out = asyncio.run(ob.playground_chat("cli_interview", payload, None))
+
+        assert seen["history"][-1]["role"] == "assistant"
+        assert seen["history"][-1]["content"].startswith("[MODO DEMONSTRAÇÃO")
+        assert out["demo_topics"] == ["agenda"]
+        assert out["reply_parts"] == ["Tenho terça-feira, 22/09 às 15h."]
+
+
+# ================================================================
+# PERFIL DO DONO + FONTE COM SITE E INSTAGRAM (rotas)
+# ================================================================
+
+
+class TestProfileAndSource:
+
+    def _db(self, monkeypatch, identity):
+        import huma.routes.onboarding as ob
+        saved: list[dict] = []
+
+        async def get_client(_cid):
+            return identity
+
+        async def update_client(_cid, updates):
+            saved.append(dict(updates))
+
+        monkeypatch.setattr(ob.db, "get_client", get_client)
+        monkeypatch.setattr(ob.db, "update_client", update_client)
+        return ob, saved
+
+    def test_profile_grava_nome_e_metadados(self, monkeypatch):
+        import asyncio
+        ob, saved = self._db(monkeypatch, _identity(onboarding_answers={"tone": "x"}))
+        out = asyncio.run(ob.save_profile(
+            "cli_interview", ob.ProfilePayload(owner_name="  André   Salazar ", team_size="2-5"), None,
+        ))
+        assert out["status"] == "ok"
+        assert saved[0]["owner_name"] == "André Salazar"
+        assert saved[0]["onboarding_answers"] == {"tone": "x", "_team_size": "2-5"}
+
+    def test_profile_recusa_tamanho_invalido(self, monkeypatch):
+        import asyncio
+        import pytest
+        from fastapi import HTTPException
+        ob, saved = self._db(monkeypatch, _identity())
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(ob.save_profile("cli_interview", ob.ProfilePayload(team_size="mil"), None))
+        assert err.value.status_code == 400
+        assert saved == []
+
+    def test_source_exige_site_ou_instagram(self, monkeypatch):
+        import asyncio
+        import pytest
+        from fastapi import HTTPException
+        ob, _ = self._db(monkeypatch, _identity())
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(ob.analyze_business_source("cli_interview", ob.SourcePayload(), None))
+        assert err.value.status_code == 400
+        assert "pelo menos um" in err.value.detail
+
+    def test_apply_guarda_instagram_e_lacunas(self, monkeypatch):
+        import asyncio
+        import json
+        ob, saved = self._db(monkeypatch, _identity())
+        payload = ob.SourceApplyPayload(
+            url="https://agencialab8.com.br", instagram="@lab8",
+            proposal={
+                "business_name": "Lab8",
+                "open_questions": ["Vi que vocês fazem tráfego e vídeo. Qual é a porta de entrada?"],
+            },
+        )
+        asyncio.run(ob.apply_business_source("cli_interview", payload, None))
+        assert saved[0]["website"] == "https://agencialab8.com.br"
+        meta = saved[0]["onboarding_answers"]
+        assert meta["_instagram"] == "https://www.instagram.com/lab8/"
+        assert "porta de entrada" in json.loads(meta["_gap_questions"])[0]
+
+    def test_apply_so_com_instagram_usa_ele_como_website(self, monkeypatch):
+        import asyncio
+        ob, saved = self._db(monkeypatch, _identity())
+        payload = ob.SourceApplyPayload(instagram="lab8", proposal={"business_name": "Lab8"})
+        asyncio.run(ob.apply_business_source("cli_interview", payload, None))
+        assert saved[0]["website"] == "https://www.instagram.com/lab8/"
+
+
+# ================================================================
+# "ME PREPARA": horário que a tela do onboarding gera (ai_schedule)
+# ================================================================
+
+
+class TestPrepScheduleShape:
+    """Espelha buildOffHoursSchedule de static/onboarding/ob-prepara.jsx."""
+
+    def _schedule(self, open_at="08:00", close_at="18:00", mode="approval") -> dict:
+        return {
+            "enabled": True, "default_mode": "off",
+            "windows": [
+                {"days": [5, 6], "start": "00:00", "end": "23:59", "mode": mode},
+                {"days": [0, 1, 2, 3, 4, 5, 6], "start": close_at, "end": open_at, "mode": mode},
+            ],
+        }
+
+    def test_formato_passa_no_validador(self):
+        from huma.core.ai_schedule import validate_ai_schedule
+        assert validate_ai_schedule(self._schedule()) == []
+
+    def test_nao_sobra_buraco_fora_do_expediente(self):
+        from datetime import datetime
+        from huma.core.ai_schedule import resolve_effective_mode
+        s = self._schedule()
+        # 2026-09-21 é segunda-feira
+        casos = {
+            datetime(2026, 9, 21, 3, 0): "approval",    # madrugada de segunda (vem do domingo)
+            datetime(2026, 9, 22, 10, 0): "off",        # terça no expediente: equipe atende
+            datetime(2026, 9, 25, 19, 0): "approval",   # sexta à noite
+            datetime(2026, 9, 26, 12, 0): "approval",   # sábado de dia
+            datetime(2026, 9, 26, 23, 59): "approval",  # último minuto de sábado
+            datetime(2026, 9, 27, 23, 59): "approval",  # último minuto de domingo
+        }
+        for instante, esperado in casos.items():
+            assert resolve_effective_mode(s, fallback_mode="approval", now=instante) == esperado, instante
 
 
 # ================================================================

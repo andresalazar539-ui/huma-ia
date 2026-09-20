@@ -37,6 +37,7 @@ from huma.config import (
     TRIAL_DAYS,
     TRIAL_TRIGGER,
 )
+from huma.core import trial_clock
 from huma.services import billing_service as billing
 from huma.services import redis_service as cache
 from huma.services.billing_service import PLAN_CONFIG, Plan, _compute_trial_deadline
@@ -726,7 +727,15 @@ async def start_trial_if_eligible(client_id: str, trigger: str = "activation") -
                     .eq("client_id", client_id).limit(1).execute()
             )
             referred_by = (row.data[0].get("referred_by") or "") if row.data else ""
-            if referred_by:
+            # Link de indicação só vale quando o INDICADOR é assinante: conta
+            # em teste grátis não distribui bônus (fazenda de contas grátis).
+            # O cadastro do indicado segue normal, só sem o bônus.
+            if referred_by and not await is_paying_subscriber(referred_by):
+                log.info(
+                    f"Indicação | indicador não é assinante, sem bônus de boas-vindas | "
+                    f"client={client_id} | ref={referred_by}"
+                )
+            elif referred_by:
                 await billing.add_conversations(
                     client_id, billing.REFERRAL_WELCOME_BONUS,
                     source="indicacao",
@@ -774,6 +783,16 @@ async def credit_referral_conversion(client_id: str) -> None:
         data = row.data[0] if row.data else {}
         referred_by = data.get("referred_by") or ""
         if not referred_by or data.get("referral_credited_at"):
+            return
+
+        # Indicador precisa ser ASSINANTE pra ganhar (conta grátis indicando
+        # conta grátis é fazenda de bônus). Sem marcar referral_credited_at:
+        # se ele assinar depois, a próxima cobrança paga do indicado credita.
+        if not await is_paying_subscriber(referred_by):
+            log.info(
+                f"Indicação | indicador não é assinante, sem crédito por ora | "
+                f"referrer={referred_by} | indicado={client_id}"
+            )
             return
 
         # Marca ANTES de creditar (anti-duplicação em reentrega de webhook)
@@ -868,16 +887,24 @@ async def get_billing_status(client_id: str) -> dict:
     trial_expired = status == "trial_expired"
     trial_days_left: int | None = None
     trial_ends_at: str | None = None
+    trial_ends_label: str | None = None
 
     if trial or trial_expired:
         deadline = _compute_trial_deadline((sub or {}).get("created_at", ""))
         if deadline:
             trial_ends_at = deadline.isoformat()
-            remaining = (deadline - datetime.utcnow()).total_seconds()
-            if trial and remaining <= 0:
+            # Dias contados por DIA DE CALENDÁRIO em Brasília (virou a data,
+            # cai um), não em blocos de 24h. Ver huma/core/trial_clock.py.
+            countdown = trial_clock.trial_countdown(deadline, datetime.utcnow())
+            if trial and countdown["expired"]:
                 # Venceu mas o gate ainda não fez o flip lazy — reporta a verdade
                 trial, trial_expired = False, True
-            trial_days_left = max(0, int(remaining // 86400) + (1 if remaining > 0 else 0))
+            if trial_expired:
+                trial_days_left = 0
+                trial_ends_label = trial_clock.LABEL_EXPIRED
+            else:
+                trial_days_left = countdown["days_left"]
+                trial_ends_label = countdown["label"]
 
     plan_name = (config or {}).get("name")
     included = (config or {}).get("included_conversations")
@@ -955,6 +982,12 @@ async def get_billing_status(client_id: str) -> dict:
         "trial_expired": trial_expired,
         "trial_days_left": trial_days_left,
         "trial_ends_at": trial_ends_at,
+        # Aditivo: texto pronto da contagem ("termina hoje" / "termina amanhã" /
+        # "N dias restantes" / "terminou"). None fora do teste grátis.
+        "trial_ends_label": trial_ends_label,
+        # Aditivo: assinante pagante (assinatura ativa com cobrança aprovada
+        # ou cortesia). Indique e ganhe e pacotes só liberam com isto True.
+        "is_subscriber": _is_paying_subscription(status, provider_id, not awaiting_first_charge),
         # Baldes derivados do razão (aditivo — consumidores antigos intactos)
         "buckets": buckets,
         # Cartão salvo (1-clique nos pacotes): exibição + card_id pro SDK
@@ -2165,6 +2198,48 @@ async def _preapproval_charged(client_id: str, preapproval_id: str) -> bool:
     except Exception as e:
         log.warning(f"Cobrança do preapproval indisponível | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
         return True
+
+
+SUBSCRIBER_ONLY_PACKS_PT = "Pacotes de conversas ficam disponíveis depois que você assina a HUMA."
+SUBSCRIBER_ONLY_REFERRAL_PT = "O Indique e ganhe fica disponível depois que você assina a HUMA."
+
+
+def _is_paying_subscription(status: Optional[str], provider_id: str, charged: bool) -> bool:
+    """
+    Regra pura de "assinante": assinatura `active` E (cortesia `coupon:*`
+    OU preapproval com ao menos uma cobrança aprovada). Teste grátis, teste
+    vencido, pausada, cancelada, pendente e sem linha NÃO são assinantes.
+    """
+    if (status or "") != "active":
+        return False
+    pid = (provider_id or "").strip()
+    if not pid or pid.startswith("coupon:"):
+        return True
+    return bool(charged)
+
+
+async def is_paying_subscriber(client_id: str) -> bool:
+    """
+    True se a conta tem assinatura paga vigente (ver _is_paying_subscription).
+    Libera o Indique e ganhe e a compra de pacotes de conversas: no teste
+    grátis os dois ficam travados (conta grátis indicando conta grátis é
+    fazenda de bônus; pacote sem assinatura vira uso eterno sem assinar).
+
+    Falha de LEITURA conta como assinante (fail-open, mesma postura do
+    gate): instabilidade do banco nunca trava quem paga. Nunca levanta.
+    """
+    row = await _current_subscription(client_id)
+    if row is None:
+        log.warning(f"Assinante | leitura falhou, fail-open | client={client_id}")
+        return True
+    status = (row.get("status") or "").strip()
+    provider_id = (row.get("payment_provider_id") or "").strip()
+    if status != "active":
+        return False
+    charged = True
+    if provider_id and not provider_id.startswith("coupon:"):
+        charged = await _preapproval_charged(client_id, provider_id)
+    return _is_paying_subscription(status, provider_id, charged)
 
 
 async def _ever_paid(client_id: str) -> bool:

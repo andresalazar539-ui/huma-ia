@@ -31,7 +31,10 @@ function Moment3({ onDone }) {
       const iv = st.interview;
       // perguntas cujo dado já existe vêm skipped=true — não exibir
       const pending = iv.questions.filter(q => !q.answered && !q.skipped);
-      setCounts({ answered: iv.answered_count, total: iv.total, seen: 0 });
+      // contador = só as perguntas que VÃO aparecer nesta sessão (puladas e já
+      // respondidas ficam de fora). Antes somava respondidas + exibidas e contava
+      // em dobro ("pergunta 7 de 8" na quarta pergunta).
+      setCounts({ answered: iv.answered_count, total: pending.length, seen: 0 });
       if (iv.done || pending.length === 0) { onDone(iv.answered_count); return; }
       setQueue(pending.slice(1).map(q => ({ id: q.id, question: q.question, field: q.field })));
       showQuestion(iv.next_question || pending[0], 1100);
@@ -42,7 +45,7 @@ function Moment3({ onDone }) {
   const advance = (resp) => {
     // reação (se vier vazia, segue direto)
     if (resp && resp.reaction) setMsgs(m => [...m, { from: 'reaction', text: resp.reaction }]);
-    if (resp && resp.answered_count != null) setCounts(c => ({ ...c, answered: resp.answered_count, total: resp.total || c.total }));
+    if (resp && resp.answered_count != null) setCounts(c => ({ ...c, answered: resp.answered_count }));
     const done = resp && resp.interview_done;
     setQueue(q => {
       // avanço local: próxima pendente que ainda não foi mostrada
@@ -85,10 +88,9 @@ function Moment3({ onDone }) {
     setCurrent(null);
     advance(null);
   };
-  const pos = Math.min(counts.answered + counts.seen, counts.total) || counts.seen;
   return <div className="moment ob-stage" style={{ maxHeight: '100dvh' }}>
     <div className="stack g14" style={{ flex: 1, minHeight: 0 }}>
-      <div className="ob-micro" style={{ textAlign: 'center' }} aria-live="polite">{counts.total ? `pergunta ${Math.min(pos, counts.total)} de ${counts.total}` : ' '}</div>
+      <div className="ob-micro" style={{ textAlign: 'center' }} aria-live="polite">{counts.total && counts.seen ? `pergunta ${Math.min(counts.seen, counts.total)} de ${counts.total}` : ' '}</div>
       <div className="chat" style={{ flex: 1, overflowY: 'auto', paddingBottom: 8, paddingRight: 4 }}>
         {msgs.map((m, i) => <Bubble key={i} from={m.from === 'own' ? 'own' : 'huma'} reaction={m.from === 'reaction'}>{m.text}</Bubble>)}
         {typing && <Typing />}

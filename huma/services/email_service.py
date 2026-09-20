@@ -262,16 +262,35 @@ async def send_owner_report(
     linhas: list[str],
     rodape: str = "",
     attachments: list[dict] | None = None,
+    lembretes: list[str] | None = None,
 ) -> bool:
     """
     Relatório de resultados por e-mail (drawer "Receber automático").
     `linhas` são as mesmas do texto do WhatsApp (emoji + frase) — um
     canal, uma verdade. `attachments` (formato Resend, base64) leva a
-    planilha/apresentação do período. Nunca levanta exceção: retorna
-    False em falha.
+    planilha/apresentação do período. `lembretes` (texto livre do dono,
+    escapado aqui) vira a seção "Lembretes" no topo, antes dos números;
+    vazio/None = e-mail idêntico ao de sempre. Nunca levanta exceção:
+    retorna False em falha.
     """
     linhas_html = "<br>\n              ".join(linhas)
-    body = f"""
+    lembretes_html = ""
+    if lembretes:
+        import html as _html
+
+        itens = "<br>\n              ".join(f"&bull; {_html.escape(str(t))}" for t in lembretes)
+        lembretes_html = f"""
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {_EMBER};border-radius:10px;margin:0 0 20px 0;">
+          <tr><td style="padding:14px 18px;">
+            <p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:{_EMBER};margin:0 0 6px 0;">
+              Lembretes
+            </p>
+            <p style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.7;color:{_INK};margin:0;">
+              {itens}
+            </p>
+          </td></tr>
+        </table>"""
+    body = f"""{lembretes_html}
         <p style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:{_INK_SOFT};margin:0 0 16px 0;">
           {intro}
         </p>

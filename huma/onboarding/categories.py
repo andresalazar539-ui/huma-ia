@@ -56,6 +56,51 @@ COMMON_QUESTIONS = [
 
 
 # ================================================================
+# PERGUNTAS UNIVERSAIS (2026-09-20)
+#
+# A entrevista do onboarding deixou de usar as listas fixas por
+# categoria: uma agência caía em "serviços" e ouvia "oferece garantia?"
+# e "tem portfólio?", perguntas de prestador de reforma. Agora o roteiro
+# é: COMMON + estas universais (cabem em qualquer negócio) + perguntas
+# de LACUNA geradas pela IA a partir do que ela leu no site/Instagram
+# (interview.analyze_source → open_questions). As que o site já
+# respondeu são puladas (interview._is_question_skippable).
+#
+# CATEGORY_QUESTIONS abaixo continua existindo pro fluxo legado
+# (get_onboarding_questions) e como referência do que cada vertical
+# costuma precisar.
+# ================================================================
+
+UNIVERSAL_QUESTIONS = [
+    {
+        "id": "goal",
+        "question": "Quando um cliente me chama, o que é um atendimento que deu certo pra você? (agendar, vender, passar pra alguém da equipe...)",
+        "field": "custom_rules",
+    },
+    {
+        "id": "offer",
+        "question": "O que você vende e como cobra? Se o preço varia de caso a caso, me conta como prefere que eu fale de valor.",
+        "field": "products_or_services",
+    },
+    {
+        "id": "hours",
+        "question": "Em que dias e horários vocês atendem?",
+        "field": "working_hours",
+    },
+    {
+        "id": "faq_top",
+        "question": "Quais perguntas seus clientes mais fazem, e o que você costuma responder?",
+        "field": "faq",
+    },
+    {
+        "id": "objections",
+        "question": "O que mais faz um cliente travar ou desistir? (preço, prazo, confiança...) E o que você diz nessa hora?",
+        "field": "custom_rules",
+    },
+]
+
+
+# ================================================================
 # PERGUNTAS ESPECÍFICAS POR CATEGORIA
 # ================================================================
 

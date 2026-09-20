@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+from huma.core import playground_demo
 from huma.core.auth import SESSION_COOKIE_NAME, verify_api_key, verify_session_token
 from huma.models.schemas import (
     BusinessCategory,
@@ -56,6 +57,7 @@ _playground_rate: dict[str, list[float]] = {}
 _PLAYGROUND_MAX_PER_MIN = 30
 
 _ANSWER_MAX_CHARS = 4000
+_TRANSCRIPTION_HINT = "Entrevista de cadastro da HUMA, a IA de atendimento. Termos: HUMA, WhatsApp, Instagram, Pix, Cockpit."
 _HISTORY_MAX_TURNS = 40
 _HISTORY_MAX_CHARS = 2000
 
@@ -66,12 +68,24 @@ _HISTORY_MAX_CHARS = 2000
 
 
 class SourcePayload(BaseModel):
-    url: str = Field(..., min_length=4, max_length=500, description="Site ou Instagram do negócio")
+    # 2026-09-20: site E Instagram em campos separados; pelo menos um é
+    # obrigatório (validado na rota, com erro que ensina). `url` sozinho
+    # continua valendo (contrato antigo do front).
+    url: str = Field(default="", max_length=500, description="Site do negócio")
+    instagram: str = Field(default="", max_length=200, description="@ ou link do Instagram")
 
 
 class SourceApplyPayload(BaseModel):
-    url: str = Field(..., min_length=4, max_length=500)
+    url: str = Field(default="", max_length=500)
+    instagram: str = Field(default="", max_length=200)
     proposal: dict = Field(..., description="Proposta (possivelmente editada pelo dono) a aplicar")
+
+
+class ProfilePayload(BaseModel):
+    """Quem é o dono e como quer trabalhar. Tudo opcional: só grava o que vier."""
+    owner_name: str | None = Field(default=None, max_length=80)
+    team_size: str | None = Field(default=None, max_length=10)
+    voice_pref: str | None = Field(default=None, max_length=10)
 
 
 class AnswerPayload(BaseModel):
@@ -212,9 +226,16 @@ async def get_state(client_id: str, _=Depends(verify_api_key)):
     if compiled and not identity.market_analysis and state["answered_count"] > 0:
         _schedule_market_analysis(client_id)
 
+    meta = identity.onboarding_answers or {}
     return {
         "client_id": client_id,
         "business_name": identity.business_name,
+        # Quem é o dono e como quer trabalhar (POST /profile)
+        "owner_name": getattr(identity, "owner_name", "") or "",
+        "team_size": meta.get(interview.META_TEAM_SIZE, ""),
+        "voice_pref": meta.get(interview.META_VOICE_PREF, ""),
+        "instagram": meta.get(interview.META_INSTAGRAM, ""),
+        "capabilities": sorted(c.value for c in identity.capabilities_resolved),
         "category": identity.category.value if identity.category else None,
         "website": identity.website or "",
         "onboarding_status": identity.onboarding_status.value,
@@ -224,6 +245,48 @@ async def get_state(client_id: str, _=Depends(verify_api_key)):
         "playground_ready": playground_ready,
         "has_market_analysis": bool(identity.market_analysis),
     }
+
+
+# ================================================================
+# POST /onboarding/{client_id}/profile — quem é o dono (2026-09-20)
+# ================================================================
+
+
+@router.post("/{client_id}/profile")
+async def save_profile(client_id: str, payload: ProfilePayload, _=Depends(verify_api_key)):
+    """
+    Grava o nome do dono, o tamanho da equipe e a preferência de voz.
+
+    owner_name vai na coluna que já existe (a mesma da tela de Perfil: é
+    o "Boa noite, André." do Cockpit e o nome nos avisos ao dono).
+    team_size e voice_pref são metadados em onboarding_answers (zero
+    migration): informativos, NÃO limitam nada.
+    """
+    identity = await _get_identity_or_404(client_id)
+    updates: dict = {}
+
+    if payload.owner_name is not None:
+        name = " ".join(payload.owner_name.split())[:80]
+        if name:
+            updates["owner_name"] = name
+
+    meta = dict(identity.onboarding_answers or {})
+    if payload.team_size is not None:
+        if payload.team_size not in interview.VALID_TEAM_SIZES:
+            raise HTTPException(400, "Tamanho de equipe inválido.")
+        meta[interview.META_TEAM_SIZE] = payload.team_size
+    if payload.voice_pref is not None:
+        if payload.voice_pref not in interview.VALID_VOICE_PREFS:
+            raise HTTPException(400, "Preferência de voz inválida.")
+        meta[interview.META_VOICE_PREF] = payload.voice_pref
+    if meta != (identity.onboarding_answers or {}):
+        updates["onboarding_answers"] = meta
+
+    if not updates:
+        return {"status": "ok", "applied_fields": []}
+    await db.update_client(client_id, updates)
+    log.info(f"Perfil do dono | client={client_id} | fields={sorted(updates.keys())}")
+    return {"status": "ok", "applied_fields": sorted(updates.keys())}
 
 
 # ================================================================
@@ -241,9 +304,15 @@ async def analyze_business_source(client_id: str, payload: SourcePayload, _=Depe
     'unavailable' e o fluxo segue pra entrevista pura.
     """
     await _get_identity_or_404(client_id)
-    result = await interview.analyze_source(payload.url.strip())
-    log.info(f"Fonte analisada | client={client_id} | status={result.get('status')}")
-    return {"client_id": client_id, "url": payload.url.strip(), **result}
+    url, instagram = payload.url.strip(), payload.instagram.strip()
+    if len(url) < 4 and len(instagram) < 2:
+        raise HTTPException(400, "Me passa o site ou o Instagram do seu negócio (pelo menos um dos dois).")
+    result = await interview.analyze_source(url, instagram=instagram)
+    log.info(
+        f"Fonte analisada | client={client_id} | status={result.get('status')} | "
+        f"site={bool(url)} | instagram={bool(instagram)}"
+    )
+    return {"client_id": client_id, "url": url, "instagram": instagram, **result}
 
 
 @router.post("/{client_id}/source/apply")
@@ -259,7 +328,23 @@ async def apply_business_source(client_id: str, payload: SourceApplyPayload, _=D
     identity = await _get_identity_or_404(client_id)
 
     updates = interview.coerce_identity_updates(payload.proposal)
-    updates["website"] = payload.url.strip()
+    url, instagram = payload.url.strip(), payload.instagram.strip()
+    # `website` é UMA url (o playbook relê daqui): site quando há, senão o Instagram.
+    insta_url = interview._instagram_url(instagram)
+    if url or insta_url:
+        updates["website"] = url or insta_url
+
+    # Metadados da entrevista (zero migration): o Instagram informado e as
+    # perguntas de lacuna que a leitura gerou. Viram perguntas em
+    # interview.get_interview_questions.
+    meta = dict(identity.onboarding_answers or {})
+    if insta_url:
+        meta[interview.META_INSTAGRAM] = insta_url
+    gaps = interview.coerce_gap_questions(payload.proposal.get("open_questions"))
+    if gaps:
+        meta[interview.META_GAP_QUESTIONS] = json.dumps([g["question"] for g in gaps], ensure_ascii=False)
+    if meta != (identity.onboarding_answers or {}):
+        updates["onboarding_answers"] = meta
 
     category_slug = str(payload.proposal.get("category", "") or "").strip()
     if category_slug:
@@ -331,7 +416,8 @@ async def submit_answer_audio(
     if len(audio_bytes) > 15 * 1024 * 1024:
         raise HTTPException(413, "Áudio muito grande (máximo 15MB)")
 
-    transcript = await transcription_service.transcribe_bytes(audio_bytes)
+    # hint: o dono fala "a HUMA" o tempo todo e o Whisper escrevia "a uma"
+    transcript = await transcription_service.transcribe_bytes(audio_bytes, hint=_TRANSCRIPTION_HINT)
     if not transcript:
         raise HTTPException(
             422, "Não consegui entender o áudio. Tenta de novo ou responde por texto."
@@ -379,7 +465,7 @@ async def compile_interview(client_id: str, _=Depends(verify_api_key)):
     """
     identity = await _get_identity_or_404(client_id)
 
-    answers = identity.onboarding_answers or {}
+    answers = interview.real_answers(identity.onboarding_answers)
     if not any(str(v or "").strip() for v in answers.values()):
         raise HTTPException(400, "Responda ao menos uma pergunta da entrevista antes de compilar.")
 
@@ -590,11 +676,15 @@ async def playground_chat(client_id: str, payload: PlaygroundChatPayload, _=Depe
     identity = await _get_identity_or_404(client_id)
     _check_playground_rate(client_id)
 
-    conv = Conversation(
-        client_id=client_id,
-        phone="playground",
-        history=_validate_history(payload.history),
-    )
+    # Modo demonstração (2026-09-20): o playground não executa actions e a
+    # agenda/pagamento/loja nem estão conectados aqui. Sem o marker o clone
+    # ficava preso em "deixa eu verificar a agenda". Mesmo mecanismo dos
+    # markers do orchestrator: entrada `assistant` no fim do histórico.
+    history = _validate_history(payload.history)
+    caps = {c.value for c in identity.capabilities_resolved}
+    history.append({"role": "assistant", "content": playground_demo.build_demo_marker(caps)})
+
+    conv = Conversation(client_id=client_id, phone="playground", history=history)
 
     try:
         result = await ai.generate_response(identity, conv, payload.message.strip(), tier=3)
@@ -602,12 +692,15 @@ async def playground_chat(client_id: str, payload: PlaygroundChatPayload, _=Depe
         log.error(f"Playground IA erro | client={client_id} | {type(e).__name__}: {e}")
         raise HTTPException(502, "O clone engasgou agora. Manda a mensagem de novo.")
 
+    reply = result.get("reply", "")
     return {
-        "reply": result.get("reply", ""),
-        "reply_parts": result.get("reply_parts") or [result.get("reply", "")],
+        "reply": reply,
+        "reply_parts": result.get("reply_parts") or [reply],
         "intent": result.get("intent", ""),
         "sentiment": result.get("sentiment", ""),
         "stage_action": result.get("stage_action", ""),
+        # Assuntos simulados nesta resposta: o front mostra a nota FORA do balão.
+        "demo_topics": playground_demo.detect_demo_topics(result.get("actions"), reply),
     }
 
 

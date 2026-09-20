@@ -482,6 +482,7 @@ function App() {
       screen = <InicioScreen
         onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}
         onGoto={setRoute}
+        ownerName={client && client.owner_name}
       />;
       break;
     case 'conversas':
@@ -515,8 +516,8 @@ function App() {
     case 'ajustes':     screen = <AjustesScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} />; break;
     case 'uso':         screen = <UsoScreen onGoto={setRoute}
                           onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
-    case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} />; break;
-    case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} />; break;
+    case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} onGoto={setRoute} />; break;
+    case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} onGoto={setRoute} />; break;
     case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute}
                           onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
     case 'checkout':    screen = <CheckoutScreen ctx={checkoutCtx} billing={billing}
@@ -530,6 +531,7 @@ function App() {
     default:            screen = <InicioScreen
       onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}
       onGoto={setRoute}
+        ownerName={client && client.owner_name}
     />;
   }
 

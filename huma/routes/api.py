@@ -487,6 +487,9 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     "ai_schedule",
     "owner_phone", "report_frequency", "report_hour", "report_day",
     "report_recipients", "report_formats",
+    # Lembrete no relatório automático (2026-09-20): o Cockpit manda num
+    # PATCH separado; sem a coluna, o salvar devolve 503 amigável.
+    "report_reminders",
     "notify_owner_on_appointment", "notify_owner_on_payment",
     "notify_owner_on_cancellation", "notify_owner_on_stuck_lead",
     "max_discount_percent", "max_installments", "accepted_payment_methods",
@@ -515,6 +518,13 @@ async def referral_stats(client_id: str, _=Depends(verify_api_key)) -> dict:
     """
     from fastapi.concurrency import run_in_threadpool
     from huma.services import billing_service as billing
+    from huma.services import subscription_service as subs
+
+    # Indique e ganhe só vale pra ASSINANTE: no teste grátis o programa
+    # fica travado (conta grátis indicando conta grátis é fazenda de bônus).
+    if not await subs.is_paying_subscriber(client_id):
+        log.info(f"Referrals | bloqueado, conta não assinante | client={client_id}")
+        raise HTTPException(403, subs.SUBSCRIBER_ONLY_REFERRAL_PT)
 
     supa = db.get_supabase()
 
@@ -616,7 +626,23 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
         caps = set(dumped.get("capabilities") or [])
         persisted["enable_scheduling"] = "schedule" in caps
         persisted["enable_payments"] = bool(caps & {"sell_digital", "sell_physical"})
-    await db.update_client(client_id, persisted)
+    try:
+        await db.update_client(client_id, persisted)
+    except Exception as e:
+        # Lembretes do relatório sem a coluna (migration pendente): erro
+        # amigável em vez de 500. Qualquer outra falha segue como antes.
+        if "report_reminders" in persisted and "report_reminders" in str(e):
+            log.error(
+                f"Settings | coluna report_reminders ausente "
+                f"(rodar scripts/migration_report_reminders.sql) | client={client_id} | "
+                f"{type(e).__name__}: {str(e)[:160]}"
+            )
+            raise HTTPException(
+                503,
+                "Os lembretes do relatório ainda não foram ativados neste servidor. "
+                "Fale com o suporte HUMA.",
+            )
+        raise
     log.info(f"Settings salvos | client={client_id} | fields={sorted(accepted.keys())}")
 
     # Informação nova sobre o negócio = playbook novo sozinho (princípio
@@ -922,6 +948,13 @@ async def billing_buy_extra_pack(
     ou cartão (cobrança síncrona — aprovou, creditou na hora).
     """
     from huma.services import subscription_service as subs
+
+    # Pacote só pra ASSINANTE: sem isso, comprar pacote vira jeito de usar
+    # a HUMA pra sempre sem assinar. Só barra a CRIAÇÃO da cobrança; pacote
+    # já pago segue creditando (poll e webhook não passam por aqui).
+    if not await subs.is_paying_subscriber(client_id):
+        log.info(f"PACOTE bloqueado, conta não assinante | client={client_id} | pack={payload.pack_id}")
+        raise HTTPException(403, subs.SUBSCRIBER_ONLY_PACKS_PT)
 
     result = await subs.create_pack_payment(
         client_id, payload.pack_id,

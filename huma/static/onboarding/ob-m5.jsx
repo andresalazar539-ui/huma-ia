@@ -20,6 +20,16 @@ function CorrectionBox({ aiSaid, context, onDone, onCancel }) {
   </div>;
 }
 
+// Notas de demonstração (2026-09-20): o teste roda em modo demonstração porque a
+// agenda, o pagamento e a loja ainda não estão conectados. A nota fica FORA do
+// balão (dentro quebraria a ilusão de conversar com o atendente) e aparece uma
+// vez por assunto.
+const DEMO_NOTES = {
+  agenda: 'Horários de exemplo. Com a sua agenda conectada, eu consulto os horários livres de verdade antes de confirmar qualquer coisa.',
+  pagamento: 'Pagamento simulado. No atendimento real, o Pix ou o cartão saem aqui mesmo na conversa.',
+  estoque: 'Estoque de exemplo. Com a sua loja conectada, eu consulto o estoque real na hora.',
+};
+
 function Moment5({ businessName, onDone }) {
   const [msgs, setMsgs] = useState([{ from: 'huma', text: "Pronto. Agora finge que você é um cliente seu. Manda um 'oi', pergunta preço, tenta me derrubar." , meta: true }]);
   const [history, setHistory] = useState([]); // {role, content}, stateless no servidor
@@ -28,6 +38,7 @@ function Moment5({ businessName, onDone }) {
   const [fixing, setFixing] = useState(null); // índice da msg em correção
   const [err, setErr] = useState(null);
   const [interacted, setInteracted] = useState(false);
+  const shownNotes = useRef({});
   const endRef = useRef(null);
   useEffect(() => { const el = endRef.current; if (el && el.parentElement) el.parentElement.scrollTop = el.parentElement.scrollHeight; }, [msgs, typing, fixing]);
 
@@ -67,6 +78,11 @@ function Moment5({ businessName, onDone }) {
         if (i < parts.length - 1) setTyping(true);
       }
       setHistory(h => [...h, { role: 'assistant', content: r.reply }]);
+      const fresh = (r.demo_topics || []).filter(t => DEMO_NOTES[t] && !shownNotes.current[t]);
+      if (fresh.length) {
+        fresh.forEach(t => { shownNotes.current[t] = true; });
+        setMsgs(m => [...m, ...fresh.map(t => ({ from: 'note', text: DEMO_NOTES[t] }))]);
+      }
     } catch (e) {
       setTyping(false);
       if (e.kind === 'auth') return;
@@ -95,6 +111,7 @@ function Moment5({ businessName, onDone }) {
           <div className="msgs">
             {msgs.map((m, i) => {
               if (m.from === 'own') return <Bubble key={i} from="own">{m.text}</Bubble>;
+              if (m.from === 'note') return <div key={i} className="demo-note" role="note">{m.text}</div>;
               if (m.meta) return <Bubble key={i} reaction>{m.text}</Bubble>;
               return <React.Fragment key={i}>
                 <Bubble from="huma" onCorrect={() => setFixing(i)}>{m.text}</Bubble>
@@ -114,7 +131,7 @@ function Moment5({ businessName, onDone }) {
           </div>
         </div>
       </div>
-      <ObButton variant={interacted ? 'primary' : 'ghost'} onClick={onDone}>Gostei! Bora pro meu WhatsApp</ObButton>
+      <ObButton variant={interacted ? 'primary' : 'ghost'} onClick={onDone}>Gostei! Agora me prepara pro trabalho</ObButton>
     </div>
   </div>;
 }

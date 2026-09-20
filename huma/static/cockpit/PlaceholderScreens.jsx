@@ -303,7 +303,7 @@ const AjustesScreen = ({ onNav, onInvite }) => {
   }[String(st || '').toLowerCase()] || (st ? String(st) : 'sem assinatura'));
   const planDesc = (bill) => {
     if (!bill || !Object.keys(bill).length) return 'Não consegui carregar o plano agora';
-    if (bill.trial && !bill.trial_expired) return `Teste grátis · ${bill.trial_days_left != null ? `${bill.trial_days_left} dia${bill.trial_days_left === 1 ? '' : 's'} restante${bill.trial_days_left === 1 ? '' : 's'}` : 'em andamento'}`;
+    if (bill.trial && !bill.trial_expired) return `Teste grátis · ${bill.trial_ends_label ? bill.trial_ends_label : bill.trial_days_left != null ? `${bill.trial_days_left} dia${bill.trial_days_left === 1 ? '' : 's'} restante${bill.trial_days_left === 1 ? '' : 's'}` : 'em andamento'}`;
     const base = `${bill.plan_name || 'HUMA'} · assinatura ${subLabel(bill.subscription_status)}`;
     return bill.next_charge_brl ? `${base} · próxima cobrança ${money(bill.next_charge_brl)}` : base;
   };

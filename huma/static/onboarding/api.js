@@ -25,7 +25,9 @@
 
   // ---------- MODO DEMO ----------
   const db = {
-    business_name: 'Clínica Vitta', category: null, website: '',
+    business_name: 'Clínica Vitta', category: null, website: '', owner_name: '', team_size: '', voice_pref: '',
+    settings: { lead_collection_fields: ['nome'], collect_before_offer: false, max_discount_percent: 0, max_installments: 6, use_emojis: true, accepted_payment_methods: ['pix', 'credit_card'], owner_phone: '' },
+    integrations: { google_oauth: '', google_oauth_server: true, mercadopago_connected: '', mercadopago_server: true, nuvemshop_connected: '', nuvemshop_server: true, instagram_connected: '', instagram_server: true },
     onboarding_status: 'pending', clone_mode: 'approval',
     corrections: 0, waConnectedAt: 0, playgroundCount: 0,
     questions: [
@@ -122,13 +124,14 @@
   ];
 
   const mockApi = {
-    async state() { await sleep(500); return { client_id: CID, business_name: db.business_name, category: db.category, website: db.website, onboarding_status: db.onboarding_status, clone_mode: db.clone_mode, interview: interviewState(), deferred_questions: [], playground_ready: db.onboarding_status === 'sandbox', has_market_analysis: db.onboarding_status === 'sandbox' }; },
-    async source(url) {
+    async state() { await sleep(500); return { client_id: CID, business_name: db.business_name, owner_name: db.owner_name, team_size: db.team_size, voice_pref: db.voice_pref, capabilities: [], category: db.category, website: db.website, onboarding_status: db.onboarding_status, clone_mode: db.clone_mode, interview: interviewState(), deferred_questions: [], playground_ready: db.onboarding_status === 'sandbox', has_market_analysis: db.onboarding_status === 'sandbox' }; },
+    async profile(p) { await sleep(400); Object.assign(db, p); return { status: 'ok', applied_fields: Object.keys(p) }; },
+    async source(url, instagram) {
       db.onboarding_status = 'in_progress'; await sleep(7000);
-      if (/erro|nada/.test(url)) return { status: 'unavailable', detail: 'Não consegui espiar sua página, mas sem drama. Me conta você mesmo!' };
+      if (/erro|nada/.test(url + ' ' + (instagram || ''))) return { status: 'unavailable', detail: 'Não consegui espiar sua página, mas sem drama. Me conta você mesmo!' };
       return { status: 'ok', proposal: JSON.parse(JSON.stringify(mockProposal)) };
     },
-    async sourceApply(url, proposal) { await sleep(900); db.website = url; db.business_name = proposal.business_name || db.business_name; db.category = proposal.category || db.category; return { status: 'ok', applied_fields: Object.keys(proposal) }; },
+    async sourceApply(url, instagram, proposal) { await sleep(900); db.website = url || instagram; db.business_name = proposal.business_name || db.business_name; db.category = proposal.category || db.category; return { status: 'ok', applied_fields: Object.keys(proposal) }; },
     async answer(question_id, answer) {
       await sleep(1100); const q = db.questions.find(q => q.id === question_id);
       if (q) { q.answered = true; q.skipped = false; q.answer = answer; }
@@ -144,7 +147,7 @@
       db.playgroundCount++; await sleep(1300);
       if (db.playgroundCount > 40) throw { kind: 'http', status: 429, detail: 'Calma aí, tagarela! Você bateu meu limite por minuto. Respira e tenta de novo em instantes.' };
       const r = mockReplyParts(message);
-      return { reply: r.parts.join(' '), reply_parts: r.parts, intent: r.intent, sentiment: 'neutral', stage_action: null };
+      return { reply: r.parts.join(' '), reply_parts: r.parts, intent: r.intent, sentiment: 'neutral', stage_action: null, demo_topics: r.intent === 'scheduling' ? ['agenda'] : [] };
     },
     async correction(payload) { await sleep(700); db.corrections++; return { status: 'ok', corrections_count: db.corrections }; },
     async waConnect() { await sleep(1400); db.waConnectedAt = Date.now() + 11000; return { status: 'ok', instance: 'demo', state: 'connecting', connected: false, qr_base64: fakeQr(), pairing_code: 'HUMA-4821' }; },
@@ -153,12 +156,19 @@
     async wizardState() { await sleep(700); return { client_id: CID, capability_cards: JSON.parse(JSON.stringify(wizardCards)), next_step: 'capabilities' }; },
     async setCapabilities(slugs) { await sleep(600); return { status: 'ok', capabilities: slugs }; },
     async activate() { await sleep(1200); db.onboarding_status = 'active'; return { status: 'ok', onboarding_status: 'active' }; },
+    async setVertical(slug) { await sleep(500); db.category = slug; return { status: 'ok', category: slug, recommended_capabilities: [] }; },
+    async settings() { await sleep(400); return { settings: JSON.parse(JSON.stringify(db.settings)) }; },
+    async saveSettings(patch) { await sleep(600); Object.assign(db.settings, patch); return { status: 'ok' }; },
+    async integrations() { await sleep(400); return JSON.parse(JSON.stringify(db.integrations)); },
+    async teamInvite(member) { await sleep(800); return { status: 'ok', member }; },
+    connectUrl(kind) { return '#'; },
   };
 
   const realApi = {
     state: () => call(`/onboarding/${CID}/state`),
-    source: (url) => call(`/onboarding/${CID}/source`, { method: 'POST', body: { url } }),
-    sourceApply: (url, proposal) => call(`/onboarding/${CID}/source/apply`, { method: 'POST', body: { url, proposal } }),
+    profile: (p) => call(`/onboarding/${CID}/profile`, { method: 'POST', body: p }),
+    source: (url, instagram) => call(`/onboarding/${CID}/source`, { method: 'POST', body: { url: url || '', instagram: instagram || '' } }),
+    sourceApply: (url, instagram, proposal) => call(`/onboarding/${CID}/source/apply`, { method: 'POST', body: { url: url || '', instagram: instagram || '', proposal: proposal || {} } }),
     answer: (question_id, answer) => call(`/onboarding/${CID}/answer`, { method: 'POST', body: { question_id, answer, react: true } }),
     answerAudio: (question_id, blob) => { const f = new FormData(); f.append('question_id', question_id); f.append('react', 'true'); f.append('audio', blob, 'resposta.webm'); return call(`/onboarding/${CID}/answer/audio`, { method: 'POST', body: f, multipart: true }); },
     compile: () => call(`/onboarding/${CID}/compile`, { method: 'POST' }),
@@ -170,6 +180,13 @@
     wizardState: () => call(`/wizard/${CID}/state`),
     setCapabilities: (slugs) => call(`/wizard/${CID}/capabilities`, { method: 'POST', body: { capabilities: slugs } }),
     activate: () => call(`/wizard/${CID}/activate`, { method: 'POST' }),
+    setVertical: (slug) => call(`/wizard/${CID}/vertical`, { method: 'POST', body: { vertical: slug } }),
+    // Etapa "Me prepara": as MESMAS rotas que o Cockpit usa (nada paralelo)
+    settings: () => call(`/api/clients/${CID}/settings`),
+    saveSettings: (patch) => call(`/api/clients/${CID}/settings`, { method: 'PATCH', body: patch }),
+    integrations: () => call(`/api/integrations/status?client_id=${encodeURIComponent(CID)}`),
+    teamInvite: (member) => call(`/api/clients/${CID}/team/invite`, { method: 'POST', body: member }),
+    connectUrl: (kind) => `/oauth/${kind}/start?client_id=${encodeURIComponent(CID)}`,
   };
 
   window.HumaAPI = Object.assign({ mock: MOCK, clientId: CID }, MOCK ? mockApi : realApi);

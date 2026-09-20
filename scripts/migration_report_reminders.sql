@@ -1,0 +1,23 @@
+-- ================================================================
+-- Migration: report_reminders (Lembrete no relatório automático) — 2026-09-20
+--
+-- Aditiva, idempotente, não-bloqueante (padrão CLAUDE.md §8).
+-- RODAR ANTES de usar a opção "Lembrete" do drawer Receber automático.
+--
+-- report_reminders: lembretes que o dono escreve no Cockpit e que saem
+--   no TOPO do relatório automático (WhatsApp e e-mail). Até 5 itens:
+--   {"id": str, "text": str (<= 280), "repeat": "weekly" | "once",
+--    "created_at": iso}
+--   "once" é removido pelo job depois de entregue; "weekly" fica.
+--   Formato e validação em huma/core/report_reminders.py. Default '[]'
+--   = sem lembrete: o relatório sai idêntico ao de antes.
+--
+-- Sem esta coluna a LEITURA continua funcionando (get_client ignora
+-- coluna ausente e o Pydantic aplica o default []) e o relatório sai
+-- normal, sem lembrete. O SALVAR dos lembretes devolve erro amigável
+-- (503 em português, PATCH /settings) e o resto da configuração do
+-- relatório continua salvando, porque o Cockpit manda os lembretes
+-- num PATCH separado.
+-- ================================================================
+
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS report_reminders JSONB DEFAULT '[]'::jsonb;

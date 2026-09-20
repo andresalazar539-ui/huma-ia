@@ -1,6 +1,35 @@
 // UsageScreens.jsx — Uso + sub-telas (Indicação, Comprar créditos, Planos)
 const { useState: useStateU, useEffect: useEffectU } = React;
 
+// ---------- Contagem do teste grátis (uma regra só pra todas as telas) ----------
+// O servidor manda `trial_ends_label` pronto, contado por DIA DE CALENDÁRIO em
+// Brasília ("termina hoje" / "termina amanhã" / "N dias restantes"). Backend
+// antigo sem o campo cai na conta antiga pelo número.
+const trialLabel = (billing) => {
+  if (!billing) return '';
+  if (billing.trial_ends_label) return billing.trial_ends_label;
+  const d = billing.trial_days_left;
+  if (d == null) return 'em andamento';
+  if (d <= 0) return 'termina hoje';
+  return `${d} ${d === 1 ? 'dia restante' : 'dias restantes'}`;
+};
+// Mesma contagem em forma de frase: "termina hoje" / "termina amanhã" / "termina em N dias".
+const trialEndsPhrase = (billing) => {
+  const label = trialLabel(billing);
+  if (label.startsWith('termina')) return label;
+  const d = billing ? billing.trial_days_left : null;
+  if (d == null) return 'termina em breve';
+  return `termina em ${d} ${d === 1 ? 'dia' : 'dias'}`;
+};
+
+// Indique e ganhe e pacotes de conversas só liberam pra ASSINANTE. O servidor
+// manda `is_subscriber`; backend antigo sem o campo: trava no teste grátis.
+const isSubscriberAccount = (billing) => {
+  if (!billing) return true; // ainda carregando: não pisca o cadeado
+  if (typeof billing.is_subscriber === 'boolean') return billing.is_subscriber;
+  return !(billing.trial || billing.trial_expired);
+};
+
 // ============================================================
 // USO — tela principal (plugada no GET /billing real)
 // ============================================================
@@ -22,7 +51,7 @@ const UsoScreen = ({ onGoto, onCheckout }) => {
   const pill = (() => {
     if (!billing) return null;
     if (billing.trial) return {
-      text: `Teste grátis · ${billing.trial_days_left ?? '?'} ${billing.trial_days_left === 1 ? 'dia restante' : 'dias restantes'}`,
+      text: `Teste grátis · ${trialLabel(billing)}`,
       bg: 'var(--terracotta-tint)', fg: 'var(--terracotta-ink)', dot: 'var(--terracotta)',
     };
     if (billing.trial_expired) return {
@@ -224,7 +253,7 @@ const UsoScreen = ({ onGoto, onCheckout }) => {
                 icon="sparkle" tone={billing && billing.trial_expired ? 'ember' : 'terracotta'}
                 title={billing && billing.trial_expired ? 'Reative sua IA agora' : 'Garanta sua IA sem pausa'}
                 subtitle={billing && billing.trial
-                  ? `Seu teste termina em ${billing.trial_days_left ?? '?'} ${billing.trial_days_left === 1 ? 'dia' : 'dias'}, assinando, o saldo restante continua seu.`
+                  ? `Seu teste ${trialEndsPhrase(billing)}. Assinando, o saldo restante continua seu.`
                   : 'Escolha o plano e sua IA volta a atender na hora, com o saldo que sobrou do teste.'}
                 cta="Ver planos"
                 onClick={() => onGoto('planos')}
@@ -489,7 +518,6 @@ const ParaVoceResultado = ({ report, onGoto }) => {
 const TrialBanner = ({ billing, onGoto }) => {
   if (!billing || (!billing.trial && !billing.trial_expired)) return null;
   const expired = billing.trial_expired;
-  const days = billing.trial_days_left;
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 12,
@@ -502,7 +530,7 @@ const TrialBanner = ({ billing, onGoto }) => {
       <span style={{ flex: 1, minWidth: 0 }}>
         {expired
           ? 'Seu teste grátis terminou, a IA está pausada e seus leads estão esperando.'
-          : `Teste grátis: ${days ?? '?'} ${days === 1 ? 'dia restante' : 'dias restantes'}. Assine e sua IA não para.`}
+          : `Teste grátis: ${trialLabel(billing)}. Assine e sua IA não para.`}
       </span>
       <button onClick={() => onGoto && onGoto('planos')} style={{
         padding: '6px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
@@ -689,18 +717,96 @@ const MiniTrend = () => {
 };
 
 // ============================================================
+// TRAVA DE ASSINANTE — estado calmo das sub-telas que só liberam depois
+// de assinar (Indique e ganhe, Créditos extras). Nunca esconde o menu,
+// nunca mostra erro: explica e leva pros planos.
+// ============================================================
+const SubscriberLockScreen = ({ onBack, onGoto, title, icon, reason }) => (
+  <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ padding: '20px 32px', borderBottom: '1px solid var(--paper-edge)' }}>
+      <button onClick={onBack} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 8px 4px 0',
+        color: 'var(--ink-3)', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+        letterSpacing: '0.04em', textTransform: 'uppercase',
+      }}>
+        <Icon name="chevronL" size={12}/> Uso
+      </button>
+      <div style={{
+        fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 28,
+        letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 4,
+      }}>{title}</div>
+    </div>
+
+    <div style={{ padding: '24px 32px 48px', maxWidth: 560 }}>
+      <div style={{
+        border: '1px solid var(--paper-edge)', borderRadius: 16,
+        background: 'var(--paper-raised)', padding: 24,
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 12,
+      }}>
+        <div style={{
+          width: 48, height: 48, borderRadius: 12,
+          background: 'var(--terracotta-tint)', color: 'var(--terracotta)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <Icon name={icon || 'lock'} size={22}/>
+        </div>
+        <div>
+          <Eyebrow><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Icon name="lock" size={11}/> para assinantes
+          </span></Eyebrow>
+          <div style={{
+            fontFamily: 'var(--font-sans)', fontSize: 20, fontWeight: 600,
+            letterSpacing: '-0.015em', color: 'var(--ink)', marginTop: 6,
+          }}>Disponível depois de assinar</div>
+        </div>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+          {reason}
+        </div>
+        <div style={{ marginTop: 4 }}>
+          <Button variant="primary" onClick={() => (onGoto ? onGoto('planos') : onBack && onBack())}>
+            Assinar a HUMA
+          </Button>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+// ============================================================
 // INDICAÇÃO — sub-tela
 // ============================================================
-const IndicacaoScreen = ({ onBack }) => {
+const IndicacaoScreen = ({ onBack, onGoto }) => {
   const [copied, setCopied] = useStateU(false);
   // Programa REAL: link com ?ref= do cliente; recompensas e lista vêm
   // do GET /api/clients/{id}/referrals.
   const link = `${location.origin}/login?ref=${window.getClientId()}`;
   const [stats, setStats] = useStateU(null);
+  // Indique e ganhe só libera pra assinante (no teste grátis fica travado).
+  const [billing, setBilling] = useStateU(null);
+  const [billingLoaded, setBillingLoaded] = useStateU(false);
 
   useEffectU(() => {
-    window.fetchReferrals().then(setStats).catch(() => {});
+    fetchBillingStatus().then(b => {
+      setBilling(b); setBillingLoaded(true);
+      if (isSubscriberAccount(b)) window.fetchReferrals().then(setStats).catch(() => {});
+    }).catch(() => {
+      // Sem o status, tenta o programa mesmo assim (o servidor é quem barra).
+      setBillingLoaded(true);
+      window.fetchReferrals().then(setStats).catch(() => {});
+    });
   }, []);
+
+  if (billingLoaded && !isSubscriberAccount(billing)) {
+    return (
+      <SubscriberLockScreen
+        onBack={onBack} onGoto={onGoto}
+        title="Programa de Indicação"
+        icon="gift"
+        reason="O Indique e ganhe dá conversas de bônus pra quem indica e pra quem chega. Por isso ele começa a valer quando a sua assinatura está ativa."
+      />
+    );
+  }
 
   const reward = stats ? stats.reward_conversations : 100;
   const welcome = stats ? stats.welcome_bonus : 50;
@@ -906,7 +1012,7 @@ const IndicacaoScreen = ({ onBack }) => {
 // ============================================================
 // CRÉDITOS — sub-tela
 // ============================================================
-const CreditosScreen = ({ onBack }) => {
+const CreditosScreen = ({ onBack, onGoto }) => {
   // Pacotes REAIS do backend (billing.extra_packs — fonte única de verdade).
   const fmtBrl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
   const [packs, setPacks] = useStateU([
@@ -1113,6 +1219,18 @@ const CreditosScreen = ({ onBack }) => {
     { id: 'card', label: savedCard ? 'Outro cartão' : 'Cartão' },
     { id: 'pix', label: 'Pix' },
   ];
+
+  // Pacote de conversas só libera pra assinante (no teste grátis fica travado).
+  if (!isSubscriberAccount(billing)) {
+    return (
+      <SubscriberLockScreen
+        onBack={onBack} onGoto={onGoto}
+        title="Créditos extras"
+        icon="zap"
+        reason="Os pacotes são um reforço pra quem já assina e teve um pico de movimento. Assinando, você já recebe as conversas do mês e pode comprar pacotes quando precisar."
+      />
+    );
+  }
 
   return (
     <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
@@ -1581,7 +1699,7 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
             background: 'var(--terracotta-tint)', color: 'var(--terracotta-ink)',
             fontFamily: 'var(--font-sans)', fontSize: 13,
           }}>
-            Você está no teste grátis ({billing.trial_days_left ?? '?'} {billing.trial_days_left === 1 ? 'dia restante' : 'dias restantes'}).
+            Você está no teste grátis ({trialLabel(billing)}).{' '}
             Assinando agora, o saldo que sobrou do teste continua seu.
           </div>
         )}

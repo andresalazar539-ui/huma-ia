@@ -24,6 +24,7 @@ from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
 
+from huma.core import report_reminders
 from huma.core.capabilities import Capability
 from huma.models.schemas import ClientIdentity
 from huma.services import redis_service as cache
@@ -413,12 +414,24 @@ def _report_lines(report: dict) -> tuple[list[str], str]:
     return lines, insight
 
 
-def format_report_whatsapp(identity: ClientIdentity, report: dict, frequency: str = "weekly") -> str:
-    """Resumo compacto de outcome, no tom de sócio que presta contas."""
+def format_report_whatsapp(
+    identity: ClientIdentity,
+    report: dict,
+    frequency: str = "weekly",
+    reminders: Optional[list] = None,
+) -> str:
+    """
+    Resumo compacto de outcome, no tom de sócio que presta contas.
+
+    `reminders` (lembretes do dono, core/report_reminders): seção
+    "Lembretes" no topo, antes dos números. Vazio/None = texto idêntico
+    ao de sempre.
+    """
     label = FREQUENCY_LABELS.get(frequency, "do período")
     nome = (identity.business_name or "seu negócio").strip()
     principais, insight = _report_lines(report)
     lines = [f"📊 HUMA — resultado {label} ({nome})", ""]
+    lines.extend(report_reminders.render_whatsapp_block(reminders))
     lines.extend(principais)
     if insight:
         lines.append("")
@@ -428,25 +441,36 @@ def format_report_whatsapp(identity: ClientIdentity, report: dict, frequency: st
     return "\n".join(lines)
 
 
-def format_report_email(identity: ClientIdentity, report: dict, frequency: str = "weekly") -> dict:
+def format_report_email(
+    identity: ClientIdentity,
+    report: dict,
+    frequency: str = "weekly",
+    reminders: Optional[list] = None,
+) -> dict:
     """
     Assunto/título/conteúdo do relatório pro e-mail do dono — mesmas
     linhas do WhatsApp, embaladas pro send_owner_report do email_service.
 
     Returns:
         dict com subject, title, intro, linhas (list[str]) e rodape.
+        Com lembretes, ganha a chave extra "lembretes" (list[str]); sem
+        lembretes o dict é idêntico ao de sempre.
     """
     label = FREQUENCY_LABELS.get(frequency, "do período")
     nome = (identity.business_name or "seu negócio").strip()
     principais, insight = _report_lines(report)
     linhas = principais + ([insight] if insight else [])
-    return {
+    out: dict = {
         "subject": f"📊 HUMA — resultado {label} ({nome})",
         "title": f"Resultado {label}",
         "intro": f"Enquanto você cuidava do resto, a HUMA trabalhou por {nome}. Olha o que aconteceu:",
         "linhas": linhas,
         "rodape": "Os detalhes completos, com funil e origem de cada lead, estão no Cockpit, aba Relatórios.",
     }
+    lembretes = report_reminders.reminder_texts(reminders)
+    if lembretes:
+        out["lembretes"] = lembretes
+    return out
 
 
 # ================================================================
@@ -602,11 +626,15 @@ async def _dispatch_report(
     frequency: str,
     targets: list[str],
     client_id: str,
+    reminders: Optional[list] = None,
 ) -> list[dict]:
     """
     Envia o relatório pra lista mista de destinos: com "@" vai por
     e-mail (Resend, com planilha/apresentação anexas), sem "@" vai
     pelo WhatsApp do canal do cliente.
+
+    `reminders` (lembretes do dono): seção "Lembretes" no topo do texto
+    do WhatsApp e do e-mail. Vazio/None = envio idêntico ao de sempre.
 
     Formatos extras do drawer (report_formats), só nos destinos de
     WhatsApp: "audio" = a HUMA conta o resultado na voz clonada;
@@ -621,8 +649,10 @@ async def _dispatch_report(
     from huma.services import email_service as mail
     from huma.services import whatsapp_service as wa
 
-    msg = format_report_whatsapp(identity, report, frequency)
-    em = format_report_email(identity, report, frequency)
+    msg = format_report_whatsapp(identity, report, frequency, reminders=reminders)
+    em = format_report_email(identity, report, frequency, reminders=reminders)
+    # kwarg só quando há lembrete: sem lembrete a chamada é a de sempre
+    mail_extra: dict = {"lembretes": em["lembretes"]} if em.get("lembretes") else {}
     attachments: list[dict] = []
     if any("@" in t for t in targets):
         attachments = _report_attachments(identity, report)
@@ -648,7 +678,7 @@ async def _dispatch_report(
         if "@" in target:
             ok = await mail.send_owner_report(
                 target, em["subject"], em["title"], em["intro"], em["linhas"],
-                rodape, attachments=attachments or None,
+                rodape, attachments=attachments or None, **mail_extra,
             )
             results.append({"target": target, "channel": "email", "ok": bool(ok)})
         else:
@@ -687,7 +717,11 @@ async def send_report_now(identity: ClientIdentity, target: str = "") -> dict:
         targets = list(dict.fromkeys(
             t for t in [identity.owner_phone, *(identity.report_recipients or [])] if t
         ))
-    results = await _dispatch_report(identity, report, freq, targets, identity.client_id)
+    # Teste mostra os lembretes como vão chegar, mas NÃO consome os
+    # "só no próximo": quem remove é só o envio automático do job.
+    reminders = getattr(identity, "report_reminders", None) or []
+    extra: dict = {"reminders": reminders} if reminders else {}
+    results = await _dispatch_report(identity, report, freq, targets, identity.client_id, **extra)
     ok = sum(1 for r in results if r["ok"])
     log.info(
         f"owner_report | teste sob demanda | client={identity.client_id} | "
@@ -738,6 +772,37 @@ def _client_due_now(row: dict, now: datetime) -> tuple[bool, int]:
 
     dedup_days = 25 if (freq == "monthly" and day.isdigit()) else days
     return True, dedup_days
+
+
+async def _consume_reminders(client_id: str, delivered: list) -> None:
+    """
+    Depois de um envio automático bem-sucedido, tira da lista do cliente
+    os lembretes "só no próximo" que acabaram de sair. Relê o cliente
+    antes de gravar (o dono pode ter editado a lista durante o envio) e
+    só grava quando algo muda. Nunca levanta: falha aqui vira WARNING e
+    o relatório já enviado segue valendo (o lembrete sai de novo no
+    próximo, o que é melhor que derrubar o job).
+    """
+    if not any(r.get("repeat") == report_reminders.REPEAT_ONCE for r in delivered if isinstance(r, dict)):
+        return
+    from huma.services import db_service as db
+
+    try:
+        fresh = await db.get_client(client_id)
+        current = (getattr(fresh, "report_reminders", None) or []) if fresh else []
+        remaining = report_reminders.remaining_after_send(current, delivered)
+        if len(remaining) == len(current):
+            return
+        await db.update_client(client_id, {"report_reminders": remaining})
+        log.info(
+            f"owner_report | lembretes entregues removidos | client={client_id} | "
+            f"restam={len(remaining)}"
+        )
+    except Exception as e:
+        log.warning(
+            f"owner_report | falha ao atualizar lembretes (relatório já enviado) | "
+            f"client={client_id} | {type(e).__name__}: {e}"
+        )
 
 
 async def run_owner_reports() -> None:
@@ -807,8 +872,11 @@ async def run_owner_reports() -> None:
 
             days = FREQUENCY_DAYS.get(freq) or 7
             report = await build_report(identity, days=days)
-            # Sem atividade no período = sem mensagem (silêncio > spam vazio)
-            if report["sections"]["atendimento"]["conversas_ativas"] == 0:
+            # Lembretes do dono (drawer Receber automático): saem no topo.
+            reminders = getattr(identity, "report_reminders", None) or []
+            # Sem atividade no período = sem mensagem (silêncio > spam vazio).
+            # Exceção: o dono PEDIU um lembrete, então o relatório sai mesmo zerado.
+            if report["sections"]["atendimento"]["conversas_ativas"] == 0 and not reminders:
                 await cache.set_with_ttl(marker_key, now.isoformat(), ttl=45 * 86400)
                 skipped += 1
                 continue
@@ -819,8 +887,11 @@ async def run_owner_reports() -> None:
             for extra in (getattr(identity, "report_recipients", None) or []):
                 if extra and extra not in targets:
                     targets.append(extra)
-            results = await _dispatch_report(identity, report, freq, targets, client_id)
+            extra: dict = {"reminders": reminders} if reminders else {}
+            results = await _dispatch_report(identity, report, freq, targets, client_id, **extra)
             await cache.set_with_ttl(marker_key, now.isoformat(), ttl=45 * 86400)
+            if reminders and any(r["ok"] for r in results):
+                await _consume_reminders(client_id, reminders)
             sent += 1
             log.info(
                 f"owner_report | enviado | client={client_id} | freq={freq} | "

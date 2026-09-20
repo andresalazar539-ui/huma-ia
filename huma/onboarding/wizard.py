@@ -91,7 +91,7 @@ _CAPABILITY_LABELS: dict[Capability, dict] = {
     Capability.SELL_PHYSICAL: {
         "verb": "Vender físico",
         "headline": "Vender produto físico (com estoque e frete)",
-        "description": "E-commerce conectado ao seu ERP (Bling). IA consulta estoque, calcula frete e gera pagamento — tudo em tempo real.",
+        "description": "Sua loja conectada (Nuvemshop ou Bling). A IA consulta estoque e preço em tempo real e fecha o pedido dentro da conversa.",
     },
     Capability.QUALIFY: {
         "verb": "Qualificar lead",

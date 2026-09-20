@@ -3,6 +3,8 @@
 // do cliente (salvos via /settings). Formatos: mensagem (sempre), áudio na
 // voz clonada (exige voz gravada na aba Voz) e relatório completo (.pptx
 // como documento no WhatsApp; no e-mail os anexos já vão sempre).
+// Lembrete (report_reminders): recado do dono no topo do relatório, salvo
+// num PATCH /settings separado (banco sem a coluna não trava o resto).
 const { useState: useStateRD, useEffect: useEffectRD } = React;
 
 const RDSwitch = ({ on, onChange }) => (
@@ -53,11 +55,29 @@ const rdMaskPhone = (raw) => {
   return `${cc}${rest.slice(0, 2)} ${rest.slice(2, -4)}-${rest.slice(-4)}`;
 };
 
+// Lembrete (clients.report_reminders): recado do dono no topo do relatório.
+// repeat 'weekly' = sai em todo relatório; 'once' = só no próximo (o job remove depois).
+const RD_MAX_LEMBRETES = 5;
+const RD_MAX_LEMBRETE_CHARS = 280;
+const RD_FREQ_ADJ = { daily: 'diário', weekly: 'semanal', biweekly: 'quinzenal', monthly: 'mensal' };
+const rdRepeatLabel = (freq) => (freq === 'weekly' ? 'toda semana' : 'todo relatório');
+
+// saveSettings levanta Error("503: {\"detail\":\"...\"}"): devolve a mensagem do servidor
+const rdServerMessage = (e) => {
+  const raw = String((e && e.message) || '');
+  const i = raw.indexOf('{');
+  if (i < 0) return '';
+  try {
+    const d = JSON.parse(raw.slice(i)).detail;
+    return typeof d === 'string' ? d : '';
+  } catch (_) { return ''; }
+};
+
 const rdIsEmail = (v) => String(v || '').includes('@');
 const rdMaskDest = (v) => rdIsEmail(v) ? v : rdMaskPhone(v);
 
 // Prévia — bolha estilo WhatsApp com os NÚMEROS REAIS do período aberto
-const RDPreview = ({ cfg, sections }) => {
+const RDPreview = ({ cfg, sections, lembretes = [] }) => {
   const s = sections || {};
   const at = s.atendimento || {};
   const partes = [];
@@ -79,6 +99,12 @@ const RDPreview = ({ cfg, sections }) => {
           boxShadow: '0 1px 2px rgba(28,23,20,0.05)',
           display: 'flex', flexDirection: 'column', gap: 8,
         }}>
+          {lembretes.length > 0 && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, lineHeight: 1.5, color: 'var(--ink-2)', overflowWrap: 'anywhere' }}>
+              <strong style={{ color: 'var(--ink)', fontWeight: 600 }}>📌 Lembretes</strong>
+              {lembretes.map((l, i) => <div key={i}>• {l.text}</div>)}
+            </div>
+          )}
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, lineHeight: 1.5, color: 'var(--ink-2)' }}>
             Bom dia! Seu período: {partes}. Detalhes abaixo.
           </div>
@@ -97,9 +123,21 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
   const [testState, setTestState] = useStateRD('idle'); // idle | sending | sent | error
   const [adding, setAdding] = useStateRD(false);
   const [novoValor, setNovoValor] = useStateRD('');
+  // Lembrete: lista salva à parte (PATCH próprio) pra um banco sem a
+  // coluna nunca travar o resto da configuração do relatório.
+  const [remOn, setRemOn] = useStateRD(false);
+  const [lembretes, setLembretes] = useStateRD([]);
+  const [novoLembrete, setNovoLembrete] = useStateRD('');
+  const [remInicial, setRemInicial] = useStateRD('[]');
+  const [remErro, setRemErro] = useStateRD('');
 
   useEffectRD(() => {
     window.fetchSettings().then(({ settings }) => {
+      const salvos = (Array.isArray(settings.report_reminders) ? settings.report_reminders : [])
+        .filter(l => l && typeof l.text === 'string' && l.text.trim());
+      setLembretes(salvos);
+      setRemOn(salvos.length > 0);
+      setRemInicial(JSON.stringify(salvos));
       const freq = settings.report_frequency || 'weekly';
       setCfg({
         enabled: freq !== 'off',
@@ -146,13 +184,40 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
     report_formats: cfg.formats,
   });
 
+  // Lista que vale ao salvar: desligado = nenhum; texto ainda no campo entra junto.
+  const lembretesFinais = () => {
+    if (!remOn) return [];
+    const draft = novoLembrete.trim().slice(0, RD_MAX_LEMBRETE_CHARS);
+    const lista = draft && lembretes.length < RD_MAX_LEMBRETES
+      ? [...lembretes, { text: draft, repeat: 'weekly' }]
+      : lembretes;
+    return lista.slice(0, RD_MAX_LEMBRETES);
+  };
+
+  // PATCH próprio, só quando mudou. Falha mostra a mensagem do servidor
+  // (ex.: lembretes ainda não ativados no banco) e não fecha o drawer.
+  const salvarLembretes = async () => {
+    const lista = lembretesFinais();
+    if (JSON.stringify(lista) === remInicial) return true;
+    try {
+      await window.saveSettings({ report_reminders: lista });
+      setLembretes(lista); setNovoLembrete('');
+      setRemInicial(JSON.stringify(lista));
+      return true;
+    } catch (e) {
+      setRemErro(rdServerMessage(e) || 'Não consegui salvar os lembretes. Tenta de novo.');
+      return false;
+    }
+  };
+
   const salvar = async () => {
-    setSaveState('saving');
+    setSaveState('saving'); setRemErro('');
     try {
       const p = payload();
       await window.saveSettings(p);
-      setSaveState('saved');
       onSaved && onSaved(p.report_frequency);
+      if (!(await salvarLembretes())) { setSaveState('idle'); return; }
+      setSaveState('saved');
       setTimeout(onClose, 900);
     } catch (e) {
       setSaveState('error');
@@ -162,11 +227,12 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
   // Salva a configuração atual e manda o relatório AGORA pra todo mundo
   // da lista (você + extras) — telefone no WhatsApp, e-mail no e-mail.
   const enviarTeste = async () => {
-    setTestState('sending');
+    setTestState('sending'); setRemErro('');
     try {
       const p = payload();
       await window.saveSettings(p);
       onSaved && onSaved(p.report_frequency);
+      if (!(await salvarLembretes())) { setTestState('idle'); return; }
       await window.sendReportTest();
       setTestState('sent');
       setTimeout(() => setTestState('idle'), 3000);
@@ -189,6 +255,16 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
     set({ recipients: [...cfg.recipients, dest] });
     setNovoValor(''); setAdding(false);
   };
+
+  const addLembrete = () => {
+    const text = novoLembrete.replace(/\s+/g, ' ').trim().slice(0, RD_MAX_LEMBRETE_CHARS);
+    if (!text || lembretes.length >= RD_MAX_LEMBRETES) return;
+    setLembretes([...lembretes, { text, repeat: 'weekly' }]);
+    setNovoLembrete(''); setRemErro('');
+  };
+  const setLembreteRepeat = (i, repeat) =>
+    setLembretes(lembretes.map((l, j) => (j === i ? { ...l, repeat } : l)));
+  const removeLembrete = (i) => setLembretes(lembretes.filter((_, j) => j !== i));
 
   const SectionLabel = ({ children }) => (
     <div style={{
@@ -402,10 +478,86 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
             </div>
           </div>
 
+          {/* LEMBRETE */}
+          <div style={dimStyle}>
+            <SectionLabel>lembrete</SectionLabel>
+            <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 12, background: 'var(--paper-raised)', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px' }}>
+                <span style={{ color: 'var(--ink-3)', display: 'inline-flex' }}><Icon name="bell" size={16} stroke={1.6}></Icon></span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 13.5, fontWeight: 500, color: 'var(--ink)' }}>Lembrete</span>
+                  <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 11.5, color: 'var(--ink-3)', marginTop: 1 }}>um recado seu que chega junto com o relatório</span>
+                </span>
+                <RDSwitch on={remOn} onChange={() => { setRemOn(!remOn); setRemErro(''); }}></RDSwitch>
+              </div>
+              {remOn && lembretes.map((l, i) => (
+                <div key={l.id || `novo-${i}`} style={{
+                  display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 14px',
+                  borderTop: '1px solid var(--paper-edge)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                    <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.45, color: 'var(--ink)', overflowWrap: 'anywhere' }}>
+                      {l.text}
+                    </span>
+                    <button onClick={() => removeLembrete(i)} aria-label="Remover lembrete"
+                      style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--ink-4)', padding: 2, display: 'inline-flex', flexShrink: 0 }}>
+                      <Icon name="x" size={14}></Icon>
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 2, padding: 2, background: 'var(--paper-sunk)', borderRadius: 999, border: '1px solid var(--paper-edge)', alignSelf: 'flex-start' }}>
+                    {[['weekly', rdRepeatLabel(cfg.freq)], ['once', 'só no próximo']].map(([id, label]) => {
+                      const on = (l.repeat === 'once' ? 'once' : 'weekly') === id;
+                      return (
+                        <button key={id} onClick={() => setLembreteRepeat(i, id)} style={{
+                          fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: on ? 500 : 400,
+                          padding: '3px 10px', borderRadius: 999, border: 'none', cursor: 'pointer',
+                          background: on ? 'var(--paper-raised)' : 'transparent',
+                          color: on ? 'var(--ink)' : 'var(--ink-3)',
+                          boxShadow: on ? '0 1px 2px rgba(28,23,20,0.08)' : 'none',
+                          transition: 'all 180ms cubic-bezier(0.22,1,0.36,1)',
+                        }}>{label}</button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              {remOn && lembretes.length < RD_MAX_LEMBRETES && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px', borderTop: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
+                  <textarea value={novoLembrete} rows={2} maxLength={RD_MAX_LEMBRETE_CHARS}
+                    onChange={e => setNovoLembrete(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addLembrete(); } }}
+                    placeholder="Ex.: ligar pro contador sobre a nota de setembro"
+                    style={{
+                      width: '100%', boxSizing: 'border-box', resize: 'vertical',
+                      background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 10,
+                      padding: '8px 10px', fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.45,
+                      color: 'var(--ink)', outline: 'none',
+                    }}></textarea>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)' }}>
+                      {novoLembrete.length}/{RD_MAX_LEMBRETE_CHARS} · {lembretes.length} de {RD_MAX_LEMBRETES}
+                    </span>
+                    <Button variant="primary" size="sm" disabled={!novoLembrete.trim()} onClick={addLembrete}>Adicionar</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+            {remOn && (
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', marginTop: 8 }}>
+                Sai no topo do seu relatório {RD_FREQ_ADJ[cfg.freq] || 'semanal'}, pra você não esquecer.
+              </div>
+            )}
+            {!remOn && lembretes.length > 0 && (
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.02em', color: 'var(--ink-4)', marginTop: 8 }}>
+                desligado: ao salvar, os lembretes saem da lista
+              </div>
+            )}
+          </div>
+
           {/* PRÉVIA */}
           <div style={dimStyle}>
             <SectionLabel>prévia · assim chega no whatsapp</SectionLabel>
-            <RDPreview cfg={cfg} sections={sections}></RDPreview>
+            <RDPreview cfg={cfg} sections={sections} lembretes={lembretesFinais()}></RDPreview>
           </div>
         </div>
 
@@ -426,6 +578,11 @@ const ReportDeliveryDrawer = ({ sections, onClose, onSaved }) => {
           {saveState === 'error' && (
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--danger)', textAlign: 'center' }}>
               Não consegui salvar. Tenta de novo.
+            </div>
+          )}
+          {remErro && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--danger)', textAlign: 'center' }}>
+              {remErro}
             </div>
           )}
           {testState === 'error' && (

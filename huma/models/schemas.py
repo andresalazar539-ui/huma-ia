@@ -891,6 +891,24 @@ class ClientIdentity(BaseModel):
         if "mensagem" not in out:  # o resumo em texto é o coração — sempre vai
             out.insert(0, "mensagem")
         return out
+
+    # Lembretes do relatório automático (drawer "Receber automático").
+    # Migration: scripts/migration_report_reminders.sql. Sem a coluna, o
+    # default vale (leitura ok); o salvar devolve erro amigável.
+    report_reminders: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Lembretes que o dono escreve e saem no topo do relatório "
+            "automático: até 5 itens {id, text (<=280), repeat weekly|once, "
+            "created_at}. 'once' é removido depois de entregue."
+        ),
+    )
+
+    @field_validator("report_reminders", mode="before")
+    @classmethod
+    def _valid_report_reminders(cls, v: object) -> list:
+        from huma.core.report_reminders import normalize_reminders
+        return normalize_reminders(v)
     # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe
     # tudo até desligar conscientemente. notify_on_payment já era enviado.
     notify_owner_on_appointment: bool = Field(
