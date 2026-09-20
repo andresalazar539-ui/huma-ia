@@ -716,6 +716,95 @@ class TestSourceReaderFallback:
 
 
 # ================================================================
+# ANÁLISE DA FONTE: resposta da IA cortada no limite (2026-09-20)
+# Caso real: loja com muitos produtos estourou max_tokens=1500, o JSON veio
+# cortado e o dono viu "não consegui estruturar o que li".
+# ================================================================
+
+
+class _Block:
+    def __init__(self, type_, text="", input_=None):
+        self.type, self.text, self.input = type_, text, input_
+
+
+class _Resp:
+    def __init__(self, blocks, stop_reason="end_turn"):
+        self.content, self.stop_reason = blocks, stop_reason
+
+
+class TestSourceAnalysisParsing:
+
+    def _run(self, monkeypatch, response):
+        import asyncio
+        seen: dict = {}
+
+        async def fake_fetch(_url):
+            return "texto da loja " * 80
+
+        class _Messages:
+            async def create(self, **kwargs):
+                seen.update(kwargs)
+                return response
+
+        class _Client:
+            def __init__(self, **_k):
+                self.messages = _Messages()
+
+        monkeypatch.setattr(interview, "fetch_source_text", fake_fetch)
+        monkeypatch.setattr(interview.anthropic, "AsyncAnthropic", _Client)
+        return asyncio.run(interview.analyze_source("https://loja.com.br")), seen
+
+    def test_pede_saida_estruturada_com_limite_folgado(self, monkeypatch):
+        resp = _Resp([_Block("tool_use", input_={"business_name": "Le Femme", "business_description": "Boutique."})])
+        out, seen = self._run(monkeypatch, resp)
+        assert out["status"] == "ok"
+        assert seen["max_tokens"] >= 4000
+        assert seen["tool_choice"] == {"type": "tool", "name": "source_analysis"}
+
+    def test_json_cortado_no_meio_e_recuperado(self, monkeypatch):
+        cortado = (
+            '{"business_name": "Le Femme", "business_description": "Boutique feminina.", '
+            '"open_questions": ["Vi que tem frete grátis. Vale pro Brasil todo?"], '
+            '"products_or_services": [{"name": "Conjunto Ibiza", "price": "R$ 455,91", "description": "tricô"}, '
+            '{"name": "Vestido Posit'
+        )
+        out, _ = self._run(monkeypatch, _Resp([_Block("text", text=cortado)], stop_reason="max_tokens"))
+        assert out["status"] == "ok"
+        assert out["proposal"]["business_name"] == "Le Femme"
+        assert [p["name"] for p in out["proposal"]["products_or_services"]] == ["Conjunto Ibiza"]
+        assert out["proposal"]["open_questions"] == ["Vi que tem frete grátis. Vale pro Brasil todo?"]
+
+    def test_tool_cortada_usa_o_que_veio(self, monkeypatch):
+        resp = _Resp(
+            [_Block("tool_use", input_={"business_name": "Le Femme", "business_description": "Boutique."})],
+            stop_reason="max_tokens",
+        )
+        out, _ = self._run(monkeypatch, resp)
+        assert out["status"] == "ok"
+
+    def test_catalogo_grande_respeita_o_teto(self, monkeypatch):
+        produtos = [{"name": f"Peça {i}", "price": "R$ 100", "description": ""} for i in range(40)]
+        faq = [{"question": f"p{i}?", "answer": "r"} for i in range(20)]
+        resp = _Resp([_Block("tool_use", input_={
+            "business_name": "Loja", "business_description": "Roupas.",
+            "products_or_services": produtos, "faq": faq,
+        })])
+        out, _ = self._run(monkeypatch, resp)
+        assert len(out["proposal"]["products_or_services"]) == 10
+        assert len(out["proposal"]["faq"]) == 5
+
+    def test_resposta_sem_json_nenhum_degrada_sem_quebrar(self, monkeypatch):
+        out, _ = self._run(monkeypatch, _Resp([_Block("text", text="desculpe, não consegui")]))
+        assert out["status"] == "unavailable"
+        assert out["sources"] == {"site": "ok", "instagram": ""}
+
+    def test_salvamento_respeita_aspas_escapadas(self):
+        got = interview.salvage_json_object('{"a": "diz \\"oi\\" e segue", "b": [1, 2, {"c": "x"}, {"d": "incompl')
+        assert got == {"a": 'diz "oi" e segue', "b": [1, 2, {"c": "x"}]}
+        assert interview.salvage_json_object("sem json nenhum") is None
+
+
+# ================================================================
 # HISTÓRICO DO PLAYGROUND (rotas)
 # ================================================================
 

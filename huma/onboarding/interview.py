@@ -59,6 +59,13 @@ META_VOICE_PREF = "_voice_pref"         # text | clone
 VALID_TEAM_SIZES = ("solo", "2-5", "6-10", "10+")
 VALID_VOICE_PREFS = ("text", "clone")
 
+# Tetos da proposta que sai da leitura da página. Sem teto, uma loja com
+# dezenas de produtos estourava o max_tokens e a resposta vinha CORTADA no
+# meio do JSON ("não consegui estruturar o que li", incidente 2026-09-20).
+_MAX_SOURCE_PRODUCTS = 10
+_MAX_SOURCE_FAQ = 5
+_SOURCE_MAX_TOKENS = 4000
+
 _MAX_GAP_QUESTIONS = 4
 _GAP_QUESTION_MAX_CHARS = 240
 
@@ -261,29 +268,161 @@ Abaixo está o texto extraído (site e/ou Instagram). Analise e proponha a ident
 TEXTO DA PÁGINA:
 {source_text}
 
-Responda APENAS com JSON válido neste formato:
+Registre a análise neste formato (os campos curtos vêm PRIMEIRO de propósito):
 {{
   "business_name": "nome do negócio (ou \\"\\" se não der pra saber)",
-  "business_description": "o que o negócio faz, pra quem, onde fica — 2-3 frases",
+  "business_description": "o que o negócio faz, pra quem, onde fica, em 2-3 frases",
   "category": "um destes slugs ou \\"\\": {valid_categories}",
-  "tone_of_voice": "como a marca fala, deduzido do texto — 1-2 frases",
-  "products_or_services": [
-    {{"name": "nome", "price": "preço se aparecer, senão \\"\\"", "description": "1 frase"}}
+  "tone_of_voice": "como a marca fala, deduzido do texto, em 1-2 frases",
+  "summary_for_owner": "1-2 frases NA PRIMEIRA PESSOA confirmando o que você entendeu, pra mostrar ao dono. Ex: 'Deixa eu ver se entendi: você tem uma clínica de estética em Curitiba e seu carro-chefe é harmonização facial.'",
+  "open_questions": [
+    "pergunta que você faria AO DONO sobre algo que o texto NÃO deixou claro e que muda como você atende os clientes dele"
   ],
   "faq": [
     {{"question": "pergunta que um cliente faria", "answer": "resposta baseada SÓ no texto"}}
   ],
-  "summary_for_owner": "1-2 frases NA PRIMEIRA PESSOA confirmando o que você entendeu, pra mostrar ao dono. Ex: 'Deixa eu ver se entendi: você tem uma clínica de estética em Curitiba e seu carro-chefe é harmonização facial.'",
-  "open_questions": [
-    "pergunta que você faria AO DONO sobre algo que o texto NÃO deixou claro e que muda como você atende os clientes dele"
+  "products_or_services": [
+    {{"name": "nome", "price": "preço se aparecer, senão \\"\\"", "description": "até 12 palavras"}}
   ]
 }}
 
 REGRAS:
 - NUNCA invente preço, endereço ou informação que não está no texto.
 - Se o texto não sustentar um campo, devolva "" ou lista vazia.
+- products_or_services: no MÁXIMO {_MAX_SOURCE_PRODUCTS} itens. Loja com catálogo grande: escolha os mais representativos (um por linha/categoria), não liste tudo. O catálogo completo chega depois pela integração da loja.
+- faq: no MÁXIMO {_MAX_SOURCE_FAQ} itens (frete, troca, pagamento, prazo costumam ser os que importam).
 - open_questions: de 2 a 4 perguntas, específicas DESTE negócio, que mostrem que você leu a página (cite o que viu: "Vi que vocês fazem X e Y..."). Só pergunte o que o texto NÃO responde. NÃO pergunte tom de voz, palavras proibidas, horário de atendimento, lista de produtos nem perguntas frequentes: isso já é perguntado em outro momento. Bons temas: qual serviço é a porta de entrada, como falar de preço quando ele não é público, quem é o cliente ideal, o que acontece depois que o cliente demonstra interesse, região atendida, o que diferencia dos concorrentes.
 - Tudo em português do Brasil, sem travessão."""
+
+
+# Saída estruturada garantida pela API (mesmo padrão do MARKET_ANALYSIS_TOOL):
+# a resposta vem como input de uma tool forçada, então aspas ou quebra de linha
+# dentro de um texto nunca quebram o parse. Campos curtos primeiro: se ainda
+# assim cortar, o que se perde é o fim da lista de produtos, não o resumo nem
+# as perguntas de lacuna.
+SOURCE_ANALYSIS_TOOL: dict = {
+    "name": "source_analysis",
+    "description": "Registra a identidade inicial do negócio lida no site/Instagram, no formato pedido no prompt.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "business_name": {"type": "string"},
+            "business_description": {"type": "string"},
+            "category": {"type": "string"},
+            "tone_of_voice": {"type": "string"},
+            "summary_for_owner": {"type": "string"},
+            "open_questions": {"type": "array", "items": {"type": "string"}},
+            "faq": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"question": {"type": "string"}, "answer": {"type": "string"}},
+                },
+            },
+            "products_or_services": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "price": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "required": ["business_name", "business_description"],
+    },
+}
+
+
+def salvage_json_object(text: str) -> dict | None:
+    """
+    Recupera um objeto JSON que veio CORTADO no meio (resposta truncada).
+
+    Anda pelo texto respeitando strings e escapes, guarda o último ponto em
+    que um valor terminou inteiro, corta ali e fecha os colchetes/chaves que
+    ficaram abertos. Devolve None se nem isso der um dict. Não inventa nada:
+    só descarta o pedaço incompleto do fim.
+    """
+    start = (text or "").find("{")
+    if start == -1:
+        return None
+    body = text[start:]
+    try:
+        whole = json.loads(body[: body.rfind("}") + 1]) if "}" in body else None
+        if isinstance(whole, dict):
+            return whole
+    except ValueError:
+        pass
+
+    stack: list[str] = []
+    in_string = escape = False
+    safe_end, safe_stack = 0, []
+    for i, ch in enumerate(body):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack:
+                break
+            stack.pop()
+            safe_end, safe_stack = i + 1, list(stack)  # um valor acabou de fechar inteiro
+        elif ch == "," and stack:
+            safe_end, safe_stack = i, list(stack)      # o item anterior está completo
+    if not safe_end:
+        return None
+    candidate = body[:safe_end].rstrip().rstrip(",") + "".join(reversed(safe_stack))
+    try:
+        parsed = json.loads(candidate)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_source_response(response, url: str) -> dict | None:
+    """Extrai o dict da resposta da IA: tool forçada → JSON em texto → JSON cortado."""
+    stop = getattr(response, "stop_reason", "") or ""
+    blocks = getattr(response, "content", None) or []
+    for block in blocks:
+        data = getattr(block, "input", None)
+        if getattr(block, "type", "") == "tool_use" and isinstance(data, dict) and data:
+            if stop == "max_tokens":
+                log.warning(f"Análise de fonte cortada no limite (tool) | url={url} | campos={list(data.keys())}")
+            return data
+
+    raw = ""
+    for block in blocks:
+        raw = (getattr(block, "text", "") or "").strip()
+        if raw:
+            break
+    if not raw:
+        return None
+    cleaned = raw.replace("```json", "").replace("```", "").strip()
+    first, last = cleaned.find("{"), cleaned.rfind("}")
+    try:
+        if first != -1 and last > first:
+            parsed = json.loads(cleaned[first:last + 1])
+            if isinstance(parsed, dict):
+                return parsed
+    except ValueError:
+        pass
+    salvaged = salvage_json_object(cleaned)
+    if salvaged:
+        log.warning(
+            f"Análise de fonte JSON cortado, recuperado | url={url} | stop_reason={stop} | "
+            f"campos={list(salvaged.keys())}"
+        )
+    return salvaged
 
 
 def _unavailable_detail(read: dict) -> str:
@@ -350,14 +489,18 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
         response = await client.messages.create(
             model=AI_MODEL_PRIMARY,
-            max_tokens=1500,
+            max_tokens=_SOURCE_MAX_TOKENS,
             messages=[{"role": "user", "content": _build_source_prompt(url, source_text)}],
+            tools=[SOURCE_ANALYSIS_TOOL],
+            tool_choice={"type": "tool", "name": SOURCE_ANALYSIS_TOOL["name"]},
         )
-        raw = response.content[0].text.strip()
-        parsed = json.loads(raw.replace("```json", "").replace("```", "").strip())
-    except json.JSONDecodeError:
-        log.warning(f"Análise de fonte JSON inválido | url={url}")
-        return {"status": "unavailable", "sources": read, "detail": "Não consegui estruturar o que li. Me conta você mesmo."}
+        parsed = _parse_source_response(response, url)
+        if not parsed:
+            log.warning(
+                f"Análise de fonte JSON inválido | url={url} | "
+                f"stop_reason={getattr(response, 'stop_reason', '?')}"
+            )
+            return {"status": "unavailable", "sources": read, "detail": "Não consegui estruturar o que li. Me conta você mesmo."}
     except anthropic.APIError as e:
         log.error(f"Análise de fonte API erro | url={url} | {type(e).__name__}: {e}")
         return {"status": "unavailable", "detail": "Tive um probleminha agora. Me conta você mesmo."}
@@ -366,6 +509,10 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
         return {"status": "unavailable", "detail": "Tive um probleminha agora. Me conta você mesmo."}
 
     proposal = coerce_identity_updates(parsed)
+    if "products_or_services" in proposal:
+        proposal["products_or_services"] = proposal["products_or_services"][:_MAX_SOURCE_PRODUCTS]
+    if "faq" in proposal:
+        proposal["faq"] = proposal["faq"][:_MAX_SOURCE_FAQ]
     category_slug = str(parsed.get("category", "") or "").strip()
     if category_slug in {c.value for c in BusinessCategory}:
         proposal["category"] = category_slug
