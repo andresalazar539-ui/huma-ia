@@ -110,11 +110,16 @@ function Moment3({ onDone }) {
   </div>;
 }
 
-// ── Momento 4 — o dever de casa (compilação 20–40s) ──────────────────────
-const compileLines = ['organizando tudo que você me contou...', 'estudando seu mercado e seus concorrentes...', 'montando meu jeito de falar com seus clientes...', 'pronto. quer me testar?'];
-const compileNodes = ['Suas respostas', 'Produtos', 'Mercado', 'Concorrentes', 'Objeções', 'Seu tom'];
+// ── Momento 4 — o dever de casa (compilação ~15–25s) ─────────────────────
+// As frases rodam por relógio, então nenhuma afirma que acabou: a última fica
+// em "quase lá" e o "pronto" só aparece quando o servidor responde de verdade.
+// Mercado/concorrentes saíram daqui: essa análise roda em segundo plano depois.
+const compileLines = ['organizando tudo que você me contou...', 'montando meu jeito de falar com seus clientes...', 'separando o que eu já sei responder...', 'quase lá, conferindo os detalhes...'];
+const compileNodes = ['Suas respostas', 'Seu tom', 'Regras', 'Produtos', 'Dúvidas', 'Horários'];
+const compileTitle = <React.Fragment><em>HUMA</em> está montando seu atendimento</React.Fragment>;
 function Moment4({ onDone }) {
   const [failed, setFailed] = useState(false);
+  const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let dead = false;
@@ -123,7 +128,11 @@ function Moment4({ onDone }) {
       if (dead) return;
       // garante que a narrativa respire mesmo se o backend voar
       const min = 8000 - (Date.now() - started);
-      setTimeout(() => !dead && onDone(), Math.max(0, min));
+      setTimeout(() => {
+        if (dead) return;
+        setReady(true);
+        setTimeout(() => !dead && onDone(), 1600);
+      }, Math.max(0, min));
     }).catch(e => {
       if (dead || e.kind === 'auth') return;
       setFailed(true);
@@ -136,7 +145,8 @@ function Moment4({ onDone }) {
         <HumaSays>Deu um nó aqui. Me dá outra chance?</HumaSays>
         <ObButton onClick={() => { setFailed(false); setAttempt(a => a + 1); }}>Tentar de novo</ObButton>
       </div>
-      : <AnalysisCore lines={compileLines} nodes={compileNodes} interval={2900} />}
+      : <AnalysisCore lines={compileLines} nodes={compileNodes} interval={4200} title={compileTitle}
+          done={ready} doneLine="pronto. quer me testar?" />}
   </div>;
 }
 Object.assign(window, { Moment3, Moment4 });

@@ -270,6 +270,147 @@ class TestOnboardingPage:
 
 
 # ================================================================
+# COMPILAÇÃO: análise de mercado em segundo plano (2026-09-20)
+# ================================================================
+
+
+class TestCompileMarketInBackground:
+
+    def _setup(self, monkeypatch, identity, *, analysis=None, analyze_spy=None):
+        """Mocka db, compilação, site, IA e Redis; devolve a lista de updates gravados."""
+        import huma.routes.onboarding as ob
+        import huma.services.redis_service as cache
+
+        store = {"identity": identity}
+        saved: list[dict] = []
+
+        async def get_client(_cid):
+            return store["identity"]
+
+        async def update_client(_cid, updates):
+            saved.append(dict(updates))
+            data = store["identity"].model_dump()
+            data.update(updates)
+            store["identity"] = ClientIdentity(**data)
+
+        async def compile_updates(_identity):
+            return {"tone_of_voice": "direto", "custom_rules": "regra do dono"}
+
+        async def site_text(_url):
+            return ""
+
+        async def fake_analyze(data, source_text=""):
+            if analyze_spy is not None:
+                analyze_spy.append(dict(data))
+            return analysis or {
+                "status": "completed",
+                "analysis": {"market_context": "mercado aquecido", "playbook": {"objecoes": []}},
+            }
+
+        async def no_redis(*_a, **_k):
+            return False
+
+        monkeypatch.setattr(ob.db, "get_client", get_client)
+        monkeypatch.setattr(ob.db, "update_client", update_client)
+        monkeypatch.setattr(ob.interview, "compile_identity_updates", compile_updates)
+        monkeypatch.setattr(ob, "_fetch_site_text", site_text)
+        monkeypatch.setattr(ob, "analyze_market", fake_analyze)
+        monkeypatch.setattr(cache, "exists", no_redis)
+        monkeypatch.setattr(cache, "set_with_ttl", no_redis)
+        ob._market_started.clear()
+        return ob, saved, store
+
+    def test_compile_libera_o_playground_sem_esperar_a_analise(self, monkeypatch):
+        import asyncio
+        identity = _identity(onboarding_answers={"tone": "falo direto"})
+        ob, saved, _ = self._setup(monkeypatch, identity)
+        scheduled: list[str] = []
+        monkeypatch.setattr(ob, "_schedule_market_analysis", lambda cid: scheduled.append(cid) or True)
+
+        out = asyncio.run(ob.compile_interview("cli_interview", None))
+
+        assert out["onboarding_status"] == "sandbox"
+        assert out["market_analysis_status"] == "running"
+        assert scheduled == ["cli_interview"]
+        # o que foi gravado na resposta HTTP é só a compilação + status
+        assert len(saved) == 1
+        assert saved[0]["onboarding_status"] == "sandbox"
+        assert "market_analysis" not in saved[0]
+
+    def test_background_aplica_em_cima_do_dado_fresco(self, monkeypatch):
+        import asyncio
+        identity = _identity(custom_rules="regra antiga", onboarding_answers={"tone": "x"})
+        ob, saved, store = self._setup(monkeypatch, identity)
+
+        # o dono mexe nas regras ENQUANTO a IA analisa (playground / ajustes)
+        async def analyze_and_owner_edits(data, source_text=""):
+            fresh = store["identity"].model_dump()
+            fresh["custom_rules"] = "regra que o dono acabou de editar"
+            store["identity"] = ClientIdentity(**fresh)
+            return {"status": "completed", "analysis": {"market_context": "mercado aquecido"}}
+        monkeypatch.setattr(ob, "analyze_market", analyze_and_owner_edits)
+
+        out = asyncio.run(ob._run_market_analysis("cli_interview"))
+
+        assert out["status"] == "completed"
+        assert "regra que o dono acabou de editar" in saved[-1]["custom_rules"]
+        assert "CONTEXTO DE MERCADO: mercado aquecido" in saved[-1]["custom_rules"]
+        assert saved[-1]["market_analysis"] == {"market_context": "mercado aquecido"}
+
+    def test_background_nao_roda_duas_vezes_pro_mesmo_cliente(self, monkeypatch):
+        import asyncio
+        calls: list[dict] = []
+        identity = _identity(onboarding_answers={"tone": "x"})
+        ob, _, _ = self._setup(monkeypatch, identity, analyze_spy=calls)
+
+        first = asyncio.run(ob._run_market_analysis("cli_interview"))
+        second = asyncio.run(ob._run_market_analysis("cli_interview"))
+
+        assert first["status"] == "completed"
+        assert second == {"status": "skipped", "detail": "running"}
+        assert len(calls) == 1
+
+    def test_background_nunca_levanta_e_nao_grava_em_falha(self, monkeypatch):
+        import asyncio
+        identity = _identity(onboarding_answers={"tone": "x"})
+        ob, saved, _ = self._setup(
+            monkeypatch, identity, analysis={"status": "error", "detail": "api fora"},
+        )
+
+        out = asyncio.run(ob._run_market_analysis("cli_interview"))
+
+        assert out["status"] == "error"
+        assert saved == []
+
+    def test_state_reagenda_quando_playbook_ficou_faltando(self, monkeypatch):
+        import asyncio
+        identity = _identity(
+            onboarding_status=OnboardingStatus.SANDBOX, onboarding_answers={"tone": "x"},
+        )
+        ob, _, _ = self._setup(monkeypatch, identity)
+        scheduled: list[str] = []
+        monkeypatch.setattr(ob, "_schedule_market_analysis", lambda cid: scheduled.append(cid) or True)
+
+        out = asyncio.run(ob.get_state("cli_interview", None))
+
+        assert out["has_market_analysis"] is False
+        assert scheduled == ["cli_interview"]
+
+    def test_state_nao_agenda_antes_de_compilar(self, monkeypatch):
+        import asyncio
+        identity = _identity(
+            onboarding_status=OnboardingStatus.IN_PROGRESS, onboarding_answers={"tone": "x"},
+        )
+        ob, _, _ = self._setup(monkeypatch, identity)
+        scheduled: list[str] = []
+        monkeypatch.setattr(ob, "_schedule_market_analysis", lambda cid: scheduled.append(cid) or True)
+
+        asyncio.run(ob.get_state("cli_interview", None))
+
+        assert scheduled == []
+
+
+# ================================================================
 # HISTÓRICO DO PLAYGROUND (rotas)
 # ================================================================
 

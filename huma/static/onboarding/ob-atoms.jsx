@@ -59,9 +59,12 @@ const CORE_BITS = [
   { t: 'pix', deg: 180, r: 165, delay: 400, dur: 4000 }, { t: '%', deg: 240, r: 150, delay: 1900, dur: 3700 },
   { t: 'cep', deg: -15, r: 140, delay: 2900, dur: 4100 }, { t: '★', deg: 165, r: 140, delay: 3300, dur: 3900 },
 ];
-function AnalysisCore({ lines, nodes, interval = 2600, title }) {
+// done + doneLine: as frases rodam por relógio, então NENHUMA delas pode
+// afirmar que acabou. Quem diz "pronto" é o chamador, quando o servidor responde.
+function AnalysisCore({ lines, nodes, interval = 2600, title, done = false, doneLine = '' }) {
   const [i, setI] = useState(0);
-  const [lit, setLit] = useState(0);
+  const [litTimer, setLit] = useState(0);
+  const lit = done ? nodes.length : litTimer;
   const calm = useRef(!!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)).current;
   useEffect(() => { const t = setInterval(() => setI(v => Math.min(v + 1, lines.length - 1)), interval); return () => clearInterval(t); }, [lines, interval]);
   useEffect(() => {
@@ -116,7 +119,7 @@ function AnalysisCore({ lines, nodes, interval = 2600, title }) {
       </div>
       <div className="stack g10 center">
         <h2 className="core-title">{title || <React.Fragment><em>HUMA</em> está entendendo seu negócio</React.Fragment>}</h2>
-        <div className="core-line" key={i}>{lines[i]}</div>
+        <div className="core-line" key={done ? 'done' : i}>{done && doneLine ? doneLine : lines[i]}</div>
       </div>
     </div>,
     document.body

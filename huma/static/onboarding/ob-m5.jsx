@@ -31,6 +31,25 @@ function Moment5({ businessName, onDone }) {
   const endRef = useRef(null);
   useEffect(() => { const el = endRef.current; if (el && el.parentElement) el.parentElement.scrollTop = el.parentElement.scrollHeight; }, [msgs, typing, fixing]);
 
+  // O estudo de mercado roda em segundo plano depois da compilação (~1-2 min).
+  // market: 'studying' | 'ready' | null (null = não deu pra saber; não afirma nada).
+  const [market, setMarket] = useState(null);
+  useEffect(() => {
+    let dead = false, tries = 0, timer = null;
+    const check = async () => {
+      try {
+        const st = await HumaAPI.state();
+        if (dead) return;
+        if (st.has_market_analysis) { setMarket(m => (m === 'studying' ? 'ready' : null)); return; }
+        setMarket('studying');
+      } catch (e) { /* consulta decorativa: falhou, tenta na próxima */ }
+      if (!dead && ++tries < 20) timer = setTimeout(check, 12000);
+      else if (!dead) setMarket(null); // passou de 4 min: para de afirmar que está estudando
+    };
+    check();
+    return () => { dead = true; clearTimeout(timer); };
+  }, []);
+
   const send = async () => {
     const text = input.trim(); if (!text || typing) return;
     setInput(''); setErr(null); setInteracted(true);
@@ -64,6 +83,8 @@ function Moment5({ businessName, onDone }) {
       <div className="stack g6 center">
         <span className="eyebrow">Seu clone tá no ar</span>
         <p className="ob-micro">Converse com ele como se fosse um cliente. Errou algo? Toca no lápis e ensina.</p>
+        {market === 'studying' && <p className="ob-micro market-note" aria-live="polite"><span className="dot" aria-hidden="true"></span>Ainda estou estudando seu mercado e seus concorrentes. Já dá pra conversar, e eu fico mais afiada em instantes.</p>}
+        {market === 'ready' && <p className="ob-micro market-note ok" aria-live="polite">Terminei de estudar seu mercado. Pode me testar à vontade.</p>}
       </div>
       <div className="phone" role="group" aria-label="Simulação de conversa com seu clone">
         <div className="screen">

@@ -8,7 +8,7 @@
 #   POST /onboarding/{client_id}/source/apply       — aplica proposta confirmada pelo dono
 #   POST /onboarding/{client_id}/answer             — grava resposta da entrevista (texto)
 #   POST /onboarding/{client_id}/answer/audio       — idem, por áudio (transcreve antes)
-#   POST /onboarding/{client_id}/compile            — respostas → identidade + análise de mercado
+#   POST /onboarding/{client_id}/compile            — respostas → identidade (análise de mercado segue em background)
 #   POST /onboarding/{client_id}/playground/chat    — conversa com o PRÓPRIO clone (motor real)
 #   POST /onboarding/{client_id}/playground/correction — dono corrige o clone (aprendizado)
 #
@@ -20,6 +20,7 @@
 # Capabilities e ativação final continuam no /wizard (não duplicado).
 # ================================================================
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -203,6 +204,14 @@ async def get_state(client_id: str, _=Depends(verify_api_key)):
         or state["answered_count"] > 0
     )
 
+    # Auto-cura: a análise de mercado roda em background depois do /compile.
+    # Se o processo reiniciou no meio (deploy), o playbook ficaria faltando
+    # pra sempre e em silêncio. Já compilou e ainda não tem análise = agenda
+    # de novo (a guarda de _run_market_analysis impede corrida e repetição).
+    compiled = identity.onboarding_status in (OnboardingStatus.SANDBOX, OnboardingStatus.ACTIVE)
+    if compiled and not identity.market_analysis and state["answered_count"] > 0:
+        _schedule_market_analysis(client_id)
+
     return {
         "client_id": client_id,
         "business_name": identity.business_name,
@@ -359,12 +368,14 @@ async def submit_answer_audio(
 @router.post("/{client_id}/compile")
 async def compile_interview(client_id: str, _=Depends(verify_api_key)):
     """
-    Transforma as respostas cruas em identidade estruturada e roda a
-    análise de mercado (analyze_market) — o "deixa eu fazer meu dever
-    de casa" antes do playground. Status vai pra SANDBOX.
+    Transforma as respostas cruas em identidade estruturada e libera o
+    playground (status SANDBOX). A análise de mercado + playbook roda em
+    SEGUNDO PLANO (2026-09-20): medida em produção levava ~95s dos ~110s
+    do endpoint, com o dono parado na tela achando que travou. O clone já
+    conversa sem o playbook; quando ele chega, entra sozinho no prompt.
 
-    Endpoint lento por natureza (~20-40s, duas chamadas de Sonnet).
-    O frontend mostra a narrativa de trabalho enquanto espera.
+    Endpoint ainda lento (~15-25s, uma chamada de Sonnet). O frontend
+    mostra a narrativa de trabalho enquanto espera.
     """
     identity = await _get_identity_or_404(client_id)
 
@@ -378,24 +389,12 @@ async def compile_interview(client_id: str, _=Depends(verify_api_key)):
             502, "Não consegui estruturar as respostas agora. Tenta de novo em instantes."
         )
 
-    # Análise de mercado em cima da identidade JÁ enriquecida.
-    # F3: passa o texto do site (se houver) pra instanciar o playbook
-    # com fatos reais do negócio. Falha de leitura não bloqueia: segue sem site.
-    merged = identity.model_dump(mode="json")
-    merged.update(updates)
-    source_text = await _fetch_site_text(merged.get("website"))
-    analysis = await analyze_market(merged, source_text=source_text)
-    market_status = analysis.get("status", "error")
-
-    if market_status == "completed":
-        enriched = apply_market_analysis(dict(merged), analysis)
-        for key in ("custom_rules", "tone_of_voice", "forbidden_words", "market_analysis"):
-            value = enriched.get(key)
-            if value:
-                updates[key] = value
-
     updates["onboarding_status"] = OnboardingStatus.SANDBOX.value
     await db.update_client(client_id, updates)
+
+    # Análise de mercado em cima da identidade JÁ enriquecida (relida do
+    # banco dentro da task), sem segurar a resposta HTTP.
+    market_status = "running" if _schedule_market_analysis(client_id) else "error"
 
     log.info(
         f"Compilação aplicada | client={client_id} | fields={list(updates.keys())} | "
@@ -407,6 +406,109 @@ async def compile_interview(client_id: str, _=Depends(verify_api_key)):
         "market_analysis_status": market_status,
         "onboarding_status": OnboardingStatus.SANDBOX.value,
     }
+
+
+# ================================================================
+# Análise de mercado em segundo plano (pós-compilação)
+# ================================================================
+
+# Referência forte das tasks: o event loop só guarda referência fraca e
+# uma task sem dono pode ser coletada no meio da chamada de IA.
+_market_tasks: set[asyncio.Task] = set()
+
+# Guarda contra rodar duas vezes pro mesmo cliente (compile + auto-cura do
+# /state). TTL folgado: a análise mais lenta medida levou ~95s. NÃO é liberada
+# ao terminar de propósito: se a IA estiver falhando, a auto-cura tenta no
+# máximo uma vez a cada 5 min em vez de uma chamada de Sonnet por consulta.
+_MARKET_RUNNING_KEY = "onboarding:{client_id}:market_running"
+_MARKET_RUNNING_TTL = 300
+_market_started: dict[str, float] = {}
+
+
+def _schedule_market_analysis(client_id: str) -> bool:
+    """Fire-and-forget da análise de mercado. True se a task foi agendada."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        log.warning(f"Análise de mercado sem event loop | client={client_id}")
+        return False
+    task = loop.create_task(_run_market_analysis(client_id))
+    _market_tasks.add(task)
+    task.add_done_callback(_market_tasks.discard)
+    return True
+
+
+async def _market_already_running(client_id: str) -> bool:
+    """True se outra task já está rodando pra esse cliente (marca a janela se não)."""
+    # Memória do processo primeiro: vale mesmo sem Redis (que é opcional).
+    now = time.time()
+    started = _market_started.get(client_id, 0.0)
+    if now - started < _MARKET_RUNNING_TTL:
+        return True
+    _market_started[client_id] = now
+    try:
+        from huma.services import redis_service as cache
+        key = _MARKET_RUNNING_KEY.format(client_id=client_id)
+        if await cache.exists(key):
+            return True
+        await cache.set_with_ttl(key, "1", ttl=_MARKET_RUNNING_TTL)
+    except Exception as e:  # Redis é opcional: sem ele, roda sem a guarda
+        log.warning(f"Análise de mercado | guarda indisponível | client={client_id} | {type(e).__name__}: {e}")
+    return False
+
+
+async def _run_market_analysis(client_id: str) -> dict:
+    """
+    Roda analyze_market e aplica o resultado na identidade. Nunca levanta.
+
+    Relê o cliente DEPOIS da chamada de IA e aplica em cima do dado fresco:
+    nos ~90s de espera o dono está no playground e pode corrigir tom/regras;
+    gravar a foto tirada antes da análise apagaria essas mudanças.
+
+    Returns:
+        {"status": "completed"|"skipped"|"partial"|"error", "detail": str}
+    """
+    if await _market_already_running(client_id):
+        log.info(f"Análise de mercado | já em andamento | client={client_id}")
+        return {"status": "skipped", "detail": "running"}
+
+    try:
+        identity = await db.get_client(client_id)
+        if identity is None:
+            return {"status": "skipped", "detail": "client_not_found"}
+
+        # F3: passa o texto do site (se houver) pra instanciar o playbook com
+        # fatos reais do negócio. Falha de leitura não bloqueia: segue sem site.
+        source_text = await _fetch_site_text(identity.website)
+        analysis = await analyze_market(identity.model_dump(mode="json"), source_text=source_text)
+        market_status = analysis.get("status", "error")
+        if market_status != "completed":
+            log.error(
+                f"Análise de mercado em background falhou | client={client_id} | status={market_status} | "
+                f"detail={str(analysis.get('detail', ''))[:300]}"
+            )
+            return {"status": market_status, "detail": str(analysis.get("detail", ""))[:300]}
+
+        fresh = await db.get_client(client_id)
+        if fresh is None:
+            return {"status": "skipped", "detail": "client_not_found"}
+        enriched = apply_market_analysis(fresh.model_dump(mode="json"), analysis)
+        updates: dict = {}
+        for key in ("custom_rules", "tone_of_voice", "forbidden_words", "market_analysis"):
+            value = enriched.get(key)
+            if value:
+                updates[key] = value
+        if updates:
+            await db.update_client(client_id, updates)
+
+        log.info(
+            f"Análise de mercado em background OK | client={client_id} | "
+            f"fields={list(updates.keys())} | site_chars={len(source_text)}"
+        )
+        return {"status": "completed", "detail": ""}
+    except Exception as e:
+        log.error(f"Análise de mercado em background erro | client={client_id} | {type(e).__name__}: {e}")
+        return {"status": "error", "detail": type(e).__name__}
 
 
 # ================================================================
