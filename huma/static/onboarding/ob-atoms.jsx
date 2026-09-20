@@ -39,45 +39,46 @@ function Field({ label, value, onChange, textarea, placeholder, type = 'text' })
 function ErrNote({ children, onRetry, retryLabel = 'Tentar de novo' }) {
   return <div className="errnote">{children}{onRetry && <ObButton variant="ghost" onClick={onRetry}>{retryLabel}</ObButton>}</div>;
 }
-// Espera viva: mensagens rotativas + orbe pulsante
+// Espera viva (esperas curtas): mesmo núcleo da tela de análise, em miniatura,
+// pra não existirem dois estilos de espera no onboarding.
 function WaitNarrative({ lines, interval = 2600 }) {
   const [i, setI] = useState(0);
   useEffect(() => { const t = setInterval(() => setI(v => Math.min(v + 1, lines.length - 1)), interval); return () => clearInterval(t); }, [lines, interval]);
   return <div className="wait" role="status">
-    <div className="orb" aria-hidden="true"></div>
+    <div className="orb" aria-hidden="true"><span className="ring"></span><span className="h">h</span></div>
     <div className="line" key={i}>{lines[i]}</div>
   </div>;
 }
 // Núcleo de análise: o momento de impressionar (leitura do site e compilação).
-// HUMA no centro, satélites = o que ela está lendo, cada um ligado ao núcleo
-// com dados fluindo pra dentro. Os satélites acendem um a um. Vai em portal
-// no body porque .moment anima com transform (quebraria o position:fixed).
-// CORE_BITS = fragmentos de dado sugados pro núcleo (decorativos, entre os satélites).
-const CORE_BITS = [
-  { t: 'R$', deg: -60, r: 150, delay: 0, dur: 3600 }, { t: '@', deg: 0, r: 165, delay: 700, dur: 4200 },
-  { t: '?', deg: 60, r: 150, delay: 1500, dur: 3800 }, { t: '24h', deg: 120, r: 155, delay: 2300, dur: 4400 },
-  { t: 'pix', deg: 180, r: 165, delay: 400, dur: 4000 }, { t: '%', deg: 240, r: 150, delay: 1900, dur: 3700 },
-  { t: 'cep', deg: -15, r: 140, delay: 2900, dur: 4100 }, { t: '★', deg: 165, r: 140, delay: 3300, dur: 3900 },
-];
-// done + doneLine: as frases rodam por relógio, então NENHUMA delas pode
-// afirmar que acabou. Quem diz "pronto" é o chamador, quando o servidor responde.
-function AnalysisCore({ lines, nodes, interval = 2600, title, done = false, doneLine = '' }) {
+// HUMA no centro, satélites = o que ela está analisando, cada um ligado ao núcleo.
+// Ritmo calmo de propósito (2026-09-20, a 1ª versão parecia bug de tão agitada):
+// UM satélite por vez, e o mostrador dele enche de laranja como um relógio
+// durante `step` ms; só a linha do satélite ativo tem movimento. O último enche
+// bem devagar e só completa quando o chamador avisa `done`: as frases e o
+// preenchimento rodam por relógio, então nada aqui afirma sozinho que acabou.
+// Vai em portal no body porque .moment anima com transform (quebraria o fixed).
+function AnalysisCore({ lines, nodes, interval = 5200, step = 3600, title, done = false, doneLine = '' }) {
   const [i, setI] = useState(0);
-  const [litTimer, setLit] = useState(0);
-  const lit = done ? nodes.length : litTimer;
-  const calm = useRef(!!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)).current;
+  const [active, setActive] = useState(-1); // índice do satélite enchendo agora
   useEffect(() => { const t = setInterval(() => setI(v => Math.min(v + 1, lines.length - 1)), interval); return () => clearInterval(t); }, [lines, interval]);
   useEffect(() => {
-    const every = Math.max(900, Math.round((interval * lines.length) / (nodes.length + 1)));
-    const first = setTimeout(() => setLit(1), 600);
-    const t = setInterval(() => setLit(v => Math.min(v + 1, nodes.length)), every);
+    // o intervalo só começa DEPOIS do primeiro acender: todo satélite tem o step inteiro
+    let t = null;
+    const first = setTimeout(() => {
+      setActive(0);
+      t = setInterval(() => setActive(v => Math.min(v + 1, nodes.length - 1)), step);
+    }, 900);
     return () => { clearTimeout(first); clearInterval(t); };
-  }, [lines, nodes, interval]);
+  }, [nodes, step]);
   const C = 170, R_NODE = 122, R_EDGE = 52;
   const pts = nodes.map((label, k) => {
     const a = (-90 + k * (360 / nodes.length)) * Math.PI / 180;
+    const last = k === nodes.length - 1;
+    const state = done || k < active ? 'done' : k === active ? 'filling' : 'idle';
     return {
-      label,
+      label, state,
+      // o último não tem como saber quando o servidor termina: enche em câmera lenta
+      dur: last ? step * 6 : step,
       x: C + R_NODE * Math.cos(a), y: C + R_NODE * Math.sin(a),
       ex: C + R_EDGE * Math.cos(a), ey: C + R_EDGE * Math.sin(a),
     };
@@ -89,33 +90,21 @@ function AnalysisCore({ lines, nodes, interval = 2600, title, done = false, done
         <svg viewBox="0 0 340 340">
           <circle className="core-ring a" cx={C} cy={C} r="78" />
           <circle className="core-ring b" cx={C} cy={C} r={R_NODE} />
-          <g className="core-spin"><circle className="core-electron" cx={C + 78} cy={C} r="2.6" /></g>
-          <g className="core-spin rev"><circle className="core-electron dim" cx={C} cy={C - R_NODE} r="2" /></g>
-          {pts.map((p, k) => {
-            const on = k < lit;
-            return <g key={k}>
-              <line className={`core-link${on ? ' lit' : ''}`} x1={r1(p.x)} y1={r1(p.y)} x2={r1(p.ex)} y2={r1(p.ey)} />
-              <line className={`core-flow${on ? ' lit' : ''}`} x1={r1(p.x)} y1={r1(p.y)} x2={r1(p.ex)} y2={r1(p.ey)} />
-              {on && !calm && <circle className="core-particle" r="2.6">
-                <animateMotion dur="1.5s" begin={`${(k * 0.27).toFixed(2)}s`} repeatCount="indefinite"
-                  path={`M${r1(p.x)},${r1(p.y)} L${r1(p.ex)},${r1(p.ey)}`} />
-              </circle>}
-            </g>;
-          })}
+          {pts.map((p, k) => <g key={k}>
+            <line className={`core-link ${p.state}`} x1={r1(p.x)} y1={r1(p.y)} x2={r1(p.ex)} y2={r1(p.ey)} />
+            <line className={`core-flow ${p.state}`} x1={r1(p.x)} y1={r1(p.y)} x2={r1(p.ex)} y2={r1(p.ey)} />
+          </g>)}
         </svg>
-        {CORE_BITS.map((b, k) => {
-          const a = (b.deg * Math.PI) / 180;
-          return <span key={k} className="core-bit" style={{
-            '--dx': `${Math.round(Math.cos(a) * b.r)}px`, '--dy': `${Math.round(Math.sin(a) * b.r)}px`,
-            animationDelay: `${b.delay}ms`, animationDuration: `${b.dur}ms`,
-          }}>{b.t}</span>;
-        })}
         <span className="core-sonar"></span>
-        <span className="core-sonar b"></span>
         <div className="core-nucleus">h</div>
-        {pts.map((p, k) => <span key={k}
-          className={`core-node${k < lit ? ' lit' : ''}${k === lit - 1 ? ' now' : ''}`}
-          style={{ left: `${(p.x / 340) * 100}%`, top: `${(p.y / 340) * 100}%` }}><i></i>{p.label}</span>)}
+        {pts.map((p, k) => <span key={k} className={`core-node ${p.state}`}
+          style={{ left: `${(p.x / 340) * 100}%`, top: `${(p.y / 340) * 100}%` }}>
+          <svg className="core-dial" viewBox="0 0 16 16">
+            <circle className="track" cx="8" cy="8" r="6.5" />
+            <circle className="fill" cx="8" cy="8" r="3.25" style={{ '--dial': `${p.dur}ms` }} />
+          </svg>
+          {p.label}
+        </span>)}
       </div>
       <div className="stack g10 center">
         <h2 className="core-title">{title || <React.Fragment><em>HUMA</em> está entendendo seu negócio</React.Fragment>}</h2>
@@ -143,12 +132,11 @@ function AudioRecorder({ onSend, onCancel }) {
   const waveRef = useRef(null); const meterRef = useRef(null);
   // Barrinhas = volume REAL do microfone (parado no silêncio, mexe quando fala).
   // Escreve a altura direto no DOM: sem re-render e sem animação CSS em loop.
-  // Sem Web Audio ou com "reduzir animações" ligado, ficam paradas (o timer já
-  // mostra que está gravando).
+  // É feedback funcional (a pessoa vê que o microfone está ouvindo), então roda
+  // mesmo com "reduzir animações". Sem Web Audio, as barrinhas ficam paradas.
   const startMeter = (stream) => {
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    const calm = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-    if (!Ctx || calm) return;
+    if (!Ctx) return;
     try {
       const ctx = new Ctx();
       if (ctx.state === 'suspended') ctx.resume().catch(() => {});
