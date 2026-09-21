@@ -48,7 +48,7 @@ function OnboardingApp() {
       onNext={({ name, team }) => { setMe(m => ({ ...m, ownerName: name, teamSize: team })); next(); }} />}
     {moment === 2 && <Moment2 ownerName={me.ownerName} onDone={fromProposal} onSkip={() => setMoment(3)} key="m2" />}
     {moment === 3 && <Moment3 onDone={(answers) => { setFacts(f => ({ ...f, answers: answers || f.answers })); setMoment(4); }} key="m3" />}
-    {moment === 4 && <Moment4 onDone={next} key="m4" />}
+    {moment === 4 && <Moment4 onDone={next} onBack={() => setMoment(3)} key="m4" />}
     {moment === 5 && <Moment5 businessName={facts.name} onDone={next} key="m5" />}
     {moment === 6 && <Moment6Prepara category={me.category} teamSize={me.teamSize} voicePref={me.voicePref}
       cloneMode={me.cloneMode} capabilities={me.capabilities} onDone={next} key="m6" />}

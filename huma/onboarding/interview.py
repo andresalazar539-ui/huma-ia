@@ -710,6 +710,33 @@ def _is_question_skippable(question: dict, identity: ClientIdentity) -> bool:
     return False
 
 
+def has_minimum_identity(identity: ClientIdentity) -> bool:
+    """
+    True se já dá pra montar um atendimento que preste: a HUMA sabe O QUE é o
+    negócio (descrição ou o que ele oferece). Vem da leitura do site ou das
+    respostas. Sem isso o teste do clone seria um atendente que não sabe onde
+    trabalha.
+    """
+    return bool((identity.business_description or "").strip() or identity.products_or_services)
+
+
+def _can_skip(question: dict, identity: ClientIdentity) -> bool:
+    """
+    "Pular" só aparece quando pular NÃO quebra nada (2026-09-20: o dono pulou
+    tudo e caiu num beco sem saída na compilação). Pergunta obrigatória só
+    pode ser pulada se o dado dela já existe (veio do site, por exemplo).
+    """
+    if not question.get("required"):
+        return True
+    field = question.get("field", "")
+    value = getattr(identity, field, None) if field else None
+    if isinstance(value, str):
+        value = value.strip()
+        if field == "business_name" and value == _SIGNUP_PLACEHOLDER_NAME:
+            return False
+    return bool(value)
+
+
 def build_interview_state(identity: ClientIdentity) -> dict:
     """
     Estado completo da entrevista pro frontend renderizar.
@@ -730,6 +757,7 @@ def build_interview_state(identity: ClientIdentity) -> dict:
             "question": q["question"],
             "field": q.get("field", ""),
             "required": bool(q.get("required", False)),
+            "can_skip": _can_skip(q, identity),
             "answered": answered,
             "skipped": skipped,
             "answer": answers.get(q["id"], ""),

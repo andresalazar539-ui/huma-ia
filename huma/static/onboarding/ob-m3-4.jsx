@@ -36,8 +36,10 @@ function Moment3({ onDone }) {
       // em dobro ("pergunta 7 de 8" na quarta pergunta).
       setCounts({ answered: iv.answered_count, total: pending.length, seen: 0 });
       if (iv.done || pending.length === 0) { onDone(iv.answered_count); return; }
-      setQueue(pending.slice(1).map(q => ({ id: q.id, question: q.question, field: q.field })));
-      showQuestion(iv.next_question || pending[0], 1100);
+      // can_skip vem do servidor: obrigatória sem dado não tem "pular" (pular quebraria a compilação)
+      const slim = q => ({ id: q.id, question: q.question, field: q.field, can_skip: q.can_skip !== false });
+      setQueue(pending.slice(1).map(slim));
+      showQuestion(slim(pending[0]), 1100);
     }).catch(e => { if (e.kind !== 'auth') setErr('Não consegui carregar a conversa. Tenta de novo?'); });
     return () => { dead = true; };
   }, []);
@@ -82,7 +84,7 @@ function Moment3({ onDone }) {
     setBusy(false);
   };
   const skip = () => {
-    if (!current || busy) return;
+    if (!current || busy || current.can_skip === false) return;
     // pular não grava resposta — só avança localmente
     setMsgs(m => [...m, { from: 'reaction', text: 'Sem problema, a gente volta nisso depois.' }]);
     setCurrent(null);
@@ -106,7 +108,9 @@ function Moment3({ onDone }) {
               ? <button className="icon-btn" onClick={sendText} disabled={!current || busy} aria-label="Enviar resposta">{Icons.send}</button>
               : <button className="icon-btn mic" onClick={() => current && !busy && setRecording(true)} disabled={!current || busy} aria-label="Responder por áudio">{Icons.mic}</button>}
           </div>
-          <div style={{ textAlign: 'center' }}><LinkBtn onClick={skip}>pular essa</LinkBtn></div>
+          <div style={{ textAlign: 'center' }}>{current && current.can_skip === false
+            ? <span className="ob-micro">essa eu preciso pra conseguir te atender direito</span>
+            : <LinkBtn onClick={skip}>pular essa</LinkBtn>}</div>
         </div>}
     </div>
   </div>;
@@ -119,8 +123,9 @@ function Moment3({ onDone }) {
 const compileLines = ['organizando tudo que você me contou...', 'montando meu jeito de falar com seus clientes...', 'separando o que eu já sei responder...', 'quase lá, conferindo os detalhes...'];
 const compileNodes = ['Suas respostas', 'Seu tom', 'Regras', 'Produtos', 'Dúvidas', 'Horários'];
 const compileTitle = <React.Fragment><em>HUMA</em> está montando seu atendimento</React.Fragment>;
-function Moment4({ onDone }) {
+function Moment4({ onDone, onBack }) {
   const [failed, setFailed] = useState(false);
+  const [why, setWhy] = useState(null); // {status, detail} da falha, pra tela dizer a verdade
   const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -137,6 +142,7 @@ function Moment4({ onDone }) {
       }, Math.max(0, min));
     }).catch(e => {
       if (dead || e.kind === 'auth') return;
+      setWhy({ status: e.status || 0, detail: e.detail || '' });
       setFailed(true);
     });
     return () => { dead = true; };
@@ -144,8 +150,11 @@ function Moment4({ onDone }) {
   return <div className="moment ob-stage centered" style={{ display: 'flex' }}>
     {failed
       ? <div className="stack g20">
-        <HumaSays>Deu um nó aqui. Me dá outra chance?</HumaSays>
-        <ObButton onClick={() => { setFailed(false); setAttempt(a => a + 1); }}>Tentar de novo</ObButton>
+        <HumaSays>{(why && why.detail) || 'Deu um nó aqui. Me dá outra chance?'}</HumaSays>
+        {/* 400 = falta informação: tentar de novo falharia igual, o caminho é voltar e responder */}
+        {why && why.status === 400 && onBack
+          ? <ObButton onClick={onBack}>Voltar e responder</ObButton>
+          : <ObButton onClick={() => { setFailed(false); setAttempt(a => a + 1); }}>Tentar de novo</ObButton>}
       </div>
       : <AnalysisCore lines={compileLines} nodes={compileNodes} interval={4200} title={compileTitle}
           done={ready} doneLine="pronto. quer me testar?" />}

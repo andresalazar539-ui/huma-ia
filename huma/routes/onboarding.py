@@ -466,13 +466,26 @@ async def compile_interview(client_id: str, _=Depends(verify_api_key)):
     identity = await _get_identity_or_404(client_id)
 
     answers = interview.real_answers(identity.onboarding_answers)
-    if not any(str(v or "").strip() for v in answers.values()):
-        raise HTTPException(400, "Responda ao menos uma pergunta da entrevista antes de compilar.")
+    has_answers = any(str(v or "").strip() for v in answers.values())
 
-    updates = await interview.compile_identity_updates(identity)
-    if not updates:
+    if has_answers:
+        updates = await interview.compile_identity_updates(identity)
+        if not updates:
+            raise HTTPException(
+                502, "Não consegui estruturar as respostas agora. Tenta de novo em instantes."
+            )
+    elif interview.has_minimum_identity(identity):
+        # Dono pulou TODAS as perguntas, mas a leitura do site já trouxe o
+        # negócio (descrição/produtos): não há o que compilar, e isso não é
+        # erro. Antes devolvia 400 e a tela ficava num "Tentar de novo" eterno.
+        log.info(f"Compilação sem respostas | client={client_id} | segue com o que a leitura do site trouxe")
+        updates = {}
+    else:
+        # Sem respostas E sem nada lido: o clone não saberia onde trabalha.
         raise HTTPException(
-            502, "Não consegui estruturar as respostas agora. Tenta de novo em instantes."
+            400,
+            "Ainda não sei o que é o seu negócio. Me responde pelo menos o que ele faz, "
+            "que com isso eu já consigo montar o seu atendimento.",
         )
 
     updates["onboarding_status"] = OnboardingStatus.SANDBOX.value

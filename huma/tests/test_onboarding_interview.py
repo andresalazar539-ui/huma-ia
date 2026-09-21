@@ -909,6 +909,78 @@ class TestRealWorldLinks:
 
 
 # ================================================================
+# "PULAR" TEM QUE FUNCIONAR (2026-09-20)
+# Caso real: o dono pulou TODAS as perguntas depois de a HUMA ler a loja
+# inteira; o /compile devolveu 400 e a tela ficou num "Tentar de novo" eterno.
+# ================================================================
+
+
+class TestSkippingWorks:
+
+    def _setup(self, monkeypatch, identity):
+        import huma.routes.onboarding as ob
+        saved: list[dict] = []
+        compiled: list[int] = []
+
+        async def get_client(_cid):
+            return identity
+
+        async def update_client(_cid, updates):
+            saved.append(dict(updates))
+
+        async def compile_updates(_identity):
+            compiled.append(1)
+            return {"tone_of_voice": "direto"}
+
+        monkeypatch.setattr(ob.db, "get_client", get_client)
+        monkeypatch.setattr(ob.db, "update_client", update_client)
+        monkeypatch.setattr(ob.interview, "compile_identity_updates", compile_updates)
+        monkeypatch.setattr(ob, "_schedule_market_analysis", lambda cid: True)
+        return ob, saved, compiled
+
+    def test_pulou_tudo_mas_o_site_foi_lido_segue_pro_teste(self, monkeypatch):
+        import asyncio
+        identity = _identity(
+            business_description="Boutique feminina em Blumenau.",
+            products_or_services=[{"name": "Conjunto", "price": "R$ 284,91", "description": ""}],
+            onboarding_answers={"_gap_questions": "[]", "_team_size": "solo"},  # só metadados
+        )
+        ob, saved, compiled = self._setup(monkeypatch, identity)
+        out = asyncio.run(ob.compile_interview("cli_interview", None))
+        assert out["onboarding_status"] == "sandbox"
+        assert compiled == []  # nada pra compilar: não gasta chamada de IA
+        assert saved == [{"onboarding_status": "sandbox"}]
+
+    def test_pulou_tudo_e_nada_foi_lido_explica_o_que_falta(self, monkeypatch):
+        import asyncio
+        import pytest
+        from fastapi import HTTPException
+        ob, saved, _ = self._setup(monkeypatch, _identity())
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(ob.compile_interview("cli_interview", None))
+        assert err.value.status_code == 400
+        assert "o que ele faz" in err.value.detail
+        assert saved == []
+
+    def test_obrigatoria_sem_dado_nao_pode_ser_pulada(self):
+        state = interview.build_interview_state(_identity())
+        por_id = {q["id"]: q for q in state["questions"]}
+        assert por_id["description"]["can_skip"] is False
+        assert por_id["tone"]["can_skip"] is False
+        assert por_id["forbidden"]["can_skip"] is True   # opcional
+        assert por_id["goal"]["can_skip"] is True
+
+    def test_obrigatoria_com_dado_do_site_pode_ser_pulada(self):
+        identity = _identity(tone_of_voice="Próximo e direto, trata a cliente por você.")
+        por_id = {q["id"]: q for q in interview.build_interview_state(identity)["questions"]}
+        assert por_id["tone"]["can_skip"] is True
+
+    def test_nome_placeholder_do_cadastro_nao_conta_como_dado(self):
+        por_id = {q["id"]: q for q in interview.build_interview_state(_identity(business_name="Meu negócio"))["questions"]}
+        assert por_id["business_name"]["can_skip"] is False
+
+
+# ================================================================
 # HISTÓRICO DO PLAYGROUND (rotas)
 # ================================================================
 
