@@ -140,6 +140,7 @@ class TestInterviewQuestions:
         })
         questions = interview.get_interview_questions(identity)
         assert questions[-1]["id"] == "gap_1"
+        assert interview._MAX_GAP_QUESTIONS == 3  # com o site lido, 10 perguntas era demais
         assert "porta de entrada" in questions[-1]["question"]
         assert [q["id"] for q in questions].count("gap_2") == 0
 
@@ -462,6 +463,38 @@ class TestUniversalSkip:
         com_preco = _identity(products_or_services=[{"name": "Corte", "price": "R$ 50", "description": ""}])
         assert interview._is_question_skippable(self._q("offer"), sem_preco) is False
         assert interview._is_question_skippable(self._q("offer"), com_preco) is True
+
+    def test_um_item_sem_preco_nao_traz_a_pergunta_generica_de_volta(self):
+        # Caso real (Le Femme): 7 linhas lidas, 6 com preço. A HUMA perguntou
+        # "o que você vende e como cobra?" logo depois de resumir a loja.
+        loja = _identity(products_or_services=(
+            [{"name": f"Linha {i}", "price": "A partir de R$ 284,91", "description": ""} for i in range(6)]
+            + [{"name": "Acessórios", "price": "", "description": ""}]
+        ))
+        assert interview._is_question_skippable(self._q("offer"), loja) is True
+
+    def test_sem_preco_a_pergunta_usa_o_que_foi_lido(self):
+        agencia = _identity(products_or_services=[
+            {"name": "Tráfego pago", "price": "", "description": ""},
+            {"name": "Produção de vídeo", "price": "", "description": ""},
+            {"name": "Social media", "price": "", "description": ""},
+        ])
+        q = next(q for q in interview.get_interview_questions(agencia) if q["id"] == "offer")
+        assert "Tráfego pago, Produção de vídeo e Social media" in q["question"]
+        assert "O que você vende" not in q["question"]
+
+    def test_tom_lido_no_site_vira_confirmacao(self):
+        identity = _identity(tone_of_voice="Próximo e direto, trata a cliente por você.")
+        q = next(q for q in interview.get_interview_questions(identity) if q["id"] == "tone")
+        assert "Pelo que eu li" in q["question"] and "Próximo e direto" in q["question"]
+
+    def test_toda_pergunta_fixa_tem_exemplo_e_nenhuma_tem_travessao(self):
+        for identity in (_identity(), _identity(tone_of_voice="Direto.", products_or_services=[{"name": "X", "price": "", "description": ""}])):
+            for q in interview.get_interview_questions(identity):
+                if q["id"] == "business_name":
+                    continue
+                assert "(ex.:" in q["question"], q["id"]
+                assert "\u2014" not in q["question"], q["id"]
 
     def test_hours_e_faq_pulam_quando_ja_existem(self):
         identity = _identity(

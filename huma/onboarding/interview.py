@@ -66,8 +66,8 @@ _MAX_SOURCE_PRODUCTS = 10
 _MAX_SOURCE_FAQ = 5
 _SOURCE_MAX_TOKENS = 4000
 
-_MAX_GAP_QUESTIONS = 4
-_GAP_QUESTION_MAX_CHARS = 240
+_MAX_GAP_QUESTIONS = 3
+_GAP_QUESTION_MAX_CHARS = 320
 
 
 def real_answers(answers: dict | None) -> dict:
@@ -383,7 +383,7 @@ REGRAS:
 - Se o texto não sustentar um campo, devolva "" ou lista vazia.
 - products_or_services: no MÁXIMO {_MAX_SOURCE_PRODUCTS} itens. Loja com catálogo grande: escolha os mais representativos (um por linha/categoria), não liste tudo. O catálogo completo chega depois pela integração da loja.
 - faq: no MÁXIMO {_MAX_SOURCE_FAQ} itens (frete, troca, pagamento, prazo costumam ser os que importam).
-- open_questions: de 2 a 4 perguntas, específicas DESTE negócio, que mostrem que você leu a página (cite o que viu: "Vi que vocês fazem X e Y..."). Só pergunte o que o texto NÃO responde. NÃO pergunte tom de voz, palavras proibidas, horário de atendimento, lista de produtos nem perguntas frequentes: isso já é perguntado em outro momento. Bons temas: qual serviço é a porta de entrada, como falar de preço quando ele não é público, quem é o cliente ideal, o que acontece depois que o cliente demonstra interesse, região atendida, o que diferencia dos concorrentes.
+- open_questions: de 2 a 3 perguntas, específicas DESTE negócio, que mostrem que você leu a página (cite o que viu: "Vi que vocês fazem X e Y..."). Só pergunte o que o texto NÃO responde. NÃO pergunte tom de voz, palavras proibidas, horário de atendimento, lista de produtos nem perguntas frequentes: isso já é perguntado em outro momento. Bons temas: qual serviço é a porta de entrada, como falar de preço quando ele não é público, quem é o cliente ideal, o que acontece depois que o cliente demonstra interesse, região atendida, o que diferencia dos concorrentes. TODA pergunta termina com um exemplo curto de resposta entre parênteses, começando por "ex.:", pra o dono não ficar sem saber o que responder. Modelo: "Vi que o frete grátis é só pra Sul e Sudeste. Como fica pras outras regiões? (ex.: 'frete normal pelos Correios, a cliente paga')".
 - Tudo em português do Brasil, sem travessão."""
 
 
@@ -671,7 +671,53 @@ def get_interview_questions(identity: ClientIdentity) -> list[dict]:
     universal sozinho cobre qualquer negócio. Autonomia e pergunta final
     ficam pra etapa "Me prepara" / Cockpit.
     """
-    return list(COMMON_QUESTIONS) + list(UNIVERSAL_QUESTIONS) + get_gap_questions(identity)
+    base = list(COMMON_QUESTIONS) + list(UNIVERSAL_QUESTIONS)
+    return [_personalize(q, identity) for q in base] + get_gap_questions(identity)
+
+
+def _priced_share(identity: ClientIdentity) -> float:
+    """Fração dos produtos lidos que veio COM preço (0.0 se não há produtos)."""
+    products = identity.products_or_services or []
+    if not products:
+        return 0.0
+    priced = sum(1 for p in products if str((p or {}).get("price", "")).strip())
+    return priced / len(products)
+
+
+def _names(identity: ClientIdentity, limit: int = 3) -> str:
+    """'A, B e C' com os primeiros produtos lidos."""
+    names = [str((p or {}).get("name", "")).strip() for p in (identity.products_or_services or [])]
+    names = [n for n in names if n][:limit]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " e " + names[-1]
+
+
+def _personalize(question: dict, identity: ClientIdentity) -> dict:
+    """
+    Reescreve a pergunta usando o que a HUMA JÁ LEU do negócio (2026-09-20).
+
+    Caso real: depois de ler a loja inteira e resumir o negócio, ela perguntou
+    "o que você vende e como cobra?", como se não tivesse lido nada. Pergunta
+    genérica depois de uma leitura boa parece burrice, e é. O id e o field não
+    mudam (as respostas continuam compatíveis); só o texto.
+    """
+    qid = question.get("id", "")
+    q = dict(question)
+    tone = (identity.tone_of_voice or "").strip()
+    if qid == "tone" and tone:
+        q["question"] = (
+            f"Pelo que eu li, o seu jeito de falar é assim: \"{tone[:180]}\". É isso mesmo no WhatsApp? "
+            "Me manda uma mensagem do jeito que você escreveria pra um cliente, que eu copio o seu estilo. "
+            "(ex.: 'Oi, Ju! Tudo bem? Chegou peça nova que é a sua cara')"
+        )
+    elif qid == "offer" and identity.products_or_services:
+        q["question"] = (
+            f"Vi que você oferece {_names(identity)}, mas não achei o preço de quase nada. "
+            "Como você prefere que eu fale de valor? "
+            "(ex.: 'pode passar a tabela: X custa R$ 50' ou 'só passo valor depois de entender o que a pessoa precisa')"
+        )
+    return q
 
 
 def get_deferred_questions() -> list[dict]:
@@ -697,12 +743,13 @@ def _is_question_skippable(question: dict, identity: ClientIdentity) -> bool:
     if field == "business_description":
         return bool((identity.business_description or "").strip())
     # Universais: o que a leitura do site já trouxe não vira pergunta. "offer"
-    # só é pulada quando os produtos vieram COM preço (sem preço, a pergunta
-    # de como falar de valor continua valendo ouro).
+    # é pulada quando a maioria dos produtos veio COM preço: a HUMA já sabe o
+    # que vende e quanto custa. Exigir TODOS os preços fazia a pergunta genérica
+    # aparecer por causa de um único item sem preço (teste do André). Sem preço
+    # na maioria, a pergunta fica, mas reescrita em cima do que foi lido.
     qid = question.get("id", "")
     if qid == "offer":
-        products = identity.products_or_services or []
-        return bool(products) and all(str((p or {}).get("price", "")).strip() for p in products)
+        return _priced_share(identity) >= 0.5
     if qid == "hours":
         return bool((identity.working_hours or "").strip())
     if qid == "faq_top":

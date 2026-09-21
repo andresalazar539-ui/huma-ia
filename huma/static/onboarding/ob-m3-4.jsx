@@ -1,6 +1,14 @@
 // ob-m3-4.jsx — Momento 3 (entrevista em conversa) e Momento 4 (compilação teatral)
 const { useState, useEffect, useRef } = React;
 
+// Pergunta com exemplo: o "(ex.: ...)" do fim sai em linha própria, mais clara,
+// pra a pergunta continuar curta de ler e o exemplo ajudar sem poluir.
+function QuestionText({ text }) {
+  const m = /^([\s\S]*?)\s*(\(ex\.:[\s\S]*\))\s*$/.exec(text || '');
+  if (!m) return text;
+  return <React.Fragment>{m[1]}<span className="q-ex">{m[2].slice(1, -1)}</span></React.Fragment>;
+}
+
 // ── Momento 3 — a entrevista ─────────────────────────────────────────────
 function Moment3({ onDone }) {
   const [msgs, setMsgs] = useState([]);           // {from:'huma'|'own'|'reaction', text}
@@ -94,7 +102,7 @@ function Moment3({ onDone }) {
     <div className="stack g14" style={{ flex: 1, minHeight: 0 }}>
       <div className="ob-micro" style={{ textAlign: 'center' }} aria-live="polite">{counts.total && counts.seen ? `pergunta ${Math.min(counts.seen, counts.total)} de ${counts.total}` : ' '}</div>
       <div className="chat" style={{ flex: 1, overflowY: 'auto', paddingBottom: 8, paddingRight: 4 }}>
-        {msgs.map((m, i) => <Bubble key={i} from={m.from === 'own' ? 'own' : 'huma'} reaction={m.from === 'reaction'}>{m.text}</Bubble>)}
+        {msgs.map((m, i) => <Bubble key={i} from={m.from === 'own' ? 'own' : 'huma'} reaction={m.from === 'reaction'}>{m.from === 'huma' ? <QuestionText text={m.text} /> : m.text}</Bubble>)}
         {typing && <Typing />}
         <div ref={endRef}></div>
       </div>

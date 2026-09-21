@@ -73,6 +73,9 @@ select.input{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xml
 .typing i:nth-child(3){animation-delay:.3s}
 @keyframes tydot{0%,60%,100%{opacity:.35;transform:none}30%{opacity:1;transform:translateY(-3px)}}
 
+/* exemplo de resposta dentro da pergunta da entrevista */
+.q-ex{display:block;margin-top:8px;font-size:13.5px;line-height:1.45;color:var(--ink-3)}
+
 /* composer */
 .composer{display:flex;gap:8px;align-items:flex-end}
 .composer .input{flex:1}

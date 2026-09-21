@@ -30,25 +30,25 @@ COMMON_QUESTIONS = [
     },
     {
         "id": "website",
-        "question": "Tem site ou Instagram? Manda o link.",
+        "question": "Tem site ou Instagram? Manda o link. (ex.: seusite.com.br ou @seunegocio)",
         "field": "website",
         "required": False,
     },
     {
         "id": "description",
-        "question": "Explica o que seu negócio faz, pra quem, e onde fica.",
+        "question": "Explica o que seu negócio faz, pra quem, e onde fica. (ex.: 'clínica de estética facial em Curitiba, atendo mulheres de 30 a 55 anos')",
         "field": "business_description",
         "required": True,
     },
     {
         "id": "tone",
-        "question": "Como você fala com seus clientes? Me dá um exemplo real de mensagem que você mandaria.",
+        "question": "Como você fala com seus clientes? Me manda uma mensagem do jeito que você escreveria no WhatsApp. (ex.: 'Oi, Ju! Tudo bem? Chegou peça nova que é a sua cara' ou 'Boa tarde, Sra. Juliana. Segue o orçamento solicitado.')",
         "field": "tone_of_voice",
         "required": True,
     },
     {
         "id": "forbidden",
-        "question": "Alguma palavra ou expressão que eu NUNCA devo usar?",
+        "question": "Alguma palavra ou expressão que eu NUNCA devo usar? (ex.: gíria, 'querida', 'baratinho', falar mal de concorrente, prometer prazo)",
         "field": "forbidden_words",
         "required": False,
     },
@@ -74,27 +74,27 @@ COMMON_QUESTIONS = [
 UNIVERSAL_QUESTIONS = [
     {
         "id": "goal",
-        "question": "Quando um cliente me chama, o que é um atendimento que deu certo pra você? (agendar, vender, passar pra alguém da equipe...)",
+        "question": "Quando um cliente me chama, o que é um atendimento que deu certo pra você? (ex.: marcar um horário, fechar a venda ali mesmo, ou passar o contato pra alguém da sua equipe)",
         "field": "custom_rules",
     },
     {
         "id": "offer",
-        "question": "O que você vende e como cobra? Se o preço varia de caso a caso, me conta como prefere que eu fale de valor.",
+        "question": "O que você vende e como cobra? (ex.: 'corte R$ 50, barba R$ 35' ou 'depende do projeto, só passo valor depois de entender o que a pessoa precisa')",
         "field": "products_or_services",
     },
     {
         "id": "hours",
-        "question": "Em que dias e horários vocês atendem?",
+        "question": "Em que dias e horários vocês atendem? (ex.: segunda a sexta das 9h às 18h, sábado até 13h)",
         "field": "working_hours",
     },
     {
         "id": "faq_top",
-        "question": "Quais perguntas seus clientes mais fazem, e o que você costuma responder?",
+        "question": "Quais perguntas seus clientes mais fazem, e o que você costuma responder? (ex.: 'vocês parcelam?' sim, em até 6x; 'tem estacionamento?' sim, na frente)",
         "field": "faq",
     },
     {
         "id": "objections",
-        "question": "O que mais faz um cliente travar ou desistir? (preço, prazo, confiança...) E o que você diz nessa hora?",
+        "question": "O que mais faz um cliente travar ou desistir, e o que você diz nessa hora? (ex.: 'acha caro, e eu explico que parcela em 6x sem juros')",
         "field": "custom_rules",
     },
 ]
