@@ -147,7 +147,10 @@
       db.playgroundCount++; await sleep(1300);
       if (db.playgroundCount > 40) throw { kind: 'http', status: 429, detail: 'Calma aí, tagarela! Você bateu meu limite por minuto. Respira e tenta de novo em instantes.' };
       const r = mockReplyParts(message);
-      return { reply: r.parts.join(' '), reply_parts: r.parts, intent: r.intent, sentiment: 'neutral', stage_action: null, demo_topics: r.intent === 'scheduling' ? ['agenda'] : [] };
+      const wantsCards = /(foto|modelo|op[cç][oõ]es|cat[aá]logo|mostra)/i.test(message);
+      const cards = wantsCards ? mockProposal.products_or_services.map(p => ({ title: p.name, price: p.price, subtitle: p.description, image_url: '' })) : [];
+      const topics = (r.intent === 'scheduling' ? ['agenda'] : []).concat(cards.length ? ['produtos'] : []);
+      return { reply: r.parts.join(' '), reply_parts: wantsCards ? ['Olha só o que eu separei. Algum chamou a sua atenção?'] : r.parts, cards, intent: r.intent, sentiment: 'neutral', stage_action: null, demo_topics: topics };
     },
     async correction(payload) { await sleep(700); db.corrections++; return { status: 'ok', corrections_count: db.corrections }; },
     async waConnect() { await sleep(1400); db.waConnectedAt = Date.now() + 11000; return { status: 'ok', instance: 'demo', state: 'connecting', connected: false, qr_base64: fakeQr(), pairing_code: 'HUMA-4821' }; },

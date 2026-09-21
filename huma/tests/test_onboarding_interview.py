@@ -557,7 +557,7 @@ class TestPlaygroundDemo:
         async def get_client(_cid):
             return _identity()
 
-        async def fake_generate(identity, conv, text, tier=3):
+        async def fake_generate(identity, conv, text, tier=3, followup_hint=""):
             seen["history"] = list(conv.history)
             return {"reply": "Tenho terça-feira, 22/09 às 15h.", "reply_parts": [], "actions": []}
 
@@ -572,6 +572,107 @@ class TestPlaygroundDemo:
         assert seen["history"][-1]["content"].startswith("[MODO DEMONSTRAÇÃO")
         assert out["demo_topics"] == ["agenda"]
         assert out["reply_parts"] == ["Tenho terça-feira, 22/09 às 15h."]
+
+
+# ================================================================
+# TESTE DO CLONE NUNCA DEIXA NO VÁCUO + CARDS DE PRODUTO (2026-09-20)
+# Caso real: "Quer que eu mande umas fotos?" / "quero" / "Segura aí, Paula!"
+# e mais nada. No atendimento real o sistema roda o segundo turno; no
+# playground esse turno não existia.
+# ================================================================
+
+
+_LOJA = [
+    {"name": "Conjuntos (tricô, moletinho)", "price": "A partir de R$ 284,91", "description": "conjuntos"},
+    {"name": "Vestidos (tule, tomara que caia)", "price": "A partir de R$ 379,91", "description": "vestidos"},
+    {"name": "Bodies", "price": "A partir de R$ 151,91", "description": ""},
+]
+
+
+class TestPlaygroundNoVacuum:
+
+    def test_pedido_direto_e_aceite_de_oferta(self):
+        from huma.core import playground_demo as demo
+        assert demo.wants_products("me manda foto dos vestidos")
+        assert demo.wants_products("quais modelos vocês têm?")
+        assert demo.wants_products("quero", "Quer que eu mande umas fotos dos modelos disponíveis pra você escolher?")
+        assert not demo.wants_products("quero", "A gente atende das 9h às 18h.")
+        assert not demo.wants_products("qual o horário de vocês?")
+
+    def test_reconhece_resposta_que_so_pede_pra_esperar(self):
+        from huma.core import playground_demo as demo
+        for vazio in ("Segura aí, Paula!", "Um segundo que eu já te mando!", "Deixa eu verificar aqui", ""):
+            assert demo.is_placeholder_reply(vazio), vazio
+        assert not demo.is_placeholder_reply("O tomara que caia cai muito bem! É despojado e fica lindo pra comemorar.")
+        assert demo.is_placeholder_reply("Olha essas opções", [{"type": "show_products", "query": "vestidos"}])
+
+    def test_cards_trazem_primeiro_o_que_o_cliente_pediu_e_nao_reformatam_preco(self):
+        from huma.core import playground_demo as demo
+        cards = demo.demo_cards(_LOJA, "ela é casual, quero ver o tomara que caia")
+        assert cards[0]["title"].startswith("Vestidos")
+        assert cards[0]["price"] == "A partir de R$ 379,91"
+        assert demo.demo_cards([], "qualquer coisa") == []
+        assert "\u2014" not in demo.build_cards_marker(cards) + demo.NO_WAIT_MARKER + demo.safety_reply(cards)
+
+    def _route(self, monkeypatch, replies, products=_LOJA):
+        import huma.routes.onboarding as ob
+        calls: list[dict] = []
+
+        async def get_client(_cid):
+            return _identity(products_or_services=products)
+
+        async def fake_generate(identity, conv, text, tier=3, followup_hint=""):
+            calls.append({"history": list(conv.history), "hint": followup_hint})
+            return dict(replies[min(len(calls) - 1, len(replies) - 1)])
+
+        monkeypatch.setattr(ob.db, "get_client", get_client)
+        monkeypatch.setattr(ob.ai, "generate_response", fake_generate)
+        ob._playground_rate.clear()
+        return ob, calls
+
+    def test_quero_depois_da_oferta_mostra_os_cards_numa_chamada_so(self, monkeypatch):
+        import asyncio
+        ob, calls = self._route(monkeypatch, [{"reply": "Olha que lindos! Qual chamou a sua atenção?", "actions": []}])
+        payload = ob.PlaygroundChatPayload(message="quero", history=[
+            {"role": "user", "content": "ela é mais casual"},
+            {"role": "assistant", "content": "Quer que eu mande umas fotos dos modelos disponíveis pra você escolher?"},
+        ])
+        out = asyncio.run(ob.playground_chat("cli_interview", payload, None))
+        assert len(calls) == 1                                   # sem custo extra
+        assert [c["title"] for c in out["cards"]][0].startswith(("Vestidos", "Conjuntos", "Bodies"))
+        assert len(out["cards"]) == 3
+        assert calls[0]["history"][-1]["content"].startswith("[PRODUTOS MOSTRADOS")
+        assert "produtos" in out["demo_topics"]
+
+    def test_segura_ai_dispara_o_segundo_turno_e_entrega(self, monkeypatch):
+        import asyncio
+        ob, calls = self._route(monkeypatch, [
+            {"reply": "Segura aí, Paula!", "actions": []},
+            {"reply": "Temos tomara que caia a partir de R$ 379,91. Quer ver as cores?", "actions": []},
+        ])
+        payload = ob.PlaygroundChatPayload(message="tem tomara que caia?", history=[])
+        out = asyncio.run(ob.playground_chat("cli_interview", payload, None))
+        assert len(calls) == 2
+        assert out["reply"].startswith("Temos tomara que caia")
+        assert calls[1]["hint"]                                   # o 2º turno recebe a instrução
+
+    def test_se_o_segundo_turno_ainda_enrolar_sai_texto_de_seguranca(self, monkeypatch):
+        import asyncio
+        ob, calls = self._route(monkeypatch, [
+            {"reply": "Um segundo!", "actions": [{"type": "show_products", "query": "vestidos"}]},
+            {"reply": "Já te mando!", "actions": []},
+        ])
+        payload = ob.PlaygroundChatPayload(message="oi, tudo bem?", history=[])
+        out = asyncio.run(ob.playground_chat("cli_interview", payload, None))
+        assert len(out["cards"]) == 3
+        assert out["reply"] == "Olha só o que eu separei pra você. Algum chamou a sua atenção?"
+        assert out["reply_parts"] == [out["reply"]]
+
+    def test_conversa_normal_nao_gasta_segunda_chamada(self, monkeypatch):
+        import asyncio
+        ob, calls = self._route(monkeypatch, [{"reply": "Oi! Tudo ótimo, e você? Procurando algo especial?", "actions": []}])
+        out = asyncio.run(ob.playground_chat("cli_interview", ob.PlaygroundChatPayload(message="oi", history=[]), None))
+        assert len(calls) == 1 and out["cards"] == []
 
 
 # ================================================================

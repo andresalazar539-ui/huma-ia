@@ -694,13 +694,50 @@ async def playground_chat(client_id: str, payload: PlaygroundChatPayload, _=Depe
     # ficava preso em "deixa eu verificar a agenda". Mesmo mecanismo dos
     # markers do orchestrator: entrada `assistant` no fim do histórico.
     history = _validate_history(payload.history)
+    message = payload.message.strip()
     caps = {c.value for c in identity.capabilities_resolved}
+    last_assistant = next((h["content"] for h in reversed(history) if h["role"] == "assistant"), "")
     history.append({"role": "assistant", "content": playground_demo.build_demo_marker(caps)})
+
+    # Cards de produto DENTRO do teste (2026-09-20). O motor real mostra os cards
+    # num segundo turno; aqui esse turno não existia e o dono via "Segura aí!" e
+    # mais nada. Camada 1: o cliente pediu pra ver (ou aceitou a oferta de ver) →
+    # os cards entram ANTES da resposta e a IA já comenta eles, numa chamada só.
+    cards: list[dict] = []
+    if playground_demo.wants_products(message, last_assistant):
+        cards = playground_demo.demo_cards(identity.products_or_services, f"{last_assistant} {message}")
+        if cards:
+            history.append({"role": "assistant", "content": playground_demo.build_cards_marker(cards)})
 
     conv = Conversation(client_id=client_id, phone="playground", history=history)
 
     try:
-        result = await ai.generate_response(identity, conv, payload.message.strip(), tier=3)
+        result = await ai.generate_response(identity, conv, message, tier=3)
+
+        # Camada 2 (rede de segurança): a resposta ainda pede pra esperar, ou
+        # emitiu uma ação de mostrar que aqui ninguém executa → roda o segundo
+        # turno na hora. O teste NUNCA deixa o dono no vácuo.
+        # Com os cards já na tela, a ação show_products é redundante (não é vácuo):
+        # só o TEXTO pedindo pra esperar dispara o segundo turno.
+        first_actions = None if cards else result.get("actions")
+        if playground_demo.is_placeholder_reply(result.get("reply", ""), first_actions):
+            if not cards:
+                cards = playground_demo.demo_cards(identity.products_or_services, f"{last_assistant} {message}") \
+                    if (playground_demo.wants_products(message, last_assistant)
+                        or any((a or {}).get("type") in ("show_products", "send_media") for a in (result.get("actions") or []))) \
+                    else []
+            marker2 = playground_demo.build_cards_marker(cards) if cards else playground_demo.NO_WAIT_MARKER
+            conv2 = Conversation(client_id=client_id, phone="playground", history=history + [
+                {"role": "assistant", "content": marker2},
+            ])
+            log.info(f"Playground | resposta pedia pra esperar, rodando 2º turno | client={client_id} | cards={len(cards)}")
+            second = await ai.generate_response(identity, conv2, message, tier=3, followup_hint=marker2)
+            if playground_demo.is_placeholder_reply(second.get("reply", ""), None):
+                text = playground_demo.safety_reply(cards)
+                second = {**second, "reply": text, "reply_parts": [text]}
+            result = second
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Playground IA erro | client={client_id} | {type(e).__name__}: {e}")
         raise HTTPException(502, "O clone engasgou agora. Manda a mensagem de novo.")
@@ -709,11 +746,13 @@ async def playground_chat(client_id: str, payload: PlaygroundChatPayload, _=Depe
     return {
         "reply": reply,
         "reply_parts": result.get("reply_parts") or [reply],
+        # Cards de produto pra o front desenhar o carrossel dentro do celular do teste
+        "cards": cards,
         "intent": result.get("intent", ""),
         "sentiment": result.get("sentiment", ""),
         "stage_action": result.get("stage_action", ""),
         # Assuntos simulados nesta resposta: o front mostra a nota FORA do balão.
-        "demo_topics": playground_demo.detect_demo_topics(result.get("actions"), reply),
+        "demo_topics": playground_demo.detect_demo_topics(result.get("actions"), reply) + (["produtos"] if cards else []),
     }
 
 

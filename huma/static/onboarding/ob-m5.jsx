@@ -28,7 +28,27 @@ const DEMO_NOTES = {
   agenda: 'Horários de exemplo. Com a sua agenda conectada, eu consulto os horários livres de verdade antes de confirmar qualquer coisa.',
   pagamento: 'Pagamento simulado. No atendimento real, o Pix ou o cartão saem aqui mesmo na conversa.',
   estoque: 'Estoque de exemplo. Com a sua loja conectada, eu consulto o estoque real na hora.',
+  produtos: 'Cards montados com o que eu li no seu site. Com a sua loja conectada, eles saem com a foto, o preço e o estoque reais de cada produto, direto na conversa.',
 };
+
+// Carrossel de produtos dentro do celular do teste (mesma ideia do carrossel do
+// Instagram e dos cards do WhatsApp). Sem foto real ainda: a inicial do produto
+// faz as vezes da foto até a loja ser conectada.
+function DemoCards({ cards, onPick }) {
+  return <div className="pcards" role="list" aria-label="Produtos">
+    {cards.map((c, i) => <div className="pcard" role="listitem" key={i}>
+      {c.image_url
+        ? <img className="ph" src={c.image_url} alt="" />
+        : <div className="ph" aria-hidden="true">{(c.title || '?').trim().charAt(0).toUpperCase()}</div>}
+      <div className="bd">
+        <span className="tt">{c.title}</span>
+        {c.price && <span className="pr">{c.price}</span>}
+        {c.subtitle && <span className="sb">{c.subtitle}</span>}
+      </div>
+      <button type="button" className="pick" onClick={() => onPick(c)}>Quero esse</button>
+    </div>)}
+  </div>;
+}
 
 function Moment5({ businessName, onDone }) {
   const [msgs, setMsgs] = useState([{ from: 'huma', text: "Pronto. Agora finge que você é um cliente seu. Manda um 'oi', pergunta preço, tenta me derrubar." , meta: true }]);
@@ -61,8 +81,8 @@ function Moment5({ businessName, onDone }) {
     return () => { dead = true; clearTimeout(timer); };
   }, []);
 
-  const send = async () => {
-    const text = input.trim(); if (!text || typing) return;
+  const send = async (forced) => {
+    const text = (typeof forced === 'string' ? forced : input).trim(); if (!text || typing) return;
     setInput(''); setErr(null); setInteracted(true);
     setMsgs(m => [...m, { from: 'own', text }]);
     const hist = [...history, { role: 'user', content: text }];
@@ -70,6 +90,13 @@ function Moment5({ businessName, onDone }) {
     try {
       const r = await HumaAPI.playgroundChat(text, history);
       const parts = (r.reply_parts && r.reply_parts.length) ? r.reply_parts : [r.reply];
+      // os cards entram ANTES do comentário: a IA foi avisada de que eles já estão na tela
+      if (r.cards && r.cards.length) {
+        setTyping(false);
+        setMsgs(m => [...m, { from: 'cards', cards: r.cards }]);
+        setTyping(true);
+        await new Promise(res => setTimeout(res, 700));
+      }
       // partes como mensagens separadas, com "digitando..." entre elas — como no WhatsApp real
       for (let i = 0; i < parts.length; i++) {
         if (i > 0) { setTyping(true); await new Promise(res => setTimeout(res, 650 + parts[i].length * 8)); }
@@ -112,6 +139,7 @@ function Moment5({ businessName, onDone }) {
             {msgs.map((m, i) => {
               if (m.from === 'own') return <Bubble key={i} from="own">{m.text}</Bubble>;
               if (m.from === 'note') return <div key={i} className="demo-note" role="note">{m.text}</div>;
+              if (m.from === 'cards') return <DemoCards key={i} cards={m.cards} onPick={c => send(`Quero o ${c.title}`)} />;
               if (m.meta) return <Bubble key={i} reaction>{m.text}</Bubble>;
               return <React.Fragment key={i}>
                 <Bubble from="huma" onCorrect={() => setFixing(i)}>{m.text}</Bubble>
@@ -126,7 +154,7 @@ function Moment5({ businessName, onDone }) {
             <div className="composer">
               <input className="input" placeholder="Finge que é seu cliente..." value={input}
                 onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} aria-label="Mensagem de teste" />
-              <button className="icon-btn" onClick={send} disabled={!input.trim() || typing} aria-label="Enviar">{Icons.send}</button>
+              <button className="icon-btn" onClick={() => send()} disabled={!input.trim() || typing} aria-label="Enviar">{Icons.send}</button>
             </div>
           </div>
         </div>

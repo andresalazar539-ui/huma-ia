@@ -29,6 +29,28 @@ _BR_TZ = timezone(timedelta(hours=-3))
 _WEEKDAYS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
 
 _AGENDA_ACTIONS = {"check_availability", "create_appointment", "cancel_appointment"}
+_SHOW_ACTIONS = {"show_products", "send_media"}
+MAX_DEMO_CARDS = 6
+
+# Cliente pedindo pra VER produto (direto) ...
+_WANTS_SEE_RE = re.compile(
+    r"\b(fotos?|imagens?|modelos?|op[cç][oõ]es|cat[aá]logo|card[aá]pio|mostra|mostrar|me manda|manda a[ií]|"
+    r"quais (voc[eê]s |vcs |vc )?t[eê]m|o que (voc[eê]s |vcs |vc )?t[eê]m|tem o qu[eê])",
+    re.IGNORECASE,
+)
+# ... ou ACEITANDO uma oferta de ver ("Quer que eu mande umas fotos?" / "quero")
+_ACCEPT_RE = re.compile(r"^\W*(quero|sim|pode|pode sim|manda|claro|por favor|bora|aham|isso|ss|s|ok|okay|quero sim|quero ver)\b", re.IGNORECASE)
+_OFFER_TO_SHOW_RE = re.compile(r"\b(fotos?|imagens?|modelos?|op[cç][oõ]es|cat[aá]logo|mostrar|te mostro|te mando|eu mande|mandar)", re.IGNORECASE)
+
+# Resposta que PROMETE e não entrega. No atendimento real o sistema roda um
+# segundo turno com o resultado da consulta; no playground esse turno nunca
+# vinha e o dono via "Segura aí, Paula!" e mais nada (teste do André, 2026-09-20).
+_PLACEHOLDER_RE = re.compile(
+    r"(segura a[ií]|s[óo] um (segundo|minuto|minutinho|instante|momento)|um (segundo|minutinho|instante|momento)|"
+    r"j[áa] (te )?(mando|envio|volto|trago|passo)|vou (te )?(mandar|enviar|verificar|checar|consultar|buscar|separar|ver)|"
+    r"deixa eu (ver|verificar|checar|consultar|buscar|separar)|aguarda|peraí|pera a[ií])",
+    re.IGNORECASE,
+)
 _PAGAMENTO_ACTIONS = {"generate_payment", "create_store_order"}
 _ESTOQUE_ACTIONS = {"check_stock", "calc_shipping", "show_products"}
 
@@ -99,8 +121,96 @@ def build_demo_marker(capabilities: set[str] | list[str] | None, now: datetime |
             "SE o cliente perguntar se tem um produto: responda com base no catálogo cadastrado, sem "
             "dizer que vai consultar o estoque."
         )
+    lines.append(
+        "NUNCA peça pro cliente esperar ('segura aí', 'um segundo', 'já te mando', 'vou verificar'): nesta "
+        "conversa nada chega depois, então a resposta completa vai SEMPRE na mesma mensagem."
+    )
     lines.append("NUNCA mencione que isto é uma demonstração, um teste ou que algo não está conectado.]")
     return " ".join(lines)
+
+
+def wants_products(user_text: str, last_assistant_text: str = "") -> bool:
+    """
+    True se o cliente pediu pra ver produtos/fotos, ou aceitou a oferta de ver
+    que o clone acabou de fazer ("Quer que eu mande umas fotos?" → "quero").
+    """
+    text = " ".join((user_text or "").split())
+    if _WANTS_SEE_RE.search(text):
+        return True
+    return bool(_ACCEPT_RE.search(text) and _OFFER_TO_SHOW_RE.search(last_assistant_text or ""))
+
+
+def is_placeholder_reply(reply: str, actions: list | None = None) -> bool:
+    """
+    True quando a resposta pede pro cliente esperar em vez de responder
+    ("Segura aí!", "Um segundo que eu verifico") ou emitiu uma ação de mostrar
+    que no playground ninguém executa. Resposta longa com conteúdo não conta.
+    """
+    types = {str((a or {}).get("type", "")) for a in (actions or []) if isinstance(a, dict)}
+    if types & _SHOW_ACTIONS:
+        return True
+    t = " ".join((reply or "").split())
+    if not t:
+        return True
+    return len(t) <= 90 and bool(_PLACEHOLDER_RE.search(t))
+
+
+def _norm(text: str) -> set[str]:
+    import unicodedata
+    plain = unicodedata.normalize("NFKD", (text or "").lower())
+    plain = "".join(ch for ch in plain if not unicodedata.combining(ch))
+    return {w[:6] for w in re.findall(r"[a-z0-9]{4,}", plain)}
+
+
+def demo_cards(products: list | None, context: str = "") -> list[dict]:
+    """
+    Cards de demonstração com o que a HUMA leu do negócio (nome, preço,
+    descrição). Os que casam com o que o cliente falou vêm primeiro. Sem foto:
+    a foto real só existe com a loja conectada (o front avisa isso na nota).
+    Preço sai do jeito que foi lido ("A partir de R$ 284,91"), sem reformatar.
+    """
+    wanted = _norm(context)
+    cards: list[tuple[int, int, dict]] = []
+    for idx, prod in enumerate(products or []):
+        if not isinstance(prod, dict):
+            continue
+        name = " ".join(str(prod.get("name") or "").split())
+        if not name:
+            continue
+        score = len(wanted & _norm(name + " " + str(prod.get("description") or "")))
+        cards.append((-score, idx, {
+            "title": name[:80],
+            "price": " ".join(str(prod.get("price") or "").split())[:60],
+            "subtitle": " ".join(str(prod.get("description") or "").split())[:110],
+            "image_url": str(prod.get("image_url") or "").strip(),
+        }))
+    cards.sort(key=lambda c: (c[0], c[1]))
+    return [c[2] for c in cards[:MAX_DEMO_CARDS]]
+
+
+def build_cards_marker(cards: list[dict]) -> str:
+    """Marker do turno em que os cards já estão na tela do cliente."""
+    listed = "; ".join(f"{c['title']}" + (f" ({c['price']})" if c.get("price") else "") for c in cards)
+    return (
+        f"[PRODUTOS MOSTRADOS: o sistema ACABOU de mostrar ao cliente, nesta conversa, os cards destes "
+        f"produtos: {listed}. Os cards já estão na tela dele. NÃO diga que vai mandar, NÃO peça pra esperar "
+        f"e NÃO liste os produtos de novo em texto. Em 1 ou 2 frases curtas, comente o que combina com o que "
+        f"o cliente pediu e pergunte qual chamou a atenção.]"
+    )
+
+
+NO_WAIT_MARKER = (
+    "[ATENÇÃO: você pediu pro cliente esperar, mas nesta conversa nada vai chegar depois. "
+    "Responda AGORA, na mesma mensagem, com o que você já sabe do cadastro, em 1 ou 2 frases. "
+    "NÃO peça pra esperar de novo.]"
+)
+
+
+def safety_reply(cards: list[dict]) -> str:
+    """Última rede: texto determinístico se o segundo turno ainda enrolar."""
+    if cards:
+        return "Olha só o que eu separei pra você. Algum chamou a sua atenção?"
+    return "Me conta um pouco mais do que você procura que eu já te indico a melhor opção."
 
 
 def detect_demo_topics(actions: list | None, reply: str) -> list[str]:
