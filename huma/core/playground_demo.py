@@ -60,8 +60,17 @@ _AGENDA_RE = re.compile(
     r"(\b\d{1,2}/\d{1,2}\b|\b(amanh[ãa]|segunda|ter[çc]a|quarta|quinta|sexta)[^.!?\n]{0,30}\bàs \d{1,2})",
     re.IGNORECASE,
 )
-_PAGAMENTO_RE = re.compile(r"\b(pix|boleto|cart[ãa]o|pagamento|parcel)", re.IGNORECASE)
-_ESTOQUE_RE = re.compile(r"\b(estoque|frete|em falta|esgotad)", re.IGNORECASE)
+# A nota "simulado" só aparece quando algo foi SIMULADO. Citar "5% no Pix" ou
+# "frete grátis acima de R$ 199" é informação real lida no site: marcar isso
+# como exemplo seria a tela mentindo (achado validando em produção, 2026-09-20).
+# Pagamento: só quando a resposta diz que está MANDANDO a cobrança.
+_PAGAMENTO_RE = re.compile(
+    r"(te mando|mando a[ií]|segue|aqui est[áa]|gerei|enviei|acabei de (mandar|enviar|gerar))[^.!?\n]{0,40}"
+    r"\b(pix|boleto|link|cobran[çc]a|pagamento)",
+    re.IGNORECASE,
+)
+# Estoque: só quando a resposta afirma disponibilidade de produto.
+_ESTOQUE_RE = re.compile(r"\b(em estoque|tem estoque|temos estoque|em falta|esgotad|[úu]ltimas? (pe[çc]as?|unidades?))", re.IGNORECASE)
 
 
 def example_slots(now: datetime | None = None) -> list[str]:

@@ -548,6 +548,11 @@ class TestPlaygroundDemo:
         # falar do horário de funcionamento NÃO é simulação de agenda
         assert demo.detect_demo_topics([], "A gente atende das 9h às 19h.") == []
         assert demo.detect_demo_topics([], "Te mando o Pix aqui mesmo.") == ["pagamento"]
+        # informação REAL lida no site não é simulação: a nota ali seria mentira
+        assert demo.detect_demo_topics([], "Entregamos sim! Acima de R$ 199,90 o frete sai grátis.") == []
+        assert demo.detect_demo_topics([], "Tem 5% de desconto no Pix e parcela em 5x no cartão.") == []
+        assert demo.detect_demo_topics([], "Esse modelo está em estoque no M e no G.") == ["estoque"]
+        assert demo.detect_demo_topics([{"type": "calc_shipping"}], "Deixa comigo") == ["estoque"]
 
     def test_rota_injeta_o_marker_e_devolve_os_topicos(self, monkeypatch):
         import asyncio
