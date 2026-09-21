@@ -693,6 +693,22 @@ def _names(identity: ClientIdentity, limit: int = 3) -> str:
     return ", ".join(names[:-1]) + " e " + names[-1]
 
 
+def _short_quote(text: str, limit: int = 170) -> str:
+    """
+    Encurta um texto pra citar numa pergunta SEM cortar palavra no meio:
+    fica com as frases inteiras que cabem; se nem a primeira cabe, corta no
+    último espaço e põe reticências.
+    """
+    t = " ".join((text or "").split())
+    if len(t) <= limit:
+        return t.rstrip(".")
+    cut = t[:limit]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    if end >= 40:
+        return cut[:end].rstrip(".")
+    return cut[: cut.rfind(" ")].rstrip(",;:") + "..."
+
+
 def _personalize(question: dict, identity: ClientIdentity) -> dict:
     """
     Reescreve a pergunta usando o que a HUMA JÁ LEU do negócio (2026-09-20).
@@ -707,7 +723,7 @@ def _personalize(question: dict, identity: ClientIdentity) -> dict:
     tone = (identity.tone_of_voice or "").strip()
     if qid == "tone" and tone:
         q["question"] = (
-            f"Pelo que eu li, o seu jeito de falar é assim: \"{tone[:180]}\". É isso mesmo no WhatsApp? "
+            f"Pelo que eu li, o seu jeito de falar é assim: \"{_short_quote(tone)}\". É isso mesmo no WhatsApp? "
             "Me manda uma mensagem do jeito que você escreveria pra um cliente, que eu copio o seu estilo. "
             "(ex.: 'Oi, Ju! Tudo bem? Chegou peça nova que é a sua cara')"
         )

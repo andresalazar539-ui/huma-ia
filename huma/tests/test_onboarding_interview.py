@@ -488,6 +488,16 @@ class TestUniversalSkip:
         q = next(q for q in interview.get_interview_questions(identity) if q["id"] == "tone")
         assert "Pelo que eu li" in q["question"] and "Próximo e direto" in q["question"]
 
+    def test_citacao_do_tom_nao_corta_palavra_no_meio(self):
+        longo = ("A marca fala de forma leve, acolhedora e feminina, usando linguagem próxima e entusiasmada "
+                 "para criar conexão com as clientes. O tom é descontraído, mas transmite confiança e sofisticação.")
+        q = interview._short_quote(longo)
+        assert q == ("A marca fala de forma leve, acolhedora e feminina, usando linguagem próxima e "
+                     "entusiasmada para criar conexão com as clientes")
+        sem_ponto = interview._short_quote("palavra " * 60)
+        assert sem_ponto.endswith("...") and not sem_ponto[:-3].endswith(" ") and len(sem_ponto) <= 173
+        assert interview._short_quote("Direto e simples.") == "Direto e simples"
+
     def test_toda_pergunta_fixa_tem_exemplo_e_nenhuma_tem_travessao(self):
         for identity in (_identity(), _identity(tone_of_voice="Direto.", products_or_services=[{"name": "X", "price": "", "description": ""}])):
             for q in interview.get_interview_questions(identity):
