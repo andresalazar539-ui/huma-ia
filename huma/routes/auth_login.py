@@ -29,7 +29,7 @@
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -44,6 +44,7 @@ from huma.core.auth import (
     SESSION_COOKIE_NAME,
     SESSION_TTL_SECONDS,
     create_session_token,
+    verify_session_token,
 )
 from huma.services import db_service as db
 from huma.services import redis_service as cache
@@ -484,6 +485,34 @@ def _session_response(client, remember: bool, email: str = "") -> JSONResponse:
         path="/",
     )
     return resp
+
+
+# ================================================================
+# GET /auth/session — "já estou logado?" (2026-09-20)
+#
+# A confirmação de e-mail abre em OUTRA aba e é lá que o cookie nasce. A aba
+# onde o dono criou a conta ficava parada no formulário; clicando de novo ele
+# tomava "este e-mail já tem conta". Agora a tela de login pergunta aqui (a
+# cada poucos segundos na espera da confirmação, e sempre que a aba volta a
+# ter foco) e segue sozinha. Só lê o cookie: nunca cria nem renova sessão.
+# ================================================================
+
+
+@router.get("/auth/session")
+async def session_status(request: Request) -> JSONResponse:
+    """Diz se o cookie de sessão é válido e pra onde a pessoa deve ir."""
+    no_store = {"Cache-Control": "no-store"}
+    client_id = verify_session_token(request.cookies.get(SESSION_COOKIE_NAME, ""))
+    if not client_id:
+        return JSONResponse({"authenticated": False}, headers=no_store)
+    try:
+        client = await db.get_client(client_id)
+    except Exception as e:
+        log.warning(f"Session status | falha lendo cliente | client={client_id} | {type(e).__name__}: {e}")
+        client = None
+    if client is None:
+        return JSONResponse({"authenticated": False}, headers=no_store)
+    return JSONResponse({"authenticated": True, "redirect": _post_login_redirect(client)}, headers=no_store)
 
 
 # ================================================================
@@ -1150,7 +1179,7 @@ async def login_page() -> HTMLResponse:
   {_BACKDROP_HTML}
   <div class="card">
     {_BRAND_HTML}
-    <div class="tabs">
+    <div class="tabs" id="tabs">
       <button class="tab active" id="tab-login">Entrar</button>
       <button class="tab" id="tab-signup">Criar conta</button>
     </div>
@@ -1177,7 +1206,7 @@ async def login_page() -> HTMLResponse:
 
     <div id="pane-signup" class="hidden">
       <h1>Criar sua conta</h1>
-      <p class="sub">Em minutos sua IA está vendendo no seu WhatsApp.</p>
+      <p class="sub">Em minutos a sua HUMA está atendendo os seus clientes.</p>
 
       <label for="s-business">Nome do seu negócio</label>
       <input id="s-business" type="text" placeholder="Ex.: Clínica Bella Pele" maxlength="80">
@@ -1191,8 +1220,21 @@ async def login_page() -> HTMLResponse:
       <button class="primary" id="signup">Criar conta</button>
     </div>
 
-    <div class="divider">ou</div>
-    <button class="google" id="google">{_GOOGLE_ICON} Continuar com Google</button>
+    <div id="pane-confirm" class="hidden">
+      <h1>Confirma seu e-mail</h1>
+      <p class="sub">Mandei um link pra <b id="c-email"></b>. É só clicar nele.</p>
+      <p class="sub" style="margin-top:10px;">Pode deixar esta aba aberta: assim que você confirmar, eu continuo sozinha por aqui.</p>
+      <button class="primary" id="c-open" style="display:none;">Abrir meu e-mail</button>
+      <p class="sub" id="c-wait" style="margin-top:14px;">Esperando a confirmação...</p>
+      <div class="row" style="justify-content:center;">
+        <button class="link" id="c-back">Usei o e-mail errado</button>
+      </div>
+    </div>
+
+    <div id="alt-login">
+      <div class="divider">ou</div>
+      <button class="google" id="google">{_GOOGLE_ICON} Continuar com Google</button>
+    </div>
 
     <div id="msg" class="msg"></div>
   </div>
@@ -1272,13 +1314,69 @@ async function doSignup() {{
     }});
     const data = await r.json();
     if (r.ok && data.redirect) {{ track("sign_up", {{method: "password"}}); location.href = data.redirect; return; }}
-    if (r.ok) {{ track("sign_up", {{method: "password"}}); show("ok", data.message); }}
+    if (r.ok) {{ track("sign_up", {{method: "password"}}); showConfirmWait(email); }}
     else {{ show("err", data.detail || "Não foi possível criar a conta."); }}
   }} catch (e) {{
     show("err", "Erro de conexão. Tente de novo.");
   }}
   $("signup").disabled = false;
 }}
+
+// ── Espera da confirmação de e-mail ──────────────────────────────────────
+// A confirmação abre em outra aba; esta aqui pergunta ao servidor se a sessão
+// já existe e segue sozinha. Sem isso a aba ficava parada no formulário e um
+// segundo clique dava "este e-mail já tem conta".
+const MAILBOX = [
+  [/@(gmail|googlemail)[.]/i, "https://mail.google.com/"],
+  [/@(outlook|hotmail|live|msn)[.]/i, "https://outlook.live.com/mail/"],
+  [/@yahoo[.]/i, "https://mail.yahoo.com/"],
+  [/@icloud[.]/i, "https://www.icloud.com/mail"],
+];
+let waitTimer = null;
+
+async function checkSession() {{
+  try {{
+    const r = await fetch("/auth/session", {{cache: "no-store"}});
+    const d = await r.json();
+    if (d && d.authenticated && d.redirect) {{
+      clearInterval(waitTimer);
+      location.href = d.redirect;
+      return true;
+    }}
+  }} catch (e) {{ /* rede piscou: a próxima checagem tenta de novo */ }}
+  return false;
+}}
+
+function showConfirmWait(email) {{
+  ["tabs", "pane-login", "pane-signup", "alt-login"].forEach((id) => $(id).className = "hidden");
+  $("msg").className = "msg";
+  $("c-email").textContent = email;
+  const box = MAILBOX.find(([re]) => re.test(email));
+  $("c-open").dataset.url = box ? box[1] : "";
+  $("c-open").style.display = box ? "" : "none";
+  $("pane-confirm").className = "";
+  clearInterval(waitTimer);
+  waitTimer = setInterval(checkSession, 3000);
+}}
+
+$("c-open").addEventListener("click", () => {{
+  const url = $("c-open").dataset.url;
+  if (url) window.open(url, "_blank", "noopener");
+}});
+
+$("c-back").addEventListener("click", () => {{
+  clearInterval(waitTimer);
+  $("pane-confirm").className = "hidden";
+  $("tabs").className = "tabs";
+  $("alt-login").className = "";
+  setTab(true);
+}});
+
+// Aba antiga reaberta depois de o dono já ter entrado por outra: segue pro
+// lugar certo em vez de mostrar um formulário que não serve mais pra nada.
+document.addEventListener("visibilitychange", () => {{ if (!document.hidden) checkSession(); }});
+window.addEventListener("focus", checkSession);
+checkSession();
 
 async function doForgot() {{
   const email = $("email").value.trim();
