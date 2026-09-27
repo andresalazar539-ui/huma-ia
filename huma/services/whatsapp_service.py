@@ -274,9 +274,25 @@ async def _evo_post_raw(url: str, body: dict) -> str:
     return ""
 
 
-async def _evo_send(identity, path: str, body: dict) -> str | None:
-    """path ex: 'message/sendText'. Monta URL com a instância do cliente."""
-    instance = getattr(identity, "evolution_instance", "") or ""
+async def _line_route(client_id: str, phone: str) -> str:
+    """
+    Número da equipe por onde este lead chegou ("" = número principal).
+    Nunca levanta: em qualquer falha o envio sai pelo principal.
+    """
+    try:
+        from huma.services import lines_service  # lazy: evita ciclo
+        return await lines_service.route_for(client_id, phone)
+    except Exception as e:
+        log.warning(f"Rota de número falhou | client={client_id} | {type(e).__name__}: {e}")
+        return ""
+
+
+async def _evo_send(identity, path: str, body: dict, instance: str = "") -> str | None:
+    """
+    path ex: 'message/sendText'. Monta URL com a instância do cliente;
+    `instance` preenchido = sai pelo número da equipe (lines_service).
+    """
+    instance = instance or getattr(identity, "evolution_instance", "") or ""
     if not EVOLUTION_API_URL or not EVOLUTION_API_KEY or not instance:
         log.error(
             f"Evolution sem config | client={getattr(identity, 'client_id', '?')} | "
@@ -324,7 +340,8 @@ async def _evo_send_text(identity, phone: str, message: str, reply_to: str | Non
     body: dict = {"number": await _evo_destination(identity, phone), "text": message}
     if reply_to:
         body["quoted"] = {"key": {"id": reply_to}}
-    return await _evo_send(identity, "message/sendText", body)
+    line = await _line_route(getattr(identity, "client_id", "") or "", phone)
+    return await _evo_send(identity, "message/sendText", body, instance=line)
 
 
 async def _evo_send_media(
@@ -336,10 +353,12 @@ async def _evo_send_media(
     audio → endpoint sendWhatsAppAudio (mensagem de voz).
     """
     dest = await _evo_destination(identity, phone)
+    line = await _line_route(getattr(identity, "client_id", "") or "", phone)
     if media_kind == "audio":
         return await _evo_send(
             identity, "message/sendWhatsAppAudio",
             {"number": dest, "audio": media_url},
+            instance=line,
         )
     body: dict = {
         "number": dest,
@@ -350,7 +369,7 @@ async def _evo_send_media(
         body["caption"] = caption
     if media_kind == "document" and filename:
         body["fileName"] = filename
-    return await _evo_send(identity, "message/sendMedia", body)
+    return await _evo_send(identity, "message/sendMedia", body, instance=line)
 
 
 # ================================================================
@@ -415,6 +434,8 @@ async def send_text(
     provider, identity = await _resolve_channel(client_id)
     if _is_instagram_destination(phone):
         return await _ig_send(identity, "text", phone, message)
+    if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
+        provider = "evolution"  # lead chegou por um número da equipe (QR)
     if provider == "meta":
         return await _meta_send_text(identity, phone, message, reply_to)
     if provider == "evolution":
@@ -444,6 +465,8 @@ async def send_cards(phone: str, cards: list[dict], client_id: str = "") -> int:
             mid = await ig.send_cards(identity, phone, cards)
             return len(cards) if mid else 0
 
+        if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
+            provider = "evolution"  # lead chegou por um número da equipe (QR)
         from huma.core.product_cards import caption_for_card
         sent = 0
         for card in cards[:3]:
@@ -485,6 +508,8 @@ async def send_audio(
     provider, identity = await _resolve_channel(client_id)
     if _is_instagram_destination(phone):
         return await _ig_send(identity, "audio", phone, audio_url)
+    if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
+        provider = "evolution"
     if provider == "meta":
         return await _meta_send_media(identity, phone, audio_url, "audio", reply_to=reply_to)
     if provider == "evolution":
@@ -506,6 +531,8 @@ async def send_image(
     provider, identity = await _resolve_channel(client_id)
     if _is_instagram_destination(phone):
         return await _ig_send(identity, "image", phone, image_url, caption)
+    if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
+        provider = "evolution"
     if provider == "meta":
         return await _meta_send_media(identity, phone, image_url, "image", caption=caption, reply_to=reply_to)
     if provider == "evolution":
@@ -527,6 +554,8 @@ async def send_video(
     provider, identity = await _resolve_channel(client_id)
     if _is_instagram_destination(phone):
         return await _ig_send(identity, "video", phone, video_url, caption)
+    if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
+        provider = "evolution"
     if provider == "meta":
         return await _meta_send_media(identity, phone, video_url, "video", caption=caption, reply_to=reply_to)
     if provider == "evolution":
@@ -548,6 +577,8 @@ async def send_document(
     provider, identity = await _resolve_channel(client_id)
     if _is_instagram_destination(phone):
         return await _ig_send(identity, "document", phone, doc_url, filename)
+    if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
+        provider = "evolution"
     if provider == "meta":
         return await _meta_send_media(identity, phone, doc_url, "document", caption=filename, filename=filename, reply_to=reply_to)
     if provider == "evolution":
@@ -673,7 +704,7 @@ async def fetch_media_meta(client_id: str, media_id: str) -> tuple[bytes | None,
         return None, ""
 
 
-async def fetch_media_evolution(client_id: str, message: dict) -> tuple[bytes | None, str]:
+async def fetch_media_evolution(client_id: str, message: dict, instance: str = "") -> tuple[bytes | None, str]:
     """
     Baixa mídia de entrada do Evolution via getBase64FromMediaMessage
     (a mídia chega criptografada no WhatsApp; o Evolution descriptografa e
@@ -683,7 +714,8 @@ async def fetch_media_evolution(client_id: str, message: dict) -> tuple[bytes | 
     import base64 as _b64
 
     _, identity = await _resolve_channel(client_id)
-    instance = (getattr(identity, "evolution_instance", "") if identity else "") or ""
+    # `instance` preenchido = a mídia chegou por um número da equipe.
+    instance = instance or (getattr(identity, "evolution_instance", "") if identity else "") or ""
     if not EVOLUTION_API_URL or not EVOLUTION_API_KEY or not instance:
         log.error(f"Evolution fetch_media sem config | client={client_id}")
         return None, ""
@@ -738,10 +770,13 @@ async def evo_instance_exists(instance: str) -> bool:
         return False
 
 
-async def evo_create_instance(instance: str, webhook_url: str) -> dict | None:
+async def evo_create_instance(instance: str, webhook_url: str, sync_history: bool = False) -> dict | None:
     """
     Cria a instância já com o webhook apontando pra HUMA. Retorna o dict
     cru da Evolution (inclui qrcode.base64) ou None em falha.
+
+    sync_history=True (número da equipe): pede ao WhatsApp as conversas
+    que já existiam no aparelho, pra HUMA saber quem é contato antigo.
     """
     from huma.config import EVOLUTION_WEBHOOK_TOKEN
 
@@ -761,6 +796,8 @@ async def evo_create_instance(instance: str, webhook_url: str) -> dict | None:
         "qrcode": True,
         "webhook": webhook_cfg,
     }
+    if sync_history:
+        body["syncFullHistory"] = True
     try:
         async with httpx.AsyncClient(timeout=30.0) as http:
             resp = await http.post(f"{_evo_base()}/instance/create", headers=_evo_headers(), json=body)
@@ -812,6 +849,74 @@ async def evo_connection_state(instance: str) -> str:
     except Exception as e:
         log.error(f"Evolution connectionState erro | instance={instance} | {type(e).__name__}: {e}")
         return "unknown"
+
+
+async def _evo_list(path: str, instance: str) -> list | None:
+    """POST que devolve lista (findChats/findContacts). None = não respondeu."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            resp = await http.post(f"{_evo_base()}/{path}/{instance}", headers=_evo_headers(), json={})
+        if resp.status_code not in (200, 201):
+            log.warning(f"Evolution {path} HTTP {resp.status_code} | instance={instance} | {resp.text[:160]}")
+            return None
+        data = resp.json()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("chats", "contacts", "records", "data"):
+                if isinstance(data.get(key), list):
+                    return data[key]
+        return []
+    except Exception as e:
+        log.error(f"Evolution {path} erro | instance={instance} | {type(e).__name__}: {e}")
+        return None
+
+
+async def evo_find_chats(instance: str) -> list | None:
+    """Conversas que existem no aparelho (com remoteJid). None se o servidor não respondeu."""
+    return await _evo_list("chat/findChats", instance)
+
+
+async def evo_find_contacts(instance: str) -> list | None:
+    """Contatos salvos na agenda do aparelho. None se o servidor não respondeu."""
+    return await _evo_list("chat/findContacts", instance)
+
+
+async def evo_instance_phone(instance: str) -> str:
+    """Número (só dígitos) do WhatsApp conectado na instância; "" se não deu pra saber."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(
+                f"{_evo_base()}/instance/fetchInstances",
+                headers=_evo_headers(), params={"instanceName": instance},
+            )
+        if resp.status_code != 200:
+            return ""
+        data = resp.json()
+        items = data if isinstance(data, list) else [data]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            inner = it.get("instance") if isinstance(it.get("instance"), dict) else it
+            jid = str(inner.get("ownerJid") or inner.get("owner") or inner.get("number") or "")
+            found = "".join(ch for ch in jid.split("@")[0].split(":")[0] if ch.isdigit())
+            if found:
+                return found
+        return ""
+    except Exception as e:
+        log.warning(f"Evolution fetchInstances erro | instance={instance} | {type(e).__name__}: {e}")
+        return ""
+
+
+async def evo_delete_instance(instance: str) -> bool:
+    """Apaga a instância no servidor (usado ao remover o número de uma pessoa)."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.delete(f"{_evo_base()}/instance/delete/{instance}", headers=_evo_headers())
+            return resp.status_code in (200, 201)
+    except Exception as e:
+        log.error(f"Evolution delete erro | instance={instance} | {type(e).__name__}: {e}")
+        return False
 
 
 async def evo_logout(instance: str) -> bool:

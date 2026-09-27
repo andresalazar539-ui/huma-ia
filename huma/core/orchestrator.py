@@ -3421,8 +3421,17 @@ async def _ping_human_lead_waiting(client_data, conv, phone: str, text: str) -> 
         target = (person or {}).get("phone") or lead_routing.normalize_phone(client_data.owner_phone)
         name = (person or {}).get("name", "") if (person or {}).get("phone") else ""
         if not target:
-            log.warning(f"Handoff ping | sem WhatsApp pra avisar | {phone} | client={client_id}")
-            return False
+            from huma.services import team_notify
+            _human_ping_memory[key] = now_ts
+            await cache.set_with_ttl(key, "1", ttl=_HUMAN_PING_TTL_SECONDS)
+            only = await team_notify.notify(
+                client_data, (person or {}).get("email", ""),
+                f"{lead_routing.lead_label(conv.lead_name_canonical or '', phone)} te escreveu",
+                ("" if str(text or "").startswith("[") else str(text or ""))[:200] or "Abra a conversa pra responder.",
+                whatsapp_sent=False, lead_phone=phone,
+            )
+            log.info(f"Handoff ping | sem WhatsApp, só notificação | {phone} | client={client_id} | push={only.get('push')}")
+            return bool(only.get("push")) or bool(only.get("email"))
 
         _human_ping_memory[key] = now_ts
         if len(_human_ping_memory) > 5000:
@@ -3435,11 +3444,18 @@ async def _ping_human_lead_waiting(client_data, conv, phone: str, text: str) -> 
             lead_routing.lead_waiting_notice(name, conv.lead_name_canonical or "", phone, preview),
             client_id=client_id,
         )
+        from huma.services import team_notify
+        extra = await team_notify.notify(
+            client_data, (person or {}).get("email", "") if name else "",
+            f"{lead_routing.lead_label(conv.lead_name_canonical or '', phone)} te escreveu",
+            preview[:200] or "Abra a conversa pra responder.",
+            whatsapp_sent=bool(msg_id), lead_phone=phone,
+        )
         log.info(
             f"Handoff ping | {phone} | client={client_id} | "
-            f"pra={'carteira' if name else 'dono'} | enviado={bool(msg_id)}"
+            f"pra={'carteira' if name else 'dono'} | enviado={bool(msg_id)} | push={extra.get('push')}"
         )
-        return bool(msg_id)
+        return bool(msg_id) or bool(extra.get("push")) or bool(extra.get("email"))
     except Exception as e:
         log.warning(f"Handoff ping | falhou | {phone} | {type(e).__name__}: {e}")
         return False
@@ -3559,6 +3575,23 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
             payload=payload,
         )
         owner_notified = notif_result.get("status") == "ok"
+
+    # Notificação do Cockpit e e-mail de reserva (não dependem do WhatsApp:
+    # no canal oficial a mensagem livre só entrega dentro de 24h).
+    from huma.services import team_notify
+    lead_display = lead_routing.lead_label(conv.lead_name_canonical or "", phone)
+    extra = await team_notify.notify(
+        client_data, (seller or {}).get("email", ""),
+        "Novo lead pra você" if urgency != "urgent" else "Lead urgente pra você",
+        f"{lead_display}: {summary[:160]}",
+        whatsapp_sent=owner_notified, lead_phone=phone,
+    )
+    if not owner_notified and (extra.get("push") or extra.get("email")):
+        log.info(
+            f"Handoff | WhatsApp não entregou, aviso chegou por outro caminho | {phone} | "
+            f"client={client_data.client_id} | push={extra.get('push')} | email={extra.get('email')}"
+        )
+        owner_notified = True
 
     if not owner_notified:
         log.error(

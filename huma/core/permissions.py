@@ -100,6 +100,10 @@ _ROUTE_RULES: tuple[tuple[str, str, Optional[str]], ...] = (
     ("GET", r"^/api/crm/status$", None),
     ("GET", r"^/whatsapp/(status|meta/status)$", None),
     ("GET", r"^/instagram/status$", None),
+    # Número da própria pessoa e notificação: cada um cuida do seu
+    # (a rota confere se é o dono do número; dono e admin mexem em todos).
+    ("*", r"^/whatsapp/lines(/|$)", None),
+    ("*", r"^/api/push(/|$)", None),
     # Equipe
     ("*", rf"^{_C}/team(/|$)", "equipe"),
     # Faturamento

@@ -70,6 +70,13 @@ EVOLUTION_WEBHOOK_TOKEN = clean_secret_env("EVOLUTION_WEBHOOK_TOKEN")
 # (services/human_echo.py). "false" desliga sem precisar de deploy.
 PHONE_ECHO_ENABLED = os.getenv("PHONE_ECHO_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off")
 
+# Notificação do Cockpit (Web Push, services/push_service.py). Par de
+# chaves VAPID gerado uma vez; sem elas a notificação fica indisponível
+# e nada quebra. VAPID_SUBJECT é o contato que os navegadores exigem.
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY = clean_secret_env("VAPID_PRIVATE_KEY")
+VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:andre@humaia.com.br").strip()
+
 # URL pública da própria HUMA (Railway). Usada pra dizer ao Evolution
 # pra onde mandar o webhook de entrada (PUBLIC_BASE_URL/webhook/evolution)
 # na hora de criar a instância do cliente. Sem barra no fim.

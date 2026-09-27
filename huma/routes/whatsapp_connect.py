@@ -148,3 +148,238 @@ async def whatsapp_disconnect(
         log.info(f"WhatsApp disconnect | client={client_id} | instance={instance}")
 
     return {"status": "ok"}
+
+
+# ================================================================
+# NÚMERO DA PESSOA (2026-09-27) — cada um conecta o WhatsApp que já usa
+#
+#   GET  /whatsapp/lines              números da equipe + estado de cada um
+#   POST /whatsapp/lines/connect      cria/renova o QR do número de uma pessoa
+#   POST /whatsapp/lines/disconnect   remove o número de uma pessoa
+#   POST /whatsapp/lines/release      libera um contato antigo pra HUMA atender
+#
+# Regras em services/lines_service.py. Quem é atendente só mexe no
+# próprio número; dono e administrativo mexem em todos.
+# ================================================================
+
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+from huma.core import lead_routing, permissions
+from huma.core.auth import session_actor
+from huma.services import lines_service as lines
+
+
+class LineConnectBody(BaseModel):
+    email: str = Field(default="", max_length=254, description="De quem é o número. Vazio = quem está logado.")
+    risk_accepted: bool = Field(default=False, description="A pessoa leu o aviso sobre o uso do número")
+
+
+class LineTargetBody(BaseModel):
+    email: str = Field(default="", max_length=254)
+
+
+class LineReleaseBody(BaseModel):
+    email: str = Field(default="", max_length=254)
+    phone: str = Field(..., min_length=8, max_length=30)
+
+
+def _who(client, creds, huma_session: str | None, wanted: str) -> dict:
+    """
+    Resolve de quem é o número e confere se quem está logado pode mexer.
+    Devolve a pessoa ({email, name, phone, is_owner}).
+    """
+    me = ""
+    if not creds:
+        _, me = session_actor(huma_session or "")
+    me = (me or "").strip().lower()
+    owner_email = (getattr(client, "owner_email", "") or "").strip().lower()
+    role = permissions.role_for(client, me)
+    target = (wanted or "").strip().lower() or me or owner_email
+    if not permissions.sees_all_conversations(role) and target != me:
+        raise HTTPException(403, "Você só pode mexer no seu próprio número.")
+    person = lead_routing.find_member(client, target)
+    if not person:
+        raise HTTPException(400, "Essa pessoa não está na equipe.")
+    return person
+
+
+def _public_line(line: dict, state: str = "") -> dict:
+    """O que a tela precisa saber de um número (nunca segredo)."""
+    status = line.get("status") or lines.STATUS_PENDING
+    return {
+        "email": line.get("owner_email") or "",
+        "name": line.get("owner_name") or "",
+        "phone": line.get("phone") or "",
+        "status": status,
+        "state": state,
+        "connected": state == "open",
+        "learning": lines.is_learning(line) or lines.needs_learning(line),
+        "learn_until": line.get("learn_until"),
+        "known_count": int(line.get("known_count") or 0),
+    }
+
+
+async def _refresh_line(line: dict) -> tuple[dict, str]:
+    """
+    Confere no servidor do WhatsApp o estado real do número e avança a
+    linha: QR lido → aprendizado; tempo de aprendizado cumprido → tira a
+    foto dos contatos antigos e libera a HUMA.
+    """
+    instance = line["instance"]
+    state = await wa.evo_connection_state(instance)
+    status = line.get("status") or lines.STATUS_PENDING
+    if state == "open" and status in (lines.STATUS_PENDING, lines.STATUS_DISCONNECTED):
+        phone = await wa.evo_instance_phone(instance)
+        line = await lines.mark_connected(line, phone)
+        log.info(f"Número da equipe conectado | client={line.get('client_id')} | instance={instance} | aprendizado iniciado")
+    elif state == "open" and lines.needs_learning(line):
+        learned = await lines.learn_contacts(line)
+        if learned >= 0:
+            line = (await lines.get_line(instance, use_cache=False)) or line
+    elif state != "open" and status in (lines.STATUS_ACTIVE, lines.STATUS_LEARNING):
+        await lines.upsert_line(instance, {
+            "client_id": line.get("client_id"), "owner_email": line.get("owner_email"),
+            "status": lines.STATUS_DISCONNECTED,
+        })
+        line = {**line, "status": lines.STATUS_DISCONNECTED}
+    return line, state
+
+
+@router.get("/whatsapp/lines", tags=["WhatsApp"])
+async def whatsapp_lines_list(
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
+) -> dict:
+    """Números que a equipe conectou. Atendente só recebe o dele."""
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    me = ""
+    if not creds:
+        _, me = session_actor(huma_session or "")
+    me = (me or "").strip().lower()
+    sees_all = permissions.sees_all_conversations(permissions.role_for(client, me))
+
+    out = []
+    for line in await lines.list_lines(client_id):
+        if not sees_all and (line.get("owner_email") or "").lower() != me:
+            continue
+        line, state = await _refresh_line(line)
+        out.append(_public_line(line, state))
+    return {
+        "status": "ok",
+        "available": bool(EVOLUTION_API_URL and EVOLUTION_API_KEY and PUBLIC_BASE_URL),
+        "lines": out,
+        "max_lines": lines.MAX_LINES_PER_ACCOUNT,
+        "learning_minutes": lines.LEARNING_MINUTES,
+        "me": me or (getattr(client, "owner_email", "") or "").strip().lower(),
+    }
+
+
+@router.post("/whatsapp/lines/connect", tags=["WhatsApp"])
+async def whatsapp_lines_connect(
+    client_id: str,
+    body: LineConnectBody,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
+) -> dict:
+    """Cria (ou renova) o QR pra pessoa conectar o próprio WhatsApp."""
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    if not EVOLUTION_API_URL or not EVOLUTION_API_KEY or not PUBLIC_BASE_URL:
+        raise HTTPException(503, "A conexão por QR não está disponível no servidor.")
+    person = _who(client, creds, huma_session, body.email)
+
+    instance = lines.instance_name(client_id, person["email"])
+    existing = await lines.get_line(instance, use_cache=False)
+    if existing is None:
+        if not body.risk_accepted:
+            raise HTTPException(400, "Leia e aceite o aviso sobre o uso do número antes de conectar.")
+        current = await lines.list_lines(client_id)
+        if len(current) >= lines.MAX_LINES_PER_ACCOUNT:
+            raise HTTPException(
+                400, f"Sua conta já tem {lines.MAX_LINES_PER_ACCOUNT} números da equipe conectados. "
+                     f"Remova um pra conectar outro.",
+            )
+
+    webhook_url = f"{PUBLIC_BASE_URL.rstrip('/')}/webhook/evolution"
+    if await wa.evo_instance_exists(instance):
+        qr = await wa.evo_get_qr(instance)
+    else:
+        created = await wa.evo_create_instance(instance, webhook_url, sync_history=True)
+        if created is None:
+            raise HTTPException(502, "Não consegui criar a conexão agora. Tenta de novo.")
+        qr = _qr_from_create(created)
+        if not qr.get("base64"):
+            qr = await wa.evo_get_qr(instance)
+
+    if existing is None:
+        saved = await lines.upsert_line(instance, {
+            "client_id": client_id,
+            "owner_email": person["email"],
+            "owner_name": person["name"],
+            "status": lines.STATUS_PENDING,
+            "risk_accepted_at": datetime.utcnow().isoformat(),
+        })
+        if not saved:
+            raise HTTPException(503, "O número da equipe ainda não está liberado nesta conta. Fale com o suporte.")
+        lines.forget_account(client_id)
+        existing = await lines.get_line(instance, use_cache=False) or {
+            "instance": instance, "client_id": client_id, "owner_email": person["email"],
+            "owner_name": person["name"], "status": lines.STATUS_PENDING,
+        }
+
+    line, state = await _refresh_line(existing)
+    log.info(f"Número da equipe | connect | client={client_id} | instance={instance} | state={state}")
+    return {
+        "status": "ok",
+        "line": _public_line(line, state),
+        "qr_base64": "" if state == "open" else qr.get("base64", ""),
+        "pairing_code": "" if state == "open" else qr.get("pairing_code", ""),
+    }
+
+
+@router.post("/whatsapp/lines/disconnect", tags=["WhatsApp"])
+async def whatsapp_lines_disconnect(
+    client_id: str,
+    body: LineTargetBody,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
+) -> dict:
+    """
+    Remove o número de uma pessoa. As conversas que chegaram por ele
+    continuam na conta; novas respostas pra esses leads passam a sair
+    pelo número principal.
+    """
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    person = _who(client, creds, huma_session, body.email)
+    instance = lines.instance_name(client_id, person["email"])
+    if await lines.get_line(instance, use_cache=False) is None:
+        raise HTTPException(404, "Essa pessoa não tem número conectado.")
+    await wa.evo_logout(instance)
+    await wa.evo_delete_instance(instance)
+    await lines.delete_line(instance)
+    lines.forget_account(client_id)
+    log.info(f"Número da equipe | removido | client={client_id} | instance={instance}")
+    return {"status": "ok"}
+
+
+@router.post("/whatsapp/lines/release", tags=["WhatsApp"])
+async def whatsapp_lines_release(
+    client_id: str,
+    body: LineReleaseBody,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
+) -> dict:
+    """Libera um contato que a pessoa já tinha pra HUMA passar a atender."""
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    person = _who(client, creds, huma_session, body.email)
+    instance = lines.instance_name(client_id, person["email"])
+    if await lines.get_line(instance, use_cache=False) is None:
+        raise HTTPException(404, "Essa pessoa não tem número conectado.")
+    phone = lead_routing.normalize_phone(body.phone)
+    if not phone:
+        raise HTTPException(400, "Número inválido. Use DDD + número, ex.: 11 98888-7777.")
+    await lines.remove_known(instance, phone)
+    log.info(f"Número da equipe | contato liberado | client={client_id} | instance={instance}")
+    return {"status": "ok", "phone": phone}

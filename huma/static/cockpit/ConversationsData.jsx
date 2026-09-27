@@ -217,6 +217,7 @@ function mapListItem(item) {
     assigned_name: item.assigned_name || '',
     // Está com quem está logado? (servidor decide; ausente = sim, API antiga)
     is_mine: item.is_mine !== false,
+    via_team_number: !!item.via_team_number,
     // Quadro: o que a HUMA já sabe do lead (fatos + leitura viva)
     lead_facts: Array.isArray(item.lead_facts) ? item.lead_facts : [],
     hints: item.lead_hints || { objecao: '', sinal_de_compra: false, pressa: '' },

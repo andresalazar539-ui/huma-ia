@@ -1768,6 +1768,7 @@ const PerfilScreen = () => {
   const tabs = [
     { id: 'you',      label: 'Você',         icon: 'user' },
     { id: 'voice',    label: 'Voz clonada',  icon: 'mic' },
+    { id: 'channels', label: 'Avisos e WhatsApp', icon: 'bell' },
     { id: 'security', label: 'Segurança',    icon: 'shield' },
   ];
 
@@ -1775,6 +1776,7 @@ const PerfilScreen = () => {
   let body;
   if (tab === 'you')           body = settings ? <PerfilYou settings={settings} patch={patch}/> : loading;
   else if (tab === 'voice')    body = <PerfilVoice/>;
+  else if (tab === 'channels') body = window.MeusCanais ? <window.MeusCanais/> : loading;
   else                         body = settings ? <PerfilSecurity settings={settings}/> : loading;
 
   return (

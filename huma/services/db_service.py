@@ -427,6 +427,7 @@ async def get_conversation(client_id: str, phone: str) -> Conversation:
             assigned_to=d.get("assigned_to", "") or "",
             assigned_name=d.get("assigned_name", "") or "",
             assigned_at=d.get("assigned_at"),
+            line_instance=d.get("line_instance", "") or "",
         )
 
     return Conversation(client_id=client_id, phone=phone)
@@ -542,13 +543,25 @@ async def save_conversation(conv: Conversation):
         data["assigned_to"] = conv.assigned_to
         data["assigned_name"] = conv.assigned_name or ""
         data["assigned_at"] = conv.assigned_at.isoformat() if conv.assigned_at else None
+    # Número do vendedor: mesmo contrato — só entra quando preenchido.
+    if conv.line_instance:
+        data["line_instance"] = conv.line_instance
     try:
         await run_in_threadpool(
             lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
         )
     except Exception as e:
         err = str(e)
-        if "assigned_to" in data and any(k in err for k in _ASSIGN_COLUMNS):
+        if "line_instance" in data and "line_instance" in err:
+            log.warning(
+                f"save_conversation | coluna line_instance ausente (rodar scripts/migration_team_lines_push.sql) | "
+                f"client={conv.client_id} | phone={conv.phone} | retry sem ela"
+            )
+            data.pop("line_instance", None)
+            await run_in_threadpool(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            )
+        elif "assigned_to" in data and any(k in err for k in _ASSIGN_COLUMNS):
             log.warning(
                 f"save_conversation | colunas de roteamento ausentes (rodar scripts/migration_lead_routing.sql) | "
                 f"client={conv.client_id} | phone={conv.phone} | retry sem assigned_*"
@@ -1327,10 +1340,26 @@ async def list_conversations_for_cockpit(
     # do quadro (objeção ativa, sinal de compra, fatos do lead).
     try:
         resp = await run_in_threadpool(
-            lambda: query(base_cols + ",lead_facts,assigned_to,assigned_name,lead_state")
+            lambda: query(base_cols + ",lead_facts,assigned_to,assigned_name,lead_state,line_instance")
         )
     except Exception as e:
         err = str(e)
+        if "line_instance" in err:
+            # Migration do número da equipe ainda não rodou: tudo igual, sem a coluna.
+            try:
+                resp = await run_in_threadpool(
+                    lambda: query(base_cols + ",lead_facts,assigned_to,assigned_name,lead_state")
+                )
+                rows = resp.data or []
+                if not any_filter:
+                    return rows[:limit]
+                return cf.apply_filters(
+                    rows, status=filter_mode, channel=channel, assignee=assignee,
+                    owner_email=owner_email, portfolio=portfolio,
+                )[:limit]
+            except Exception as e2:
+                err = str(e2)
+                e = e2
         if "assigned_" not in err and "lead_state" not in err:
             raise
         log.warning(

@@ -1238,6 +1238,15 @@ class Conversation(BaseModel):
         description="Quando o lead foi entregue a essa pessoa (UTC).",
     )
 
+    # Número do vendedor (2026-09-27) — por qual número a conversa chegou.
+    # Vazio = número principal do negócio. A resposta sai pelo mesmo
+    # número (services/lines_service). Contrato do bsuid no save
+    # (migration scripts/migration_team_lines_push.sql).
+    line_instance: str = Field(
+        default="",
+        description="Instância do número da equipe por onde o lead chegou. Vazio = número principal.",
+    )
+
 
 # ================================================================
 # APROVAÇÃO PENDENTE

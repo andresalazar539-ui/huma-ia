@@ -30,6 +30,7 @@ from huma.routes.oauth_nuvemshop import router as oauth_nuvemshop_router
 from huma.routes.onboarding import router as onboarding_router
 from huma.routes.web_channel import router as web_channel_router
 from huma.routes.whatsapp_connect import router as whatsapp_connect_router
+from huma.routes.push import router as push_router
 from huma.routes.whatsapp_meta import router as whatsapp_meta_router
 from huma.routes.wizard import router as wizard_router
 from huma.services import redis_service as cache
@@ -200,6 +201,7 @@ def create_app() -> FastAPI:
     app.include_router(crm_webhook_router)
     app.include_router(legal_router)
     app.include_router(whatsapp_connect_router)
+    app.include_router(push_router)
     app.include_router(whatsapp_meta_router)
     app.include_router(wizard_router)
     app.include_router(onboarding_router)

@@ -309,6 +309,7 @@ const ConversationList = ({
       background: 'var(--paper)',
       height: '100%',
     }}>
+      {window.TcNotifyPrompt && <window.TcNotifyPrompt/>}
       <ConversationFilterBar
         query={query} onQuery={onQuery}
         filters={filters} onFilters={onFilters} team={team}
@@ -363,7 +364,9 @@ const ConversationList = ({
                   {c.channel === 'web' && <ChannelChip captured={!!c.lead_whatsapp} />}
                   {c.channel === 'instagram' && <ChannelChip channel="instagram" />}
                   {c.assigned_name && (
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>→ {c.assigned_name}</span>
+                    <span title={c.via_team_number ? `Chegou pelo WhatsApp de ${c.assigned_name}` : ''} style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>
+                      {c.via_team_number ? '☎ ' : '→ '}{c.assigned_name}
+                    </span>
                   )}
                 </div>
               </div>

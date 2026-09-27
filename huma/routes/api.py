@@ -1258,6 +1258,8 @@ async def list_conversations_cockpit(
             "assigned_to": r.get("assigned_to", "") or "",
             "assigned_name": r.get("assigned_name", "") or "",
             "is_mine": _is_mine(r),
+            # Número da equipe por onde o lead chegou ("" = número principal)
+            "via_team_number": bool(r.get("line_instance")),
             # Quadro (kanban): o cartão mostra o que a HUMA já sabe do lead.
             "lead_facts": [f for f in (r.get("lead_facts") or []) if isinstance(f, str) and f.strip()][:3],
             "lead_hints": _lead_hints(r.get("lead_state")),
@@ -2277,6 +2279,16 @@ async def conversation_transfer_cockpit(
                 f"Cockpit transfer | aviso falhou | client_id={client_id} | phone={phone} | "
                 f"{type(e).__name__}: {e}"
             )
+
+    if not same_person:
+        from huma.services import team_notify
+        extra = await team_notify.notify(
+            client_data, person["email"],
+            f"{actor_name} passou uma conversa pra você",
+            f"{lead_routing.lead_label(conv.lead_name_canonical or '', phone)}" + (f": {note[:160]}" if note else ""),
+            whatsapp_sent=notified, lead_phone=phone,
+        )
+        notified = notified or bool(extra.get("push")) or bool(extra.get("email"))
 
     log.info(
         f"Cockpit transfer | client_id={client_id} | phone={phone} | "
@@ -3403,8 +3415,12 @@ async def _mirror_evolution_echo(client_id: str, parsed: dict) -> None:
     media_url = ""
     try:
         # Só baixa mídia de eco que não é da HUMA (as dela já estão no histórico).
+        _, echo_line = await _client_for_instance(parsed.get("instance") or "")
         if kind in ("image", "audio") and not await human_echo.was_sent_by_huma(client_id, message_id):
-            raw, ct = await wa.fetch_media_evolution(client_id, parsed.get("raw") or {})
+            raw, ct = await wa.fetch_media_evolution(
+                client_id, parsed.get("raw") or {},
+                instance=(parsed.get("instance") or "") if echo_line is not None else "",
+            )
             media_url = await lead_media.upload(client_id, phone, kind, raw, ct)
     except Exception as e:
         log.warning(f"Webhook Evolution | mídia do eco não baixou | client={client_id} | {type(e).__name__}: {e}")
@@ -3432,11 +3448,83 @@ async def _mirror_meta_echo(client_id: str, echo: dict) -> None:
     )
 
 
+async def _client_for_instance(instance: str) -> tuple[Any, Optional[dict]]:
+    """
+    Dono de uma instância do Evolution: (conta, linha). A linha vem
+    preenchida quando a instância é o número de alguém da equipe; None
+    quando é o número principal do negócio.
+    """
+    from huma.services import lines_service as lines
+
+    if not instance:
+        return None, None
+    client = await db.get_client_by_evolution_instance(instance)
+    if client:
+        return client, None
+    line = await lines.get_line(instance)
+    if not line:
+        return None, None
+    return await db.get_client(line.get("client_id") or ""), line
+
+
+async def _line_gate(client: Any, line: dict, phone: str) -> str:
+    """
+    A HUMA pode atender essa mensagem que chegou no número de uma
+    pessoa? Devolve "" pra atender, ou o motivo pra ignorar.
+    """
+    from huma.services import lines_service as lines
+
+    sender = lines.digits(phone)
+    if sender in lines.own_numbers(client, await lines.list_lines(client.client_id)):
+        return "own_number"
+    if lines.needs_learning(line):
+        await lines.learn_contacts(line)
+        line = (await lines.get_line(line["instance"], use_cache=False)) or line
+    if (line.get("status") or "") != lines.STATUS_ACTIVE:
+        return "line_not_ready"
+    if await lines.is_known(line["instance"], phone):
+        return "known_contact"
+    return ""
+
+
+async def _claim_for_line(client: Any, line: dict, phone: str) -> None:
+    """
+    Lead que chega no número de uma pessoa já nasce na carteira dela, e
+    a resposta passa a sair por esse número. Não troca o dono de um lead
+    que já é de outra pessoa. Nunca levanta.
+    """
+    from huma.core import lead_routing
+    from huma.services import lines_service as lines
+
+    try:
+        await lines.remember_route(client.client_id, phone, line["instance"])
+        conv = await db.get_conversation(client.client_id, phone)
+        changed = False
+        if conv.line_instance != line["instance"]:
+            conv.line_instance = line["instance"]
+            changed = True
+        if not conv.assigned_to:
+            person = lead_routing.find_member(client, line.get("owner_email") or "")
+            if person:
+                conv.assigned_to = person["email"]
+                conv.assigned_name = person["name"]
+                conv.assigned_at = datetime.utcnow()
+                changed = True
+        if changed:
+            await db.save_conversation(conv)
+    except Exception as e:
+        log.warning(
+            f"Webhook Evolution | número da equipe | não marcou a conversa | "
+            f"client={client.client_id} | {type(e).__name__}: {e}"
+        )
+
+
 async def _ingest_evolution_media(
     client_id: str, phone: str, media_type: str, message: dict, caption: str, bg: BackgroundTasks,
+    instance: str = "",
 ) -> None:
     """Baixa mídia do Evolution (base64) e delega pra ingestão comum."""
-    raw, ct = await wa.fetch_media_evolution(client_id, message)
+    raw, ct = await wa.fetch_media_evolution(client_id, message, instance=instance)
     await _ingest_media_message(client_id, phone, media_type, caption, raw, ct, bg)
 
 
@@ -3480,7 +3568,7 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
     # Eco do próprio número: pode ser a HUMA (enviou pela API) ou um humano
     # respondendo pelo aparelho. Quem decide é o human_echo, em background.
     if parsed["from_me"]:
-        echo_client = await db.get_client_by_evolution_instance(parsed["instance"]) if parsed["instance"] else None
+        echo_client, echo_line = await _client_for_instance(parsed["instance"])
         if not echo_client or not parsed["phone"]:
             return {"status": "ignored", "reason": "from_me"}
         bg.add_task(_mirror_evolution_echo, echo_client.client_id, parsed)
@@ -3494,10 +3582,23 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
     if not instance or not phone:
         return {"status": "ignored", "reason": "no_instance_or_phone"}
 
-    client = await db.get_client_by_evolution_instance(instance)
+    client, line = await _client_for_instance(instance)
     if not client:
         log.warning(f"Webhook Evolution | instância sem cliente | instance={instance}")
         return {"status": "ignored", "reason": "unknown_instance"}
+
+    # Número da equipe (pessoal): a HUMA só atende quem chega DEPOIS da
+    # conexão. Contato antigo, aviso interno e o período de aprendizado
+    # ficam de fora. Número principal não passa por aqui.
+    if line is not None:
+        skip = await _line_gate(client, line, phone)
+        if skip:
+            log.info(
+                f"Webhook Evolution | número da equipe | ignorado | client={client.client_id} | "
+                f"instance={instance} | motivo={skip}"
+            )
+            return {"status": "ignored", "reason": skip}
+        await _claim_for_line(client, line, phone)
 
     # Guarda o endereço EXATO de entrada (dígitos -> jid completo) pra que a
     # resposta saia no MESMO jid. Crítico pra contatos @lid: o número real é
@@ -3519,6 +3620,7 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
         bg.add_task(
             _ingest_evolution_media,
             client.client_id, phone, media_type, parsed.get("raw") or {}, text, bg,
+            instance if line is not None else "",
         )
         log.info(f"Webhook Evolution | mídia {media_type} | client={client.client_id} | phone={phone}")
         return {"status": "received"}

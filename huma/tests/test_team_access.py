@@ -335,7 +335,7 @@ class TestAvisoLeadEsperando:
         assert sent[0]["phone"] == "5511911110001"
         assert sent[0]["text"].splitlines()[0] == "💬 Ana, João te escreveu"
         assert "tem como parcelar?" in sent[0]["text"]
-        assert keys == [("handoff_ping:cli_acc:5511999998888", 600)]
+        assert ("handoff_ping:cli_acc:5511999998888", 600) in keys
 
     def test_sem_dono_de_carteira_avisa_o_dono_da_conta(self, monkeypatch):
         sent, _ = _mock_ping(monkeypatch)

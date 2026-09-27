@@ -226,6 +226,9 @@ const EqPerson = ({ person, stats, isOwner, tone, onChanged, onError }) => {
           <Row m={person} tone={tone} onChanged={onChanged} onRemove={remove} onError={onError}/>
         </div>
       )}
+      {window.TcLineCard && person.email && (
+        <window.TcLineCard compact email={person.email} name={person.name || person.email}/>
+      )}
     </div>
   );
 };
