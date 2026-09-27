@@ -226,7 +226,8 @@ class TestHandoffHandler:
         assert conv.handoff_status == "handed_off"
         assert conv.handed_off_at is not None
         assert "João" in conv.handoff_summary
-        assert conv.stage == "won"
+        # 2026-09-27: qualificar não é fechar. "won" só com venda de verdade.
+        assert conv.stage == "qualified"
 
         # Provider chamado com payload certo
         assert FakeProvider.called_with["target"] == "5511988887777"

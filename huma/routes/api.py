@@ -322,10 +322,14 @@ async def get_reports(
     days: int = 30,
     date_from: str = "",
     date_to: str = "",
+    seller: str = "",
     client=Depends(verify_api_key),
 ) -> dict:
     """
     Relatório de outcome do período pro Cockpit (ReportsScreen).
+
+    seller (e-mail, opcional): o mesmo relatório contando só os leads
+    que são dessa pessoa da equipe. Vazio = geral.
 
     Seções condicionais às metas (capabilities) do cliente: vendas só
     pra quem vende, agenda só pra quem agenda, qualificação só pra
@@ -344,6 +348,14 @@ async def get_reports(
         if date_from < limite:
             raise HTTPException(400, "Período máximo: 12 meses atrás")
     from huma.services import report_service
+    seller = (seller or "").strip().lower()
+    if seller:
+        from huma.core import lead_routing
+        if not lead_routing.find_member(client, seller):
+            raise HTTPException(400, "Essa pessoa não está na equipe.")
+        return await report_service.build_report(
+            client, days=days, date_from=date_from, date_to=date_to, seller=seller,
+        )
     return await report_service.build_report(
         client, days=days, date_from=date_from, date_to=date_to,
     )
@@ -1118,6 +1130,7 @@ async def list_conversations_cockpit(
     assignee: str = "",
     date_from: str = "",
     date_to: str = "",
+    portfolio: str = "",
     creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     huma_session: Optional[str] = Cookie(None),
 ) -> dict:
@@ -1138,6 +1151,9 @@ async def list_conversations_cockpit(
         (vazio = todos)
       - date_from / date_to: yyyy-mm-dd em horário de Brasília, sobre
         a última mensagem; date_to é inclusivo (vazio = sem esse lado)
+      - portfolio: carteira, de quem o lead é (mesmo com a HUMA
+        atendendo): "me" (quem está logado), "dono" ou e-mail
+        (vazio = todos). É o "Minhas conversas".
 
     Regra dos filtros: huma/core/conversation_filters.py.
 
@@ -1164,13 +1180,30 @@ async def list_conversations_cockpit(
     if date_from and date_to and date_from > date_to:
         raise HTTPException(400, "date_from não pode ser depois de date_to")
     since_iso, until_iso = cf.date_window(date_from, date_to)
+    portfolio = (portfolio or "").strip().lower()
+    if len(portfolio) > 200:
+        raise HTTPException(400, "portfolio inválido")
+    if portfolio == "me":
+        # Quem está logado. Dono, Bearer e sessão antiga (sem e-mail) = dono.
+        actor = _cockpit_actor(client_data, creds, huma_session)
+        portfolio = actor["email"] if actor and not actor["is_owner"] else "dono"
+    # Atendente só vê o que é dele, peça o que pedir. Lead que a HUMA
+    # ainda está qualificando não é de ninguém: fica só pro dono/admin.
+    restricted = _restricted_email(client_data, creds, huma_session)
+    if restricted:
+        portfolio = restricted
+        assignee = ""
 
-    rows = await db.list_conversations_for_cockpit(
-        client_id, filter, limit,
+    list_kwargs: dict = dict(
         channel=channel, assignee=assignee,
         since_iso=since_iso, until_iso=until_iso,
         owner_email=(getattr(client_data, "owner_email", "") or ""),
     )
+    # Só passa o kwarg quando preenchido (mesma postura do _cal_kwargs):
+    # sem "Minhas conversas" a chamada é idêntica à de antes.
+    if portfolio:
+        list_kwargs["portfolio"] = portfolio
+    rows = await db.list_conversations_for_cockpit(client_id, filter, limit, **list_kwargs)
 
     import re as _re
     # Markers internos: mensagens que começam com "[MARKER..." (maiúsculas/underline/espaço).
@@ -1214,9 +1247,89 @@ async def list_conversations_cockpit(
     log.info(
         f"Cockpit list_conversations | client_id={client_id} | "
         f"filter={filter} | channel={channel or '-'} | assignee={assignee or '-'} | "
+        f"portfolio={portfolio or '-'} | "
         f"date_from={date_from or '-'} | date_to={date_to or '-'} | count={len(items)}"
     )
     return {"items": items, "total": len(items)}
+
+
+def _session_email(creds: Any, huma_session: Optional[str]) -> str:
+    """
+    E-mail de quem está logado ("" quando não dá pra saber: Bearer
+    api_key ou sessão antiga, sem e-mail = o dono, como antes da equipe).
+    """
+    if creds:
+        return ""
+    from huma.core.auth import session_actor
+
+    _, email = session_actor(huma_session or "")
+    return (email or "").strip().lower()
+
+
+def _cockpit_actor(client_data: Any, creds: Any, huma_session: Optional[str]) -> Optional[dict]:
+    """
+    Quem está logado no Cockpit: {email, name, phone, is_owner}.
+
+    Sai do e-mail que o cookie de sessão carrega. Bearer api_key, sessão
+    antiga (sem e-mail) e e-mail que não é de ninguém da conta → None
+    (quem chama trata como "o dono", comportamento de antes da equipe).
+    """
+    from huma.core import lead_routing
+
+    email = _session_email(creds, huma_session)
+    if not email:
+        return None
+    return lead_routing.find_member(client_data, email)
+
+
+async def _only_own_rows(
+    client_data: Any, creds: Any, huma_session: Optional[str], client_id: str, rows: list,
+) -> list:
+    """
+    Recorta linhas de conversa (Agenda, Clientes) pro que é do atendente
+    logado. Quem vê a conta inteira recebe a lista como veio.
+    """
+    email = _restricted_email(client_data, creds, huma_session)
+    if not email or not rows:
+        return rows
+    mine = await db.list_portfolio_phones(client_id, email)
+    return [r for r in rows if str(r.get("phone") or "") in mine]
+
+
+_NOT_YOUR_CONVERSATION = (
+    "Essa conversa não está com você. Peça ao dono da conta ou a quem está com ela pra transferir."
+)
+
+
+def _restricted_email(client_data: Any, creds: Any, huma_session: Optional[str]) -> str:
+    """
+    E-mail do ATENDENTE logado, ou "" pra quem vê a conta inteira.
+
+    Dono e Administrativo veem tudo. Os outros papéis só veem as
+    conversas que são deles (carteira). E-mail que não é de ninguém da
+    conta (pessoa removida com cookie ainda válido) também é restrito:
+    não tem carteira, então não vê nada.
+    """
+    from huma.core import permissions
+
+    email = _session_email(creds, huma_session)
+    if not email:
+        return ""
+    role = permissions.role_for(client_data, email)
+    return "" if permissions.sees_all_conversations(role) else email
+
+
+def _ensure_conversation_access(
+    client_data: Any, creds: Any, huma_session: Optional[str], conv: Any,
+) -> None:
+    """403 quando o atendente tenta abrir ou mexer numa conversa que não é dele."""
+    email = _restricted_email(client_data, creds, huma_session)
+    if email and (getattr(conv, "assigned_to", "") or "").strip().lower() != email:
+        log.info(
+            f"Cockpit acesso negado | client_id={getattr(client_data, 'client_id', '?')} | "
+            f"phone={getattr(conv, 'phone', '?')} | atendente tentou conversa de outra pessoa"
+        )
+        raise HTTPException(403, _NOT_YOUR_CONVERSATION)
 
 
 def _lead_hints(lead_state: Any) -> dict:
@@ -1254,7 +1367,7 @@ async def set_stage_cockpit(
     não pro dono. Fechar marca o lead como cliente (reason "manual").
     Mesma etapa = no-op (changed=False).
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
     from huma.core import conversation_filters as cf
 
@@ -1265,6 +1378,7 @@ async def set_stage_cockpit(
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
 
     previous = conv.stage or "discovery"
     if previous == stage:
@@ -1303,11 +1417,12 @@ async def get_conversation_cockpit(
 
     404 se conversa nunca recebeu mensagem (history vazio e sem last_message_at).
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
 
     log.info(
         f"Cockpit get_conversation | client_id={client_id} | "
@@ -1382,6 +1497,8 @@ async def create_appointment_cockpit(
     identity = await db.get_client(client_id)
     if identity is None:
         raise HTTPException(404, f"Cliente {client_id} não encontrado")
+    creator = _cockpit_actor(identity, creds, huma_session)
+    creator_restricted = _restricted_email(identity, creds, huma_session)
 
     phone = "".join(c for c in payload.phone if c.isdigit())
     if len(phone) < 10:
@@ -1403,6 +1520,10 @@ async def create_appointment_cockpit(
         raise HTTPException(400, "E-mail inválido.")
 
     conv = await db.get_conversation(client_id, phone)
+    if creator_restricted and conv.assigned_to and conv.assigned_to.strip().lower() != creator_restricted:
+        raise HTTPException(
+            403, "Esse cliente está com outra pessoa da equipe. Peça pra ela agendar ou transferir pra você.",
+        )
     request = SchedulingRequest(
         client_id=client_id,
         phone=phone,
@@ -1459,6 +1580,12 @@ async def create_appointment_cockpit(
         conv.last_message_at = datetime.utcnow()
     if mark_as_customer(conv, "appointment"):
         log.info(f"Customer | phone={phone} | motivo=appointment | via=cockpit")
+    # Quem agenda um contato que não é de ninguém fica com ele (senão o
+    # atendente criaria um agendamento que ele mesmo não enxerga).
+    if creator and not creator["is_owner"] and not conv.assigned_to:
+        conv.assigned_to = creator["email"]
+        conv.assigned_name = creator["name"]
+        conv.assigned_at = datetime.utcnow()
     await db.save_conversation(conv)
 
     notified = False
@@ -1775,9 +1902,10 @@ async def list_customers_cockpit(
     Junta as compras aprovadas (tabela payments, por telefone) e o
     agendamento ativo. `q` filtra por nome, telefone, e-mail ou anotação.
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
     try:
         rows = await db.list_customers_for_cockpit(client_id)
+        rows = await _only_own_rows(client_data, creds, huma_session, client_id, rows)
     except Exception as e:
         friendly = _customer_migration_error(e)
         if friendly:
@@ -1811,9 +1939,10 @@ async def export_customers_csv(
     """Exporta a aba Clientes em CSV (UTF-8 com BOM, separador ';' — abre certo no Excel BR)."""
     from huma.core.customers import customers_to_csv
 
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
     try:
         rows = await db.list_customers_for_cockpit(client_id)
+        rows = await _only_own_rows(client_data, creds, huma_session, client_id, rows)
     except Exception as e:
         friendly = _customer_migration_error(e)
         if friendly:
@@ -1850,11 +1979,12 @@ async def set_customer_cockpit(
     Marcar: a primeira marcação vence (customer_since não é sobrescrito).
     Desmarcar: único caminho que grava is_customer=false; anotações ficam.
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
 
     try:
         updates = await db.set_customer_flag(client_id, phone, payload.is_customer, reason="manual")
@@ -1888,11 +2018,12 @@ async def set_owner_notes_cockpit(
     """
     from huma.core.customers import clean_owner_notes
 
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
 
     notes = clean_owner_notes(payload.owner_notes)
     try:
@@ -1953,12 +2084,22 @@ async def conversation_handoff_cockpit(
 
     Não envia mensagem pro lead — só muda o estado interno. Se o dono
     quiser avisar o lead da transferência, manda manualmente via /send.
+
+    Equipe dentro da conta (2026-09-27):
+      - Quem ASSUME uma conversa que não é de ninguém fica com ela
+        (assigned_to = quem está logado). Conversa que já é de alguém
+        continua sendo dessa pessoa; pra mudar o dono, é Transferir.
+      - DEVOLVER pra HUMA mantém a carteira: o lead continua sendo de
+        quem era e volta pra mesma pessoa no próximo handoff.
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
+
+    from huma.core import lead_routing
 
     assigned_changed = False
     if payload.takeover:
@@ -1970,34 +2111,24 @@ async def conversation_handoff_cockpit(
         # O e-mail precisa ser de alguém da equipe (ou do próprio dono).
         wanted = (payload.assigned_to or "").strip().lower()
         if wanted:
-            client_data = await db.get_client(client_id)
-            members = [
-                m for m in (getattr(client_data, "team_members", None) or [])
-                if isinstance(m, dict) and str(m.get("email") or "").lower() == wanted
-            ]
-            owner_email = (getattr(client_data, "owner_email", "") or "").strip().lower()
-            if members:
-                from huma.core import lead_routing
-                conv.assigned_to = wanted
-                conv.assigned_name = lead_routing.seller_label(members[0])
-            elif owner_email and wanted == owner_email:
-                conv.assigned_to = wanted
-                conv.assigned_name = (getattr(client_data, "owner_name", "") or "").strip() or "Dono"
-            else:
+            person = lead_routing.find_member(client_data, wanted)
+            if not person:
                 raise HTTPException(400, "Essa pessoa não está na equipe.")
+            conv.assigned_to = person["email"]
+            conv.assigned_name = person["name"]
             conv.assigned_at = datetime.utcnow()
             assigned_changed = True
+        elif not conv.assigned_to:
+            actor = _cockpit_actor(client_data, creds, huma_session)
+            if actor:
+                conv.assigned_to = actor["email"]
+                conv.assigned_name = actor["name"]
+                conv.assigned_at = datetime.utcnow()
+                assigned_changed = True
     else:
         conv.handoff_status = "active"
         conv.handed_off_at = None
         conv.handoff_summary = ""
-        # Devolver pra HUMA solta o lead de quem estava com ele. O save só
-        # grava assigned_* quando preenchido, então limpar é update direto.
-        if conv.assigned_to:
-            conv.assigned_to = ""
-            conv.assigned_name = ""
-            conv.assigned_at = None
-            assigned_changed = True
 
     await db.save_conversation(conv)
     if assigned_changed:
@@ -2013,6 +2144,130 @@ async def conversation_handoff_cockpit(
         "handed_off_at": conv.handed_off_at.isoformat() if conv.handed_off_at else None,
         "assigned_to": conv.assigned_to or "",
         "assigned_name": conv.assigned_name or "",
+    }
+
+
+class TransferPayload(BaseModel):
+    """Payload pra passar a conversa pra outra pessoa da conta."""
+    assigned_to: str = Field(
+        default="", max_length=254,
+        description="E-mail de quem recebe (membro da equipe ou dono). Vazio = tira da carteira de todo mundo.",
+    )
+    note: str = Field(default="", max_length=500, description="Nota interna pra quem recebe (o lead nunca vê)")
+
+
+@router.post("/api/conversations/{client_id}/{phone}/transfer", tags=["Cockpit"])
+async def conversation_transfer_cockpit(
+    client_id: str,
+    phone: str,
+    payload: TransferPayload,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Transfere a conversa pra outra pessoa da conta, a qualquer momento,
+    com uma nota interna (2026-09-27).
+
+    Com destino: o lead passa a ser dessa pessoa (carteira), um humano
+    assume (handoff_status='handed_off'), a nota fica registrada na
+    conversa (só a equipe vê) e quem recebeu é avisado no WhatsApp quando
+    tem número cadastrado. Falha no aviso NÃO desfaz a transferência.
+
+    Sem destino (assigned_to vazio): tira o lead da carteira de todo
+    mundo, sem mexer em quem está atendendo.
+
+    Nada é enviado pro lead.
+    """
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
+
+    from huma.core import lead_routing
+
+    wanted = (payload.assigned_to or "").strip().lower()
+    note = " ".join((payload.note or "").split()).strip()
+    if not wanted and _restricted_email(client_data, creds, huma_session):
+        # Atendente passa a conversa pra alguém; soltar o lead no ar é do dono.
+        raise HTTPException(400, "Escolha pra quem passar a conversa.")
+    actor = _cockpit_actor(client_data, creds, huma_session)
+    actor_name = (actor or {}).get("name") or (getattr(client_data, "owner_name", "") or "").strip() or "Dono"
+
+    if not wanted:
+        previous = conv.assigned_to or ""
+        conv.assigned_to = ""
+        conv.assigned_name = ""
+        conv.assigned_at = None
+        await db.set_assignment(client_id, phone, "", "")
+        log.info(
+            f"Cockpit transfer | client_id={client_id} | phone={phone} | "
+            f"carteira limpa | antes={previous or '-'}"
+        )
+        return {
+            "status": "ok", "handoff_status": conv.handoff_status,
+            "assigned_to": "", "assigned_name": "", "notified": False,
+        }
+
+    person = lead_routing.find_member(client_data, wanted)
+    if not person:
+        raise HTTPException(400, "Essa pessoa não está na equipe.")
+    if wanted == (conv.assigned_to or "").strip().lower() and conv.handoff_status == "handed_off":
+        raise HTTPException(400, f"Essa conversa já está com {person['name']}.")
+
+    now = datetime.utcnow()
+    conv.handoff_status = "handed_off"
+    conv.handed_off_at = now
+    conv.assigned_to = person["email"]
+    conv.assigned_name = person["name"]
+    conv.assigned_at = now
+    conv.history.append({
+        "role": "assistant",
+        "content": lead_routing.transfer_marker(actor_name, person["name"], note),
+        "note": {"from": actor_name, "to": person["name"], "text": note},
+        "timestamp": now.isoformat(),
+    })
+
+    try:
+        await db.save_conversation(conv)
+    except Exception as e:
+        log.error(f"Cockpit transfer | client_id={client_id} | phone={phone} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui transferir agora. Tenta de novo.")
+    await db.set_assignment(client_id, phone, conv.assigned_to, conv.assigned_name)
+
+    # Avisa quem recebeu (best-effort). Quem transfere pra si mesmo não
+    # precisa de aviso; sem WhatsApp cadastrado, a pessoa vê no Cockpit.
+    notified = False
+    same_person = bool(actor) and actor["email"] == person["email"]
+    if person["phone"] and not same_person:
+        try:
+            msg_id = await wa.notify_owner(
+                person["phone"],
+                lead_routing.transfer_notice(
+                    person["name"], actor_name, conv.lead_name_canonical or "", phone, note,
+                ),
+                client_id=client_id,
+            )
+            notified = bool(msg_id)
+        except Exception as e:
+            log.warning(
+                f"Cockpit transfer | aviso falhou | client_id={client_id} | phone={phone} | "
+                f"{type(e).__name__}: {e}"
+            )
+
+    log.info(
+        f"Cockpit transfer | client_id={client_id} | phone={phone} | "
+        f"de={(actor or {}).get('email') or 'dono'} | pra={person['email']} | "
+        f"nota={len(note)} | notified={notified}"
+    )
+    return {
+        "status": "ok",
+        "handoff_status": conv.handoff_status,
+        "assigned_to": conv.assigned_to,
+        "assigned_name": conv.assigned_name,
+        "notified": notified,
+        "has_phone": bool(person["phone"]),
     }
 
 
@@ -2040,7 +2295,7 @@ async def conversation_send_cockpit(
       404 — conversa inexistente
       502 — Twilio/Meta retornou erro (msg não foi enviada)
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
     text = payload.text.strip()
     if not text:
@@ -2049,6 +2304,7 @@ async def conversation_send_cockpit(
     conv = await db.get_conversation(client_id, phone)
     if not conv.history and not conv.last_message_at:
         raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
 
     # Balcão (canal web): não existe envio de WhatsApp — a entrega é o
     # próprio history, que a página /c/<id> consome via poll de mensagens.
@@ -2062,12 +2318,19 @@ async def conversation_send_cockpit(
             raise HTTPException(502, "Falha ao enviar mensagem pelo WhatsApp")
 
     now = datetime.utcnow()
-    conv.history.append({
+    entry = {
         "role": "assistant",
         "content": text,
         "by": "owner",
         "timestamp": now.isoformat(),
-    })
+    }
+    # Equipe dentro da conta: a conversa mostra QUEM da equipe respondeu.
+    # Sem sessão identificada (Bearer, sessão antiga) fica como antes.
+    actor = _cockpit_actor(client_data, creds, huma_session)
+    if actor:
+        entry["by_name"] = actor["name"]
+        entry["by_email"] = actor["email"]
+    conv.history.append(entry)
     conv.last_message_at = now
     await db.save_conversation(conv)
 
@@ -2149,9 +2412,10 @@ async def list_appointments_cockpit(
       - status: "confirmed" | "done" | "cancelled" (derivado de stage + data)
       - phone: pra cockpit linkar com a conversa
     """
-    await verify_api_key_manual(client_id, creds, huma_session)
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
 
     rows = await db.list_active_appointments(limit=300, client_id=client_id)
+    rows = await _only_own_rows(client_data, creds, huma_session, client_id, rows)
 
     now = datetime.utcnow()
     items: list[dict] = []

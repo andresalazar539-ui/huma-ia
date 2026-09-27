@@ -2317,9 +2317,9 @@ const PerfilSecurity = ({ settings }) => {
 // Espelho de huma/core/permissions.py (ROLE_DESCRIPTIONS). O backend é
 // quem barra; aqui a pessoa escolhe sabendo o que cada papel enxerga.
 const TEAM_ROLES = [
-  { id: 'vendedor', label: 'Vendas',         desc: 'Conversas, agenda e clientes. Recebe os leads que a HUMA qualifica.' },
-  { id: 'recepcao', label: 'Recepção',       desc: 'Conversas, agenda e clientes.' },
-  { id: 'admin',    label: 'Administrativo', desc: 'Conversas, relatórios, vendas, uso e faturamento, disparos e divulgação.' },
+  { id: 'vendedor', label: 'Vendas',         desc: 'Só as conversas, a agenda e os clientes que são dele. Recebe os leads que a HUMA qualifica.' },
+  { id: 'recepcao', label: 'Recepção',       desc: 'Só as conversas, a agenda e os clientes que são dela.' },
+  { id: 'admin',    label: 'Administrativo', desc: 'Todas as conversas, relatórios, vendas, uso e faturamento, disparos e divulgação.' },
   { id: 'dono',     label: 'Sócio / dono',   desc: 'Tudo, inclusive ajustes do negócio, integrações e equipe.' },
 ];
 const teamRoleLabel = (id) => (TEAM_ROLES.find(r => r.id === id) || { label: 'Equipe' }).label;
@@ -2338,6 +2338,7 @@ const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
   const [phone, setPhone] = useStateS(m.phone || '');
   const [receives, setReceives] = useStateS(!!m.receives_leads);
   const [specialty, setSpecialty] = useStateS(m.specialty || '');
+  const [regions, setRegions] = useStateS(m.regions || '');
   const [saving, setSaving] = useStateS(false);
   const fmtSince = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }); };
 
@@ -2345,7 +2346,7 @@ const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
     if (saving) return;
     setSaving(true); onError('');
     try {
-      await updateTeamMember(m.email, { role, phone, receives_leads: receives, specialty });
+      await updateTeamMember(m.email, { role, phone, receives_leads: receives, specialty, regions });
       setEditing(false);
       await onChanged();
     } catch (e) { onError(e.message); }
@@ -2364,7 +2365,7 @@ const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
             )}
           </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {teamRoleLabel(m.role)}{m.name ? ` · ${m.email}` : ''}{m.phone ? ` · ${fmtWa(m.phone)}` : ''}{m.specialty ? ` · atende: ${m.specialty}` : ''}{m.invited_at ? ` · desde ${fmtSince(m.invited_at)}` : ''}
+            {teamRoleLabel(m.role)}{m.name ? ` · ${m.email}` : ''}{m.phone ? ` · ${fmtWa(m.phone)}` : ''}{m.specialty ? ` · atende: ${m.specialty}` : ''}{m.regions ? ` · região: ${m.regions}` : ''}{m.invited_at ? ` · desde ${fmtSince(m.invited_at)}` : ''}
           </div>
         </div>
         <Button variant="plain" size="sm" onClick={() => setEditing(!editing)}>{editing ? 'Fechar' : 'Editar'}</Button>
@@ -2387,6 +2388,9 @@ const TeamMemberRow = ({ m, tone, onChanged, onRemove, onError }) => {
             <Field label="Atende (opcional)" half hint="Assuntos separados por vírgula. Quando o lead fala disso, vai pra essa pessoa.">
               <Input placeholder="implantes, ortodontia" value={specialty} onChange={e => setSpecialty(e.target.value)}/>
             </Field>
+            <Field label="Região (opcional)" half hint="DDDs ou estados separados por vírgula, ex.: 11, 19 ou SP, RJ. Lead desse DDD vai pra essa pessoa.">
+              <Input placeholder="11, 19 ou SP" value={regions} onChange={e => setRegions(e.target.value)}/>
+            </Field>
           </div>
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)' }}>
             <input type="checkbox" checked={receives} onChange={e => setReceives(e.target.checked)} style={{ accentColor: 'var(--ink)' }}/>
@@ -2408,6 +2412,7 @@ const InviteModal = ({ onClose }) => {
   const [phone, setPhone] = useStateS('');
   const [receives, setReceives] = useStateS(false);
   const [specialty, setSpecialty] = useStateS('');
+  const [regions, setRegions] = useStateS('');
   const [team, setTeam] = useStateS(null);
   const [err, setErr] = useStateS('');
   const [notice, setNotice] = useStateS('');
@@ -2426,11 +2431,11 @@ const InviteModal = ({ onClose }) => {
     if (!email.trim() || busy) return;
     setBusy(true); setErr(''); setNotice('');
     try {
-      const r = await inviteTeamMember({ email, name, role, phone, receives_leads: receives, specialty });
+      const r = await inviteTeamMember({ email, name, role, phone, receives_leads: receives, specialty, regions });
       setNotice(r.email_sent
         ? `Convite enviado pra ${r.member.email}. A pessoa recebe o e-mail pra criar a senha e entra com ele.`
         : `${r.member.email} já pode entrar: basta usar "Esqueci minha senha" na tela de login com esse e-mail.`);
-      setEmail(''); setName(''); setPhone(''); setSpecialty(''); setReceives(false);
+      setEmail(''); setName(''); setPhone(''); setSpecialty(''); setRegions(''); setReceives(false);
       await load();
     } catch (e) { setErr(e.message); }
     setBusy(false);
@@ -2517,6 +2522,9 @@ const InviteModal = ({ onClose }) => {
               <Field label="Atende (opcional)" half hint="Assuntos separados por vírgula. Quando o lead fala disso, vai pra essa pessoa; senão, rodízio.">
                 <Input placeholder="implantes, ortodontia" value={specialty} onChange={e => setSpecialty(e.target.value)}/>
               </Field>
+              <Field label="Região (opcional)" half hint="DDDs ou estados separados por vírgula, ex.: 11, 19 ou SP, RJ.">
+                <Input placeholder="11, 19 ou SP" value={regions} onChange={e => setRegions(e.target.value)}/>
+              </Field>
             </div>
           )}
           {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
@@ -2566,4 +2574,4 @@ const InviteModal = ({ onClose }) => {
   );
 };
 
-Object.assign(window, { NegocioScreen, PerfilScreen, InviteModal });
+Object.assign(window, { NegocioScreen, PerfilScreen, InviteModal, TeamMemberRow, TEAM_ROLES });

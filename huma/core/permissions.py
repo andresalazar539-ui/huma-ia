@@ -46,6 +46,12 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "equipe": frozenset({"conversas"}),
 }
 
+# Quem enxerga TODAS as conversas da conta (2026-09-27). Os outros papéis
+# são atendentes: só veem as conversas que são deles (carteira). Lead que
+# a HUMA ainda está qualificando não é de ninguém, então só dono e
+# administrativo veem.
+ROLES_SEE_ALL_CONVERSATIONS: frozenset[str] = frozenset({"dono", "admin"})
+
 ROLE_LABELS: dict[str, str] = {
     "dono": "Dono",
     "vendedor": "Vendas",
@@ -55,9 +61,9 @@ ROLE_LABELS: dict[str, str] = {
 }
 
 ROLE_DESCRIPTIONS: dict[str, str] = {
-    "vendedor": "Conversas, agenda e clientes. Recebe os leads que a HUMA qualifica.",
-    "recepcao": "Conversas, agenda e clientes.",
-    "admin": "Conversas, relatórios, vendas, uso e faturamento, disparos e divulgação.",
+    "vendedor": "Só as conversas, a agenda e os clientes que são dele. Recebe os leads que a HUMA qualifica.",
+    "recepcao": "Só as conversas, a agenda e os clientes que são dela.",
+    "admin": "Todas as conversas, relatórios, vendas, uso e faturamento, disparos e divulgação.",
     "dono": "Tudo, inclusive ajustes do negócio, integrações e equipe.",
 }
 
@@ -80,6 +86,7 @@ SCREEN_PERMISSIONS: dict[str, str] = {
     "voz": "ajustes",
     "integracoes": "ajustes",
     "negocio": "ajustes",
+    "equipe": "equipe",
 }
 
 # (métodos ou "*", regex do path, permissão). Primeira que casa vence.
@@ -153,6 +160,11 @@ def can(role: str, permission: Optional[str]) -> bool:
     if permission is None:
         return True
     return permission in ROLE_PERMISSIONS.get(normalize_role(role), frozenset())
+
+
+def sees_all_conversations(role: str) -> bool:
+    """True pra quem vê a conta inteira; False pra atendente (só a carteira dele)."""
+    return normalize_role(role) in ROLES_SEE_ALL_CONVERSATIONS
 
 
 def permission_for(method: str, path: str) -> Optional[str]:

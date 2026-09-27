@@ -100,6 +100,146 @@ const OrigemBadge = ({ categoria }) => {
   );
 };
 
+// "O que a HUMA entregou" (2026-09-27): a prova de cada lead passado pra
+// equipe. Responde "a HUMA está mandando lead ruim?" com fato.
+const _fmtQuando = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+};
+const ENTREGA_CANAL = { whatsapp: 'WhatsApp', instagram: 'Instagram', web: 'Chat do site' };
+
+const EntregaLeads = ({ leads, showVendedor }) => {
+  const [open, setOpen] = React.useState(null);
+  const [all, setAll] = React.useState(false);
+  if (!leads || leads.length === 0) return null;
+  const shown = all ? leads : leads.slice(0, 6);
+  return (
+    <div style={{
+      border: '1px solid var(--paper-edge)', borderRadius: 16,
+      background: 'var(--paper-raised)', padding: '6px 20px 14px',
+    }}>
+      {shown.map((l, i) => {
+        const isOpen = open === i;
+        return (
+          <div key={(l.phone || '') + i} style={{ borderTop: i ? '1px solid var(--paper-edge)' : 'none' }}>
+            <button onClick={() => setOpen(isOpen ? null : i)} style={{
+              display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left',
+              border: 'none', background: 'transparent', cursor: 'pointer', padding: '12px 0',
+            }}>
+              <span style={{
+                width: 8, height: 8, borderRadius: 999, flexShrink: 0,
+                background: l.fechou ? 'var(--sage)' : (l.completo ? '#7A5BA8' : 'var(--ember)'),
+              }}/>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {l.nome || 'Sem nome'}
+                  <span style={{ fontWeight: 400, color: 'var(--ink-3)' }}>
+                    {' · '}{ENTREGA_CANAL[l.canal] || l.canal}{l.origem ? ` · ${l.origem}` : ''}{showVendedor && l.vendedor ? ` · com ${l.vendedor}` : ''}
+                  </span>
+                </span>
+                {!isOpen && l.resumo && (
+                  <span style={{ display: 'block', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.resumo}</span>
+                )}
+              </span>
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.04em', textTransform: 'uppercase',
+                padding: '2px 8px', borderRadius: 999, flexShrink: 0,
+                background: l.fechou ? 'var(--sage-tint)' : (l.completo ? '#EFE9F7' : '#FADFD0'),
+                color: l.fechou ? 'var(--sage-ink)' : (l.completo ? '#4E3578' : '#B33A18'),
+              }}>{l.fechou ? 'fechou' : (l.completo ? 'completo' : 'incompleto')}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-4)', flexShrink: 0, width: 40, textAlign: 'right' }}>{_fmtQuando(l.quando)}</span>
+            </button>
+            {isOpen && (
+              <div style={{ padding: '0 0 14px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+                  {l.resumo || 'A HUMA não registrou resumo nesta entrega.'}
+                </div>
+                {(l.dados || []).length > 0 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {l.dados.map((d, k) => (
+                      <span key={k} style={{
+                        fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)',
+                        padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)',
+                      }}>{d}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {leads.length > 6 && (
+        <button onClick={() => setAll(a => !a)} style={{
+          border: 'none', background: 'transparent', cursor: 'pointer', padding: '10px 0 0',
+          fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink-2)', textDecoration: 'underline',
+        }}>{all ? 'Mostrar menos' : `Ver os ${leads.length} leads entregues`}</button>
+      )}
+    </div>
+  );
+};
+
+// Tabela "Equipe" (2026-09-27): o que cada pessoa recebeu e o que fechou.
+// "Fechou" é fato (virou cliente, ganhou no CRM ou pagamento aprovado).
+const EquipeTable = ({ vendedores }) => {
+  if (!vendedores || vendedores.length === 0) return null;
+  const maxRec = Math.max(...vendedores.map(v => v.recebidos || 0), 1);
+  const th = {
+    fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+    letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)',
+  };
+  const num = { fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', textAlign: 'right' };
+  const cols = 'minmax(140px, 1.4fr) minmax(90px, 1fr) 80px 110px 80px 80px 110px';
+
+  return (
+    <div style={{
+      border: '1px solid var(--paper-edge)', borderRadius: 16,
+      background: 'var(--paper-raised)', padding: '18px 20px',
+      display: 'flex', flexDirection: 'column', gap: 0, overflowX: 'auto',
+    }}>
+      <div style={{ ...th, marginBottom: 12 }}>O que cada pessoa recebeu e o que fechou</div>
+      <div style={{ minWidth: 720 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
+          <div style={th}>Pessoa</div>
+          <div/>
+          <div style={{ ...th, textAlign: 'right' }}>Leads</div>
+          <div style={{ ...th, textAlign: 'right' }}>Em atendimento</div>
+          <div style={{ ...th, textAlign: 'right' }}>Fechou</div>
+          <div style={{ ...th, textAlign: 'right' }}>Conversão</div>
+          <div style={{ ...th, textAlign: 'right' }}>Receita</div>
+        </div>
+        {vendedores.map((v, i) => (
+          <div key={v.email || v.nome || i} style={{
+            display: 'grid', gridTemplateColumns: cols, gap: 12, alignItems: 'center',
+            padding: '12px 0', borderTop: '1px solid var(--paper-edge)',
+          }}>
+            <div style={{
+              fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }} title={v.email || ''}>{v.nome}</div>
+            <div style={{ height: 6, borderRadius: 3, background: 'var(--paper-sunk)', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', borderRadius: 3, background: 'var(--ink)',
+                width: `${Math.max(4, Math.round(100 * (v.recebidos || 0) / maxRec))}%`,
+              }}/>
+            </div>
+            <div style={num}>{v.recebidos || 0}</div>
+            <div style={num}>{v.em_atendimento || 0}</div>
+            <div style={{ ...num, fontWeight: 600 }}>{v.fechados || 0}</div>
+            <div style={num}>{v.conversao || '0%'}</div>
+            <div style={num}>{v.receita_cents ? v.receita_display : ''}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
+        Conta como fechado o lead que virou cliente (pagou, agendou ou foi marcado), foi ganho no CRM ou teve pagamento aprovado no período.
+      </div>
+    </div>
+  );
+};
+
 // Tabela "De onde veio cada conversa — e o que virou" (seção origem)
 const OrigemTable = ({ fontes }) => {
   if (!fontes || fontes.length === 0) return null;
@@ -199,6 +339,10 @@ const ReportsScreen = () => {
   const [freq, setFreq] = useStateR(null);
   const [deliveryOpen, setDeliveryOpen] = useStateR(false);
 
+  // Relatório geral ou de UMA pessoa da equipe (e-mail); '' = geral
+  const [seller, setSeller] = useStateR('');
+  const [people, setPeople] = useStateR([]);
+
   const [report, setReport] = useStateR(null);
   const [prevReport, setPrevReport] = useStateR(null);
   const [state, setState] = useStateR('loading'); // loading | ready | error
@@ -222,15 +366,30 @@ const ReportsScreen = () => {
   useEffectR(() => {
     setState('loading');
     const cur = periodo === 'custom'
-      ? fetchReport(30, customFrom, customTo)
-      : fetchReport(parseInt(periodo));
+      ? fetchReport(30, customFrom, customTo, seller)
+      : fetchReport(parseInt(periodo), '', '', seller);
     const prev = compare
-      ? fetchReport(30, cmpRangeFrom, cmpRangeTo).catch(() => null)
+      ? fetchReport(30, cmpRangeFrom, cmpRangeTo, seller).catch(() => null)
       : Promise.resolve(null);
     Promise.all([cur, prev])
       .then(([r, p]) => { setReport(r); setPrevReport(p); setState('ready'); })
       .catch(() => setState('error'));
-  }, [periodo, customFrom, customTo, compare, compareMode, cmpFrom, cmpTo]);
+  }, [periodo, customFrom, customTo, compare, compareMode, cmpFrom, cmpTo, seller]);
+
+  // Pessoas da conta pro seletor "Geral | Ana | Bia" (só aparece com equipe)
+  useEffectR(() => {
+    if (!window.fetchTeam) return;
+    window.fetchTeam().then(t => {
+      const list = [];
+      const members = (t.members || []).filter(m => m && m.email);
+      if (members.length && t.owner && t.owner.email) {
+        list.push({ email: String(t.owner.email).toLowerCase(), name: t.owner.name || 'Dono' });
+      }
+      for (const m of members) list.push({ email: String(m.email).toLowerCase(), name: m.name || String(m.email).split('@')[0] });
+      setPeople(list);
+    }).catch(() => setPeople([]));
+  }, []);
+  const sellerName = (people.find(p => p.email === seller) || {}).name || '';
 
   useEffectR(() => {
     window.fetchSettings().then(({ settings }) => setFreq(settings.report_frequency || 'weekly')).catch(() => {});
@@ -297,10 +456,34 @@ const ReportsScreen = () => {
           <div style={{
             fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 28,
             letterSpacing: '-0.02em', color: 'var(--ink)',
-          }}>O que a HUMA fez por você</div>
+          }}>{seller ? `O que chegou pra ${sellerName || 'essa pessoa'}` : 'O que a HUMA fez por você'}</div>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4 }}>
-            Números reais do seu negócio, {periodoLabel}.
+            {seller
+              ? `Só os leads que são de ${sellerName || 'essa pessoa'}, ${periodoLabel}.`
+              : `Números reais do seu negócio, ${periodoLabel}.`}
           </div>
+          {people.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
+              {[{ email: '', name: 'Geral' }, ...people].map(p => {
+                const on = seller === p.email;
+                return (
+                  <button key={p.email || 'geral'} onClick={() => setSeller(p.email)} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6,
+                    fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: on ? 500 : 400,
+                    padding: '5px 12px 5px 6px', borderRadius: 999, cursor: 'pointer',
+                    border: `1px solid ${on ? 'var(--ink)' : 'var(--paper-edge)'}`,
+                    background: on ? 'var(--ink)' : 'var(--paper-raised)',
+                    color: on ? 'var(--paper)' : 'var(--ink-2)',
+                  }}>
+                    {p.email
+                      ? <Avatar initials={window.initialsFrom ? window.initialsFrom(p.name) : '?'} tone={window.toneFrom ? window.toneFrom(p.email) : 'ink'} size={20}/>
+                      : <span style={{ width: 20, height: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="users" size={13} stroke={2}/></span>}
+                    {p.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {/* Entrega automática, abre o drawer do design (report_frequency REAL) */}
@@ -490,6 +673,40 @@ const ReportsScreen = () => {
               </>
             )}
 
+            {/* Entrega: o que a HUMA passou pra equipe, com a prova */}
+            {s.entrega && (
+              <>
+                <SectionTitle>{seller ? `O que a HUMA entregou pra ${sellerName || 'essa pessoa'}` : 'O que a HUMA entregou pra equipe'}</SectionTitle>
+                <Grid cols={4}>
+                  <StatTile label="Leads entregues" value={s.entrega.entregues}/>
+                  <StatTile label="Chegaram completos" value={s.entrega.taxa_completos} accent
+                            sub={`${s.entrega.completos} com nome, resumo e dados`}/>
+                  <StatTile label="Com contato direto" value={s.entrega.com_contato}
+                            sub="WhatsApp ou e-mail do lead"/>
+                  <StatTile label="Viraram venda" value={s.entrega.taxa_fechamento}
+                            sub={`${s.entrega.fechados} de ${s.entrega.entregues}`}/>
+                </Grid>
+                <EntregaLeads leads={s.entrega.leads} showVendedor={!seller}/>
+              </>
+            )}
+
+            {/* Equipe: só no relatório geral, quando algum lead é de alguém */}
+            {!seller && s.equipe && (s.equipe.vendedores || []).length > 0 && (
+              <>
+                <SectionTitle>Equipe</SectionTitle>
+                <EquipeTable vendedores={s.equipe.vendedores}/>
+              </>
+            )}
+
+            {seller && report && (at.conversas_ativas ?? 0) === 0 && (
+              <div style={{
+                padding: '14px 16px', borderRadius: 12, background: 'var(--paper-sunk)',
+                fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5,
+              }}>
+                Nenhum lead foi de {sellerName || 'essa pessoa'} nesse período. Os leads entram aqui quando a HUMA passa, quando alguém transfere ou quando a pessoa assume uma conversa.
+              </div>
+            )}
+
             {/* Funil, sempre. Visual do design (proporcional + PNG) com
                 toggle pros cartões por etapa de sempre. */}
             <SectionTitle>Funil</SectionTitle>
@@ -498,10 +715,11 @@ const ReportsScreen = () => {
               periodo={periodo === 'custom' ? `${customFrom}_${customTo}` : periodo}
               periodoLabel={periodoLabel}
               cardsView={(
-                <Grid cols={5}>
+                <Grid cols={6}>
                   <StatTile label="Descobrindo" value={funil.descoberta ?? 0}/>
                   <StatTile label="Negociando" value={funil.negociando ?? 0}/>
                   <StatTile label="Compromissados" value={funil.compromissados ?? 0}/>
+                  <StatTile label="Qualificados" value={funil.qualificados ?? 0}/>
                   <StatTile label="Ganhos" value={funil.ganhos ?? 0} accent delta={dl.ganhos}/>
                   <StatTile label="Perdidos" value={funil.perdidos ?? 0} delta={dl.perdidos} deltaInvert/>
                 </Grid>

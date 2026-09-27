@@ -287,7 +287,16 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                     f"Erro registrando msg pós-handoff | {phone} | "
                     f"{type(e).__name__}: {e}"
                 )
+            # O lead nunca fica no vácuo: quem está com a conversa é avisado.
+            await _ping_human_lead_waiting(client_data, conv, phone, unified_text)
             return
+
+        # Conversa que a equipe devolveu pra HUMA depois de qualificada:
+        # "qualified" é estado de sistema (não existe no funil da IA), então
+        # a HUMA retoma de "closing" e volta a conduzir dali.
+        if conv.stage == "qualified":
+            log.info(f"Funil | {phone} | qualified → closing | conversa devolvida pra HUMA")
+            conv.stage = "closing"
 
         # ── Reativação: lead em "lost" que volta a falar ──
         # Se alguém que foi "lost" manda mensagem, é porque tem
@@ -3352,11 +3361,59 @@ async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict
 #   1. Notifica o dono via WhatsApp (owner_phone) com resumo do lead
 #   2. Marca conv.handoff_status = "handed_off" (IA não responde mais)
 #   3. Manda 1 mensagem final ao lead avisando da transferência
-#   4. Avança stage pra "won" (handoff = conversão pro QUALIFY)
-#
-# "Won" aqui é semanticamente diferente de pagamento confirmado, mas
-# pra o funil é equivalente — lead saiu do pipeline da IA com sucesso.
+#   4. Leva o stage pra "qualified" (2026-09-27): a HUMA qualificou e
+#      passou pra equipe; "won" é só quando a venda fecha de verdade
+#      (pagamento aprovado, ou a pessoa marca como fechado no Cockpit).
 # ================================================================
+
+# Aviso "o lead te escreveu" pra quem está com a conversa: no máximo um
+# a cada 10 minutos por conversa (Redis; sem Redis, memória do processo).
+_HUMAN_PING_TTL_SECONDS = 600
+_human_ping_memory: dict[str, float] = {}
+
+
+async def _ping_human_lead_waiting(client_data, conv, phone: str, text: str) -> bool:
+    """
+    Avisa no WhatsApp quem está com a conversa (dono da carteira; sem
+    ninguém, o dono da conta) que o lead escreveu enquanto a HUMA está
+    em silêncio. Nunca levanta exceção.
+
+    Returns:
+        True se o aviso foi enviado.
+    """
+    try:
+        client_id = client_data.client_id
+        key = f"handoff_ping:{client_id}:{phone}"
+        now_ts = datetime.utcnow().timestamp()
+        if await cache.exists(key) or (now_ts - _human_ping_memory.get(key, 0.0)) < _HUMAN_PING_TTL_SECONDS:
+            return False
+
+        person = lead_routing.find_member(client_data, getattr(conv, "assigned_to", "") or "")
+        target = (person or {}).get("phone") or lead_routing.normalize_phone(client_data.owner_phone)
+        name = (person or {}).get("name", "") if (person or {}).get("phone") else ""
+        if not target:
+            log.warning(f"Handoff ping | sem WhatsApp pra avisar | {phone} | client={client_id}")
+            return False
+
+        _human_ping_memory[key] = now_ts
+        if len(_human_ping_memory) > 5000:
+            _human_ping_memory.clear()
+        await cache.set_with_ttl(key, "1", ttl=_HUMAN_PING_TTL_SECONDS)
+
+        preview = "" if str(text or "").startswith("[") else str(text or "")
+        msg_id = await wa.notify_owner(
+            target,
+            lead_routing.lead_waiting_notice(name, conv.lead_name_canonical or "", phone, preview),
+            client_id=client_id,
+        )
+        log.info(
+            f"Handoff ping | {phone} | client={client_id} | "
+            f"pra={'carteira' if name else 'dono'} | enviado={bool(msg_id)}"
+        )
+        return bool(msg_id)
+    except Exception as e:
+        log.warning(f"Handoff ping | falhou | {phone} | {type(e).__name__}: {e}")
+        return False
 
 
 async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
@@ -3400,7 +3457,24 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
     target = client_data.owner_phone or ""
     seller = None
     candidates = lead_routing.sellers(client_data)
-    if candidates:
+    # Carteirização (2026-09-27): lead que já é de alguém volta pra mesma
+    # pessoa e NÃO gasta a vez de ninguém no rodízio. Lead do próprio dono
+    # segue pro owner_phone (target já é ele).
+    portfolio_kind, portfolio_seller = lead_routing.portfolio_target(client_data, candidates, conv)
+    if portfolio_kind == "seller" and portfolio_seller:
+        seller = portfolio_seller
+        target = seller["phone"]
+        log.info(
+            f"Handoff routing | {phone} | client={client_data.client_id} | "
+            f"vendedores={len(candidates)} | escolhido={seller.get('name') or seller.get('email')} | "
+            f"motivo={lead_routing.REASON_PORTFOLIO}"
+        )
+    elif portfolio_kind == "owner":
+        log.info(
+            f"Handoff routing | {phone} | client={client_data.client_id} | "
+            f"escolhido=dono | motivo={lead_routing.REASON_PORTFOLIO}"
+        )
+    elif candidates:
         counter = 0
         try:
             counter = await cache.incr_with_ttl(
@@ -3413,13 +3487,13 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
             )
         # incr devolve o valor PÓS-incremento (1, 2, 3…); -1 = Redis off.
         rr_index = counter - 1 if counter > 0 else 0
-        seller = lead_routing.pick_seller(candidates, conv, summary, rr_index)
+        seller, reason = lead_routing.pick_seller_with_reason(candidates, conv, summary, rr_index)
         if seller:
             target = seller["phone"]
             log.info(
                 f"Handoff routing | {phone} | client={client_data.client_id} | "
                 f"vendedores={len(candidates)} | escolhido={seller.get('name') or seller.get('email')} | "
-                f"contador={counter}"
+                f"motivo={reason} | contador={counter}"
             )
 
     provider = get_default_provider()
@@ -3431,6 +3505,7 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
         "urgency": urgency,
         "stage": conv.stage,
         "assigned_name": (seller or {}).get("name", ""),
+        "lead_whatsapp": getattr(conv, "lead_whatsapp", "") or "",
     }
     notif_result = await provider.notify_human(
         target=target,
@@ -3477,7 +3552,7 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
     conv.handed_off_at = datetime.utcnow()
     conv.handoff_summary = summary
     if conv.stage not in TERMINAL_STAGES:
-        conv.stage = "won"
+        conv.stage = "qualified"
     if seller:
         conv.assigned_to = seller.get("email") or seller["phone"]
         conv.assigned_name = seller.get("name") or ""
@@ -3505,7 +3580,7 @@ async def _handle_handoff_action(phone, action, client_data, conv) -> dict:
         await db.save_conversation(conv)
         log.info(
             f"Handoff executado | {phone} | client={client_data.client_id} | "
-            f"urgency={urgency} | stage→won | assigned_to={conv.assigned_to or '-'}"
+            f"urgency={urgency} | stage→qualified | assigned_to={conv.assigned_to or '-'}"
         )
     except Exception as e:
         log.error(

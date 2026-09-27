@@ -1,10 +1,45 @@
 // ConversationView.jsx — center stream of messages
 // mobile: tela cheia no celular (botão voltar, header enxuto, sem rodapé de atalhos)
-const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, onSend, handoff, onHandoff, onOpenAgenda, mobile = false, onBack }) => {
+const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, onSend, handoff, onHandoff, onOpenAgenda, mobile = false, onBack, team = null, onTransferred }) => {
   const [draft, setDraft] = React.useState('');
   const [busy, setBusy] = React.useState(false);     // handoff ou envio em andamento
   const [toast, setToast] = React.useState(null);    // { type:'ok'|'error', text }
   const toastTimer = React.useRef(null);
+
+  // Transferir (2026-09-27): passa a conversa pra outra pessoa da conta,
+  // com nota interna. Só aparece quando a conta tem equipe.
+  const [transferOpen, setTransferOpen] = React.useState(false);
+  const [transferTo, setTransferTo] = React.useState('');
+  const [transferNote, setTransferNote] = React.useState('');
+  const [transferBusy, setTransferBusy] = React.useState(false);
+  React.useEffect(() => { setTransferOpen(false); setTransferTo(''); setTransferNote(''); }, [conversation.id]);
+  const people = React.useMemo(() => {
+    const members = ((team && team.members) || []).filter(m => m && m.email);
+    if (!members.length) return [];
+    const owner = (team && team.owner) || {};
+    const list = [];
+    if (owner.email) list.push({ email: String(owner.email).toLowerCase(), name: owner.name || 'Dono', tag: 'dono' });
+    for (const m of members) {
+      list.push({ email: String(m.email).toLowerCase(), name: m.name || String(m.email).split('@')[0], tag: m.specialty ? `atende: ${m.specialty}` : '' });
+    }
+    return list;
+  }, [team]);
+  const humanHolds = (conversation.handoff_status === 'handed_off') || handoff;
+  const doTransfer = async () => {
+    if (!transferTo || transferBusy) return;
+    setTransferBusy(true);
+    try {
+      const r = await transferConversation(conversation.id, transferTo, transferNote);
+      setTransferOpen(false); setTransferTo(''); setTransferNote('');
+      const who = r.assigned_name || 'a pessoa';
+      showToast('ok', r.notified ? `Passada pra ${who}, que foi avisada no WhatsApp` : `Passada pra ${who}`);
+      if (onTransferred) onTransferred(r);
+    } catch (e) {
+      showToast('error', String((e && e.message) || e));
+    } finally {
+      setTransferBusy(false);
+    }
+  };
 
   const showToast = (type, text) => {
     setToast({ type, text });
@@ -116,15 +151,75 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
         </div>
         {!mobile && <StatusPill status={conversation.status || 'andamento'} />}
         {conversation.assigned_name && (
-          <span title="Quem da equipe recebeu este lead" style={{
+          <span title={humanHolds
+            ? 'Quem da equipe está com este lead'
+            : 'Este lead é dessa pessoa. A HUMA está atendendo agora e devolve pra ela quando qualificar.'}
+            style={{
             display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0,
             padding: '5px 10px', borderRadius: 999,
             border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)',
             fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)', whiteSpace: 'nowrap',
           }}>
-            <Icon name="userPlus" size={12} stroke={2} />
-            {mobile ? conversation.assigned_name : `Com ${conversation.assigned_name}`}
+            <Icon name="user" size={12} stroke={2} />
+            {mobile ? conversation.assigned_name : (humanHolds ? `Com ${conversation.assigned_name}` : `Carteira de ${conversation.assigned_name}`)}
           </span>
+        )}
+        {people.length > 0 && (
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <button onClick={() => setTransferOpen(o => !o)} title="Passar esta conversa pra outra pessoa da equipe"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: mobile ? '6px 9px' : '6px 11px', borderRadius: 999, cursor: 'pointer',
+                border: '1px solid var(--paper-edge)',
+                background: transferOpen ? 'var(--paper-sunk)' : 'var(--paper-raised)',
+                color: 'var(--ink-2)',
+                fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap',
+              }}>
+              <Icon name="arrow" size={13} stroke={2} />
+              {!mobile && 'Transferir'}
+            </button>
+            {transferOpen && (
+              <div style={{
+                position: mobile ? 'fixed' : 'absolute',
+                top: mobile ? 64 : 'calc(100% + 6px)', right: mobile ? 12 : 0, left: mobile ? 12 : 'auto',
+                zIndex: 60, width: mobile ? 'auto' : 320,
+                background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 12,
+                boxShadow: '0 12px 32px rgba(0,0,0,0.16)', padding: 14,
+                display: 'flex', flexDirection: 'column', gap: 10,
+              }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>Passar a conversa</div>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <Eyebrow>Pra quem</Eyebrow>
+                  <select value={transferTo} onChange={e => setTransferTo(e.target.value)} style={{
+                    fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)',
+                    padding: '8px 10px', borderRadius: 8, border: '1px solid var(--paper-edge)', background: 'var(--paper)',
+                  }}>
+                    <option value="">Escolha a pessoa</option>
+                    {people
+                      .filter(p => !(humanHolds && p.email === (conversation.assigned_to || '').toLowerCase()))
+                      .map(p => <option key={p.email} value={p.email}>{p.name}{p.tag ? ` (${p.tag})` : ''}</option>)}
+                  </select>
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <Eyebrow>Nota pra quem recebe (o lead não vê)</Eyebrow>
+                  <textarea value={transferNote} onChange={e => setTransferNote(e.target.value.slice(0, 500))} rows={3}
+                    placeholder="Ex.: quer fechar hoje, pediu desconto no Pix"
+                    style={{
+                      fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', lineHeight: 1.4,
+                      padding: '8px 10px', borderRadius: 8, border: '1px solid var(--paper-edge)',
+                      background: 'var(--paper)', resize: 'vertical', outline: 'none',
+                    }}/>
+                </label>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>
+                  A HUMA para de responder e a pessoa assume. Quem tem WhatsApp cadastrado recebe o aviso com a nota.
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <Button variant="ghost" size="sm" onClick={() => setTransferOpen(false)}>Cancelar</Button>
+                  <Button variant="dark" size="sm" onClick={doTransfer} disabled={!transferTo || transferBusy}>{transferBusy ? 'Passando…' : 'Transferir'}</Button>
+                </div>
+              </div>
+            )}
+          </div>
         )}
         <button onClick={toggleCustomer} disabled={customerBusy}
           title={isCustomer ? 'Cliente da casa: clique pra remover da lista' : 'Marcar como cliente (aparece na aba Clientes)'}
@@ -273,9 +368,27 @@ const MessageCard = ({ card, dark }) => {
   );
 };
 
-const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url }) => {
+// Nota interna da equipe (transferência): faixa no meio da conversa,
+// diferente de balão, pra ninguém confundir com mensagem que o lead viu.
+const InternalNote = ({ note, text, time }) => (
+  <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}>
+    <div style={{
+      maxWidth: '86%', padding: '8px 12px', borderRadius: 10,
+      background: '#FBF1D6', border: '1px dashed #D9BE74', color: '#5E4610',
+      fontFamily: 'var(--font-sans)', fontSize: 12.5, lineHeight: 1.45,
+    }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: text ? 3 : 0 }}>
+        Nota interna · {(note && note.from) || 'Equipe'} passou pra {(note && note.to) || 'outra pessoa'}{time ? ` · ${time}` : ''}
+      </div>
+      {text && <div>{text}</div>}
+    </div>
+  </div>
+);
+
+const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url, note, by, by_name }) => {
+  if (from === 'note') return <InternalNote note={note} text={text} time={time} />;
   const isClient = from === 'client';
-  const isHuma = from === 'huma';
+  const isHuma = from === 'huma' && by !== 'owner';
   const hasCards = Array.isArray(cards) && cards.length > 0;
   const hasMedia = Boolean(image_url || video_url || file_url);
   return (
@@ -329,6 +442,9 @@ const Message = ({ from, text, time, responseTime, audio, audio_url, cards, imag
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)' }}>
         {isHuma && (
           <span style={{ fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#8E3724', background: '#FBEEE8', padding: '1px 5px', borderRadius: 3 }}>HUMA</span>
+        )}
+        {!isClient && by === 'owner' && by_name && (
+          <span style={{ fontWeight: 500, color: 'var(--ink-2)', background: 'var(--paper-sunk)', padding: '1px 5px', borderRadius: 3 }}>{by_name}</span>
         )}
         <span>{time}</span>
         {responseTime && <><span>·</span><span>respondido em {responseTime}</span></>}

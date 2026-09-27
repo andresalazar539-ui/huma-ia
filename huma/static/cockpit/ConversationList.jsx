@@ -108,6 +108,9 @@ const ConversationFilterBar = ({
   const chips = activeFilterChips(f, team);
   const members = ((team && team.members) || []).filter(m => m && m.email);
   const ownerName = (team && team.owner && team.owner.name) ? team.owner.name : 'Dono';
+  // Quem vê a conta inteira (espelho de core/permissions.py). Atendente
+  // só recebe as conversas dele, então "Minhas" e "Quem atende" somem.
+  const seesAll = ['dono', 'admin'].includes(window.HUMA_ROLE || 'dono');
 
   return (
     <>
@@ -178,17 +181,19 @@ const ConversationFilterBar = ({
               {CHANNEL_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
             </select>
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <Eyebrow>Quem atende</Eyebrow>
-            <select value={f.assignee} onChange={e => setF({ assignee: e.target.value })} style={fieldStyle}>
-              <option value="">Todo mundo</option>
-              <option value="huma">HUMA (a IA)</option>
-              <option value="dono">{ownerName}</option>
-              {members.map(m => (
-                <option key={m.email} value={String(m.email).toLowerCase()}>{m.name || String(m.email).split('@')[0]}</option>
-              ))}
-            </select>
-          </label>
+          {seesAll && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <Eyebrow>Quem atende</Eyebrow>
+              <select value={f.assignee} onChange={e => setF({ assignee: e.target.value })} style={fieldStyle}>
+                <option value="">Todo mundo</option>
+                <option value="huma">HUMA (a IA)</option>
+                <option value="dono">{ownerName}</option>
+                {members.map(m => (
+                  <option key={m.email} value={String(m.email).toLowerCase()}>{m.name || String(m.email).split('@')[0]}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <button onClick={clearAll} disabled={!filtering} style={{
               border: 'none', background: 'transparent', padding: 0,
@@ -202,6 +207,23 @@ const ConversationFilterBar = ({
       )}
 
       <div style={{ padding: '8px 14px 4px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* Minhas conversas (2026-09-27): só aparece quando a conta tem equipe */}
+        {seesAll && members.length > 0 && (
+          <button onClick={() => setF({ mine: !f.mine })}
+            title="Leads que são seus, mesmo com a HUMA atendendo agora"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500,
+              padding: '4px 10px', borderRadius: 999,
+              background: f.mine ? 'var(--terracotta)' : 'transparent',
+              color: f.mine ? 'var(--paper-raised)' : 'var(--ink-2)',
+              border: f.mine ? '1px solid var(--terracotta)' : '1px solid var(--ink-line)',
+              cursor: 'pointer',
+            }}>
+            <Icon name="userPlus" size={11} stroke={2.2} />
+            Minhas
+          </button>
+        )}
         {LIST_FILTERS.map(({ label, key }) => {
           const on = filter === key;
           return (
@@ -287,11 +309,15 @@ const ConversationList = ({
         ) : visible.length === 0 ? (
           filtering ? (
             <ListMessage
-              text="Nenhuma conversa com esses filtros."
-              action={<Button variant="ghost" size="sm" onClick={clearAll}>Limpar filtros</Button>}
+              text={(filters && filters.mine)
+                ? 'Nenhuma conversa sua com esses filtros. Os leads que a HUMA passar pra você aparecem aqui.'
+                : 'Nenhuma conversa com esses filtros.'}
+              action={<Button variant="ghost" size="sm" onClick={clearAll}>{(filters && filters.mine) ? 'Ver todas' : 'Limpar filtros'}</Button>}
             />
           ) : (
-            <ListMessage text="Nenhuma conversa ainda. Quando um lead te escrever no WhatsApp, aparece aqui." />
+            <ListMessage text={['dono', 'admin'].includes(window.HUMA_ROLE || 'dono')
+              ? 'Nenhuma conversa ainda. Quando um lead te escrever no WhatsApp, aparece aqui.'
+              : 'Nenhuma conversa com você ainda. Quando a HUMA passar um lead pra você, ele aparece aqui e você é avisado no WhatsApp.'} />
           )
         ) : (
           visible.map(c => (

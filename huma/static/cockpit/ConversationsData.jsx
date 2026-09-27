@@ -17,7 +17,7 @@ const AUTH_HEADERS = API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {};
 // date_from, date_to } já no formato da API (ver toConversationQuery).
 async function fetchConversations(filter = 'todas', opts = {}) {
   const params = new URLSearchParams({ client_id: CLIENT_ID, filter });
-  for (const key of ['channel', 'assignee', 'date_from', 'date_to']) {
+  for (const key of ['channel', 'assignee', 'date_from', 'date_to', 'portfolio']) {
     if (opts && opts[key]) params.set(key, opts[key]);
   }
   const r = await fetch(`/api/conversations?${params}`, { headers: { ...AUTH_HEADERS } });
@@ -29,7 +29,9 @@ async function fetchConversations(filter = 'todas', opts = {}) {
 // period: 'all' | 'today' | '7' | '30' | 'custom' (from/to yyyy-mm-dd).
 // Datas são do calendário do navegador (o dono está no Brasil); o backend
 // converte pra janela UTC em horário de Brasília.
-const DEFAULT_CONV_FILTERS = { period: 'all', from: '', to: '', channel: '', assignee: '' };
+// mine (2026-09-27): "Minhas conversas" = leads que são de quem está logado
+// (carteira), mesmo com a HUMA atendendo agora. O servidor resolve o "me".
+const DEFAULT_CONV_FILTERS = { period: 'all', from: '', to: '', channel: '', assignee: '', mine: false };
 
 function _localDateStr(d) {
   const pad = n => String(n).padStart(2, '0');
@@ -38,7 +40,7 @@ function _localDateStr(d) {
 
 function toConversationQuery(filters) {
   const f = { ...DEFAULT_CONV_FILTERS, ...(filters || {}) };
-  const out = { channel: f.channel || '', assignee: f.assignee || '', date_from: '', date_to: '' };
+  const out = { channel: f.channel || '', assignee: f.assignee || '', date_from: '', date_to: '', portfolio: f.mine ? 'me' : '' };
   const today = new Date();
   if (f.period === 'today') {
     out.date_from = out.date_to = _localDateStr(today);
@@ -62,6 +64,7 @@ function countActiveConversationFilters(filters) {
   if (f.period && f.period !== 'all') n += 1;
   if (f.channel) n += 1;
   if (f.assignee) n += 1;
+  if (f.mine) n += 1;
   return n;
 }
 
@@ -238,13 +241,19 @@ function mapHistory(history) {
       const c = (m.content || '').trim();
       const hasRich = (Array.isArray(m.cards) && m.cards.length) || m.image_url || m.video_url || m.file_url || m.audio_url;
       if (hasRich) return true;  // card/mídia sem texto ainda é uma mensagem que o lead viu
+      if (m.note && typeof m.note === 'object') return true;  // nota interna da equipe (transferência)
       return c && !INTERNAL_MARKER.test(c);
     })
     .flatMap(m => {
+      // Nota interna da transferência: só a equipe vê, nunca foi pro lead.
+      if (m.note && typeof m.note === 'object') {
+        return [{ from: 'note', time: formatTime(m.timestamp), text: m.note.text || '', note: m.note }];
+      }
       const base = {
         from: m.role === 'user' ? 'client' : 'huma',
         time: formatTime(m.timestamp),
         by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
+        by_name: m.by_name || '',  // quem da equipe respondeu pelo Cockpit
       };
       // Cards que o lead viu (produto, carrossel, "Finalizar pedido", "Pagar",
       // resumo do pedido): a bolha desenha o card, não o texto "📦 …".
@@ -412,7 +421,20 @@ async function sendMessage(phone, text) {
   return r.json();
 }
 
-Object.assign(window, { sendHandoff, sendMessage });
+// Passa a conversa pra outra pessoa da conta, com nota interna (o lead
+// nunca vê). assignedTo = e-mail de quem recebe; '' tira da carteira.
+async function transferConversation(phone, assignedTo, note = '') {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/transfer`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ assigned_to: assignedTo || '', note: note || '' }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+Object.assign(window, { sendHandoff, sendMessage, transferConversation });
 
 /* ---------------- T4: Agenda (appointments) ---------------- */
 async function fetchAppointments() {
@@ -801,11 +823,13 @@ async function fetchWhatsappHealth() {
 Object.assign(window, { createCampaign, reviewCampaign, fetchWhatsappHealth });
 
 /* ---------------- Relatórios de outcome (por meta do cliente) ---------------- */
-async function fetchReport(days = 30, dateFrom = '', dateTo = '') {
+// seller (e-mail, opcional): o mesmo relatório só com os leads dessa pessoa.
+async function fetchReport(days = 30, dateFrom = '', dateTo = '', seller = '') {
   const range = dateFrom && dateTo
     ? `&date_from=${encodeURIComponent(dateFrom)}&date_to=${encodeURIComponent(dateTo)}`
     : '';
-  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/reports?days=${days}${range}`, { headers: { ...AUTH_HEADERS } });
+  const who = seller ? `&seller=${encodeURIComponent(seller)}` : '';
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/reports?days=${days}${range}${who}`, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
   return r.json();
 }
@@ -954,11 +978,11 @@ async function fetchTeam() {
   return r.json();
 }
 
-async function inviteTeamMember({ email, name = '', role = 'equipe', phone = '', receives_leads = false, specialty = '' }) {
+async function inviteTeamMember({ email, name = '', role = 'equipe', phone = '', receives_leads = false, specialty = '', regions = '' }) {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team/invite`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
-    body: JSON.stringify({ email, name, role, phone, receives_leads, specialty }),
+    body: JSON.stringify({ email, name, role, phone, receives_leads, specialty, regions }),
   });
   if (!r.ok) throw await _readApiError(r);
   return r.json();

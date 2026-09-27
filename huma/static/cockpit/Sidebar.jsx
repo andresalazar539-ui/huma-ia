@@ -116,6 +116,7 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
     ...(tabs.agenda ? [{ id: 'agenda', label: 'Agenda', icon: 'calendar', count: null }] : []),
     ...(tabs.vendas ? [{ id: 'vendas', label: 'Vendas', icon: 'card',     count: null }] : []),
     { id: 'clientes',     label: 'Clientes',     icon: 'users',    count: null },
+    { id: 'equipe',       label: 'Equipe',       icon: 'userPlus', count: null },
     { id: 'voz',          label: 'Voz',          icon: 'mic',      count: null },
     { id: 'relatorios',   label: 'Relatórios',   icon: 'chart',    count: null },
     { id: 'disparos',     label: 'Disparos',     icon: 'send',     count: null },

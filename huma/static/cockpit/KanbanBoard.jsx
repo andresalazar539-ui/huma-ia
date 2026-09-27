@@ -8,11 +8,12 @@ const STAGE_COLUMNS = [
   { key: 'offer',     label: 'Negociando',   hint: 'já viu preço ou proposta',                        dot: '#B8831E' },
   { key: 'closing',   label: 'Fechando',     hint: 'decidindo como pagar ou quando agendar',           dot: '#4B6E87' },
   { key: 'committed', label: 'Compromissado', hint: 'disse sim, falta pagar ou aparecer',              dot: '#4F7A4A' },
-  { key: 'won',       label: 'Fechado',      hint: 'pagou ou o dono marcou como fechado',              dot: '#3E5540' },
+  { key: 'qualified', label: 'Qualificado',  hint: 'a HUMA qualificou e passou pra equipe; falta fechar', dot: '#7A5BA8' },
+  { key: 'won',       label: 'Fechado',      hint: 'vendeu: pagou, ou alguém marcou como fechado',     dot: '#3E5540' },
   { key: 'lost',      label: 'Perdido',      hint: 'desistiu; a HUMA pode reativar depois',           dot: '#A84C2E' },
 ];
 const STAGE_LABEL = Object.fromEntries(STAGE_COLUMNS.map(c => [c.key, c.label]));
-const OPEN_STAGES = ['discovery', 'offer', 'closing', 'committed'];
+const OPEN_STAGES = ['discovery', 'offer', 'closing', 'committed', 'qualified'];
 
 function _fmtAppt(iso) {
   if (!iso) return '';

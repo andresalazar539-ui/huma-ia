@@ -45,6 +45,8 @@ class TeamInviteBody(BaseModel):
     phone: str = Field(default="", max_length=30)
     receives_leads: bool = Field(default=False)
     specialty: str = Field(default="", max_length=200)
+    # Roleta inteligente: DDDs ou estados que a pessoa atende ("11, 19" / "SP, RJ").
+    regions: str = Field(default="", max_length=200)
 
 
 class TeamUpdateBody(BaseModel):
@@ -54,6 +56,7 @@ class TeamUpdateBody(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=30)
     receives_leads: Optional[bool] = Field(default=None)
     specialty: Optional[str] = Field(default=None, max_length=200)
+    regions: Optional[str] = Field(default=None, max_length=200)
 
 
 def _routing_fields(phone: str, receives_leads: bool, specialty: str) -> dict:
@@ -71,6 +74,19 @@ def _routing_fields(phone: str, receives_leads: bool, specialty: str) -> dict:
         "receives_leads": bool(receives_leads),
         "specialty": (specialty or "").strip()[:200],
     }
+
+
+def _regions_field(regions: str) -> str:
+    """
+    Região que a pessoa atende (roleta inteligente). Guarda o texto do
+    dono; se ele escreveu algo e NADA virou DDD, 400 que ensina.
+    """
+    raw = " ".join((regions or "").split()).strip()[:200]
+    if raw and not lead_routing.region_ddds(raw):
+        raise HTTPException(
+            400, "Não entendi a região. Use DDDs ou estados separados por vírgula, ex.: 11, 19 ou SP, RJ.",
+        )
+    return raw
 
 
 def _norm_email(raw: str) -> str:
@@ -256,6 +272,7 @@ async def team_invite(client_id: str, body: TeamInviteBody, client=Depends(verif
         "invited_at": datetime.now(timezone.utc).isoformat(),
         "status": "invited",
         **_routing_fields(body.phone, body.receives_leads, body.specialty),
+        "regions": _regions_field(body.regions),
     }
     await _persist(client_id, {"team_members": members + [member]})
     email_sent = await _send_invite(email, client, TEAM_ROLE_LABELS[role])
@@ -269,7 +286,7 @@ async def team_invite(client_id: str, body: TeamInviteBody, client=Depends(verif
 @router.patch("/api/clients/{client_id}/team/{email}")
 async def team_update(client_id: str, email: str, body: TeamUpdateBody, client=Depends(verify_api_key)) -> dict:
     """
-    Edita um membro (nome, papel, WhatsApp, recebe leads, atende).
+    Edita um membro (nome, papel, WhatsApp, recebe leads, atende, região).
 
     É aqui que o dono liga o roteamento por vendedor: marca quem recebe
     leads e o WhatsApp de cada um. Efeito imediato no próximo handoff.
@@ -290,6 +307,8 @@ async def team_update(client_id: str, email: str, body: TeamUpdateBody, client=D
     receives = body.receives_leads if body.receives_leads is not None else bool(current.get("receives_leads"))
     specialty = body.specialty if body.specialty is not None else str(current.get("specialty") or "")
     current.update(_routing_fields(phone, receives, specialty))
+    if body.regions is not None:
+        current["regions"] = _regions_field(body.regions)
 
     members[idx] = current
     await _persist(client_id, {"team_members": members})

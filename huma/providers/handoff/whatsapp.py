@@ -78,11 +78,25 @@ class WhatsAppHandoffProvider(HandoffProvider):
         if assigned_name:
             urgency_tag = f"{urgency_tag} pra você, {assigned_name}"
 
+        # Instagram e chat do site não têm telefone: a pessoa responde
+        # pelo Cockpit, no mesmo canal em que o lead está.
+        raw_phone = str(lead_phone)
+        if raw_phone.startswith("ig:"):
+            contact_line = "Canal: Instagram (responda pelo Cockpit, em Conversas)"
+        elif raw_phone.startswith("web:"):
+            lead_wa = (payload.get("lead_whatsapp") or "").strip()
+            contact_line = (
+                f"Canal: chat do site · WhatsApp que ele deixou: {lead_wa}" if lead_wa
+                else "Canal: chat do site (responda pelo Cockpit, em Conversas)"
+            )
+        else:
+            contact_line = f"WhatsApp: {lead_phone}"
+
         lines = [
             f"{urgency_tag}",
             "",
             f"Nome: {lead_name}",
-            f"WhatsApp: {lead_phone}",
+            contact_line,
             "",
             f"Resumo: {summary}",
         ]
@@ -99,6 +113,9 @@ class WhatsAppHandoffProvider(HandoffProvider):
             lines.append(f"Stage: {stage}")
 
         lines.append("")
-        lines.append("Chama ele agora pra fechar 👇")
+        if raw_phone.startswith(("ig:", "web:")):
+            lines.append("Responde ele agora pelo Cockpit pra fechar 👇")
+        else:
+            lines.append("Chama ele agora pra fechar 👇")
 
         return "\n".join(lines)

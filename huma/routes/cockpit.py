@@ -102,6 +102,7 @@ async def cockpit_page(request: Request) -> HTMLResponse:
         inject = (
             f"<script>window.HUMA_CLIENT_ID = {json.dumps(session_client)};"
             f"window.HUMA_ROLE = {json.dumps(role)};"
+            f"window.HUMA_EMAIL = {json.dumps(session_email or '')};"
             f"window.HUMA_PERMS = {json.dumps(permissions.permissions_for(role))};"
             f"window.HUMA_SCREEN_PERMS = {json.dumps(permissions.SCREEN_PERMISSIONS)};</script>"
         )

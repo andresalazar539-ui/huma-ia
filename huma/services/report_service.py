@@ -97,6 +97,7 @@ async def build_report(
     days: int = 7,
     date_from: str = "",
     date_to: str = "",
+    seller: str = "",
 ) -> dict:
     """
     Monta o relatório de outcome do período, com seções condicionais
@@ -106,8 +107,13 @@ async def build_report(
     date_from/date_to (ISO yyyy-mm-dd, ADITIVO): período personalizado
     e comparação com época arbitrária no Cockpit. Vazios/inválidos →
     comportamento original (últimos `days` até agora).
+
+    seller (e-mail, ADITIVO, 2026-09-27): relatório POR ATENDENTE. Todas
+    as seções passam a contar só os leads que são dessa pessoa
+    (carteira); vazio = relatório geral, idêntico ao de antes.
     """
     client_id = identity.client_id
+    seller = (seller or "").strip().lower()
     now = datetime.utcnow()
     f_dt = _parse_dt(date_from)
     t_dt = _parse_dt(date_to)
@@ -145,19 +151,32 @@ async def build_report(
             .limit(1000).execute()
         )
 
-    # assigned_name (roteamento por vendedor) só existe após
-    # scripts/migration_lead_routing.sql — sem a coluna, refaz sem ela.
+    # assigned_* (roteamento por vendedor) só existem após
+    # scripts/migration_lead_routing.sql e is_customer após
+    # scripts/migration_customers.sql — sem as colunas, refaz sem elas
+    # (o relatório sai sem a seção Equipe em vez de quebrar).
+    team_cols = (
+        ",assigned_name,assigned_to,is_customer,crm_outcome,"
+        "handoff_summary,handed_off_at,channel,lead_whatsapp"
+    )
+    _optional = (
+        "assigned_name", "assigned_to", "is_customer", "crm_outcome",
+        "handoff_summary", "handed_off_at", "channel", "lead_whatsapp",
+    )
     try:
-        resp = await run_in_threadpool(lambda: _convs_query(conv_cols + ",assigned_name"))
+        resp = await run_in_threadpool(lambda: _convs_query(conv_cols + team_cols))
     except Exception as e:
-        if "assigned_name" not in str(e):
+        if not any(k in str(e) for k in _optional):
             raise
         log.warning(
-            f"Report | coluna assigned_name ausente (rodar scripts/migration_lead_routing.sql) | "
-            f"client={client_id} | retry sem ela"
+            f"Report | colunas de equipe ausentes (rodar scripts/migration_lead_routing.sql "
+            f"e migration_customers.sql) | client={client_id} | retry sem elas"
         )
         resp = await run_in_threadpool(lambda: _convs_query(conv_cols))
     convs = resp.data or []
+    if seller:
+        convs = [c for c in convs if (c.get("assigned_to") or "").strip().lower() == seller]
+    seller_phones = {str(c.get("phone") or "") for c in convs} if seller else set()
 
     novas = [
         c for c in convs
@@ -180,6 +199,8 @@ async def build_report(
         "compromissados": stage_counts.get("committed", 0),
         "ganhos": stage_counts.get("won", 0),
         "perdidos": stage_counts.get("lost", 0),
+        # A HUMA qualificou e passou pra equipe; ainda falta fechar.
+        "qualificados": stage_counts.get("qualified", 0),
     }
 
     # ── Vendas (meta SELL) — receita REAL confirmada ──
@@ -194,6 +215,8 @@ async def build_report(
                 .limit(1000).execute()
         )
         pays = pay_resp.data or []
+        if seller:
+            pays = [p for p in pays if str(p.get("phone") or "") in seller_phones]
         receita_cents = sum(int(p.get("amount_cents") or 0) for p in pays)
         ganhas_sem_humano = sum(
             1 for c in convs
@@ -252,6 +275,22 @@ async def build_report(
             "por_vendedor": dict(sorted(por_vendedor.items(), key=lambda kv: -kv[1])),
         }
 
+    # ── Equipe (2026-09-27) — o que cada pessoa recebeu e o que FECHOU ──
+    # Só existe quando algum lead do período é de alguém (carteira).
+    # "Fechou" é fato verificado, nunca a etapa do funil (o handoff já
+    # leva a conversa pra "won"): virou cliente (pagou, agendou ou foi
+    # marcado), negócio ganho no CRM ou pagamento aprovado no período.
+    equipe = _team_section(convs, pays)
+    if equipe:
+        sections["equipe"] = equipe
+
+    # ── Entrega (2026-09-27) — a prova do que a HUMA passou pra equipe ──
+    # Cada lead entregue com o que ela coletou. É o que responde "a HUMA
+    # está mandando lead ruim?" com fato, no geral e por atendente.
+    entrega = _delivery_section(convs, pays)
+    if entrega:
+        sections["entrega"] = entrega
+
     # ── Origem (sempre) — de onde vêm as conversas e as CONVERSÕES ──
     # lead_source é gravado first-touch pelo attribution_service (referral
     # CTWA, código #h de link rastreável, utm). Vazio = orgânico/direto;
@@ -264,11 +303,13 @@ async def build_report(
             slug = "outbound" if c.get("is_outbound") else "organico"
         fonte_por_phone[str(c.get("phone") or "")] = slug
         bucket = por_origem.setdefault(
-            slug, {"conversas": 0, "ganhos": 0, "agendamentos": 0, "receita_cents": 0}
+            slug, {"conversas": 0, "ganhos": 0, "agendamentos": 0, "receita_cents": 0, "qualificados": 0}
         )
         bucket["conversas"] += 1
         if c.get("stage") == "won":
             bucket["ganhos"] += 1
+        if _was_delivered(c):
+            bucket["qualificados"] += 1
         if c.get("active_appointment_datetime"):
             bucket["agendamentos"] += 1
 
@@ -287,6 +328,7 @@ async def build_report(
             "conversas": v["conversas"],
             "agendamentos": v["agendamentos"],
             "ganhos": v["ganhos"],
+            "qualificados": v["qualificados"],
             "receita_cents": v["receita_cents"],
             "receita_display": _brl(v["receita_cents"]),
             "conversao": f"{round(100 * v['ganhos'] / v['conversas'])}%" if v["conversas"] else "0%",
@@ -313,13 +355,29 @@ async def build_report(
     }
 
     # ── Inteligência (sempre) — o que os leads pediram ──
-    cls_resp = await run_in_threadpool(
-        lambda: supa.table("message_classifications").select("msg_type")
-            .eq("client_id", client_id).gte("created_at", since_iso)
-            .lte("created_at", until_iso)
-            .limit(2000).execute()
-    )
-    tipos = Counter(r.get("msg_type", "") for r in (cls_resp.data or []))
+    cls_rows: list[dict] = []
+    if not seller:
+        cls_resp = await run_in_threadpool(
+            lambda: supa.table("message_classifications").select("msg_type")
+                .eq("client_id", client_id).gte("created_at", since_iso)
+                .lte("created_at", until_iso)
+                .limit(2000).execute()
+        )
+        cls_rows = cls_resp.data or []
+    elif seller_phones:
+        # Por atendente: só os assuntos dos leads que são dele. Tabela sem
+        # a coluna phone = seção vazia, nunca relatório quebrado.
+        try:
+            cls_resp = await run_in_threadpool(
+                lambda: supa.table("message_classifications").select("msg_type,phone")
+                    .eq("client_id", client_id).gte("created_at", since_iso)
+                    .lte("created_at", until_iso)
+                    .limit(2000).execute()
+            )
+            cls_rows = [r for r in (cls_resp.data or []) if str(r.get("phone") or "") in seller_phones]
+        except Exception as e:
+            log.warning(f"Report | assuntos por atendente indisponíveis | client={client_id} | {type(e).__name__}: {e}")
+    tipos = Counter(r.get("msg_type", "") for r in cls_rows)
     top = [
         {"tipo": _MSG_TYPE_LABELS.get(t, t), "vezes": n}
         for t, n in tipos.most_common(3)
@@ -338,8 +396,150 @@ async def build_report(
         "period_to": until_iso,
         "generated_at": now.isoformat(),
         "goals": sorted(c.value for c in caps),
+        "seller": seller,
         "sections": sections,
     }
+
+
+def _was_delivered(conv: dict) -> bool:
+    """True quando o lead foi passado pra um humano (pela HUMA ou pelo Cockpit)."""
+    return bool(
+        (conv.get("assigned_to") or "").strip()
+        or (conv.get("assigned_name") or "").strip()
+        or conv.get("handoff_status") == "handed_off"
+        or conv.get("stage") == "qualified"
+    )
+
+
+_DELIVERY_MAX_LEADS = 50
+
+
+def _delivery_section(convs: list[dict], pays: list[dict]) -> dict:
+    """
+    O que a HUMA entregou pra equipe, com a prova de cada lead.
+
+    Um lead entregue é "completo" quando chegou com nome, resumo do que
+    quer e pelo menos um dado coletado. Módulo puro sobre as linhas já
+    consultadas.
+
+    Returns:
+        {entregues, com_nome, com_resumo, com_dados, com_contato,
+        completos, taxa_completos, fechados, taxa_fechamento, leads: [...]}
+        ou {} quando nada foi entregue no período.
+    """
+    delivered = [c for c in convs if _was_delivered(c)]
+    if not delivered:
+        return {}
+    paid_phones = {str(p.get("phone") or "") for p in pays}
+
+    leads: list[dict] = []
+    com_nome = com_resumo = com_dados = com_contato = completos = fechados = 0
+    for c in delivered:
+        phone = str(c.get("phone") or "")
+        nome = (c.get("lead_name_canonical") or "").strip()
+        resumo = (c.get("handoff_summary") or "").strip()
+        fatos = [f.strip() for f in (c.get("lead_facts") or []) if isinstance(f, str) and f.strip()]
+        synthetic = phone.startswith(("ig:", "web:"))
+        contato = bool((not synthetic and phone) or (c.get("lead_whatsapp") or "").strip() or (c.get("lead_email") or "").strip())
+        fechou = bool(c.get("is_customer") or (c.get("crm_outcome") or "") == "won" or phone in paid_phones)
+        completo = bool(nome and resumo and fatos)
+
+        com_nome += 1 if nome else 0
+        com_resumo += 1 if resumo else 0
+        com_dados += 1 if fatos else 0
+        com_contato += 1 if contato else 0
+        completos += 1 if completo else 0
+        fechados += 1 if fechou else 0
+
+        slug = (c.get("lead_source") or "").strip() or ("outbound" if c.get("is_outbound") else "organico")
+        channel = (c.get("channel") or "").strip() or (
+            "instagram" if phone.startswith("ig:") else "web" if phone.startswith("web:") else "whatsapp"
+        )
+        leads.append({
+            "phone": phone,
+            "nome": nome,
+            "canal": channel,
+            "origem": SOURCE_LABELS.get(slug, slug),
+            "quando": c.get("handed_off_at") or c.get("last_message_at") or "",
+            "vendedor": (c.get("assigned_name") or "").strip(),
+            "resumo": resumo[:400],
+            "dados": fatos[:6],
+            "completo": completo,
+            "fechou": fechou,
+            "etapa": c.get("stage") or "",
+        })
+
+    leads.sort(key=lambda item: str(item["quando"]), reverse=True)
+    total = len(delivered)
+    return {
+        "entregues": total,
+        "com_nome": com_nome,
+        "com_resumo": com_resumo,
+        "com_dados": com_dados,
+        "com_contato": com_contato,
+        "completos": completos,
+        "taxa_completos": f"{round(100 * completos / total)}%",
+        "fechados": fechados,
+        "taxa_fechamento": f"{round(100 * fechados / total)}%",
+        "leads": leads[:_DELIVERY_MAX_LEADS],
+    }
+
+
+def _team_section(convs: list[dict], pays: list[dict]) -> dict:
+    """
+    Resultado por pessoa da equipe no período (módulo puro sobre as
+    linhas já consultadas; zero consulta extra).
+
+    Returns:
+        {"vendedores": [{nome, email, recebidos, em_atendimento, fechados,
+        receita_cents, receita_display, conversao}]} ordenado por quem
+        mais fechou; {} quando nenhum lead do período é de alguém.
+    """
+    por_pessoa: dict[str, dict] = {}
+    dono_do_phone: dict[str, str] = {}
+    for c in convs:
+        key = (c.get("assigned_to") or "").strip().lower()
+        nome = (c.get("assigned_name") or "").strip()
+        if not key and not nome:
+            continue
+        key = key or nome.lower()
+        bucket = por_pessoa.setdefault(key, {
+            "nome": nome or key.split("@", 1)[0],
+            "email": key if "@" in key else "",
+            "recebidos": 0, "em_atendimento": 0, "fechados": 0, "receita_cents": 0,
+            "_phones_fechados": set(),
+        })
+        if nome:
+            bucket["nome"] = nome
+        bucket["recebidos"] += 1
+        if c.get("handoff_status") == "handed_off":
+            bucket["em_atendimento"] += 1
+        phone = str(c.get("phone") or "")
+        dono_do_phone[phone] = key
+        if c.get("is_customer") or (c.get("crm_outcome") or "") == "won":
+            bucket["_phones_fechados"].add(phone)
+
+    if not por_pessoa:
+        return {}
+
+    for p in pays:
+        key = dono_do_phone.get(str(p.get("phone") or ""))
+        if not key:
+            continue
+        por_pessoa[key]["receita_cents"] += int(p.get("amount_cents") or 0)
+        por_pessoa[key]["_phones_fechados"].add(str(p.get("phone") or ""))
+
+    vendedores = []
+    for bucket in por_pessoa.values():
+        fechados = len(bucket.pop("_phones_fechados"))
+        bucket["fechados"] = fechados
+        bucket["receita_display"] = _brl(bucket["receita_cents"])
+        bucket["conversao"] = (
+            f"{round(100 * fechados / bucket['recebidos'])}%" if bucket["recebidos"] else "0%"
+        )
+        vendedores.append(bucket)
+    vendedores.sort(key=lambda v: (-v["fechados"], -v["receita_cents"], -v["recebidos"], v["nome"]))
+    return {"vendedores": vendedores}
 
 
 # ================================================================
@@ -384,10 +584,21 @@ def _report_lines(report: dict) -> tuple[list[str], str]:
             partes.append(f"{q['passados_pro_humano']} entregues quentes pra você")
         lines.append("🎯 " + " · ".join(partes))
         por_vendedor = q.get("por_vendedor") or {}
-        if por_vendedor:
+        if por_vendedor and not (s.get("equipe") or {}).get("vendedores"):
             lines.append(
                 "👥 Por vendedor: " + " · ".join(f"{n} → {who}" for who, n in por_vendedor.items())
             )
+
+    # Equipe: o que cada pessoa recebeu e fechou (substitui a linha só de
+    # contagem acima quando existe). Até 5 pessoas pra caber no WhatsApp.
+    vendedores = (s.get("equipe") or {}).get("vendedores") or []
+    if vendedores:
+        lines.append("👥 Por vendedor:")
+        for v in vendedores[:5]:
+            linha = f"  {v.get('nome', '')}: recebeu {v.get('recebidos', 0)}, fechou {v.get('fechados', 0)}"
+            if v.get("receita_cents", 0):
+                linha += f" ({v.get('receita_display', '')})"
+            lines.append(linha)
 
     f = s.get("follow_up", {})
     if f.get("leads_reengajados", 0):

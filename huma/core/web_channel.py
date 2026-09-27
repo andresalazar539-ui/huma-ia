@@ -439,6 +439,9 @@ async def _process_web_message_locked(
         conv.history.append({"role": "user", "content": text})
         conv.last_message_at = datetime.utcnow()
         await db.save_conversation(conv)
+        # O visitante nunca fica no vácuo: quem está com a conversa é avisado.
+        from huma.core.orchestrator import _ping_human_lead_waiting
+        await _ping_human_lead_waiting(client_data, conv, phone, text)
         notice_key = f"web_handoff_notice:{client_id}:{phone}"
         if not await cache.exists(notice_key):
             await cache.set_with_ttl(notice_key, "1", ttl=21600)
@@ -449,6 +452,9 @@ async def _process_web_message_locked(
     if conv.stage == "lost":
         conv.stage = "discovery"
         conv.follow_up_count = 0
+    # Devolvida pra HUMA depois de qualificada (mesmo contrato do WhatsApp).
+    if conv.stage == "qualified":
+        conv.stage = "closing"
 
     web_identity = build_web_identity(client_data)
 

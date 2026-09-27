@@ -14,6 +14,8 @@ Contratos:
   - atendente: ``huma`` (IA atendendo), ``dono`` (humano assumiu e
     ninguém da equipe está com o lead) ou o e-mail de quem está com o
     lead (``assigned_to``). Vazio = sem filtro.
+  - carteira (``portfolio``): de quem o lead É (``assigned_to``), mesmo
+    quando a HUMA está atendendo agora. É o "Minhas conversas".
   - período: datas locais (yyyy-mm-dd, horário de Brasília) viram uma
     janela UTC ``[since, until)`` sobre ``last_message_at``; a query já
     aplica isso no banco, ``apply_filters`` só refaz a checagem por
@@ -28,7 +30,10 @@ from zoneinfo import ZoneInfo
 
 CHANNELS = ("whatsapp", "instagram", "web")
 # Etapas do funil (colunas do quadro), na ordem do core/funnel.py
-STAGES = ("discovery", "offer", "closing", "committed", "won", "lost")
+# "qualified" (2026-09-27): a HUMA qualificou e passou pra equipe; falta
+# a pessoa fechar. Não é etapa do funil da IA (core/funnel.py), é estado
+# de sistema gravado pelo handoff.
+STAGES = ("discovery", "offer", "closing", "committed", "qualified", "won", "lost")
 STATUSES = ("andamento", "aguardando", "confirmado", "feito", "cancelado")
 ASSIGNEE_SPECIAL = ("huma", "dono")
 
@@ -110,16 +115,34 @@ def assignee_of(row: dict, owner_email: str = "") -> str:
     (minúsculo) de quem da equipe está com o lead. O dono que escolheu
     a si mesmo no handoff (``assigned_to`` = e-mail do dono) também
     conta como ``dono``.
+
+    Carteirização (2026-09-27): ``assigned_to`` é de quem o lead É, e
+    continua gravado quando a conversa volta pra HUMA. Por isso quem
+    ATENDE agora sai do ``handoff_status``: conversa ativa é da HUMA,
+    mesmo com dono de carteira (pra carteira, ver ``portfolio_of``).
     """
     handoff = row.get("handoff_status") or "active"
+    if handoff != "handed_off":
+        return "huma"
     assigned = str(row.get("assigned_to") or "").strip().lower()
     if assigned:
         if owner_email and assigned == owner_email.strip().lower():
             return "dono"
         return assigned
-    if handoff == "handed_off":
+    return "dono"
+
+
+def portfolio_of(row: dict, owner_email: str = "") -> str:
+    """
+    De quem é o lead (carteira), não importa quem está falando agora:
+    ``dono``, o e-mail (minúsculo) de alguém da equipe ou "" (de ninguém).
+    """
+    assigned = str(row.get("assigned_to") or "").strip().lower()
+    if not assigned:
+        return ""
+    if owner_email and assigned == owner_email.strip().lower():
         return "dono"
-    return "huma"
+    return assigned
 
 
 def apply_filters(
@@ -131,6 +154,7 @@ def apply_filters(
     until_iso: str = "",
     now_iso: str = "",
     owner_email: str = "",
+    portfolio: str = "",
 ) -> list[dict]:
     """
     Aplica os filtros da aba Conversas em memória, preservando a ordem.
@@ -145,11 +169,14 @@ def apply_filters(
         now_iso: agora em ISO naive UTC (default: agora de verdade).
         owner_email: e-mail do dono, pra "dono" pegar também o lead que
             o dono atribuiu a si mesmo.
+        portfolio: "dono" | e-mail | "" (todos). Carteira: de quem o
+            lead é, mesmo com a HUMA atendendo agora ("Minhas conversas").
     """
     now_iso = now_iso or datetime.utcnow().isoformat()
     want_status = status if status in STATUSES else ""
     want_channel = channel if channel in CHANNELS else ""
     want_assignee = (assignee or "").strip().lower()
+    want_portfolio = (portfolio or "").strip().lower()
 
     out: list[dict] = []
     for r in rows:
@@ -158,6 +185,8 @@ def apply_filters(
         if want_channel and channel_of(r) != want_channel:
             continue
         if want_assignee and assignee_of(r, owner_email) != want_assignee:
+            continue
+        if want_portfolio and portfolio_of(r, owner_email) != want_portfolio:
             continue
         if since_iso or until_iso:
             last = str(r.get("last_message_at") or "")

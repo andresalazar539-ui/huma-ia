@@ -80,6 +80,7 @@
 <script type="text/babel" src="/static/cockpit/VendasScreen.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/UsageScreens.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/SettingsScreens.jsx?v=__ASSET_V__"></script>
+<script type="text/babel" src="/static/cockpit/EquipeScreen.jsx?v=__ASSET_V__"></script>
 
 <script type="text/babel">
 const { useState, useEffect, useCallback, useRef } = React;
@@ -118,6 +119,7 @@ function ConversasScreen({
   mobile, onBack,
   query, onQuery, filters, onFilters, team,
   view = 'list', onView, onMove, drawerOpen = false, onCloseDrawer,
+  onTransferred,
 }) {
   // Quadro (2026-09-17): mesmas conversas por etapa do funil; a busca
   // local e os filtros valem nas duas visões.
@@ -137,6 +139,7 @@ function ConversasScreen({
           onSend={onSend}
           handoff={handoff}
           onHandoff={onHandoff}
+          team={team} onTransferred={onTransferred}
           mobile
           onBack={onBack}
         />
@@ -188,6 +191,7 @@ function ConversasScreen({
                 onSend={onSend}
                 handoff={handoff}
                 onHandoff={onHandoff}
+                team={team} onTransferred={onTransferred}
                 onBack={onCloseDrawer}
               />
             </div>
@@ -220,6 +224,7 @@ function ConversasScreen({
           onSend={onSend}
           handoff={handoff}
           onHandoff={onHandoff}
+          team={team} onTransferred={onTransferred}
           onOpenAgenda={narrow ? onOpenAgenda : null}
         />
       )}
@@ -237,7 +242,7 @@ function App() {
     const s = new URLSearchParams(location.search).get('screen');
     const valid = ['inicio', 'conversas', 'agenda', 'vendas', 'clientes', 'voz', 'relatorios',
                    'disparos', 'integracoes', 'ajustes', 'uso', 'indicacao',
-                   'creditos', 'planos', 'negocio', 'perfil'];
+                   'creditos', 'planos', 'negocio', 'perfil', 'equipe'];
     return valid.includes(s) ? s : 'inicio';
   })();
   const [route, setRoute] = useState(initialRoute);
@@ -286,6 +291,8 @@ function App() {
   // --- Conversas (dados reais via API) ---
   const [filter, setFilter] = useState('todas');
   // Filtros que organizam a lista (período, canal, quem atende) + busca local
+  // Atendente (Vendas, Recepção) já recebe do servidor só o que é dele;
+  // o filtro "Minhas" é pra quem vê a conta inteira (dono, administrativo).
   const [convFilters, setConvFilters] = useState({ ...(window.DEFAULT_CONV_FILTERS || {}) });
   const [convQuery, setConvQuery] = useState('');
   // Equipe (dono + membros) pro filtro "Quem atende"; falha vira só HUMA/Dono
@@ -394,6 +401,9 @@ function App() {
       const d = await fetchConversationDetail(phone);
       setDetail(mapDetail(d));
       setDetailState('ready');
+      // Conversa que já está com um humano (handoff da HUMA ou transferência)
+      // abre com "Devolver para HUMA", não com "Assumir".
+      if (!silent) setHandoff(d.handoff_status === 'handed_off');
     } catch (e) {
       console.error('Conversas | falha no detalhe | phone=' + phone, e);
       if (!silent) setDetailState('error');
@@ -498,7 +508,21 @@ function App() {
         active={active} detailState={detailState}
         onRetryDetail={() => loadDetail(activeId)}
         onSend={send} handoff={handoff}
-        onHandoff={() => setHandoff(h => !h)}
+        onHandoff={(takeover) => {
+          const next = typeof takeover === 'boolean' ? takeover : !handoff;
+          setHandoff(next);
+          setDetail(d => (d && d.id === activeId) ? { ...d, handoff_status: next ? 'handed_off' : 'active' } : d);
+          loadDetail(activeId, { silent: true });
+          loadList(filter, { silent: true }, convFilters);
+        }}
+        onTransferred={(r) => {
+          setHandoff(true);
+          const patch = { handoff_status: 'handed_off', assigned_to: (r && r.assigned_to) || '', assigned_name: (r && r.assigned_name) || '' };
+          setDetail(d => (d && d.id === activeId) ? { ...d, ...patch } : d);
+          setConversations(list => list.map(c => (c.id === activeId ? { ...c, ...patch } : c)));
+          loadDetail(activeId, { silent: true });
+          loadList(filter, { silent: true }, convFilters);
+        }}
         narrow={narrow} onOpenAgenda={() => setAgendaOpen(true)}
         mobile={isMobile} onBack={() => { setActiveId(null); setHandoff(false); }}
         view={convView} onView={setConvView} onMove={moveStage}
@@ -527,6 +551,7 @@ function App() {
                             fetchBillingStatus().then(setBilling).catch(() => {});
                           }} />; break;
     case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
+    case 'equipe':      screen = <EquipeScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} inviteOpen={inviteOpen} />; break;
     case 'perfil':      screen = <PerfilScreen />; break;
     default:            screen = <InicioScreen
       onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}

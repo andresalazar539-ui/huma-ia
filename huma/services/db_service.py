@@ -534,8 +534,10 @@ async def save_conversation(conv: Conversation):
     if conv.owner_notes:
         data["owner_notes"] = conv.owner_notes
     # Roteamento por vendedor: mesmo contrato — só entra quando o lead foi
-    # entregue a alguém. Limpar (devolver pra HUMA) é via clear_assignment,
-    # update direto. Sem a migration, retry sem os campos (WARNING).
+    # entregue a alguém. Devolver pra HUMA NÃO limpa (carteirização,
+    # 2026-09-27: o lead continua sendo de quem era); tirar da carteira é
+    # via set_assignment, update direto. Sem a migration, retry sem os
+    # campos (WARNING).
     if conv.assigned_to:
         data["assigned_to"] = conv.assigned_to
         data["assigned_name"] = conv.assigned_name or ""
@@ -612,6 +614,31 @@ async def set_assignment(client_id: str, phone: str, assigned_to: str, assigned_
             f"set_assignment | falhou (rodou scripts/migration_lead_routing.sql?) | "
             f"client={client_id} | phone={phone} | {type(e).__name__}: {e}"
         )
+
+
+async def list_portfolio_phones(client_id: str, email: str) -> set[str]:
+    """
+    Telefones (chave da conversa) dos leads que são de uma pessoa da
+    equipe. Usado pra recortar Agenda e Clientes do atendente, que só vê
+    o que é dele. Sem a coluna ou em falha: conjunto vazio (o atendente
+    não vê nada, nunca a conta inteira).
+    """
+    wanted = (email or "").strip().lower()
+    if not wanted:
+        return set()
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("conversations").select("phone")
+            .eq("client_id", client_id).eq("assigned_to", wanted)
+            .limit(2000).execute()
+        )
+    except Exception as e:
+        log.warning(
+            f"list_portfolio_phones | falhou (rodou scripts/migration_lead_routing.sql?) | "
+            f"client={client_id} | {type(e).__name__}: {e}"
+        )
+        return set()
+    return {str(r.get("phone") or "") for r in (resp.data or []) if r.get("phone")}
 
 
 async def set_customer_flag(
@@ -1093,7 +1120,7 @@ async def list_unanswered_conversations(
             .gte("last_message_at", cutoff_max)
             .not_.like("phone", "web:%")
             .not_.like("phone", "ig:%")
-            .not_.in_("stage", ["won", "lost"])
+            .not_.in_("stage", ["won", "lost", "qualified"])
             .limit(limit)
             .execute()
         )
@@ -1169,6 +1196,7 @@ async def list_conversations_for_cockpit(
     since_iso: str = "",
     until_iso: str = "",
     owner_email: str = "",
+    portfolio: str = "",
 ) -> list[dict]:
     """
     T2 (Cockpit) — lista conversas pra renderizar no cockpit do dono.
@@ -1190,6 +1218,8 @@ async def list_conversations_for_cockpit(
       - channel: "whatsapp" | "instagram" | "web" | "" (todos)
       - assignee: "huma" | "dono" | e-mail de quem está com o lead | ""
         (owner_email faz "dono" pegar também o lead atribuído ao dono)
+      - portfolio: "dono" | e-mail | "" — carteira: de quem o lead é,
+        mesmo com a HUMA atendendo agora ("Minhas conversas")
       - since_iso/until_iso: janela UTC [since, until) sobre
         last_message_at (ISO naive) — aplicada NA QUERY (gte/lt), então
         o teto de 200 linhas conta só dentro do período.
@@ -1201,7 +1231,7 @@ async def list_conversations_for_cockpit(
     """
     from huma.core import conversation_filters as cf
 
-    any_filter = bool(filter_mode != "todas" or channel or assignee)
+    any_filter = bool(filter_mode != "todas" or channel or assignee or portfolio)
     # Busca tudo do cliente (até 200) e filtra em Python.
     fetch_limit = max(limit, 200) if any_filter else limit
 
@@ -1258,5 +1288,6 @@ async def list_conversations_for_cockpit(
         channel=channel,
         assignee=assignee,
         owner_email=owner_email,
+        portfolio=portfolio,
     )
     return filtered[:limit]
