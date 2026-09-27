@@ -191,6 +191,8 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
 
 async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
     """Processa mensagem unificada (após buffer juntar tudo)."""
+    # Aviso interno disparado daqui pra frente nunca vai pro número deste lead.
+    wa.set_current_lead(phone)
     if not await cache.acquire_lock(phone):
         return
 
@@ -414,7 +416,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 await wa.notify_owner(
                     owner,
                     f"⚠️ Lead {phone} atingiu o limite diário de IA "
-                    f"(50 msgs/dia). Conversa pausada — assume direto pelo "
+                    f"(50 msgs/dia). Conversa pausada: assume direto pelo "
                     f"WhatsApp. Mensagens seguintes do lead não receberão "
                     f"resposta automática hoje.",
                     client_id=client_id,
@@ -4108,6 +4110,12 @@ async def _handle_blocked_new_conversation(client_data, phone: str, lead_text: s
             f"{'lead está' if waiting == 1 else 'leads estão'} na sua fila: "
             f"responda pelo Cockpit ou pelo WhatsApp, ninguém se perdeu."
         )
+    elif (await billing.get_gate_status(client_id)).get("trial"):
+        # Conta em teste grátis não tem cartão: oferecer "liberar gasto"
+        # levaria a um erro. O caminho é assinar.
+        from huma.core import trial_reminders
+        base = (PUBLIC_BASE_URL or "https://app.humaia.com.br").rstrip("/")
+        owner_msg = trial_reminders.trial_out_of_conversations_text(waiting, f"{base}/cockpit?screen=planos")
     else:
         links = await billing.short_spend_links(client_id, PUBLIC_BASE_URL)
         motivo = (
@@ -4128,10 +4136,23 @@ async def _handle_blocked_new_conversation(client_data, phone: str, lead_text: s
         linhas.extend(["", "Você confirma na página antes de mudar qualquer coisa."])
         owner_msg = "\n".join(linhas)
 
+    sent_id = None
     try:
-        await wa.notify_owner(owner_phone, owner_msg, client_id=client_id)
+        sent_id = await wa.notify_owner(owner_phone, owner_msg, client_id=client_id, about_phone=phone)
     except Exception as e:
         log.warning(f"SpendControl | notify_owner falhou | {client_id} | {type(e).__name__}: {e}")
+    if sent_id:
+        # Quando o WhatsApp foi bloqueado (destino = lead) o notify_owner já
+        # mandou pela reserva; aqui é o reforço do caminho normal.
+        try:
+            from huma.services import team_notify
+            await team_notify.notify(
+                client_data, "", "Leads na sua fila",
+                f"{waiting} {'lead está' if waiting == 1 else 'leads estão'} esperando resposta.",
+                whatsapp_sent=True, tag="fila",
+            )
+        except Exception as e:
+            log.warning(f"SpendControl | notificação falhou | {client_id} | {type(e).__name__}: {e}")
     log.warning(f"SpendControl | bloqueado | {client_id} | {phone} | reason={reason} | fila={waiting}")
 
 

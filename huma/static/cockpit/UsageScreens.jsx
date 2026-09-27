@@ -30,6 +30,32 @@ const isSubscriberAccount = (billing) => {
   return !(billing.trial || billing.trial_expired);
 };
 
+// Telas que só assinante usa (Indicação, Pacotes): enquanto não se sabe
+// se a conta é assinante, NÃO mostram o conteúdo. Antes a tela inteira
+// aparecia e só depois de uns segundos virava "disponível depois de
+// assinar". O status vem do shell (já carregado) e é guardado aqui pra
+// próxima abertura ser instantânea.
+let _billingMemo = null;
+const rememberBilling = (b) => { if (b) _billingMemo = b; return b; };
+const knownBilling = (fromShell) => fromShell || _billingMemo || null;
+
+const SubscriberCheckingScreen = ({ onBack, title }) => (
+  <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ padding: '20px 32px', borderBottom: '1px solid var(--paper-edge)' }}>
+      <button onClick={onBack} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        background: 'transparent', border: 'none', cursor: 'pointer', padding: '4px 8px 4px 0',
+        fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)',
+      }}><Icon name="chevronL" size={14}/> Voltar</button>
+      <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 28, letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 4 }}>{title}</div>
+    </div>
+    <div style={{ padding: '24px 32px', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="skeleton" style={{ height: 120, borderRadius: 16 }}/>
+      <div className="skeleton" style={{ height: 64, borderRadius: 16 }}/>
+    </div>
+  </div>
+);
+
 // ============================================================
 // USO — tela principal (plugada no GET /billing real)
 // ============================================================
@@ -776,26 +802,31 @@ const SubscriberLockScreen = ({ onBack, onGoto, title, icon, reason }) => (
 // ============================================================
 // INDICAÇÃO — sub-tela
 // ============================================================
-const IndicacaoScreen = ({ onBack, onGoto }) => {
+const IndicacaoScreen = ({ onBack, onGoto, billing: shellBilling = null }) => {
   const [copied, setCopied] = useStateU(false);
   // Programa REAL: link com ?ref= do cliente; recompensas e lista vêm
   // do GET /api/clients/{id}/referrals.
   const link = `${location.origin}/login?ref=${window.getClientId()}`;
   const [stats, setStats] = useStateU(null);
   // Indique e ganhe só libera pra assinante (no teste grátis fica travado).
-  const [billing, setBilling] = useStateU(null);
-  const [billingLoaded, setBillingLoaded] = useStateU(false);
+  const [billing, setBilling] = useStateU(() => knownBilling(shellBilling));
+  const [billingLoaded, setBillingLoaded] = useStateU(() => !!knownBilling(shellBilling));
 
   useEffectU(() => {
+    const known = knownBilling(shellBilling);
+    if (known && isSubscriberAccount(known)) window.fetchReferrals().then(setStats).catch(() => {});
     fetchBillingStatus().then(b => {
+      rememberBilling(b);
       setBilling(b); setBillingLoaded(true);
-      if (isSubscriberAccount(b)) window.fetchReferrals().then(setStats).catch(() => {});
+      if (!known && isSubscriberAccount(b)) window.fetchReferrals().then(setStats).catch(() => {});
     }).catch(() => {
       // Sem o status, tenta o programa mesmo assim (o servidor é quem barra).
       setBillingLoaded(true);
-      window.fetchReferrals().then(setStats).catch(() => {});
+      if (!known) window.fetchReferrals().then(setStats).catch(() => {});
     });
   }, []);
+
+  if (!billingLoaded) return <SubscriberCheckingScreen onBack={onBack} title="Programa de Indicação"/>;
 
   if (billingLoaded && !isSubscriberAccount(billing)) {
     return (
@@ -1012,7 +1043,7 @@ const IndicacaoScreen = ({ onBack, onGoto }) => {
 // ============================================================
 // CRÉDITOS — sub-tela
 // ============================================================
-const CreditosScreen = ({ onBack, onGoto }) => {
+const CreditosScreen = ({ onBack, onGoto, billing: shellBilling = null }) => {
   // Pacotes REAIS do backend (billing.extra_packs — fonte única de verdade).
   const fmtBrl = (v) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
   const [packs, setPacks] = useStateU([
@@ -1020,7 +1051,8 @@ const CreditosScreen = ({ onBack, onGoto }) => {
     { id: 'pack_500', size: '+500', amount: 500, price: fmtBrl(797.00), priceNum: 797.00, highlight: 'Melhor valor' },
   ]);
   const [selected, setSelected] = useStateU(0);
-  const [billing, setBilling] = useStateU(null);
+  const [billing, setBilling] = useStateU(() => knownBilling(shellBilling));
+  const [billingFailed, setBillingFailed] = useStateU(false);
 
   // Método de pagamento: cartão salvo (1 clique) > cartão novo > Pix.
   const [metodo, setMetodo] = useStateU('card');
@@ -1049,6 +1081,7 @@ const CreditosScreen = ({ onBack, onGoto }) => {
 
   useEffectU(() => {
     fetchBillingStatus().then(b => {
+      rememberBilling(b);
       setBilling(b);
       const list = (b.extra_packs || []).map((p, i) => ({
         id: p.id,
@@ -1060,7 +1093,7 @@ const CreditosScreen = ({ onBack, onGoto }) => {
       }));
       if (list.length) { setPacks(list); setSelected(list.length - 1); }
       if (b.saved_card) setMetodo('saved');
-    }).catch(() => {});
+    }).catch(() => setBillingFailed(true));
   }, []);
 
   // Poll do Pix enquanto o QR está na tela (a cada 4s).
@@ -1219,6 +1252,9 @@ const CreditosScreen = ({ onBack, onGoto }) => {
     { id: 'card', label: savedCard ? 'Outro cartão' : 'Cartão' },
     { id: 'pix', label: 'Pix' },
   ];
+
+  // Enquanto não se sabe se a conta é assinante, a tela de compra não aparece.
+  if (!billing && !billingFailed) return <SubscriberCheckingScreen onBack={onBack} title="Créditos extras"/>;
 
   // Pacote de conversas só libera pra assinante (no teste grátis fica travado).
   if (!isSubscriberAccount(billing)) {

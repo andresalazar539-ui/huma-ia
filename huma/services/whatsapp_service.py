@@ -638,13 +638,78 @@ async def send_template(
     return await send_text(phone, text, client_id)
 
 
+# Lead cuja mensagem está sendo processada AGORA. Aviso interno (pro dono
+# ou pra equipe) disparado durante esse processamento nunca pode ir pro
+# número desse mesmo lead. ContextVar acompanha as tasks criadas dentro
+# do processamento, então vale pra tudo que o motor dispara no caminho.
+import contextvars
+
+_current_lead: contextvars.ContextVar[str] = contextvars.ContextVar("huma_current_lead", default="")
+
+
+def set_current_lead(phone: str) -> None:
+    """Marca de qual lead é a mensagem que o motor está processando."""
+    _current_lead.set(str(phone or ""))
+
+
+def phone_variants(phone: str) -> set[str]:
+    """
+    Jeitos de escrever o mesmo número: com e sem o DDI 55, com e sem o 9
+    extra do celular. Vazio pra phone sintético (ig:, web:) ou curto. (puro)
+    """
+    raw = str(phone or "")
+    if raw.startswith(("ig:", "web:")):
+        return set()
+    d = _digits(raw.split("@")[0])
+    if len(d) < 10:
+        return set()
+    local = d[2:] if d.startswith("55") and len(d) in (12, 13) else d
+    out = {local, "55" + local}
+    if len(local) == 11 and local[2] == "9":
+        short = local[:2] + local[3:]
+        out |= {short, "55" + short}
+    elif len(local) == 10:
+        long = local[:2] + "9" + local[2:]
+        out |= {long, "55" + long}
+    return out
+
+
+def same_phone(a: str, b: str) -> bool:
+    """Os dois números são a mesma linha de WhatsApp? (puro)"""
+    va, vb = phone_variants(a), phone_variants(b)
+    return bool(va and vb and (va & vb))
+
+
 async def notify_owner(
     owner_phone: str,
     message: str,
     client_id: str = "",
     **kwargs,
 ) -> str | None:
-    """Notifica o dono. Retorna message_id. Roteia pelo canal do cliente."""
+    """
+    Aviso INTERNO pro dono ou pra equipe. Retorna message_id.
+
+    REGRA (2026-09-27): aviso interno nunca vai pro número de um lead.
+    Se o destino é o próprio lead que disparou o aviso (`about_phone`,
+    ou o lead em processamento), o WhatsApp é bloqueado e o aviso segue
+    por notificação do Cockpit e e-mail. Lead lendo "suas conversas do
+    plano acabaram" é inaceitável.
+    """
+    about = str(kwargs.get("about_phone") or _current_lead.get() or "")
+    if about and same_phone(owner_phone, about):
+        log.warning(
+            f"Aviso interno BLOQUEADO | destino é o próprio lead | client={client_id} | "
+            f"seguindo por notificação e e-mail"
+        )
+        try:
+            from huma.services import team_notify  # lazy: evita ciclo
+            _, identity = await _resolve_channel(client_id)
+            if identity is not None:
+                first_line = (message or "").strip().splitlines()[0][:80] if (message or "").strip() else "Aviso da HUMA"
+                await team_notify.notify(identity, "", first_line, (message or "")[:240], whatsapp_sent=False)
+        except Exception as e:
+            log.warning(f"Aviso interno | reserva falhou | client={client_id} | {type(e).__name__}: {e}")
+        return None
     return await send_text(owner_phone, message, client_id)
 
 

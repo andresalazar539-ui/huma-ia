@@ -40,6 +40,12 @@ class WhatsAppHandoffProvider(HandoffProvider):
         try:
             # Import tardio pra quebrar ciclo
             from huma.services import whatsapp_service as wa
+            lead_phone = str(payload.get("lead_phone") or "")
+            if wa.same_phone(target, lead_phone):
+                # Destino é o próprio lead: o aviso segue por notificação e
+                # e-mail (notify_owner bloqueia o WhatsApp) e não conta como avisado.
+                await wa.notify_owner(target, message, client_id=client_id, about_phone=lead_phone)
+                return {"status": "not_delivered", "detail": "target_is_the_lead"}
             await wa.notify_owner(target, message, client_id=client_id)
             log.info(
                 f"handoff notificado | client={client_id} | "

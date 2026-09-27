@@ -969,7 +969,87 @@ async def _run_catalog_refresh_job() -> None:
         log.error(f"sched | catalog_refresh | {type(e).__name__}: {e}")
 
 
+async def _run_trial_reminder_job() -> None:
+    """
+    Roda 1x/hora. Lembra o dono que o teste grátis está acabando: 2 dias
+    antes, na véspera e no último dia (core/trial_reminders). Uma vez por
+    dia por conta (Redis trial_reminder:{client}:{dia}). Sem Redis não
+    envia: sem dedup viraria um aviso por hora. Respeita o horário de
+    silêncio. Nunca derruba o loop.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from huma.config import PUBLIC_BASE_URL
+    from huma.core import trial_clock, trial_reminders
+    from huma.core.orchestrator import _is_silent_hours
+    from huma.services import billing_service as billing
+    from huma.services import db_service as db
+    from huma.services import team_notify
+    from huma.services import whatsapp_service as wa
+    from huma.services.db_service import get_supabase
+
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("subscriptions").select("client_id,created_at,status")
+            .eq("status", "trial").limit(2000).execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        log.error(f"trial_reminder | subscriptions indisponível | {type(e).__name__}: {e}")
+        return
+
+    base = (PUBLIC_BASE_URL or "https://app.humaia.com.br").rstrip("/")
+    now = datetime.utcnow()
+    sent = skipped = errors = 0
+    for row in rows:
+        client_id = row.get("client_id", "")
+        try:
+            deadline = billing._compute_trial_deadline(row.get("created_at", ""))
+            if not client_id or not deadline or now >= deadline:
+                skipped += 1
+                continue
+            days = trial_clock.calendar_days_until(deadline, now)
+            day_key = trial_reminders.reminder_key(days)
+            if not day_key:
+                skipped += 1
+                continue
+            key = f"trial_reminder:{client_id}:{day_key}"
+            if await cache.exists(key):
+                skipped += 1
+                continue
+            client_data = await db.get_client(client_id)
+            if not client_data or _is_silent_hours(client_data):
+                skipped += 1
+                continue
+            await cache.set_with_ttl(key, "1", ttl=4 * 86400)
+            if not await cache.exists(key):
+                skipped += 1  # sem Redis não há como garantir um aviso só
+                continue
+
+            total = 0
+            try:
+                total = int((await db.get_conversation_metrics(client_id)).get("total") or 0)
+            except Exception:
+                total = 0
+            text = trial_reminders.reminder_text(days, total, f"{base}/cockpit?screen=planos")
+            msg_id = None
+            if client_data.owner_phone:
+                msg_id = await wa.notify_owner(client_data.owner_phone, text, client_id=client_id)
+            await team_notify.notify(
+                client_data, "", trial_reminders.reminder_title(days),
+                "Assine pra HUMA continuar atendendo sem parar.",
+                whatsapp_sent=bool(msg_id), tag="teste-gratis",
+            )
+            sent += 1
+        except Exception as e:
+            errors += 1
+            log.warning(f"trial_reminder | {client_id} | {type(e).__name__}: {e}")
+    log.info(f"trial_reminder | sent={sent} | skipped={skipped} | errors={errors} | trials={len(rows)}")
+
+
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
+    # Teste grátis acabando — 2 dias antes, véspera e último dia: a cada 1h, lock 30min
+    ("trial_reminder", _run_trial_reminder_job, 3600, 1800),
     # Controle de gasto — avisos de 80% e degraus de excedente: a cada 1h, lock 30min
     ("spend_alert", _run_spend_alert_job, 3600, 1800),
     # Excedente na fatura — programa na renovação: a cada 6h, lock 30min

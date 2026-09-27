@@ -544,8 +544,8 @@ function App() {
     case 'ajustes':     screen = <AjustesScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} />; break;
     case 'uso':         screen = <UsoScreen onGoto={setRoute}
                           onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
-    case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} onGoto={setRoute} />; break;
-    case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} onGoto={setRoute} />; break;
+    case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} onGoto={setRoute} billing={billing} />; break;
+    case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} onGoto={setRoute} billing={billing} />; break;
     case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute}
                           onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
     case 'checkout':    screen = <CheckoutScreen ctx={checkoutCtx} billing={billing}
