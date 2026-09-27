@@ -72,7 +72,10 @@ async def save_subscription(client_id: str, email: str, subscription: Any, user_
         await run_in_threadpool(
             lambda: get_supabase().table(TABLE).upsert(row, on_conflict="endpoint").execute()
         )
-        log.info(f"Push | aparelho guardado | client={client_id}")
+        log.info(
+            f"Push | aparelho guardado | client={client_id} | servico={_endpoint_host(clean['endpoint'])} | "
+            f"navegador={(user_agent or '?')[:140]}"
+        )
         return True
     except Exception as e:
         log.warning(
