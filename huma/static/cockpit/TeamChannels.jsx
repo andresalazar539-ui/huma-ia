@@ -520,43 +520,52 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
 
 // Aba do Perfil: o que cada pessoa liga pra si mesma.
 // Número de WhatsApp que recebe os avisos: é só digitar, sem QR.
+// "Ligado" só aparece quando existe por onde mandar (número do negócio conectado).
 const TcNoticeNumber = () => {
   const owner = (window.HUMA_ROLE || 'dono') === 'dono';
-  const [saved, setSaved] = React.useState(null);   // número gravado ('' = nenhum)
+  const [st, setSt] = React.useState(null);        // {phone, ready, code, text, channel}
   const [draft, setDraft] = React.useState('');
   const [editing, setEditing] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  const [err, setErr] = React.useState('');
+  // view: null | 'perguntando' | 'sim' | 'nao' | { erro }
+  const [view, setView] = React.useState(null);
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        if (owner) {
-          const { settings } = await window.fetchSettings();
-          setSaved(settings.owner_phone || '');
-        } else {
-          const me = String(window.HUMA_EMAIL || '').toLowerCase();
-          const team = await window.fetchTeam();
-          const m = (team.members || []).find(x => String(x.email || '').toLowerCase() === me) || {};
-          setSaved(m.phone || '');
-        }
-      } catch (e) { setSaved(''); }
-    })();
+  const load = React.useCallback(async () => {
+    try { setSt(await tcCall('GET', '/api/push/whatsapp')); }
+    catch (e) { setSt({ phone: '', ready: false, code: 'erro', text: 'Não consegui conferir agora. Recarregue a página.' }); }
   }, []);
+  React.useEffect(() => { load(); }, [load]);
 
   const save = async () => {
     const d = draft.replace(/\D/g, '');
-    if (d.length < 10) { setErr('Digite o DDD e o número. Exemplo: 11 98888-7777'); return; }
-    setBusy(true); setErr('');
+    if (d.length < 10) { setView({ erro: 'Digite o DDD e o número. Exemplo: 11 98888-7777' }); return; }
+    setBusy(true); setView(null);
     try {
-      const full = d.length <= 11 ? '55' + d : d;
-      await window.saveSettings({ owner_phone: full });
-      setSaved(full); setEditing(false); setDraft('');
-    } catch (e) { setErr('Não consegui salvar agora. Tente de novo.'); }
+      await window.saveSettings({ owner_phone: d.length <= 11 ? '55' + d : d });
+      setEditing(false); setDraft('');
+      await load();
+    } catch (e) { setView({ erro: 'Não consegui salvar agora. Tente de novo.' }); }
+    setBusy(false);
+  };
+  const test = async () => {
+    setBusy(true); setView(null);
+    try {
+      const r = await tcCall('POST', '/api/push/whatsapp/test');
+      setSt(s => ({ ...s, ...r }));
+      setView(r.sent ? 'perguntando' : { erro: r.text || 'O teste não saiu.' });
+    } catch (e) { setView({ erro: e.message }); }
     setBusy(false);
   };
 
-  const showForm = owner && saved !== null && (editing || !saved);
+  const phone = st && st.phone;
+  const blocked = st && phone && !st.ready;          // tem número, mas não tem por onde mandar
+  const needsChannel = st && ['no_channel', 'channel_off'].includes(st.code);
+  const showForm = owner && st && (editing || !phone);
+  const chip = (text, ok) => (
+    <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 999,
+      color: ok ? 'var(--sage-ink)' : '#7A5A14', background: ok ? 'var(--sage-tint)' : '#FBF1D6' }}>{text}</span>
+  );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -564,27 +573,75 @@ const TcNoticeNumber = () => {
         <div style={{ flex: '1 1 200px', minWidth: 0 }}>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>
             Aviso no seu WhatsApp
-            {saved && <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--sage-ink)', background: 'var(--sage-tint)', padding: '2px 8px', borderRadius: 999 }}>ligado</span>}
+            {st && st.ready && chip('ligado', true)}
+            {blocked && chip('ainda não funciona', false)}
           </div>
           <div style={{ ...tcText, fontSize: 13 }}>
-            {saved === null ? 'Carregando…'
-              : saved ? <>Você recebe em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(saved)}</b> quando um lead é passado pra você, agenda ou paga.</>
+            {st === null ? 'Carregando…'
+              : phone ? <>Você recebe em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(phone)}</b> quando um lead é passado pra você, agenda ou paga.</>
               : owner ? 'Digite o seu número pra ser avisado quando um lead for passado pra você, agendar ou pagar.'
               : 'Peça ao dono da conta pra colocar o seu número em Equipe.'}
           </div>
         </div>
-        {owner && saved && !editing && <Button variant="plain" size="sm" onClick={() => { setEditing(true); setDraft(''); }}>Trocar</Button>}
+        {st && st.ready && !editing && (
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button variant="ghost" size="sm" onClick={test} disabled={busy}>{busy ? 'Testando…' : 'Testar'}</Button>
+            {owner && <Button variant="plain" size="sm" onClick={() => { setEditing(true); setDraft(''); setView(null); }}>Trocar</Button>}
+          </span>
+        )}
+        {blocked && owner && !editing && <Button variant="plain" size="sm" onClick={() => { setEditing(true); setDraft(''); setView(null); }}>Trocar</Button>}
       </div>
+
       {showForm && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="11 98888-7777" inputMode="tel"
             onKeyDown={e => { if (e.key === 'Enter') save(); }}
             style={{ flex: '1 1 180px', minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', outline: 'none' }}/>
           <Button variant="dark" size="sm" onClick={save} disabled={busy || !draft.trim()}>{busy ? 'Salvando…' : 'Salvar'}</Button>
-          {editing && <Button variant="plain" size="sm" onClick={() => { setEditing(false); setErr(''); }}>Cancelar</Button>}
+          {editing && <Button variant="plain" size="sm" onClick={() => { setEditing(false); setView(null); }}>Cancelar</Button>}
         </div>
       )}
-      {err && <div style={tcMsg('err')}>{err}</div>}
+
+      {blocked && !editing && (
+        <div style={{ ...tcMsg('warn'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ flex: '1 1 240px' }}>{st.text}</span>
+          {needsChannel && owner && (
+            <Button variant="dark" size="sm" onClick={() => { window.location.href = '/cockpit?screen=integracoes'; }}>
+              {st.code === 'channel_off' ? 'Reconectar' : 'Conectar o número do negócio'}
+            </Button>
+          )}
+        </div>
+      )}
+      {view && view.erro && <div style={tcMsg('err')}>{view.erro}</div>}
+      {view === 'perguntando' && (
+        <div style={{ ...tcMsg('ok'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ flex: '1 1 200px' }}>Mandei uma mensagem pro {tcFmtPhone(phone)}. <b>Chegou no seu WhatsApp?</b></span>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button variant="dark" size="sm" onClick={() => setView('sim')}>Sim</Button>
+            <Button variant="ghost" size="sm" onClick={() => setView('nao')}>Não</Button>
+          </span>
+        </div>
+      )}
+      {view === 'sim' && <div style={tcMsg('ok')}>Pronto, está funcionando.</div>}
+      {view === 'nao' && (
+        <div style={tcMsg('warn')}>
+          {st && st.channel === 'meta' ? (
+            <>
+              <b>No WhatsApp oficial, o aviso só chega se você falou com o número do negócio nas últimas 24 horas.</b>
+              <div style={{ marginTop: 4 }}>Mande um "oi" do seu celular pro número do negócio e clique em Testar de novo. Pra não depender disso, ligue o aviso neste aparelho, na linha de cima.</div>
+            </>
+          ) : (
+            <>
+              <b>A mensagem saiu do número do negócio. Confira:</b>
+              <ol style={{ margin: '6px 0 0', paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <li>O número {tcFmtPhone(phone)} está certo? Se não, clique em Trocar.</li>
+                <li>Espere um minuto e olhe as conversas do WhatsApp, inclusive as arquivadas.</li>
+                <li>Se não chegar, o número do negócio pode ter caído. Confira em Integrações.</li>
+              </ol>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 };

@@ -168,3 +168,104 @@ async def push_test(
     )
     log.info(f"Push teste | client={client_id} | entregues={delivered}")
     return {"status": "ok", "delivered": delivered}
+
+
+# ================================================================
+# Aviso por WhatsApp: estado e teste na hora
+#
+# "Ligado" só é verdade quando existe POR ONDE mandar: o número do
+# negócio conectado. Número no cadastro sem canal não avisa ninguém.
+# ================================================================
+
+WHATSAPP_TEST_TEXT = (
+    "Teste da HUMA. É por aqui que eu te aviso quando um lead for passado "
+    "pra você, agendar ou pagar."
+)
+
+_NOTICE_TEXT = {
+    "ok": "",
+    "no_phone": "Falta cadastrar o seu número.",
+    "no_channel": "O número do negócio ainda não está conectado, então a HUMA não tem por onde te mandar WhatsApp.",
+    "channel_off": "O WhatsApp do negócio está desconectado. Reconecte pra voltar a receber os avisos.",
+    "same_number": "Esse é o próprio número do negócio. Pra receber aviso, use outro número (o seu celular).",
+}
+
+
+async def _whatsapp_notice_state(client, email: str) -> dict:
+    """
+    Dá pra avisar essa pessoa por WhatsApp agora? Devolve
+    {phone, channel, code, ready, text}. Nunca levanta.
+    """
+    from huma.core import lead_routing
+    from huma.services import whatsapp_service as wa
+
+    person = lead_routing.find_member(client, email) or {}
+    phone = person.get("phone") or ""
+    provider = (getattr(client, "whatsapp_provider", "") or "").strip().lower()
+    code = "ok"
+    try:
+        if not phone:
+            code = "no_phone"
+        elif provider == "evolution":
+            instance = (getattr(client, "evolution_instance", "") or "").strip()
+            if not instance:
+                code = "no_channel"
+            elif await wa.evo_connection_state(instance) != "open":
+                code = "channel_off"
+            elif (await wa.evo_instance_phone(instance)) == phone:
+                code = "same_number"
+        elif provider == "meta":
+            has = (getattr(client, "phone_number_id", "") or "") and (getattr(client, "meta_access_token", "") or "")
+            if not has:
+                code = "no_channel"
+        else:
+            code = "no_channel"
+    except Exception as e:
+        log.warning(f"Aviso WhatsApp | estado falhou | client={getattr(client, 'client_id', '?')} | {type(e).__name__}: {e}")
+        code = "channel_off"
+    return {
+        "phone": phone,
+        "channel": provider if provider in ("evolution", "meta") else "",
+        "code": code,
+        "ready": code == "ok",
+        "text": _NOTICE_TEXT.get(code, ""),
+    }
+
+
+@router.get("/api/push/whatsapp")
+async def whatsapp_notice_state(
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """O aviso por WhatsApp de quem está logado funciona agora? E por quê não."""
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    state = await _whatsapp_notice_state(client, _me(client, creds, huma_session))
+    return {"status": "ok", **state}
+
+
+@router.post("/api/push/whatsapp/test")
+async def whatsapp_notice_test(
+    client_id: str,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Manda uma mensagem de teste pro WhatsApp de quem está logado, pelo
+    mesmo caminho dos avisos de verdade. Só envia quando há por onde.
+    """
+    from huma.services import whatsapp_service as wa
+
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    state = await _whatsapp_notice_state(client, _me(client, creds, huma_session))
+    sent = False
+    if state["ready"]:
+        try:
+            sent = bool(await wa.notify_owner(state["phone"], WHATSAPP_TEST_TEXT, client_id=client_id))
+        except Exception as e:
+            log.warning(f"Aviso WhatsApp | teste falhou | client={client_id} | {type(e).__name__}: {e}")
+        if not sent:
+            state = {**state, "code": "send_failed",
+                     "text": "O WhatsApp do negócio não aceitou o envio. Confira a conexão em Integrações e teste de novo."}
+    log.info(f"Aviso WhatsApp | teste | client={client_id} | canal={state['channel'] or '-'} | code={state['code']} | enviou={sent}")
+    return {"status": "ok", "sent": sent, **state}
