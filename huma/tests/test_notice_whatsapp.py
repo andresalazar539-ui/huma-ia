@@ -170,3 +170,84 @@ class TestTeste:
         monkeypatch.setattr(wa, "evo_connection_state", boom)
         r = _test(tc)
         assert r["sent"] is False and r["code"] == "channel_off"
+
+
+class TestNumeroDeAviso:
+
+    @pytest.fixture
+    def number(self, notice, monkeypatch):
+        from huma.services import db_service
+        tc, store = notice
+        store["updates"] = []
+
+        async def _update(client_id, updates):
+            store["updates"].append(updates)
+            for k, v in updates.items():
+                setattr(store["client"], k, v)
+
+        async def _get(client_id):
+            return store["client"]
+
+        monkeypatch.setattr(db_service, "update_client", _update)
+        monkeypatch.setattr(db_service, "get_client", _get)
+        # cada teste começa com a equipe original (o fixture divide a classe _Client)
+        store["client"].team_members = [
+            {"email": "ana@x.com", "name": "Ana", "role": "vendedor", "phone": "5511911110001", "receives_leads": True},
+            {"email": "gil@x.com", "name": "Gil", "role": "admin", "phone": "5511922220002"},
+        ]
+        store["client"].owner_phone = "5511988887777"
+        return tc, store
+
+    def _put(self, tc, phone):
+        return tc.put("/api/push/whatsapp/number", params=Q, json={"phone": phone})
+
+    def test_dono_troca(self, number):
+        tc, store = number
+        r = self._put(tc, "(11) 97777-6666")
+        assert r.status_code == 200, r.text
+        assert r.json()["phone"] == "5511977776666" and r.json()["ready"] is True
+        assert store["updates"] == [{"owner_phone": "5511977776666"}]
+
+    def test_dono_remove(self, number):
+        tc, store = number
+        r = self._put(tc, "")
+        assert r.status_code == 200, r.text
+        assert r.json()["phone"] == "" and r.json()["code"] == "no_phone" and r.json()["ready"] is False
+        assert store["updates"] == [{"owner_phone": ""}]
+
+    def test_numero_invalido(self, number):
+        tc, store = number
+        r = self._put(tc, "123")
+        assert r.status_code == 400 and "DDD" in r.json()["detail"]
+        assert store["updates"] == []
+
+    def test_pessoa_da_equipe_troca_o_proprio(self, number):
+        tc, store = number
+        store["email"] = "gil@x.com"
+        r = self._put(tc, "11 95555-4444")
+        assert r.status_code == 200, r.text
+        members = store["updates"][0]["team_members"]
+        assert [m["phone"] for m in members] == ["5511911110001", "5511955554444"]
+        assert store["client"].owner_phone == "5511988887777"  # não mexe no do dono
+
+    def test_pessoa_da_equipe_remove(self, number):
+        tc, store = number
+        store["email"] = "gil@x.com"
+        r = self._put(tc, "")
+        assert r.status_code == 200, r.text
+        assert store["updates"][0]["team_members"][1]["phone"] == ""
+
+    def test_quem_recebe_leads_nao_remove_sem_saber(self, number):
+        tc, store = number
+        store["email"] = "ana@x.com"
+        r = self._put(tc, "")
+        assert r.status_code == 400 and "recebe os leads" in r.json()["detail"]
+        assert store["updates"] == []
+        # trocar pode
+        assert self._put(tc, "11 94444-3333").status_code == 200
+
+    def test_quem_saiu_da_equipe(self, number):
+        tc, store = number
+        store["email"] = "fora@x.com"
+        assert self._put(tc, "11 94444-3333").status_code == 403
+        assert store["updates"] == []

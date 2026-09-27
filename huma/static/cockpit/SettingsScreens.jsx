@@ -1810,7 +1810,7 @@ const PerfilYou = ({ settings, patch }) => {
           fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
           color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640,
         }}>
-          Olá{first ? `, ${first}` : ''}. É pra você que a HUMA manda os avisos, e é em seu nome que ela responde.
+          Olá{first ? `, ${first}` : ''}. É em seu nome que a HUMA responde.
         </div>
       </div>
 
@@ -1835,34 +1835,12 @@ const PerfilYou = ({ settings, patch }) => {
           <Field label="E-mail de login" half hint="É a chave da sua conta. Pra trocar, fale com o suporte HUMA.">
             <Input value={settings.owner_email || ''} disabled style={{ opacity: 0.7 }}/>
           </Field>
-          <Field label="Seu WhatsApp (avisos da HUMA)" half hint="Agendamentos, pagamentos e alertas chegam aqui. DDI + DDD, só números.">
-            <Input value={settings.owner_phone || ''} placeholder="5511987654321" onChange={e => patch('owner_phone', e.target.value)}/>
-          </Field>
         </div>
       </Card>
 
-      <Card title="Quando a HUMA te avisa">
-        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-          Os avisos chegam no WhatsApp acima. Desligue o que não quiser receber.
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
-          <Toggle checked={flag('notify_owner_on_appointment')}  onChange={() => toggle('notify_owner_on_appointment')}  label="Novo agendamento"/>
-          <Toggle checked={flag('notify_owner_on_cancellation')} onChange={() => toggle('notify_owner_on_cancellation')} label="Cancelamento"/>
-          <Toggle checked={flag('notify_owner_on_payment')}      onChange={() => toggle('notify_owner_on_payment')}      label="Pagamento confirmado"/>
-          <Toggle checked={flag('notify_owner_on_stuck_lead')}   onChange={() => toggle('notify_owner_on_stuck_lead')}   label="Lead quente parado (pra você intervir antes de esfriar)"/>
-        </div>
-        <div style={{ height: 1, background: 'var(--paper-edge)' }}/>
-        <Field label="Relatório de resultados" hint="A HUMA presta contas no seu WhatsApp, na frequência que você quiser.">
-          <Select value={settings.report_frequency || 'weekly'} onChange={e => patch('report_frequency', e.target.value)}
-                  options={[
-                    { value: 'daily',    label: 'Diário (toda manhã, 8h)' },
-                    { value: 'weekly',   label: 'Semanal' },
-                    { value: 'biweekly', label: 'Quinzenal' },
-                    { value: 'monthly',  label: 'Mensal' },
-                    { value: 'off',      label: 'Não enviar' },
-                  ]}/>
-        </Field>
-      </Card>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>
+        Onde e sobre o que a HUMA te avisa fica na aba <b style={{ color: 'var(--ink-2)' }}>Avisos</b>.
+      </div>
     </>
   );
 };

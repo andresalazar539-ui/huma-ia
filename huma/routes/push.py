@@ -269,3 +269,59 @@ async def whatsapp_notice_test(
                      "text": "O WhatsApp do negócio não aceitou o envio. Confira a conexão em Integrações e teste de novo."}
     log.info(f"Aviso WhatsApp | teste | client={client_id} | canal={state['channel'] or '-'} | code={state['code']} | enviou={sent}")
     return {"status": "ok", "sent": sent, **state}
+
+
+class NoticeNumberBody(BaseModel):
+    phone: str = Field(default="", max_length=30, description="Vazio = remover o número")
+
+
+@router.put("/api/push/whatsapp/number")
+async def whatsapp_notice_number(
+    client_id: str,
+    body: NoticeNumberBody,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Cadastra, troca ou REMOVE o WhatsApp de aviso de quem está logado
+    (dono ou pessoa da equipe). Cada um mexe só no próprio número.
+
+    Remover é recusado pra quem recebe leads da roleta por esse número:
+    sem ele a HUMA pararia de passar leads pra pessoa sem avisar.
+    """
+    from huma.core import lead_routing
+    from huma.services import db_service as db
+
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    me = _me(client, creds, huma_session)
+    raw = (body.phone or "").strip()
+    phone = lead_routing.normalize_phone(raw)
+    if raw and not phone:
+        raise HTTPException(400, "Número inválido. Digite o DDD e o número, por exemplo 11 98888-7777.")
+
+    owner_email = (getattr(client, "owner_email", "") or "").strip().lower()
+    try:
+        if not me or me == owner_email:
+            await db.update_client(client_id, {"owner_phone": phone})
+        else:
+            members = [dict(m) for m in (getattr(client, "team_members", None) or []) if isinstance(m, dict)]
+            idx = next((i for i, m in enumerate(members) if str(m.get("email") or "").strip().lower() == me), -1)
+            if idx < 0:
+                raise HTTPException(403, "Você não faz mais parte desta equipe.")
+            if not phone and members[idx].get("receives_leads"):
+                raise HTTPException(
+                    400, "Você recebe os leads por esse número. Troque por outro número, ou peça ao dono da conta "
+                         "pra tirar você da distribuição de leads antes de remover.",
+                )
+            members[idx]["phone"] = phone
+            await db.update_client(client_id, {"team_members": members})
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Aviso WhatsApp | não salvou o número | client={client_id} | {type(e).__name__}: {e}")
+        raise HTTPException(502, "Não consegui salvar agora. Tente de novo.")
+
+    fresh = await db.get_client(client_id) or client
+    state = await _whatsapp_notice_state(fresh, me)
+    log.info(f"Aviso WhatsApp | número {'removido' if not phone else 'salvo'} | client={client_id}")
+    return {"status": "ok", **state}

@@ -520,14 +520,16 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
 
 // Aba do Perfil: o que cada pessoa liga pra si mesma.
 // Número de WhatsApp que recebe os avisos: é só digitar, sem QR.
+// Cadastrar, trocar, remover e testar. Cada pessoa mexe no próprio número.
 // "Ligado" só aparece quando existe por onde mandar (número do negócio conectado).
 const TcNoticeNumber = () => {
   const owner = (window.HUMA_ROLE || 'dono') === 'dono';
   const [st, setSt] = React.useState(null);        // {phone, ready, code, text, channel}
   const [draft, setDraft] = React.useState('');
   const [editing, setEditing] = React.useState(false);
+  const [removing, setRemoving] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  // view: null | 'perguntando' | 'sim' | 'nao' | { erro }
+  // view: null | 'perguntando' | 'sim' | 'nao' | 'removido' | { erro }
   const [view, setView] = React.useState(null);
 
   const load = React.useCallback(async () => {
@@ -536,16 +538,18 @@ const TcNoticeNumber = () => {
   }, []);
   React.useEffect(() => { load(); }, [load]);
 
-  const save = async () => {
-    const d = draft.replace(/\D/g, '');
-    if (d.length < 10) { setView({ erro: 'Digite o DDD e o número. Exemplo: 11 98888-7777' }); return; }
+  const put = async (phone, after) => {
     setBusy(true); setView(null);
     try {
-      await window.saveSettings({ owner_phone: d.length <= 11 ? '55' + d : d });
-      setEditing(false); setDraft('');
-      await load();
-    } catch (e) { setView({ erro: 'Não consegui salvar agora. Tente de novo.' }); }
+      setSt(await tcCall('PUT', '/api/push/whatsapp/number', { phone }));
+      setEditing(false); setRemoving(false); setDraft('');
+      if (after) setView(after);
+    } catch (e) { setView({ erro: e.message }); setRemoving(false); }
     setBusy(false);
+  };
+  const save = () => {
+    if (draft.replace(/\D/g, '').length < 10) { setView({ erro: 'Digite o DDD e o número. Exemplo: 11 98888-7777' }); return; }
+    put(draft);
   };
   const test = async () => {
     setBusy(true); setView(null);
@@ -556,11 +560,13 @@ const TcNoticeNumber = () => {
     } catch (e) { setView({ erro: e.message }); }
     setBusy(false);
   };
+  const startEdit = () => { setEditing(true); setRemoving(false); setDraft(''); setView(null); };
 
   const phone = st && st.phone;
   const blocked = st && phone && !st.ready;          // tem número, mas não tem por onde mandar
   const needsChannel = st && ['no_channel', 'channel_off'].includes(st.code);
-  const showForm = owner && st && (editing || !phone);
+  const showForm = st && (editing || !phone);
+  const idle = !editing && !removing;
   const chip = (text, ok) => (
     <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', padding: '2px 8px', borderRadius: 999,
       color: ok ? 'var(--sage-ink)' : '#7A5A14', background: ok ? 'var(--sage-tint)' : '#FBF1D6' }}>{text}</span>
@@ -578,23 +584,22 @@ const TcNoticeNumber = () => {
           </div>
           <div style={{ ...tcText, fontSize: 13 }}>
             {st === null ? 'Carregando…'
-              : phone ? <>Você recebe em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(phone)}</b> quando um lead é passado pra você, agenda ou paga.</>
-              : owner ? 'Digite o seu número pra ser avisado quando um lead for passado pra você, agendar ou pagar.'
-              : 'Peça ao dono da conta pra colocar o seu número em Equipe.'}
+              : phone ? <>Chega em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(phone)}</b>.</>
+              : 'Desligado. Digite o seu número pra receber os avisos também no WhatsApp.'}
           </div>
         </div>
-        {st && st.ready && !editing && (
-          <span style={{ display: 'flex', gap: 6 }}>
-            <Button variant="ghost" size="sm" onClick={test} disabled={busy}>{busy ? 'Testando…' : 'Testar'}</Button>
-            {owner && <Button variant="plain" size="sm" onClick={() => { setEditing(true); setDraft(''); setView(null); }}>Trocar</Button>}
+        {phone && idle && (
+          <span style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+            {st.ready && <Button variant="ghost" size="sm" onClick={test} disabled={busy}>{busy ? 'Testando…' : 'Testar'}</Button>}
+            <Button variant="plain" size="sm" onClick={startEdit} disabled={busy}>Trocar</Button>
+            <Button variant="plain" size="sm" onClick={() => { setRemoving(true); setView(null); }} disabled={busy}>Remover</Button>
           </span>
         )}
-        {blocked && owner && !editing && <Button variant="plain" size="sm" onClick={() => { setEditing(true); setDraft(''); setView(null); }}>Trocar</Button>}
       </div>
 
       {showForm && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="11 98888-7777" inputMode="tel"
+          <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="11 98888-7777" inputMode="tel" autoFocus={editing}
             onKeyDown={e => { if (e.key === 'Enter') save(); }}
             style={{ flex: '1 1 180px', minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', outline: 'none' }}/>
           <Button variant="dark" size="sm" onClick={save} disabled={busy || !draft.trim()}>{busy ? 'Salvando…' : 'Salvar'}</Button>
@@ -602,7 +607,24 @@ const TcNoticeNumber = () => {
         </div>
       )}
 
-      {blocked && !editing && (
+      {removing && (
+        <div style={{ ...tcMsg('warn'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ flex: '1 1 240px' }}>
+            <b>Parar de receber avisos no {tcFmtPhone(phone)}?</b>
+            <div style={{ marginTop: 2 }}>
+              {owner
+                ? 'Avisos de lead, agendamento, pagamento, cobrança e o relatório deixam de chegar no WhatsApp. Continuam no aviso do aparelho e por e-mail.'
+                : 'Os avisos deixam de chegar no seu WhatsApp. Continuam no aviso do aparelho e por e-mail.'}
+            </div>
+          </span>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button variant="dark" size="sm" onClick={() => put('', 'removido')} disabled={busy}>{busy ? 'Removendo…' : 'Remover'}</Button>
+            <Button variant="ghost" size="sm" onClick={() => setRemoving(false)} disabled={busy}>Manter</Button>
+          </span>
+        </div>
+      )}
+
+      {blocked && idle && (
         <div style={{ ...tcMsg('warn'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{ flex: '1 1 240px' }}>{st.text}</span>
           {needsChannel && owner && (
@@ -613,6 +635,7 @@ const TcNoticeNumber = () => {
         </div>
       )}
       {view && view.erro && <div style={tcMsg('err')}>{view.erro}</div>}
+      {view === 'removido' && <div style={tcMsg('ok')}>Número removido. Você não recebe mais avisos por WhatsApp.</div>}
       {view === 'perguntando' && (
         <div style={{ ...tcMsg('ok'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span style={{ flex: '1 1 200px' }}>Mandei uma mensagem pro {tcFmtPhone(phone)}. <b>Chegou no seu WhatsApp?</b></span>
@@ -646,19 +669,91 @@ const TcNoticeNumber = () => {
   );
 };
 
-// Aba do Perfil. Uma pergunta só: "onde eu quero ser avisado?"
+// Sobre o que avisar (só o dono escolhe). Cada chave salva na hora.
+const TC_TOPICS = [
+  ['notify_owner_on_appointment', 'Agendou', 'Um lead marcou horário.'],
+  ['notify_owner_on_cancellation', 'Cancelou', 'Um lead cancelou o horário.'],
+  ['notify_owner_on_payment', 'Pagou', 'Um pagamento foi confirmado.'],
+  ['notify_owner_on_stuck_lead', 'Lead quente parado', 'Estava perto de fechar e parou de responder.'],
+];
+const TC_REPORT = [['daily', 'Todo dia'], ['weekly', 'Toda semana'], ['biweekly', 'A cada 15 dias'], ['monthly', 'Todo mês'], ['off', 'Não enviar']];
+
+const TcTopics = () => {
+  const [settings, setSettings] = React.useState(null);
+  const [saving, setSaving] = React.useState('');
+  const [err, setErr] = React.useState('');
+  React.useEffect(() => {
+    window.fetchSettings().then(d => setSettings(d.settings || {})).catch(() => setSettings({}));
+  }, []);
+  const set = async (key, value) => {
+    const before = settings[key];
+    setSettings(s => ({ ...s, [key]: value })); setSaving(key); setErr('');
+    try { await window.saveSettings({ [key]: value }); }
+    catch (e) { setSettings(s => ({ ...s, [key]: before })); setErr('Não consegui salvar agora. Tente de novo.'); }
+    setSaving('');
+  };
+  if (settings === null) return <div style={tcText}>Carregando…</div>;
+  const row = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px' };
+  const Switch = ({ on, onClick, disabled }) => (
+    <button onClick={onClick} disabled={disabled} aria-pressed={on} style={{
+      position: 'relative', width: 38, height: 22, borderRadius: 999, flexShrink: 0, cursor: disabled ? 'default' : 'pointer',
+      border: '1px solid ' + (on ? 'var(--sage)' : 'var(--paper-edge)'), background: on ? 'var(--sage)' : 'var(--paper-sunk)', padding: 0,
+    }}>
+      <span style={{ position: 'absolute', top: 1, left: on ? 17 : 1, width: 18, height: 18, borderRadius: 999, background: 'var(--paper-raised)', transition: 'left 160ms', boxShadow: '0 1px 2px rgba(28,23,20,0.15)' }}/>
+    </button>
+  );
+  const label = (title, text) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{title}</div>
+      <div style={{ ...tcText, fontSize: 12.5 }}>{text}</div>
+    </div>
+  );
+  return (
+    <div style={{ ...tcCard, padding: 0 }}>
+      <div style={row}>
+        {label('Lead passado pra você', 'A HUMA qualificou e entregou. Esse aviso fica sempre ligado.')}
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>sempre</span>
+      </div>
+      {TC_TOPICS.map(([key, title, text]) => (
+        <div key={key} style={{ ...row, borderTop: '1px solid var(--paper-edge)' }}>
+          {label(title, text)}
+          <Switch on={settings[key] !== false} disabled={saving === key} onClick={() => set(key, settings[key] === false)}/>
+        </div>
+      ))}
+      <div style={{ ...row, borderTop: '1px solid var(--paper-edge)', flexWrap: 'wrap' }}>
+        {label('Relatório de resultados', 'O resumo do que a HUMA fez pelo seu negócio.')}
+        <select value={settings.report_frequency || 'weekly'} disabled={saving === 'report_frequency'}
+          onChange={e => set('report_frequency', e.target.value)}
+          style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', padding: '7px 10px', borderRadius: 8, border: '1px solid var(--paper-edge)', background: 'var(--paper)' }}>
+          {TC_REPORT.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+      </div>
+      {err && <div style={{ ...tcMsg('err'), margin: '0 18px 14px' }}>{err}</div>}
+    </div>
+  );
+};
+
+const tcHead = { fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 16, letterSpacing: '-0.01em', color: 'var(--ink)', marginTop: 6 };
+
+// Aba do Perfil. Duas perguntas: ONDE e SOBRE O QUÊ quero ser avisado.
 // O número extra de atendimento fica recolhido: quase ninguém precisa.
 const MeusCanais = () => {
   const [more, setMore] = React.useState(false);
+  const owner = (window.HUMA_ROLE || 'dono') === 'dono';
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 720 }}>
-      <div style={{ ...tcText, fontSize: 14, color: 'var(--ink-2)' }}>
-        A HUMA te avisa quando um lead precisar de você. Escolha onde.
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 720 }}>
+      <div style={tcHead}>Onde você quer ser avisado</div>
       <div style={{ ...tcCard, display: 'flex', flexDirection: 'column', gap: 0, padding: 0 }}>
         <div style={{ padding: 18 }}><TcNotifyCard/></div>
         <div style={{ borderTop: '1px solid var(--paper-edge)', padding: 18 }}><TcNoticeNumber/></div>
       </div>
+
+      {owner && (
+        <>
+          <div style={tcHead}>Sobre o que avisar</div>
+          <TcTopics/>
+        </>
+      )}
 
       <button onClick={() => setMore(m => !m)} style={{
         alignSelf: 'flex-start', border: 'none', background: 'transparent', cursor: 'pointer', padding: '4px 0',
