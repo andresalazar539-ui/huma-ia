@@ -421,3 +421,92 @@ async def route_for(client_id: str, phone: str) -> str:
         return instance
     except Exception:
         return ""
+
+
+# ────────────────────────────────────────────────────────────────
+# Senha do webhook em TODAS as instâncias (principais e da equipe)
+# ────────────────────────────────────────────────────────────────
+
+
+async def all_instances() -> list[str]:
+    """Todas as instâncias do Evolution que a HUMA conhece. [] em falha."""
+    found: list[str] = []
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("clients").select("evolution_instance")
+            .neq("evolution_instance", "").limit(2000).execute()
+        )
+        found += [str(r.get("evolution_instance") or "").strip() for r in (resp.data or [])]
+    except Exception as e:
+        log.warning(f"Webhooks | leitura dos números principais falhou | {type(e).__name__}: {e}")
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table(TABLE).select("instance").limit(2000).execute()
+        )
+        found += [str(r.get("instance") or "").strip() for r in (resp.data or [])]
+    except Exception as e:
+        log.warning(f"Webhooks | leitura dos números da equipe falhou | {type(e).__name__}: {e}")
+    out: list[str] = []
+    for name in found:
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+async def ensure_webhooks() -> dict:
+    """
+    Grava a senha do webhook em toda instância que ainda não tem. Roda
+    no startup; sem senha configurada ou sem Evolution é no-op. Instância
+    que não existe mais no servidor é só contada, não é erro. Nunca levanta.
+
+    Returns:
+        {"total", "ok", "updated", "failed", "missing"}
+    """
+    from huma.config import PUBLIC_BASE_URL
+    from huma.services import whatsapp_service as wa
+
+    out = {"total": 0, "ok": 0, "updated": 0, "failed": 0, "missing": 0}
+    try:
+        if not wa.evo_webhook_token() or not PUBLIC_BASE_URL or not wa._evo_base():
+            return out
+        webhook_url = f"{PUBLIC_BASE_URL.rstrip('/')}/webhook/evolution"
+        instances = await all_instances()
+        out["total"] = len(instances)
+        for instance in instances:
+            has = await wa.evo_webhook_has_token(instance)
+            if has is True:
+                out["ok"] += 1
+                continue
+            if not await wa.evo_instance_exists(instance):
+                out["missing"] += 1
+                continue
+            if await wa.evo_set_webhook(instance, webhook_url) and await wa.evo_webhook_has_token(instance) is True:
+                out["updated"] += 1
+            else:
+                out["failed"] += 1
+                log.warning(f"Webhooks | instância ficou sem a senha | instance={instance}")
+        log.info(
+            f"Webhooks | senha conferida | total={out['total']} | ja_tinham={out['ok']} | "
+            f"atualizadas={out['updated']} | falharam={out['failed']} | nao_existem_mais={out['missing']}"
+        )
+        return out
+    except Exception as e:
+        log.error(f"Webhooks | conferência falhou | {type(e).__name__}: {e}")
+        return out
+
+
+# ────────────────────────────────────────────────────────────────
+# Teste do número: "se essa pessoa me escrever, a HUMA responde?"
+# ────────────────────────────────────────────────────────────────
+
+
+def explain_gate(reason: str) -> dict:
+    """Resposta em português pra cada decisão do portão. (puro)"""
+    table = {
+        "": ("responde", "A HUMA responde. É um contato novo pra esse número."),
+        "known_contact": ("nao_responde", "A HUMA não responde. Esse contato já conversava com esse número antes da conexão."),
+        "own_number": ("nao_responde", "A HUMA não responde. Esse número é da própria conta (dono, equipe ou outro número conectado)."),
+        "line_not_ready": ("aguarde", "A HUMA ainda não responde ninguém nesse número: ela está terminando de aprender os contatos."),
+    }
+    verdict, text = table.get(reason, ("nao_responde", "A HUMA não responde esse número."))
+    return {"verdict": verdict, "text": text, "reason": reason}

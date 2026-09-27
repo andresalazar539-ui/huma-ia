@@ -383,3 +383,66 @@ async def whatsapp_lines_release(
     await lines.remove_known(instance, phone)
     log.info(f"Número da equipe | contato liberado | client={client_id} | instance={instance}")
     return {"status": "ok", "phone": phone}
+
+
+class LineCheckBody(BaseModel):
+    email: str = Field(default="", max_length=254)
+    phone: str = Field(default="", max_length=30, description="Vazio = só testa a conexão")
+
+
+@router.post("/whatsapp/lines/test", tags=["WhatsApp"])
+async def whatsapp_lines_test(
+    client_id: str,
+    body: LineCheckBody,
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: str | None = Cookie(None),
+) -> dict:
+    """
+    Teste do número, na hora, sem mandar mensagem pra ninguém de fora:
+
+      - sem `phone`: confere se o número está conectado e manda uma
+        mensagem de teste pro PRÓPRIO número (aparece na conversa
+        "Você" do WhatsApp da pessoa);
+      - com `phone`: diz se a HUMA responderia esse contato e por quê.
+    """
+    from huma.routes.api import _line_gate
+
+    client = await verify_api_key_manual(client_id, creds, huma_session)
+    person = _who(client, creds, huma_session, body.email)
+    instance = lines.instance_name(client_id, person["email"])
+    line = await lines.get_line(instance, use_cache=False)
+    if line is None:
+        raise HTTPException(404, "Essa pessoa não tem número conectado.")
+    line, state = await _refresh_line(line)
+
+    if (body.phone or "").strip():
+        phone = lead_routing.normalize_phone(body.phone)
+        if not phone:
+            raise HTTPException(400, "Número inválido. Use DDD + número, ex.: 11 98888-7777.")
+        if state != "open":
+            return {"status": "ok", "kind": "contact", "phone": phone, "verdict": "aguarde",
+                    "text": "Esse número está desconectado. Reconecte pra HUMA voltar a atender por ele."}
+        reason = await _line_gate(client, line, phone)
+        return {"status": "ok", "kind": "contact", "phone": phone, **lines.explain_gate(reason)}
+
+    if state != "open":
+        return {"status": "ok", "kind": "connection", "connected": False, "sent": False,
+                "text": "O WhatsApp não está conectado nesse número. Clique em Reconectar e leia o QR."}
+    own = lines.digits(line.get("phone"))
+    sent = False
+    if own:
+        message_id = await wa._evo_send(
+            client, "message/sendText",
+            {"number": own, "text": "HUMA conectada neste número. Esta é uma mensagem de teste, só você vê."},
+            instance=instance,
+        )
+        sent = bool(message_id)
+    log.info(f"Número da equipe | teste | client={client_id} | instance={instance} | state={state} | enviou={sent}")
+    ready = (line.get("status") or "") == lines.STATUS_ACTIVE
+    if sent:
+        text = "Conexão funcionando. Mandei uma mensagem de teste pro seu próprio WhatsApp: abra o WhatsApp e procure a conversa com você mesmo."
+    else:
+        text = "O número está conectado, mas não consegui mandar a mensagem de teste. Se a HUMA não responder os leads, remova e conecte de novo."
+    if not ready:
+        text += " A HUMA ainda está aprendendo os contatos e começa a atender em alguns minutos."
+    return {"status": "ok", "kind": "connection", "connected": True, "sent": sent, "ready": ready, "text": text}

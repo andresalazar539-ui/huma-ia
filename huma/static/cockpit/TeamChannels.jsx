@@ -416,12 +416,31 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
     try { await tcCall('POST', '/whatsapp/lines/disconnect', { email: who }); await load(); }
     catch (e) { setMsg({ kind: 'err', text: e.message }); }
   };
-  const doRelease = async () => {
+  // Teste na hora: a conexão funciona? e "se fulano me escrever, a HUMA responde?"
+  const [testing, setTesting] = React.useState(false);
+  const [check, setCheck] = React.useState(null);   // resposta do "verificar contato"
+  const testConnection = async () => {
+    if (testing) return;
+    setTesting(true); setMsg(null);
+    try {
+      const r = await tcCall('POST', '/whatsapp/lines/test', { email: who });
+      setMsg({ kind: r.sent ? 'ok' : (r.connected ? 'warn' : 'err'), text: r.text });
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setTesting(false);
+  };
+  const checkContact = async () => {
     if (!release.trim() || releasing) return;
+    setReleasing(true); setMsg(null); setCheck(null);
+    try { setCheck(await tcCall('POST', '/whatsapp/lines/test', { email: who, phone: release })); }
+    catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setReleasing(false);
+  };
+  const doRelease = async () => {
+    if (!check || releasing) return;
     setReleasing(true); setMsg(null);
     try {
-      const r = await tcCall('POST', '/whatsapp/lines/release', { email: who, phone: release });
-      setRelease('');
+      const r = await tcCall('POST', '/whatsapp/lines/release', { email: who, phone: check.phone });
+      setRelease(''); setCheck(null);
       setMsg({ kind: 'ok', text: `Liberado. A HUMA passa a atender ${tcFmtPhone(r.phone)} quando ele escrever.` });
     } catch (e) { setMsg({ kind: 'err', text: e.message }); }
     setReleasing(false);
@@ -492,17 +511,39 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
       {full && <div style={{ ...tcMsg('warn'), marginTop: 10 }}>A conta já tem {data.max_lines} números da equipe conectados. Remova um pra conectar outro.</div>}
       {msg && <div style={{ ...tcMsg(msg.kind), marginTop: 10 }}>{msg.text}</div>}
 
-      {good && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ ...tcText, fontSize: 12.5 }}>
-            {line.known_count ? `${line.known_count} contatos que já existiam ficam de fora. ` : ''}Quer que a HUMA atenda um contato antigo? Libere pelo número:
+      {line && line.connected && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--paper-edge)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>Testar a conexão</div>
+              <div style={{ ...tcText, fontSize: 12.5 }}>Manda uma mensagem de teste pro próprio número. Só {mine ? 'você' : 'a pessoa'} vê, na conversa consigo mesmo.</div>
+            </div>
+            <Button variant="ghost" size="sm" onClick={testConnection} disabled={testing}>{testing ? 'Testando…' : 'Testar agora'}</Button>
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-            <input value={release} onChange={e => setRelease(e.target.value)} placeholder="11 98888-7777"
-              onKeyDown={e => { if (e.key === 'Enter') doRelease(); }}
-              style={{ flex: '1 1 160px', minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', outline: 'none' }}/>
-            <Button variant="ghost" size="sm" onClick={doRelease} disabled={releasing || !release.trim()}>{releasing ? 'Liberando…' : 'Liberar'}</Button>
-          </div>
+
+          {good && (
+            <div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>A HUMA responde esse contato?</div>
+              <div style={{ ...tcText, fontSize: 12.5 }}>
+                Digite um número e veja o que a HUMA faria se ele escrevesse agora. Nada é enviado.
+                {line.known_count ? ` Hoje ${line.known_count} contatos antigos ficam de fora.` : ''}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                <input value={release} onChange={e => { setRelease(e.target.value); setCheck(null); }} placeholder="11 98888-7777"
+                  onKeyDown={e => { if (e.key === 'Enter') checkContact(); }}
+                  style={{ flex: '1 1 160px', minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 13, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', outline: 'none' }}/>
+                <Button variant="ghost" size="sm" onClick={checkContact} disabled={releasing || !release.trim()}>{releasing ? 'Verificando…' : 'Verificar'}</Button>
+              </div>
+              {check && (
+                <div style={{ ...tcMsg(check.verdict === 'responde' ? 'ok' : 'warn'), marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span style={{ flex: '1 1 220px' }}><b>{tcFmtPhone(check.phone)}:</b> {check.text}</span>
+                  {check.reason === 'known_contact' && (
+                    <Button variant="dark" size="sm" onClick={doRelease} disabled={releasing}>Liberar pra HUMA atender</Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

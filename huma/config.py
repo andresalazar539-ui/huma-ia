@@ -64,6 +64,12 @@ EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
 # instância). Vazio = validação pulada (dev). ATENÇÃO: ao definir em
 # produção, reconecte as instâncias existentes (criadas sem o header).
 EVOLUTION_WEBHOOK_TOKEN = clean_secret_env("EVOLUTION_WEBHOOK_TOKEN")
+# Troca da senha SEM perder mensagem, em duas fases:
+#   1. define só EVOLUTION_WEBHOOK_TOKEN_NEXT → no startup a HUMA grava a
+#      senha nova em todas as instâncias (ensure_webhooks), ainda sem exigir;
+#   2. define EVOLUTION_WEBHOOK_TOKEN com o mesmo valor → passa a exigir.
+# Exigir antes de gravar faria as instâncias antigas tomarem 401.
+EVOLUTION_WEBHOOK_TOKEN_NEXT = clean_secret_env("EVOLUTION_WEBHOOK_TOKEN_NEXT")
 
 # O que o humano manda pelo aparelho (WhatsApp do número, app do Instagram)
 # aparece no Cockpit e põe a HUMA em silêncio naquela conversa

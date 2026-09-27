@@ -218,6 +218,14 @@ def create_app() -> FastAPI:
             await scheduler.start()
         except Exception as e:
             log.error(f"Scheduler start falhou | {type(e).__name__}: {e}")
+        # Senha do webhook do WhatsApp em todas as instâncias (em segundo
+        # plano: não atrasa a subida do app).
+        try:
+            import asyncio as _asyncio
+            from huma.services import lines_service
+            _asyncio.create_task(lines_service.ensure_webhooks())
+        except Exception as e:
+            log.error(f"Conferência dos webhooks não iniciou | {type(e).__name__}: {e}")
 
     # Sprint 3 / item 16 — Graceful shutdown.
     # Quando Railway envia SIGTERM (deploy/restart), o uvicorn dispara este handler.

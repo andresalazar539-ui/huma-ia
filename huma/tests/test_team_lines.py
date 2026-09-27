@@ -655,3 +655,150 @@ class TestRotasDaNotificacao:
         assert permissions.permission_for("POST", "/api/push/subscribe") is None
         # o número principal do negócio continua só com quem mexe nos ajustes
         assert permissions.permission_for("POST", "/whatsapp/connect") == "ajustes"
+
+
+# ================================================================
+# Teste do número e senha do webhook
+# ================================================================
+
+
+class TestTesteDoNumero:
+
+    def _ready(self, store, monkeypatch, gate_reason=""):
+        from huma.routes import api as api_routes
+        from huma.routes import whatsapp_connect as wc
+        store["lines"][ANA_INSTANCE] = _line()
+        store["state"] = "open"
+        store["email"] = "ana@x.com"
+        store["self_sent"] = []
+
+        async def _gate(client, line, phone):
+            return gate_reason
+
+        async def _evo_send(identity, path, body, instance=""):
+            store["self_sent"].append((path, body["number"], instance))
+            return "MID"
+
+        monkeypatch.setattr(api_routes, "_line_gate", _gate)
+        monkeypatch.setattr(wc.wa, "_evo_send", _evo_send)
+
+    def test_conexao_manda_mensagem_pro_proprio_numero(self, routes, monkeypatch):
+        tc, store = routes
+        self._ready(store, monkeypatch)
+        r = tc.post("/whatsapp/lines/test", params=Q, json={})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["connected"] is True and body["sent"] is True and body["ready"] is True
+        assert store["self_sent"] == [("message/sendText", "5511911110001", ANA_INSTANCE)]
+        assert "—" not in body["text"]
+
+    def test_conexao_em_aprendizado_avisa(self, routes, monkeypatch):
+        tc, store = routes
+        self._ready(store, monkeypatch)
+        store["lines"][ANA_INSTANCE] = _line(
+            status="learning", learn_until=(datetime.utcnow() + timedelta(minutes=5)).isoformat())
+        body = tc.post("/whatsapp/lines/test", params=Q, json={}).json()
+        assert body["sent"] is True and body["ready"] is False and "aprendendo" in body["text"]
+
+    def test_numero_desconectado(self, routes, monkeypatch):
+        tc, store = routes
+        self._ready(store, monkeypatch)
+        store["state"] = "close"
+        body = tc.post("/whatsapp/lines/test", params=Q, json={}).json()
+        assert body["connected"] is False and store["self_sent"] == []
+
+    def test_contato_novo_a_huma_responde(self, routes, monkeypatch):
+        tc, store = routes
+        self._ready(store, monkeypatch, gate_reason="")
+        body = tc.post("/whatsapp/lines/test", params=Q, json={"phone": "(11) 97777-6666"}).json()
+        assert body["verdict"] == "responde" and body["phone"] == "5511977776666"
+        assert store["self_sent"] == []  # nada é enviado
+
+    def test_contato_antigo_a_huma_nao_responde(self, routes, monkeypatch):
+        tc, store = routes
+        self._ready(store, monkeypatch, gate_reason="known_contact")
+        body = tc.post("/whatsapp/lines/test", params=Q, json={"phone": "11977776666"}).json()
+        assert body["verdict"] == "nao_responde" and body["reason"] == "known_contact"
+
+    def test_numero_invalido_e_sem_numero_conectado(self, routes, monkeypatch):
+        tc, store = routes
+        self._ready(store, monkeypatch)
+        assert tc.post("/whatsapp/lines/test", params=Q, json={"phone": "123"}).status_code == 400
+        store["lines"].clear()
+        assert tc.post("/whatsapp/lines/test", params=Q, json={}).status_code == 404
+
+    def test_explicacoes(self):
+        assert lines.explain_gate("")["verdict"] == "responde"
+        assert lines.explain_gate("own_number")["verdict"] == "nao_responde"
+        assert lines.explain_gate("line_not_ready")["verdict"] == "aguarde"
+        assert lines.explain_gate("qualquer")["verdict"] == "nao_responde"
+
+
+class TestSenhaDoWebhook:
+
+    def _setup(self, monkeypatch, has, exists=True, set_ok=True, token="SENHA", base="https://app"):
+        from huma import config
+        from huma.services import whatsapp_service as wa
+        calls = {"set": [], "has": []}
+        state = dict(has)
+
+        async def _all():
+            return list(has.keys())
+
+        async def _has(instance):
+            calls["has"].append(instance)
+            return state[instance]
+
+        async def _exists(instance):
+            return exists
+
+        async def _set(instance, url):
+            calls["set"].append((instance, url))
+            if set_ok:
+                state[instance] = True
+            return set_ok
+
+        monkeypatch.setattr(lines, "all_instances", _all)
+        monkeypatch.setattr(wa, "evo_webhook_has_token", _has)
+        monkeypatch.setattr(wa, "evo_instance_exists", _exists)
+        monkeypatch.setattr(wa, "evo_set_webhook", _set)
+        monkeypatch.setattr(wa, "evo_webhook_token", lambda: token)
+        monkeypatch.setattr(wa, "_evo_base", lambda: "https://evo")
+        monkeypatch.setattr(config, "PUBLIC_BASE_URL", base)
+        return calls
+
+    def test_grava_so_em_quem_nao_tem(self, monkeypatch):
+        calls = self._setup(monkeypatch, {"a": True, "b": False, "c": None})
+        out = asyncio.run(lines.ensure_webhooks())
+        assert out == {"total": 3, "ok": 1, "updated": 2, "failed": 0, "missing": 0}
+        assert calls["set"] == [("b", "https://app/webhook/evolution"), ("c", "https://app/webhook/evolution")]
+
+    def test_instancia_que_nao_existe_mais_nao_e_erro(self, monkeypatch):
+        calls = self._setup(monkeypatch, {"velha": None}, exists=False)
+        out = asyncio.run(lines.ensure_webhooks())
+        assert out["missing"] == 1 and out["failed"] == 0 and calls["set"] == []
+
+    def test_servidor_recusou(self, monkeypatch):
+        self._setup(monkeypatch, {"a": False}, set_ok=False)
+        assert asyncio.run(lines.ensure_webhooks())["failed"] == 1
+
+    def test_sem_senha_nao_faz_nada(self, monkeypatch):
+        calls = self._setup(monkeypatch, {"a": False}, token="")
+        assert asyncio.run(lines.ensure_webhooks())["total"] == 0 and calls["has"] == []
+
+    def test_senha_da_troca_vale_antes_de_ser_exigida(self, monkeypatch):
+        from huma import config
+        from huma.core import auth
+        from huma.services import whatsapp_service as wa
+        monkeypatch.setattr(config, "EVOLUTION_WEBHOOK_TOKEN", "")
+        monkeypatch.setattr(config, "EVOLUTION_WEBHOOK_TOKEN_NEXT", "NOVA")
+        assert wa.evo_webhook_token() == "NOVA"
+        assert wa._evo_webhook_config("https://app/webhook/evolution")["headers"] == {"x-huma-webhook-token": "NOVA"}
+        # fase 1: ainda não exige (instância antiga sem a senha continua entrando)
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "")
+        assert auth.verify_evolution_token("") is True
+        # fase 2: passa a exigir
+        monkeypatch.setattr(auth, "EVOLUTION_WEBHOOK_TOKEN", "NOVA")
+        assert auth.verify_evolution_token("NOVA") is True
+        assert auth.verify_evolution_token("") is False
+        assert auth.verify_evolution_token("errada") is False

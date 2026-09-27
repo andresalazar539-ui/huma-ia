@@ -770,6 +770,70 @@ async def evo_instance_exists(instance: str) -> bool:
         return False
 
 
+def evo_webhook_token() -> str:
+    """Senha que as instâncias mandam no webhook: a vigente, ou a próxima durante a troca."""
+    from huma.config import EVOLUTION_WEBHOOK_TOKEN, EVOLUTION_WEBHOOK_TOKEN_NEXT
+    return EVOLUTION_WEBHOOK_TOKEN or EVOLUTION_WEBHOOK_TOKEN_NEXT
+
+
+def _evo_webhook_config(webhook_url: str) -> dict:
+    """Configuração do webhook de uma instância (mesma na criação e na atualização)."""
+    cfg: dict = {
+        "url": webhook_url,
+        "byEvents": False,
+        "base64": True,
+        "events": ["MESSAGES_UPSERT"],
+    }
+    # Token compartilhado: a HUMA valida este header na rota /webhook/evolution.
+    token = evo_webhook_token()
+    if token:
+        cfg["headers"] = {"x-huma-webhook-token": token}
+    return cfg
+
+
+async def evo_set_webhook(instance: str, webhook_url: str) -> bool:
+    """
+    Regrava o webhook de uma instância que JÁ existe (endereço + senha),
+    sem desconectar o número. True se o servidor aceitou.
+    """
+    cfg = {"enabled": True, **_evo_webhook_config(webhook_url)}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            resp = await http.post(
+                f"{_evo_base()}/webhook/set/{instance}", headers=_evo_headers(), json={"webhook": cfg},
+            )
+        if resp.status_code in (200, 201):
+            return True
+        log.warning(f"Evolution webhook/set HTTP {resp.status_code} | instance={instance} | {resp.text[:200]}")
+        return False
+    except Exception as e:
+        log.error(f"Evolution webhook/set erro | instance={instance} | {type(e).__name__}: {e}")
+        return False
+
+
+async def evo_webhook_has_token(instance: str) -> bool | None:
+    """
+    A instância está mandando a senha certa? True/False, ou None se não
+    deu pra conferir. Nunca devolve nem loga a senha.
+    """
+    token = evo_webhook_token()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(f"{_evo_base()}/webhook/find/{instance}", headers=_evo_headers())
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if isinstance(data, dict) and isinstance(data.get("webhook"), dict):
+            data = data["webhook"]
+        headers = data.get("headers") if isinstance(data, dict) else None
+        if not isinstance(headers, dict):
+            return False
+        return bool(token) and headers.get("x-huma-webhook-token") == token
+    except Exception as e:
+        log.warning(f"Evolution webhook/find erro | instance={instance} | {type(e).__name__}: {e}")
+        return None
+
+
 async def evo_create_instance(instance: str, webhook_url: str, sync_history: bool = False) -> dict | None:
     """
     Cria a instância já com o webhook apontando pra HUMA. Retorna o dict
@@ -778,17 +842,7 @@ async def evo_create_instance(instance: str, webhook_url: str, sync_history: boo
     sync_history=True (número da equipe): pede ao WhatsApp as conversas
     que já existiam no aparelho, pra HUMA saber quem é contato antigo.
     """
-    from huma.config import EVOLUTION_WEBHOOK_TOKEN
-
-    webhook_cfg: dict = {
-        "url": webhook_url,
-        "byEvents": False,
-        "base64": True,
-        "events": ["MESSAGES_UPSERT"],
-    }
-    # Token compartilhado: a HUMA valida este header na rota /webhook/evolution.
-    if EVOLUTION_WEBHOOK_TOKEN:
-        webhook_cfg["headers"] = {"x-huma-webhook-token": EVOLUTION_WEBHOOK_TOKEN}
+    webhook_cfg = _evo_webhook_config(webhook_url)
 
     body = {
         "instanceName": instance,
