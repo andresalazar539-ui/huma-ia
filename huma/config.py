@@ -65,6 +65,11 @@ EVOLUTION_API_KEY = os.getenv("EVOLUTION_API_KEY", "")
 # produção, reconecte as instâncias existentes (criadas sem o header).
 EVOLUTION_WEBHOOK_TOKEN = clean_secret_env("EVOLUTION_WEBHOOK_TOKEN")
 
+# O que o humano manda pelo aparelho (WhatsApp do número, app do Instagram)
+# aparece no Cockpit e põe a HUMA em silêncio naquela conversa
+# (services/human_echo.py). "false" desliga sem precisar de deploy.
+PHONE_ECHO_ENABLED = os.getenv("PHONE_ECHO_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off")
+
 # URL pública da própria HUMA (Railway). Usada pra dizer ao Evolution
 # pra onde mandar o webhook de entrada (PUBLIC_BASE_URL/webhook/evolution)
 # na hora de criar a instância do cliente. Sem barra no fim.

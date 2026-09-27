@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from fastapi import (
-    APIRouter, BackgroundTasks, Cookie, Depends, File,
+    APIRouter, BackgroundTasks, Cookie, Depends, File, Form,
     HTTPException, Request, UploadFile,
 )
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -2367,6 +2367,124 @@ async def conversation_send_cockpit(
     }
 
 
+# Formatos de áudio que a Cloud API oficial entrega como áudio. O que o
+# navegador grava (WAV) não está na lista: nesse canal vai como arquivo.
+_META_AUDIO_TYPES = ("audio/ogg", "audio/mpeg", "audio/mp3", "audio/mp4", "audio/aac", "audio/amr")
+_MEDIA_KEY = {"image": "image_url", "audio": "audio_url", "video": "video_url", "document": "file_url"}
+_MEDIA_LABEL = {"image": "Foto", "video": "Vídeo", "document": "Arquivo"}
+
+
+@router.post("/api/conversations/{client_id}/{phone}/send-media", tags=["Cockpit"])
+async def conversation_send_media_cockpit(
+    client_id: str,
+    phone: str,
+    file: UploadFile = File(...),
+    caption: str = Form(default=""),
+    creds: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(None),
+) -> dict:
+    """
+    Manda foto, vídeo, arquivo ou áudio gravado pelo Cockpit, no canal
+    em que o lead está (2026-09-27).
+
+    O arquivo sobe pro Storage, sai pelo canal e fica no histórico igual
+    ao que o lead recebeu (conversa idêntica). No chat do site o
+    visitante recebe o link do arquivo.
+
+    Erros:
+      400 — tipo não aceito, arquivo vazio ou grande demais (16 MB)
+      403 — conversa de outra pessoa da equipe
+      404 — conversa inexistente
+      502 — o Storage ou o canal recusou (nada é gravado no histórico)
+    """
+    from huma.services import lead_media
+
+    client_data = await verify_api_key_manual(client_id, creds, huma_session)
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client_data, creds, huma_session, conv)
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    kind, _ext = lead_media.outgoing_kind(content_type)
+    if not kind:
+        raise HTTPException(400, "Esse tipo de arquivo não dá pra enviar. Use foto (JPG, PNG), vídeo MP4, áudio, PDF, Word, Excel ou TXT.")
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(400, "O arquivo está vazio.")
+    if len(blob) > lead_media.OUTGOING_MAX_BYTES:
+        raise HTTPException(400, "Arquivo grande demais. O limite é 16 MB.")
+
+    caption = " ".join((caption or "").split()).strip()[:1000]
+    filename = (file.filename or "").strip()[:120] or f"arquivo.{_ext}"
+
+    url, kind = await lead_media.upload_outgoing(client_id, blob, content_type)
+    if not url:
+        log.error(f"Cockpit send_media | storage recusou | client_id={client_id} | phone={phone} | type={content_type}")
+        raise HTTPException(502, "Não consegui guardar o arquivo agora. Tenta de novo.")
+
+    is_web = conv.channel == "web" or phone.startswith("web:")
+    sent_as = kind
+    if is_web:
+        msg_id = "web"
+    else:
+        provider = (getattr(client_data, "whatsapp_provider", "") or "").strip().lower()
+        if kind == "image":
+            msg_id = await wa.send_image(phone, url, caption=caption, client_id=client_id)
+        elif kind == "video":
+            msg_id = await wa.send_video(phone, url, caption=caption, client_id=client_id)
+        elif kind == "audio":
+            official = provider == "meta" and not phone.startswith("ig:")
+            if official and content_type not in _META_AUDIO_TYPES:
+                # A API oficial não aceita esse formato como áudio: vai como arquivo.
+                sent_as = "document"
+                msg_id = await wa.send_document(phone, url, filename="audio.wav", client_id=client_id)
+            else:
+                msg_id = await wa.send_audio(phone, url, client_id=client_id)
+        else:
+            msg_id = await wa.send_document(phone, url, filename=filename, client_id=client_id)
+            if msg_id and caption:
+                await wa.send_text(phone, caption, client_id=client_id)
+        if not msg_id:
+            log.error(f"Cockpit send_media | canal recusou | client_id={client_id} | phone={phone} | kind={kind}")
+            raise HTTPException(502, "O canal não aceitou o envio. Confere a conexão e tenta de novo.")
+
+    now = datetime.utcnow()
+    if kind == "audio":
+        content = "[áudio enviado: gravado no Cockpit]"
+    else:
+        content = caption or (filename if kind == "document" else _MEDIA_LABEL.get(kind, "Arquivo"))
+    if is_web:
+        # O widget mostra texto: o visitante recebe o link pra abrir.
+        content = f"{caption}\n{url}".strip() if caption else url
+    entry = {
+        "role": "assistant",
+        "content": content,
+        "by": "owner",
+        "timestamp": now.isoformat(),
+        _MEDIA_KEY[kind]: url,
+    }
+    if kind == "audio":
+        entry["audio_text"] = ""
+    actor = _cockpit_actor(client_data, creds, huma_session)
+    if actor:
+        entry["by_name"] = actor["name"]
+        entry["by_email"] = actor["email"]
+    conv.history.append(entry)
+    conv.last_message_at = now
+    await db.save_conversation(conv)
+
+    log.info(
+        f"Cockpit send_media | client_id={client_id} | phone={phone} | kind={kind} | "
+        f"sent_as={sent_as} | size={len(blob)} | msg_id={msg_id}"
+    )
+    return {
+        "status": "sent", "message_id": msg_id, "kind": kind, "sent_as": sent_as,
+        "url": url, "timestamp": now.isoformat(),
+    }
+
+
 # ── Cockpit (T4) — Agenda real ──
 #
 # Fonte: Supabase (conversations com active_appointment_*). Não chama
@@ -3271,6 +3389,49 @@ async def _ingest_meta_media(
     await _ingest_media_message(client_id, phone, media_type, caption, raw, ct, bg)
 
 
+async def _mirror_evolution_echo(client_id: str, parsed: dict) -> None:
+    """
+    Eco do Evolution: se for de humano, guarda a mídia (foto/áudio) e
+    espelha na conversa. A decisão "é da HUMA ou de gente" é do
+    human_echo. Nunca levanta.
+    """
+    from huma.services import human_echo, lead_media
+
+    phone = parsed.get("phone", "")
+    kind = parsed.get("media_type", "") or ""
+    message_id = parsed.get("message_id", "") or ""
+    media_url = ""
+    try:
+        # Só baixa mídia de eco que não é da HUMA (as dela já estão no histórico).
+        if kind in ("image", "audio") and not await human_echo.was_sent_by_huma(client_id, message_id):
+            raw, ct = await wa.fetch_media_evolution(client_id, parsed.get("raw") or {})
+            media_url = await lead_media.upload(client_id, phone, kind, raw, ct)
+    except Exception as e:
+        log.warning(f"Webhook Evolution | mídia do eco não baixou | client={client_id} | {type(e).__name__}: {e}")
+    await human_echo.mirror(
+        client_id, phone, text=parsed.get("text", ""), message_id=message_id,
+        media_kind=kind, media_url=media_url, source="evolution",
+    )
+
+
+async def _mirror_meta_echo(client_id: str, echo: dict) -> None:
+    """Eco da coexistência (WhatsApp Business App): sempre de humano. Nunca levanta."""
+    from huma.services import human_echo, lead_media
+
+    kind = echo.get("media_type", "") or ""
+    media_url = ""
+    try:
+        if kind in ("image", "audio") and echo.get("media_id"):
+            raw, ct = await wa.fetch_media_meta(client_id, echo["media_id"])
+            media_url = await lead_media.upload(client_id, echo["phone"], kind, raw, ct)
+    except Exception as e:
+        log.warning(f"Webhook Meta | mídia do eco não baixou | client={client_id} | {type(e).__name__}: {e}")
+    await human_echo.mirror(
+        client_id, echo["phone"], text=echo.get("text", ""), message_id=echo.get("message_id", ""),
+        media_kind=kind, media_url=media_url, source="meta", delay=0,
+    )
+
+
 async def _ingest_evolution_media(
     client_id: str, phone: str, media_type: str, message: dict, caption: str, bg: BackgroundTasks,
 ) -> None:
@@ -3312,9 +3473,18 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
     if not parsed:
         return {"status": "ignored", "reason": "no_message"}
 
-    # Só processa ENTRADA do lead — ignora eco do próprio número e grupos.
-    if parsed["from_me"] or parsed["is_group"]:
-        return {"status": "ignored", "reason": "from_me_or_group"}
+    # Grupos nunca entram.
+    if parsed["is_group"]:
+        return {"status": "ignored", "reason": "group"}
+
+    # Eco do próprio número: pode ser a HUMA (enviou pela API) ou um humano
+    # respondendo pelo aparelho. Quem decide é o human_echo, em background.
+    if parsed["from_me"]:
+        echo_client = await db.get_client_by_evolution_instance(parsed["instance"]) if parsed["instance"] else None
+        if not echo_client or not parsed["phone"]:
+            return {"status": "ignored", "reason": "from_me"}
+        bg.add_task(_mirror_evolution_echo, echo_client.client_id, parsed)
+        return {"status": "received", "echo": True}
 
     instance = parsed["instance"]
     phone = parsed["phone"]
@@ -3528,8 +3698,19 @@ async def meta_webhook(request: Request, bg: BackgroundTasks):
     if quality_events:
         bg.add_task(_ingest_meta_quality_events, quality_events)
 
+    # Coexistência: o que o dono mandou pelo WhatsApp Business App.
+    echoes = wa.parse_meta_echoes(body)
+    for echo in echoes:
+        if not echo["phone_number_id"] or not echo["phone"]:
+            continue
+        echo_client = await db.get_client_by_phone_number_id(echo["phone_number_id"])
+        if echo_client:
+            bg.add_task(_mirror_meta_echo, echo_client.client_id, echo)
+
     messages = wa.parse_meta_webhook(body)
     if not messages:
+        if echoes:
+            return {"status": "received", "echoes": len(echoes), "processed": 0}
         if statuses or quality_events:
             return {
                 "status": "received",

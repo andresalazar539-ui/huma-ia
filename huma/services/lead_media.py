@@ -69,6 +69,55 @@ async def upload(client_id: str, phone: str, kind: str, raw: bytes | None, conte
         return ""
 
 
+# Arquivo que a equipe manda pelo Cockpit (2026-09-27). Tipo → como o
+# canal entrega. Fora dessa lista o arquivo é recusado (nada de .exe).
+OUTGOING_MAX_BYTES = 16_000_000
+_OUTGOING_TYPES = {
+    "image/jpeg": ("image", "jpg"), "image/jpg": ("image", "jpg"), "image/png": ("image", "png"),
+    "image/webp": ("image", "webp"),
+    "audio/wav": ("audio", "wav"), "audio/x-wav": ("audio", "wav"), "audio/wave": ("audio", "wav"),
+    "audio/mpeg": ("audio", "mp3"), "audio/mp3": ("audio", "mp3"), "audio/ogg": ("audio", "ogg"),
+    "audio/mp4": ("audio", "m4a"), "audio/x-m4a": ("audio", "m4a"), "audio/m4a": ("audio", "m4a"),
+    "audio/aac": ("audio", "aac"),
+    "video/mp4": ("video", "mp4"),
+    "application/pdf": ("document", "pdf"),
+    "application/msword": ("document", "doc"),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ("document", "docx"),
+    "application/vnd.ms-excel": ("document", "xls"),
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ("document", "xlsx"),
+    "text/plain": ("document", "txt"), "text/csv": ("document", "csv"),
+}
+
+
+def outgoing_kind(content_type: str) -> tuple[str, str]:
+    """(kind, extensão) de um arquivo que a equipe quer mandar; ("", "") se o tipo não é aceito."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    return _OUTGOING_TYPES.get(ct, ("", ""))
+
+
+async def upload_outgoing(client_id: str, raw: bytes | None, content_type: str) -> tuple[str, str]:
+    """
+    Sobe pro Storage um arquivo que a equipe vai mandar pro lead e
+    devolve (url pública, kind). ("", "") quando não deu. Nunca levanta.
+    """
+    kind, ext = outgoing_kind(content_type)
+    if not raw or not kind or len(raw) > OUTGOING_MAX_BYTES:
+        return "", ""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    path = f"team/{client_id}/{uuid.uuid4()}.{ext}"
+    try:
+        supa = get_supabase()
+        if supa is None:
+            return "", ""
+        await run_in_threadpool(lambda: supa.storage.from_(BUCKET).upload(path, raw, {"content-type": ct}))
+        url = supa.storage.from_(BUCKET).get_public_url(path)
+        log.info(f"Arquivo da equipe guardado | client={client_id} | kind={kind} | size={len(raw)} | type={ct}")
+        return str(url or ""), kind
+    except Exception as e:
+        log.warning(f"Arquivo da equipe não subiu | client={client_id} | kind={kind} | {type(e).__name__}: {e}")
+        return "", ""
+
+
 async def push_pending(client_id: str, phone: str, kind: str, url: str) -> None:
     """Deixa a URL esperando o orchestrator gravar a mensagem do lead. Nunca levanta."""
     if not url:

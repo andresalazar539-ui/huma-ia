@@ -156,6 +156,15 @@ async def instagram_webhook(request: Request, bg: BackgroundTasks):
     except ValueError:
         return {"status": "ignored", "reason": "bad_json"}
 
+    # O que alguém respondeu pelo aplicativo do Instagram aparece na HUMA.
+    for echo in ig.parse_echoes(body):
+        if echo["from_app"]:
+            continue  # saiu pela API (a HUMA ou o Cockpit)
+        echo_client = await db.get_client_by_instagram_user_id(echo["ig_user_id"])
+        if not echo_client:
+            continue
+        bg.add_task(_mirror_instagram_echo, echo_client.client_id, echo)
+
     messages = ig.parse_webhook(body)
     entries = body.get("entry") if isinstance(body, dict) else None
     log.info(
@@ -195,6 +204,30 @@ async def instagram_webhook(request: Request, bg: BackgroundTasks):
         log.info(f"Webhook Instagram | client={client.client_id} | phone={phone} | chars={len(text)}")
 
     return {"status": "received", "processed": processed}
+
+
+async def _mirror_instagram_echo(client_id: str, echo: dict) -> None:
+    """Guarda a mídia (foto/áudio) e espelha o eco na conversa. Nunca levanta."""
+    from huma.services import human_echo, lead_media
+
+    phone = ig.ig_phone(echo["lead_id"])
+    media_url = ""
+    kind = echo.get("media_type", "")
+    try:
+        if kind in ("image", "audio") and echo.get("media_url"):
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http:
+                resp = await http.get(echo["media_url"])
+            if resp.status_code == 200:
+                media_url = await lead_media.upload(
+                    client_id, phone, kind, resp.content, resp.headers.get("content-type", ""),
+                )
+    except Exception as e:
+        log.warning(f"Webhook Instagram | mídia do eco não baixou | client={client_id} | {type(e).__name__}: {e}")
+    await human_echo.mirror(
+        client_id, phone, text=echo.get("text", ""), message_id=echo.get("message_id", ""),
+        media_kind=kind, media_url=media_url, source="instagram",
+    )
 
 
 async def _ingest_instagram_media(

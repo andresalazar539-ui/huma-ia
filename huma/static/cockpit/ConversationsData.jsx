@@ -258,6 +258,7 @@ function mapHistory(history) {
         time: formatTime(m.timestamp),
         by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
         by_name: m.by_name || '',  // quem da equipe respondeu pelo Cockpit
+        via: m.via || '',          // 'phone' = mandado direto pelo aparelho
       };
       // Cards que o lead viu (produto, carrossel, "Finalizar pedido", "Pagar",
       // resumo do pedido): a bolha desenha o card, não o texto "📦 …".
@@ -438,7 +439,55 @@ async function transferConversation(phone, assignedTo, note = '') {
   return r.json();
 }
 
-Object.assign(window, { sendHandoff, sendMessage, transferConversation });
+// Manda foto, vídeo, arquivo ou áudio gravado. FormData: o navegador
+// monta o Content-Type (não definir na mão).
+async function sendMedia(phone, file, caption = '', filename = '') {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/send-media`;
+  const form = new FormData();
+  form.append('file', file, filename || file.name || 'arquivo');
+  form.append('caption', caption || '');
+  const r = await fetch(url, { method: 'POST', headers: { ...AUTH_HEADERS }, body: form });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Áudio gravado no navegador → WAV mono 16 kHz. O navegador grava em
+// formatos que os canais não aceitam (webm); WAV todo canal entende.
+async function audioBlobToWav(blob) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) throw new Error('Este navegador não grava áudio.');
+  const ctx = new Ctx();
+  let decoded;
+  try {
+    decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  } finally {
+    if (ctx.close) ctx.close();
+  }
+  const rate = 16000;
+  const frames = Math.max(1, Math.ceil(decoded.duration * rate));
+  const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const off = new Offline(1, frames, rate);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start(0);
+  const rendered = await off.startRendering();
+  const samples = rendered.getChannelData(0);
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buf);
+  const put = (at, str) => { for (let i = 0; i < str.length; i++) view.setUint8(at + i, str.charCodeAt(i)); };
+  put(0, 'RIFF'); view.setUint32(4, 36 + samples.length * 2, true); put(8, 'WAVE');
+  put(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  put(36, 'data'); view.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const v = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7FFF, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+Object.assign(window, { sendHandoff, sendMessage, transferConversation, sendMedia, audioBlobToWav });
 
 /* ---------------- T4: Agenda (appointments) ---------------- */
 async function fetchAppointments() {

@@ -285,7 +285,12 @@ async def _evo_send(identity, path: str, body: dict) -> str | None:
         return None
     url = f"{EVOLUTION_API_URL.rstrip('/')}/{path}/{instance}"
     try:
-        return await _evo_post_raw(url, body)
+        message_id = await _evo_post_raw(url, body)
+        # O WhatsApp devolve como eco (fromMe) tudo que sai pela API: o id
+        # registrado é o que diz "essa fui eu, não um humano no aparelho".
+        from huma.services import human_echo  # lazy: evita ciclo
+        await human_echo.register_sent(getattr(identity, "client_id", ""), message_id)
+        return message_id
     except httpx.HTTPStatusError as e:
         log.error(f"Evolution HTTP {e.response.status_code} | client={getattr(identity, 'client_id', '?')} | {e.response.text[:200]}")
         return None
@@ -1046,6 +1051,54 @@ def parse_meta_webhook(body: dict) -> list[dict]:
                     "bsuid": bsuid,
                 })
 
+    return out
+
+
+def parse_meta_echoes(body: dict) -> list[dict]:
+    """
+    Mensagens que o dono mandou pelo WhatsApp Business App num número em
+    COEXISTÊNCIA com a Cloud API (campo `smb_message_echoes`). O que sai
+    pela API não volta aqui, então todo item é de humano.
+
+    Returns:
+        Lista de {phone_number_id, phone (o lead), text, message_id,
+        media_type, media_id}. [] quando o webhook não traz ecos.
+    """
+    out: list[dict] = []
+    if not isinstance(body, dict):
+        return out
+    for entry in body.get("entry") or []:
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("changes") or []:
+            if not isinstance(change, dict) or (change.get("field") or "") != "smb_message_echoes":
+                continue
+            value = change.get("value") if isinstance(change.get("value"), dict) else {}
+            pnid = str((value.get("metadata") or {}).get("phone_number_id") or "")
+            for m in value.get("message_echoes") or []:
+                if not isinstance(m, dict):
+                    continue
+                kind = (m.get("type") or "").lower()
+                text = ""
+                media_type = ""
+                media_id = ""
+                if kind == "text":
+                    text = ((m.get("text") or {}).get("body") or "").strip()
+                elif kind in ("image", "audio", "video", "document"):
+                    media_type = kind
+                    part = m.get(kind) if isinstance(m.get(kind), dict) else {}
+                    media_id = str(part.get("id") or "")
+                    text = (part.get("caption") or "").strip()
+                else:
+                    continue
+                out.append({
+                    "phone_number_id": pnid,
+                    "phone": _digits(str(m.get("to") or "")),
+                    "text": text,
+                    "message_id": str(m.get("id") or ""),
+                    "media_type": media_type,
+                    "media_id": media_id,
+                })
     return out
 
 

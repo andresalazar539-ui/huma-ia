@@ -156,6 +156,8 @@ function Icon({ name, size = 20, stroke = 1.5 }) {
     list:     <><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></>,
     columns:  <><rect x="3" y="3" width="5" height="18" rx="1"/><rect x="10" y="3" width="5" height="13" rx="1"/><rect x="17" y="3" width="4" height="9" rx="1"/></>,
     more:     <><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></>,
+    // Composer (2026-09-27): parar a gravação do áudio
+    stop:     <><rect x="6" y="6" width="12" height="12" rx="2"/></>,
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"

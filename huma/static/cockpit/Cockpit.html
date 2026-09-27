@@ -119,7 +119,7 @@ function ConversasScreen({
   mobile, onBack,
   query, onQuery, filters, onFilters, team,
   view = 'list', onView, onMove, drawerOpen = false, onCloseDrawer,
-  onTransferred,
+  onTransferred, onRefresh,
 }) {
   // Quadro (2026-09-17): mesmas conversas por etapa do funil; a busca
   // local e os filtros valem nas duas visões.
@@ -139,7 +139,7 @@ function ConversasScreen({
           onSend={onSend}
           handoff={handoff}
           onHandoff={onHandoff}
-          team={team} onTransferred={onTransferred}
+          team={team} onTransferred={onTransferred} onRefresh={onRefresh}
           mobile
           onBack={onBack}
         />
@@ -191,7 +191,7 @@ function ConversasScreen({
                 onSend={onSend}
                 handoff={handoff}
                 onHandoff={onHandoff}
-                team={team} onTransferred={onTransferred}
+                team={team} onTransferred={onTransferred} onRefresh={onRefresh}
                 onBack={onCloseDrawer}
               />
             </div>
@@ -224,7 +224,7 @@ function ConversasScreen({
           onSend={onSend}
           handoff={handoff}
           onHandoff={onHandoff}
-          team={team} onTransferred={onTransferred}
+          team={team} onTransferred={onTransferred} onRefresh={onRefresh}
           onOpenAgenda={narrow ? onOpenAgenda : null}
         />
       )}
@@ -515,6 +515,7 @@ function App() {
           loadDetail(activeId, { silent: true });
           loadList(filter, { silent: true }, convFilters);
         }}
+        onRefresh={() => { loadDetail(activeId, { silent: true }); loadList(filter, { silent: true }, convFilters); }}
         onTransferred={(r) => {
           setHandoff(true);
           const patch = { handoff_status: 'handed_off', assigned_to: (r && r.assigned_to) || '', assigned_name: (r && r.assigned_name) || '' };

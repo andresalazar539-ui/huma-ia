@@ -254,7 +254,11 @@ async def _post_message(identity: Any, body: dict) -> str | None:
                 f"code={err.get('code')} | {err.get('message', '')[:160]}"
             )
             return None
-        return str(data.get("message_id") or "") or None
+        mid = str(data.get("message_id") or "") or None
+        # O Instagram devolve como eco o que sai pela API: registra o id.
+        from huma.services import human_echo  # lazy: evita ciclo
+        await human_echo.register_sent(getattr(identity, "client_id", ""), mid)
+        return mid
     except httpx.TimeoutException:
         log.error(f"Timeout | service=instagram_send | client={getattr(identity, 'client_id', '?')}")
         return None
@@ -370,6 +374,65 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
         return False
     expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature_header[7:])
+
+
+def parse_echoes(body: dict) -> list[dict]:
+    """
+    Mensagens que a PRÓPRIA conta mandou (eco). As que saem por um app
+    (a HUMA) trazem `app_id`; as digitadas no aplicativo do Instagram
+    por um humano não. `from_app` diz qual é qual.
+
+    Returns:
+        Lista de {ig_user_id, lead_id, text, message_id, media_type,
+        media_url, from_app}.
+    """
+    out: list[dict] = []
+    if not isinstance(body, dict) or body.get("object") != "instagram":
+        return out
+    for entry in body.get("entry") or []:
+        if not isinstance(entry, dict):
+            continue
+        ig_user_id = str(entry.get("id") or "")
+        events = list(entry.get("messaging") or [])
+        for ch in entry.get("changes") or []:
+            if isinstance(ch, dict) and (ch.get("field") or "") == "messages" and isinstance(ch.get("value"), dict):
+                events.append(ch["value"])
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            msg = ev.get("message")
+            if not isinstance(msg, dict) or msg.get("is_deleted"):
+                continue
+            sender = str((ev.get("sender") or {}).get("id") or "")
+            recipient = str((ev.get("recipient") or {}).get("id") or "")
+            if not (msg.get("is_echo") or (sender and sender == ig_user_id)):
+                continue
+            if not recipient or recipient == ig_user_id:
+                continue
+            media_type = ""
+            media_url = ""
+            for att in msg.get("attachments") or []:
+                if not isinstance(att, dict):
+                    continue
+                kind = (att.get("type") or "").lower()
+                url = ((att.get("payload") or {}).get("url") or "")
+                if kind in ("image", "audio", "video", "file"):
+                    media_type = kind if kind in ("image", "audio", "video") else "document"
+                    media_url = url
+                    break
+            text = (msg.get("text") or "").strip()
+            if not text and not media_type:
+                continue
+            out.append({
+                "ig_user_id": ig_user_id,
+                "lead_id": recipient,
+                "text": text,
+                "message_id": str(msg.get("mid") or ""),
+                "media_type": media_type,
+                "media_url": media_url,
+                "from_app": bool(msg.get("app_id") or ev.get("app_id")),
+            })
+    return out
 
 
 def parse_webhook(body: dict) -> list[dict]:

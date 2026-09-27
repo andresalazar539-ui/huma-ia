@@ -1,7 +1,83 @@
 // ConversationView.jsx — center stream of messages
 // mobile: tela cheia no celular (botão voltar, header enxuto, sem rodapé de atalhos)
-const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, onSend, handoff, onHandoff, onOpenAgenda, mobile = false, onBack, team = null, onTransferred }) => {
+const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, onSend, handoff, onHandoff, onOpenAgenda, mobile = false, onBack, team = null, onTransferred, onRefresh }) => {
   const [draft, setDraft] = React.useState('');
+
+  // Anexo e áudio (2026-09-27). `pending` = o que está pronto pra enviar:
+  // { file, name, kind: 'file'|'audio', previewUrl }
+  const fileInput = React.useRef(null);
+  const recorder = React.useRef(null);
+  const recordTimer = React.useRef(null);
+  const [pending, setPending] = React.useState(null);
+  const [recording, setRecording] = React.useState(false);
+  const [recordSecs, setRecordSecs] = React.useState(0);
+  const MAX_RECORD_SECS = 120;
+  const clearPending = () => {
+    setPending(p => { if (p && p.previewUrl) URL.revokeObjectURL(p.previewUrl); return null; });
+  };
+  const stopTracks = () => {
+    const r = recorder.current;
+    if (r && r.stream) r.stream.getTracks().forEach(t => t.stop());
+  };
+  React.useEffect(() => {
+    // Trocou de conversa: nada de anexo ou gravação vazando pra outro lead.
+    clearPending();
+    if (recorder.current && recorder.current.state === 'recording') { recorder.current.onstop = null; recorder.current.stop(); }
+    stopTracks();
+    clearInterval(recordTimer.current);
+    setRecording(false); setRecordSecs(0);
+    return () => { clearInterval(recordTimer.current); stopTracks(); };
+  }, [conversation.id]);
+
+  const pickFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    if (f.size > 16 * 1024 * 1024) { showToast('error', 'Arquivo grande demais. O limite é 16 MB.'); return; }
+    clearPending();
+    const isImage = (f.type || '').startsWith('image/');
+    setPending({ file: f, name: f.name, kind: 'file', previewUrl: isImage ? URL.createObjectURL(f) : '', isImage });
+  };
+
+  const startRecording = async () => {
+    if (recording || busy) return;
+    if (!navigator.mediaDevices || !window.MediaRecorder) { showToast('error', 'Este navegador não grava áudio.'); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks = [];
+      const rec = new MediaRecorder(stream);
+      recorder.current = rec;
+      rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+      rec.onstop = async () => {
+        clearInterval(recordTimer.current);
+        setRecording(false);
+        stream.getTracks().forEach(t => t.stop());
+        try {
+          const wav = await audioBlobToWav(new Blob(chunks, { type: rec.mimeType || 'audio/webm' }));
+          clearPending();
+          setPending({ file: wav, name: 'audio.wav', kind: 'audio', previewUrl: URL.createObjectURL(wav) });
+        } catch (err) {
+          showToast('error', 'Não consegui preparar o áudio. Grava de novo.');
+        }
+      };
+      clearPending();
+      setRecordSecs(0);
+      setRecording(true);
+      rec.start();
+      recordTimer.current = setInterval(() => {
+        setRecordSecs(s => {
+          if (s + 1 >= MAX_RECORD_SECS && rec.state === 'recording') rec.stop();
+          return s + 1;
+        });
+      }, 1000);
+    } catch (err) {
+      showToast('error', 'Libere o microfone no navegador pra gravar áudio.');
+    }
+  };
+  const stopRecording = () => {
+    if (recorder.current && recorder.current.state === 'recording') recorder.current.stop();
+  };
+  const fmtSecs = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   const [busy, setBusy] = React.useState(false);     // handoff ou envio em andamento
   const [toast, setToast] = React.useState(null);    // { type:'ok'|'error', text }
   const toastTimer = React.useRef(null);
@@ -99,8 +175,27 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
 
   // Envia pelo WhatsApp. Append otimista pra feedback imediato; toast vermelho se falhar.
   const sendIt = async () => {
+    if (busy) return;
+    if (pending) {
+      const caption = pending.kind === 'audio' ? '' : draft.trim();
+      setBusy(true);
+      try {
+        const r = await sendMedia(conversation.id, pending.file, caption, pending.name);
+        clearPending();
+        setDraft('');
+        showToast('ok', r.sent_as === 'document' && r.kind === 'audio'
+          ? 'Áudio enviado como arquivo (o WhatsApp oficial não aceita esse formato como áudio)'
+          : (r.kind === 'audio' ? 'Áudio enviado' : 'Arquivo enviado'));
+        if (onRefresh) onRefresh();
+      } catch (e) {
+        showToast('error', String((e && e.message) || e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     const text = draft.trim();
-    if (!text || busy) return;
+    if (!text) return;
     onSend(text);
     setDraft('');
     setBusy(true);
@@ -281,14 +376,34 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
           border: '1px solid var(--paper-edge)', borderRadius: 12,
           background: 'var(--paper-raised)', padding: '8px 8px 8px 14px',
         }}>
-          <button style={{ border: 'none', background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', padding: 6 }}>
+          <input ref={fileInput} type="file" onChange={pickFile} style={{ display: 'none' }}
+            accept="image/jpeg,image/png,image/webp,video/mp4,audio/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv" />
+          <button onClick={() => fileInput.current && fileInput.current.click()} disabled={busy || recording}
+            title="Anexar foto, vídeo ou arquivo" aria-label="Anexar"
+            style={{ border: 'none', background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', padding: 6 }}>
             <Icon name="paperclip" size={18} />
+          </button>
+          <button onClick={recording ? stopRecording : startRecording} disabled={busy}
+            title={recording ? 'Parar a gravação' : 'Gravar áudio'} aria-label={recording ? 'Parar a gravação' : 'Gravar áudio'}
+            style={{
+              border: 'none', cursor: 'pointer', padding: 6, borderRadius: 999,
+              background: recording ? 'var(--terracotta)' : 'transparent',
+              color: recording ? 'var(--paper-raised)' : 'var(--ink-3)',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontFamily: 'var(--font-mono)', fontSize: 11,
+            }}>
+            <Icon name={recording ? 'stop' : 'mic'} size={18} />
+            {recording && <span style={{ paddingRight: 4 }}>{fmtSecs(recordSecs)}</span>}
           </button>
           <textarea
             value={draft}
             onChange={e => setDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendIt(); }}}
-            placeholder={handoff ? "Você assumiu a conversa, escreva como você mesmo…" : "HUMA está respondendo. Digite para assumir."}
+            disabled={recording || (pending && pending.kind === 'audio')}
+            placeholder={recording ? 'Gravando… clique no quadrado pra parar'
+              : (pending && pending.kind === 'audio') ? 'Áudio pronto. Ouça e envie.'
+              : pending ? 'Escreva uma legenda (opcional)'
+              : (handoff ? "Você assumiu a conversa, escreva como você mesmo…" : "HUMA está respondendo. Digite para assumir.")}
             rows={1}
             style={{
               flex: 1, border: 'none', outline: 'none', resize: 'none',
@@ -296,8 +411,28 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
               color: 'var(--ink)', padding: '6px 0', lineHeight: 1.4,
             }}
           />
-          <Button variant="primary" size="sm" icon={<Icon name="send" size={14} />} onClick={sendIt} disabled={busy || !draft.trim()}>{busy ? 'Enviando…' : 'Enviar'}</Button>
+          <Button variant="primary" size="sm" icon={<Icon name="send" size={14} />} onClick={sendIt} disabled={busy || recording || (!pending && !draft.trim())}>{busy ? 'Enviando…' : 'Enviar'}</Button>
         </div>
+        {pending && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, padding: '8px 10px',
+            border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)',
+          }}>
+            {pending.kind === 'audio' ? (
+              <audio controls src={pending.previewUrl} style={{ height: 34, flex: 1, minWidth: 0 }} />
+            ) : (
+              <>
+                {pending.isImage
+                  ? <img src={pending.previewUrl} alt="" style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
+                  : <span style={{ color: 'var(--ink-3)', display: 'flex' }}><Icon name="file" size={20} /></span>}
+                <span style={{ flex: 1, minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pending.name}</span>
+              </>
+            )}
+            <button onClick={clearPending} disabled={busy} title="Descartar" aria-label="Descartar" style={{
+              border: 'none', background: 'transparent', color: 'var(--ink-3)', cursor: 'pointer', padding: 4, display: 'flex', flexShrink: 0,
+            }}><Icon name="x" size={16} stroke={2} /></button>
+          </div>
+        )}
         {!mobile && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 10, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="sparkle" size={13} /> Sugestão de HUMA</span>
@@ -385,7 +520,7 @@ const InternalNote = ({ note, text, time }) => (
   </div>
 );
 
-const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url, note, by, by_name }) => {
+const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url, note, by, by_name, via }) => {
   if (from === 'note') return <InternalNote note={note} text={text} time={time} />;
   const isClient = from === 'client';
   const isHuma = from === 'huma' && by !== 'owner';
@@ -414,7 +549,7 @@ const Message = ({ from, text, time, responseTime, audio, audio_url, cards, imag
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/>
               </svg>
-              {isClient ? 'Áudio do lead' : 'Áudio com a sua voz'}
+              {isClient ? 'Áudio do lead' : (by === 'owner' ? 'Áudio da equipe' : 'Áudio com a sua voz')}
             </div>
             <audio controls preload="none" src={audio_url} style={{ width: 260, maxWidth: '100%', height: 36 }} />
             {text && <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.95 }}>{text}</div>}
@@ -445,6 +580,9 @@ const Message = ({ from, text, time, responseTime, audio, audio_url, cards, imag
         )}
         {!isClient && by === 'owner' && by_name && (
           <span style={{ fontWeight: 500, color: 'var(--ink-2)', background: 'var(--paper-sunk)', padding: '1px 5px', borderRadius: 3 }}>{by_name}</span>
+        )}
+        {!isClient && by === 'owner' && via === 'phone' && (
+          <span title="Mensagem mandada direto pelo aparelho, fora do Cockpit" style={{ fontWeight: 500, color: 'var(--ink-2)', background: 'var(--paper-sunk)', padding: '1px 5px', borderRadius: 3 }}>pelo aparelho</span>
         )}
         <span>{time}</span>
         {responseTime && <><span>·</span><span>respondido em {responseTime}</span></>}
