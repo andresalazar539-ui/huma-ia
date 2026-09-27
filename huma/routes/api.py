@@ -1053,49 +1053,119 @@ async def billing_ledger(client_id: str, limit: int = 30, _=Depends(verify_api_k
 
 _SPEND_ACTION_HTML = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>HUMA · Controle de gasto</title>
+<meta name="robots" content="noindex">
 <style>body{{margin:0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#f6f4ef;color:#1d1b16;
 display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}}
 .card{{background:#fff;border:1px solid #e6e1d6;border-radius:16px;padding:28px;max-width:420px;width:100%}}
 h1{{font-size:20px;margin:0 0 8px}}p{{margin:0 0 12px;line-height:1.5;color:#4a463f}}
-a{{color:#1d1b16}}.ok{{color:#2f6b3a}}.err{{color:#a63d2f}}</style></head><body>
-<div class="card"><h1 class="{cls}">{title}</h1><p>{body}</p>
+a{{color:#1d1b16}}.ok{{color:#2f6b3a}}.err{{color:#a63d2f}}
+button{{font:inherit;font-weight:600;border:none;border-radius:10px;padding:12px 18px;cursor:pointer;
+background:#1d1b16;color:#fff;width:100%;margin:4px 0 12px}}</style></head><body>
+<div class="card"><h1 class="{cls}">{title}</h1><p>{body}</p>{form}
 <p><a href="/cockpit">Abrir o Cockpit</a></p></div></body></html>"""
+
+
+def _spend_page(cls: str, title: str, body: str, form: str = "", status_code: int = 200) -> HTMLResponse:
+    html = _SPEND_ACTION_HTML.format(cls=cls, title=title, body=body, form=form)
+    return HTMLResponse(html, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+
+def _spend_question(action: str) -> tuple[str, str, str]:
+    """(título, explicação, texto do botão) da página de confirmação."""
+    from huma.services import billing_service as billing
+
+    price = billing.brl(billing.OVERAGE_PRICE_BRL)
+    if action == "unlimited":
+        return (
+            "Liberar sem limite?",
+            f"A HUMA volta a atender todo lead novo. Cada conversa além do plano custa {price} "
+            f"e entra na sua próxima fatura, sem teto.",
+            "Liberar sem limite",
+        )
+    if action == "unlock_100":
+        step = int(billing.SPEND_ALERT_STEP_BRL)
+        return (
+            f"Liberar até R$ {step} a mais?",
+            f"A HUMA volta a atender até gastar R$ {step} além do plano. Cada conversa extra custa {price} "
+            f"e entra na sua próxima fatura.",
+            f"Liberar até R$ {step}",
+        )
+    return (
+        "Travar o gasto extra?",
+        "A HUMA passa a usar só o que você já pagou. Leads novos ficam na sua fila pra você responder.",
+        "Travar",
+    )
+
+
+_SPEND_EXPIRED = "Esse link expirou. Ajuste o controle de gasto em Ajustes &gt; Uso no Cockpit."
+
+
+@router.get("/l/{code}", include_in_schema=False)
+async def short_link_redirect(code: str) -> Response:
+    """Link curto dos avisos (billing_service.short_link). Só redireciona."""
+    from huma.services import billing_service as billing
+
+    url = await billing.resolve_short_link(code)
+    if not url:
+        return _spend_page("err", "Link inválido ou vencido", _SPEND_EXPIRED, status_code=404)
+    return RedirectResponse(url, status_code=302)
 
 
 @router.get("/billing/spend-action", response_class=HTMLResponse, include_in_schema=False)
 async def billing_spend_action(token: str = "") -> HTMLResponse:
     """
-    Link assinado dos avisos no WhatsApp: liberar até +R$100, liberar sem
-    limite ou travar — sem login. Token HMAC com validade de 7 dias
-    (billing_service.make_spend_action_token). Token inválido = nada muda.
+    Link assinado dos avisos no WhatsApp (token HMAC, 7 dias).
+
+    ABRIR O LINK NÃO MUDA NADA: só mostra a pergunta e um botão. Quem
+    aplica é o POST. Motivo: o próprio WhatsApp abre links sozinho pra
+    montar a prévia, e uma mensagem encaminhada pode ser clicada por
+    qualquer pessoa. Mexer em gasto exige um clique consciente.
     """
     from huma.services import billing_service as billing
 
     data = billing.verify_spend_action_token(token)
     if not data:
-        html = _SPEND_ACTION_HTML.format(
-            cls="err", title="Link inválido ou vencido",
-            body="Esse link expirou. Ajuste o controle de gasto em Ajustes &gt; Uso no Cockpit.",
-        )
-        return HTMLResponse(html, status_code=400)
+        return _spend_page("err", "Link inválido ou vencido", _SPEND_EXPIRED, status_code=400)
+    title, body, button = _spend_question(data["action"])
+    form = (
+        f'<form method="post" action="/billing/spend-action">'
+        f'<input type="hidden" name="token" value="{token}">'
+        f'<button type="submit">{button}</button></form>'
+    )
+    return _spend_page("", title, body, form=form)
+
+
+@router.post("/billing/spend-action", response_class=HTMLResponse, include_in_schema=False)
+async def billing_spend_action_apply(request: Request) -> HTMLResponse:
+    """Aplica a mudança de gasto depois do clique no botão da página."""
+    from huma.services import billing_service as billing
+
+    try:
+        form = await request.form()
+        token = str(form.get("token") or "")
+    except Exception:
+        token = ""
+    data = billing.verify_spend_action_token(token)
+    if not data:
+        return _spend_page("err", "Link inválido ou vencido", _SPEND_EXPIRED, status_code=400)
 
     result = await billing.apply_spend_action(data["client_id"], data["action"])
     if result.get("status") != "ok":
-        html = _SPEND_ACTION_HTML.format(
-            cls="err", title="Não consegui aplicar agora",
-            body=result.get("detail", "Tente de novo em instantes ou ajuste no Cockpit."),
+        return _spend_page(
+            "err", "Não consegui aplicar agora",
+            result.get("detail", "Tente de novo em instantes ou ajuste no Cockpit."), status_code=400,
         )
-        return HTMLResponse(html, status_code=400)
 
     mode = result.get("mode")
+    price = billing.brl(billing.OVERAGE_PRICE_BRL)
     if mode == billing.SPEND_MODE_UNLIMITED:
-        title, body = "Liberado sem limite", "A HUMA continua atendendo. Cada conversa extra custa R$ %.2f e entra na sua fatura." % billing.OVERAGE_PRICE_BRL
+        title, body = "Liberado sem limite", f"A HUMA continua atendendo. Cada conversa extra custa {price} e entra na sua fatura."
     elif mode == billing.SPEND_MODE_CAPPED:
         title, body = "Liberado até R$ %.0f a mais" % float(result.get("cap_brl") or 0), "A HUMA continua atendendo até esse limite. Você recebe aviso antes de chegar nele."
     else:
         title, body = "Travado", "A HUMA só usa o que você já pagou. Leads novos ficam na sua fila."
     log.info(f"SpendControl | link aplicado | client={data['client_id']} | action={data['action']} | mode={mode}")
-    return HTMLResponse(_SPEND_ACTION_HTML.format(cls="ok", title=title, body=body))
+    return _spend_page("ok", title, body)
 
 
 class AnalyticsIdsBody(BaseModel):

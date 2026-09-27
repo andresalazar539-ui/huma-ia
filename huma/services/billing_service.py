@@ -770,7 +770,7 @@ async def set_spend_settings(client_id: str, mode: str, cap_brl: float = 0.0) ->
         return {"status": "error", "detail": "Modo inválido."}
     cap = round(max(0.0, float(cap_brl or 0.0)), 2)
     if mode == SPEND_MODE_CAPPED and cap < OVERAGE_PRICE_BRL:
-        return {"status": "error", "detail": f"O limite precisa ser de pelo menos R$ {OVERAGE_PRICE_BRL:.2f}."}
+        return {"status": "error", "detail": f"O limite precisa ser de pelo menos {brl(OVERAGE_PRICE_BRL)}."}
     if mode != SPEND_MODE_CAPPED:
         cap = 0.0
 
@@ -1083,6 +1083,56 @@ async def apply_spend_action(client_id: str, action: str) -> dict:
         current = float((await get_cycle_overage(client_id)).get("brl") or 0.0)
         return await set_spend_settings(client_id, SPEND_MODE_CAPPED, current + SPEND_ALERT_STEP_BRL)
     return {"status": "error", "detail": "Ação desconhecida."}
+
+
+def brl(value: float) -> str:
+    """Valor em reais do jeito que se escreve no Brasil: 1.99 → 'R$ 1,99'. (puro)"""
+    text = f"{float(value or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {text}"
+
+
+SHORT_LINK_TTL_SECONDS = 7 * 86400
+
+
+async def short_link(url: str, base_url: str) -> str:
+    """
+    Troca um link longo por um curto (`<base>/l/<código>`) pra caber numa
+    mensagem de WhatsApp sem parecer golpe. Guarda no Redis pelo mesmo
+    prazo do token. Sem Redis ou em falha devolve o link original: o
+    aviso nunca sai sem link. Nunca levanta.
+    """
+    import secrets
+
+    base = (base_url or "").rstrip("/")
+    if not url or not base:
+        return url
+    try:
+        code = secrets.token_urlsafe(6)
+        key = f"short_link:{code}"
+        await cache.set_with_ttl(key, url, ttl=SHORT_LINK_TTL_SECONDS)
+        if await cache.get_value(key) != url:
+            return url
+        return f"{base}/l/{code}"
+    except Exception as e:
+        log.warning(f"Link curto | falhou, usando o longo | {type(e).__name__}: {e}")
+        return url
+
+
+async def resolve_short_link(code: str) -> str:
+    """Link original de um código curto ("" se venceu ou não existe)."""
+    code = (code or "").strip()
+    if not code or len(code) > 32:
+        return ""
+    try:
+        return str(await cache.get_value(f"short_link:{code}") or "")
+    except Exception:
+        return ""
+
+
+async def short_spend_links(client_id: str, base_url: str) -> dict:
+    """spend_action_links com cada link encurtado."""
+    links = spend_action_links(client_id, base_url)
+    return {action: (await short_link(url, base_url) if url else "") for action, url in links.items()}
 
 
 def spend_action_links(client_id: str, base_url: str) -> dict:

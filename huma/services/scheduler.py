@@ -820,7 +820,7 @@ async def _run_spend_alert_job() -> None:
                 skipped += 1
                 continue
 
-            links = billing.spend_action_links(client_id, PUBLIC_BASE_URL)
+            links = await billing.short_spend_links(client_id, PUBLIC_BASE_URL)
             for level, payload in alerts:
                 key = f"spend_alert:{client_id}:{cycle_tag}:{level}"
                 if await cache.exists(key):
@@ -840,13 +840,13 @@ async def _run_spend_alert_job() -> None:
                     elif settings["mode"] == billing.SPEND_MODE_CAPPED:
                         modo = (
                             f"Seu modo é Com limite (até R$ {settings['cap_brl']:.0f} a mais): "
-                            f"a HUMA continua atendendo, R$ {billing.OVERAGE_PRICE_BRL:.2f} por conversa extra."
+                            f"a HUMA continua atendendo, {billing.brl(billing.OVERAGE_PRICE_BRL)} por conversa extra."
                         )
                         acao = "Pra mudar, Ajustes > Uso no Cockpit."
                     else:
                         modo = (
                             f"Seu modo é Liberado: a HUMA continua atendendo, "
-                            f"R$ {billing.OVERAGE_PRICE_BRL:.2f} por conversa extra."
+                            f"{billing.brl(billing.OVERAGE_PRICE_BRL)} por conversa extra."
                         )
                         acao = "Pra mudar, Ajustes > Uso no Cockpit."
                     msg = (
@@ -856,7 +856,7 @@ async def _run_spend_alert_job() -> None:
                 else:
                     conv, brl = payload.split("|")
                     msg = (
-                        f"📊 Excedente do ciclo: {conv} conversas extras · R$ {float(brl):.2f}.\n"
+                        f"📊 Excedente do ciclo: {conv} conversas extras · {billing.brl(float(brl))}.\n"
                         f"Isso entra na sua próxima fatura. Pra travar agora: "
                         f"{links.get('lock', '') or 'Ajustes > Uso no Cockpit'}"
                     )

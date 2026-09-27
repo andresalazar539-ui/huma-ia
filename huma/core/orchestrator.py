@@ -4109,7 +4109,7 @@ async def _handle_blocked_new_conversation(client_data, phone: str, lead_text: s
             f"responda pelo Cockpit ou pelo WhatsApp, ninguém se perdeu."
         )
     else:
-        links = billing.spend_action_links(client_id, PUBLIC_BASE_URL)
+        links = await billing.short_spend_links(client_id, PUBLIC_BASE_URL)
         motivo = (
             "Seu limite de gasto extra deste mês foi atingido."
             if reason == "cap_reached" else "Suas conversas do plano acabaram."
@@ -4117,15 +4117,15 @@ async def _handle_blocked_new_conversation(client_data, phone: str, lead_text: s
         linhas = [
             f"⚠️ {motivo}",
             f"{waiting} {'lead novo está' if waiting == 1 else 'leads novos estão'} na sua fila. "
-            f"Responda pelo Cockpit ou pelo WhatsApp — ninguém se perdeu.",
+            f"Responda pelo Cockpit ou pelo WhatsApp, ninguém se perdeu.",
             "",
-            f"Quer que a HUMA continue? Cada conversa extra custa R$ {billing.OVERAGE_PRICE_BRL:.2f}.",
+            f"Quer que a HUMA continue? Cada conversa extra custa {billing.brl(billing.OVERAGE_PRICE_BRL)}.",
         ]
         if links.get("unlock_100"):
-            linhas.append(f"Liberar até R$ {int(billing.SPEND_ALERT_STEP_BRL)} a mais: {links['unlock_100']}")
+            linhas.extend(["", f"Liberar até R$ {int(billing.SPEND_ALERT_STEP_BRL)} a mais:", links["unlock_100"]])
         if links.get("unlimited"):
-            linhas.append(f"Liberar sem limite: {links['unlimited']}")
-        linhas.append("Ou ajuste em Ajustes > Uso no Cockpit.")
+            linhas.extend(["", "Liberar sem limite:", links["unlimited"]])
+        linhas.extend(["", "Você confirma na página antes de mudar qualquer coisa."])
         owner_msg = "\n".join(linhas)
 
     try:

@@ -108,7 +108,7 @@ _ROUTE_RULES: tuple[tuple[str, str, Optional[str]], ...] = (
     ("*", rf"^{_C}/team(/|$)", "equipe"),
     # Faturamento
     ("*", rf"^{_C}/(billing|referrals|payment)(/|$)", "faturamento"),
-    ("GET", r"^/billing/spend-action$", "faturamento"),
+    ("*", r"^/billing/spend-action$", "faturamento"),
     # Relatórios / métricas
     ("*", rf"^{_C}/(reports|metrics|ai-usage)(/|$)", "relatorios"),
     ("*", r"^/api/sales$", "relatorios"),
