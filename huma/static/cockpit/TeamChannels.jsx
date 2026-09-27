@@ -568,8 +568,8 @@ const TcNoticeNumber = () => {
           </div>
           <div style={{ ...tcText, fontSize: 13 }}>
             {saved === null ? 'Carregando…'
-              : saved ? <>Chega em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(saved)}</b>, junto com o relatório.</>
-              : owner ? 'Digite o seu número pra receber os avisos e o relatório.'
+              : saved ? <>Você recebe em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(saved)}</b> quando um lead é passado pra você, agenda ou paga.</>
+              : owner ? 'Digite o seu número pra ser avisado quando um lead for passado pra você, agendar ou pagar.'
               : 'Peça ao dono da conta pra colocar o seu número em Equipe.'}
           </div>
         </div>
