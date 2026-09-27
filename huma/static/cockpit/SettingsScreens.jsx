@@ -1768,7 +1768,7 @@ const PerfilScreen = () => {
   const tabs = [
     { id: 'you',      label: 'Você',         icon: 'user' },
     { id: 'voice',    label: 'Voz clonada',  icon: 'mic' },
-    { id: 'channels', label: 'Avisos e WhatsApp', icon: 'bell' },
+    { id: 'channels', label: 'Avisos', icon: 'bell' },
     { id: 'security', label: 'Segurança',    icon: 'shield' },
   ];
 

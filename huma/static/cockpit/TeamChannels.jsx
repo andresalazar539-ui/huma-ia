@@ -85,127 +85,84 @@ const tcMsg = (kind) => ({
 const TcNotifyCard = () => {
   const [st, setSt] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
-  const [msg, setMsg] = React.useState(null);
+  // view: null | 'perguntando' | 'sim' | 'nao' | { erro: '...' }
+  const [view, setView] = React.useState(null);
   const load = React.useCallback(() => tcPushState().then(setSt), []);
   React.useEffect(() => { load(); }, [load]);
 
-  const turnOn = async () => {
-    setBusy(true); setMsg(null);
-    try { await tcEnablePush(st.key); await load(); setMsg({ kind: 'ok', text: 'Notificação ligada neste aparelho.' }); }
-    catch (e) { setMsg({ kind: 'err', text: e.message }); }
+  const phone = /android|iphone|ipad/i.test(navigator.userAgent || '');
+  const device = phone ? 'neste celular' : 'neste computador';
+  const corner = /windows/i.test(navigator.userAgent || '') ? 'no canto de baixo da tela, à direita'
+    : phone ? 'no topo do celular' : 'no canto de cima da tela, à direita';
+
+  const run = async (fn) => {
+    setBusy(true); setView(null);
+    try { await fn(); } catch (e) { setView({ erro: e.message }); }
     setBusy(false);
   };
-  const turnOff = async () => {
-    setBusy(true); setMsg(null);
-    try { await tcDisablePush(); await load(); setMsg({ kind: 'ok', text: 'Notificação desligada neste aparelho.' }); }
-    catch (e) { setMsg({ kind: 'err', text: e.message }); }
-    setBusy(false);
-  };
-  // asked: 'sim' | 'nao' | null — depois do teste a tela pergunta se apareceu,
-  // em vez de deixar a pessoa procurando.
-  const [asked, setAsked] = React.useState(null);
-  const [tested, setTested] = React.useState(false);
-  const test = async () => {
-    setBusy(true); setMsg(null); setAsked(null); setTested(false);
-    try {
-      const r = await tcCall('POST', '/api/push/test');
-      if (r.delivered) setTested(true);
-      else setMsg({ kind: 'err', text: 'O teste não saiu. Clique em "Desligar neste aparelho", depois em "Ligar" e tente de novo.' });
-    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
-    setBusy(false);
-  };
-  const ua = navigator.userAgent || '';
-  const system = /windows/i.test(ua) ? 'windows' : /android/i.test(ua) ? 'android' : /mac os/i.test(ua) && !tcIsIphone() ? 'mac' : tcIsIphone() ? 'iphone' : 'outro';
-  const whereItShows = {
-    windows: 'no canto de baixo, à direita da tela',
-    mac: 'no canto de cima, à direita da tela',
-    android: 'na barra de notificações, no topo do celular',
-    iphone: 'na tela de bloqueio e na central de notificações',
-    outro: 'junto das outras notificações do aparelho',
-  }[system];
-  const howToFix = {
-    windows: [
-      'Clique na data e hora, no canto direito da barra de tarefas. Se o aviso estiver na lista, ele chegou e o Windows só não mostrou na tela.',
-      'Abra Configurações do Windows, depois Sistema, depois Notificações. Deixe "Notificações" ligado e "Não perturbe" desligado.',
-      'Na mesma tela, na lista de aplicativos, deixe o seu navegador (Google Chrome, Edge) ligado.',
-    ],
-    mac: [
-      'Abra Ajustes do Sistema, depois Notificações, e escolha o seu navegador. Deixe "Permitir notificações" ligado.',
-      'Confira se o modo Foco (Não Perturbe) está desligado.',
-    ],
-    android: [
-      'Abra Configurações, depois Apps, escolha o seu navegador e entre em Notificações. Deixe tudo ligado.',
-      'Confira se o "Não perturbe" está desligado.',
-    ],
-    iphone: [
-      'Abra Ajustes, depois Notificações, e procure HUMA na lista. Deixe "Permitir Notificações" ligado.',
-      'Confira se o modo Foco está desligado.',
-    ],
-    outro: ['Confira nas configurações do aparelho se o navegador pode mostrar notificações.'],
-  }[system];
+  const turnOn = () => run(async () => { await tcEnablePush(st.key); await load(); });
+  const turnOff = () => run(async () => { await tcDisablePush(); await load(); });
+  const test = () => run(async () => {
+    const r = await tcCall('POST', '/api/push/test');
+    if (r.delivered) setView('perguntando');
+    else setView({ erro: 'O teste não saiu. Desligue, ligue de novo e teste outra vez.' });
+  });
 
   const needsInstall = tcIsIphone() && !tcIsInstalled();
+  const ready = st && st.supported && st.available && !needsInstall;
+  const steps = /windows/i.test(navigator.userAgent || '')
+    ? ['Clique no relógio, no canto de baixo da tela. Se o aviso estiver na lista, ele chegou.',
+       'Abra Configurações do Windows > Sistema > Notificações e ligue o seu navegador na lista.',
+       'Na mesma tela, desligue o "Não perturbe".']
+    : ['Abra as configurações do aparelho, entre em Notificações e libere o navegador.',
+       'Desligue o "Não perturbe" ou o modo Foco.'];
+
   return (
-    <div style={tcCard}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--paper-sunk)', color: 'var(--ink-2)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <Icon name="bell" size={18} stroke={1.8}/>
-        </span>
-        <div style={{ flex: '1 1 260px', minWidth: 0 }}>
-          <div style={tcTitle}>Notificação da HUMA</div>
-          <div style={{ ...tcText, marginTop: 3 }}>
-            A HUMA avisa neste aparelho quando você recebe um lead e quando um lead seu escreve. Funciona mesmo com o Cockpit fechado e não depende do WhatsApp.
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--ink-2)', display: 'flex' }}><Icon name="bell" size={18} stroke={1.8}/></span>
+        <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>
+            Aviso {device}
+            {st && st.on && <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--sage-ink)', background: 'var(--sage-tint)', padding: '2px 8px', borderRadius: 999 }}>ligado</span>}
           </div>
+          <div style={{ ...tcText, fontSize: 13 }}>Um aviso pula {corner} quando um lead precisar de você.</div>
         </div>
-        {st && st.supported && st.available && !needsInstall && (
-          st.on
-            ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--sage-ink)', background: 'var(--sage-tint)', padding: '4px 10px', borderRadius: 999 }}>ligada</span>
-            : <Button variant="dark" size="sm" onClick={turnOn} disabled={busy || st.denied}>{busy ? 'Ligando…' : 'Ligar neste aparelho'}</Button>
+        {ready && !st.on && <Button variant="dark" size="sm" onClick={turnOn} disabled={busy || st.denied}>{busy ? 'Ligando…' : 'Ligar'}</Button>}
+        {ready && st.on && (
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button variant="ghost" size="sm" onClick={test} disabled={busy}>{busy ? 'Testando…' : 'Testar'}</Button>
+            <Button variant="plain" size="sm" onClick={turnOff} disabled={busy}>Desligar</Button>
+          </span>
         )}
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-        {st === null && <div style={tcText}>Carregando…</div>}
-        {st && !st.supported && <div style={tcMsg('warn')}>Este navegador não mostra notificações. Use o Chrome, o Edge ou o Safari atualizado.</div>}
-        {st && st.supported && !st.available && <div style={tcMsg('warn')}>A notificação ainda não está disponível no servidor. Enquanto isso os avisos chegam por WhatsApp e por e-mail.</div>}
-        {st && st.supported && st.available && needsInstall && (
-          <div style={tcMsg('warn')}>
-            No iPhone a notificação só funciona com a HUMA na tela inicial. Toque em Compartilhar, escolha "Adicionar à Tela de Início", abra a HUMA por esse ícone e volte aqui.
-          </div>
-        )}
-        {st && st.denied && <div style={tcMsg('err')}>As notificações estão bloqueadas pra este site. Libere nas configurações do navegador (no cadeado ao lado do endereço) e recarregue a página.</div>}
-        {msg && <div style={tcMsg(msg.kind)}>{msg.text}</div>}
-        {tested && asked === null && (
-          <div style={{ ...tcMsg('ok'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <span style={{ flex: '1 1 240px' }}>
-              Mandei agora. O aviso "Notificação ligada" aparece {whereItShows}. <b>Apareceu?</b>
-            </span>
-            <span style={{ display: 'flex', gap: 6 }}>
-              <Button variant="dark" size="sm" onClick={() => setAsked('sim')}>Apareceu</Button>
-              <Button variant="ghost" size="sm" onClick={() => setAsked('nao')}>Não apareceu</Button>
-            </span>
-          </div>
-        )}
-        {asked === 'sim' && (
-          <div style={tcMsg('ok')}>
-            Tudo certo. É assim que a HUMA vai te avisar, mesmo com o Cockpit fechado. Pra receber no celular, abra a HUMA no navegador do celular e ligue por lá também.
-          </div>
-        )}
-        {asked === 'nao' && (
-          <div style={tcMsg('warn')}>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>O aviso saiu daqui e chegou no seu navegador. Quem está escondendo é o aparelho. Confira nesta ordem:</div>
-            <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {howToFix.map((step, i) => <li key={i}>{step}</li>)}
-            </ol>
-            <div style={{ marginTop: 8 }}>Depois clique em "Mandar um teste" de novo.</div>
-          </div>
-        )}
-        {st && st.on && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Button variant="ghost" size="sm" onClick={test} disabled={busy}>{busy ? 'Mandando…' : (tested ? 'Mandar outro teste' : 'Mandar um teste')}</Button>
-            <Button variant="plain" size="sm" onClick={turnOff} disabled={busy}>Desligar neste aparelho</Button>
-          </div>
-        )}
-      </div>
+
+      {st && !st.supported && <div style={tcMsg('warn')}>Este navegador não mostra avisos. Use o Chrome, o Edge ou o Safari.</div>}
+      {st && st.supported && !st.available && <div style={tcMsg('warn')}>O aviso no aparelho está fora do ar. Os avisos continuam chegando por WhatsApp e e-mail.</div>}
+      {st && st.supported && st.available && needsInstall && (
+        <div style={tcMsg('warn')}>No iPhone: toque em Compartilhar, depois em "Adicionar à Tela de Início", abra a HUMA por esse ícone e volte aqui.</div>
+      )}
+      {st && st.denied && <div style={tcMsg('err')}>O navegador está bloqueando os avisos deste site. Clique no cadeado ao lado do endereço, libere "Notificações" e recarregue a página.</div>}
+      {view && view.erro && <div style={tcMsg('err')}>{view.erro}</div>}
+
+      {view === 'perguntando' && (
+        <div style={{ ...tcMsg('ok'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ flex: '1 1 200px' }}>Mandei o aviso. <b>Apareceu {corner}?</b></span>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button variant="dark" size="sm" onClick={() => setView('sim')}>Sim</Button>
+            <Button variant="ghost" size="sm" onClick={() => setView('nao')}>Não</Button>
+          </span>
+        </div>
+      )}
+      {view === 'sim' && <div style={tcMsg('ok')}>Pronto, está funcionando.</div>}
+      {view === 'nao' && (
+        <div style={tcMsg('warn')}>
+          <b>O aviso chegou no navegador, mas o aparelho escondeu.</b>
+          <ol style={{ margin: '6px 0 0', paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {steps.map((t, i) => <li key={i}>{t}</li>)}
+          </ol>
+        </div>
+      )}
     </div>
   );
 };
@@ -562,65 +519,101 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
 };
 
 // Aba do Perfil: o que cada pessoa liga pra si mesma.
-const TcSection = ({ title, text }) => (
-  <div style={{ marginTop: 6 }}>
-    <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, letterSpacing: '-0.015em', color: 'var(--ink)' }}>{title}</div>
-    <div style={{ ...tcText, marginTop: 2, maxWidth: 640 }}>{text}</div>
-  </div>
-);
-
-// Onde os avisos por WhatsApp chegam: é só o número do cadastro, sem QR.
+// Número de WhatsApp que recebe os avisos: é só digitar, sem QR.
 const TcNoticeNumber = () => {
-  const [info, setInfo] = React.useState(null);
+  const owner = (window.HUMA_ROLE || 'dono') === 'dono';
+  const [saved, setSaved] = React.useState(null);   // número gravado ('' = nenhum)
+  const [draft, setDraft] = React.useState('');
+  const [editing, setEditing] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState('');
+
   React.useEffect(() => {
     (async () => {
       try {
-        const role = window.HUMA_ROLE || 'dono';
-        const me = String(window.HUMA_EMAIL || '').toLowerCase();
-        if (role === 'dono') {
+        if (owner) {
           const { settings } = await window.fetchSettings();
-          setInfo({ phone: settings.owner_phone || '', owner: true });
+          setSaved(settings.owner_phone || '');
         } else {
+          const me = String(window.HUMA_EMAIL || '').toLowerCase();
           const team = await window.fetchTeam();
           const m = (team.members || []).find(x => String(x.email || '').toLowerCase() === me) || {};
-          setInfo({ phone: m.phone || '', owner: false });
+          setSaved(m.phone || '');
         }
-      } catch (e) { setInfo({ phone: '', owner: (window.HUMA_ROLE || 'dono') === 'dono' }); }
+      } catch (e) { setSaved(''); }
     })();
   }, []);
+
+  const save = async () => {
+    const d = draft.replace(/\D/g, '');
+    if (d.length < 10) { setErr('Digite o DDD e o número. Exemplo: 11 98888-7777'); return; }
+    setBusy(true); setErr('');
+    try {
+      const full = d.length <= 11 ? '55' + d : d;
+      await window.saveSettings({ owner_phone: full });
+      setSaved(full); setEditing(false); setDraft('');
+    } catch (e) { setErr('Não consegui salvar agora. Tente de novo.'); }
+    setBusy(false);
+  };
+
+  const showForm = owner && saved !== null && (editing || !saved);
   return (
-    <div style={tcCard}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-        <span style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--paper-sunk)', color: 'var(--ink-2)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <Icon name="message" size={17} stroke={1.8}/>
-        </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={tcTitle}>Aviso por WhatsApp</div>
-          <div style={{ ...tcText, marginTop: 3 }}>
-            {info === null ? 'Carregando…'
-              : info.phone
-                ? <>Os avisos e o relatório chegam em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(info.phone)}</b>. É só o número do seu cadastro: não precisa conectar nem ler QR.</>
-                : (info.owner
-                  ? 'Você ainda não cadastrou o seu WhatsApp. Coloque o número na aba "Você" pra receber os avisos e o relatório. Não precisa conectar nem ler QR.'
-                  : 'Seu WhatsApp ainda não está no cadastro. Peça ao dono da conta pra colocar o seu número em Equipe. Não precisa conectar nem ler QR.')}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--ink-2)', display: 'flex' }}><Icon name="message" size={18} stroke={1.8}/></span>
+        <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 15, fontWeight: 600, color: 'var(--ink)' }}>
+            Aviso no seu WhatsApp
+            {saved && <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em', textTransform: 'uppercase', color: 'var(--sage-ink)', background: 'var(--sage-tint)', padding: '2px 8px', borderRadius: 999 }}>ligado</span>}
+          </div>
+          <div style={{ ...tcText, fontSize: 13 }}>
+            {saved === null ? 'Carregando…'
+              : saved ? <>Chega em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(saved)}</b>, junto com o relatório.</>
+              : owner ? 'Digite o seu número pra receber os avisos e o relatório.'
+              : 'Peça ao dono da conta pra colocar o seu número em Equipe.'}
           </div>
         </div>
+        {owner && saved && !editing && <Button variant="plain" size="sm" onClick={() => { setEditing(true); setDraft(''); }}>Trocar</Button>}
       </div>
+      {showForm && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input value={draft} onChange={e => setDraft(e.target.value)} placeholder="11 98888-7777" inputMode="tel"
+            onKeyDown={e => { if (e.key === 'Enter') save(); }}
+            style={{ flex: '1 1 180px', minWidth: 0, fontFamily: 'var(--font-sans)', fontSize: 14, padding: '9px 12px', borderRadius: 10, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', outline: 'none' }}/>
+          <Button variant="dark" size="sm" onClick={save} disabled={busy || !draft.trim()}>{busy ? 'Salvando…' : 'Salvar'}</Button>
+          {editing && <Button variant="plain" size="sm" onClick={() => { setEditing(false); setErr(''); }}>Cancelar</Button>}
+        </div>
+      )}
+      {err && <div style={tcMsg('err')}>{err}</div>}
     </div>
   );
 };
 
-// Aba do Perfil: o que cada pessoa liga pra si mesma.
-const MeusCanais = () => (
-  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-    <TcSection title="Onde você recebe os avisos"
-      text="Lead qualificado, lead que te escreveu, agendamento, pagamento e relatório. Nada aqui muda onde os clientes são atendidos."/>
-    <TcNotifyCard/>
-    <TcNoticeNumber/>
-    <TcSection title="Onde os clientes são atendidos"
-      text="O número do negócio fica em Integrações. Aqui é só pra quem também recebe clientes no próprio celular."/>
-    <TcLineCard/>
-  </div>
-);
+// Aba do Perfil. Uma pergunta só: "onde eu quero ser avisado?"
+// O número extra de atendimento fica recolhido: quase ninguém precisa.
+const MeusCanais = () => {
+  const [more, setMore] = React.useState(false);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 720 }}>
+      <div style={{ ...tcText, fontSize: 14, color: 'var(--ink-2)' }}>
+        A HUMA te avisa quando um lead precisar de você. Escolha onde.
+      </div>
+      <div style={{ ...tcCard, display: 'flex', flexDirection: 'column', gap: 0, padding: 0 }}>
+        <div style={{ padding: 18 }}><TcNotifyCard/></div>
+        <div style={{ borderTop: '1px solid var(--paper-edge)', padding: 18 }}><TcNoticeNumber/></div>
+      </div>
+
+      <button onClick={() => setMore(m => !m)} style={{
+        alignSelf: 'flex-start', border: 'none', background: 'transparent', cursor: 'pointer', padding: '4px 0',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)',
+      }}>
+        <Icon name={more ? 'chevronDown' : 'chevron'} size={13} stroke={2}/>
+        Clientes também escrevem direto pro seu celular?
+      </button>
+      {more && <TcLineCard/>}
+    </div>
+  );
+};
 
 Object.assign(window, { TcNotifyCard, TcNotifyPrompt, TcLineCard, TcLineModal, TcNoticeNumber, MeusCanais });
