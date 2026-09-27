@@ -578,7 +578,7 @@ function App() {
   return (
     <div style={{ display: 'flex', height: '100vh', background: 'var(--paper)', position: 'relative' }}>
       <SidebarNav active={route} onNav={setRoute} onInvite={() => setInviteOpen(true)}
-                  client={client} waitingCount={conversations.filter(c => c.status === 'aguardando').length} />
+                  client={client} waitingCount={conversations.filter(c => c.status === 'aguardando' && c.is_mine !== false).length} />
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {!['planos', 'checkout'].includes(route) && <TrialBanner billing={billing} onGoto={setRoute} />}
         <div key={route} className="screen-enter" style={{ flex: 1, display: 'flex', minWidth: 0, minHeight: 0 }}>

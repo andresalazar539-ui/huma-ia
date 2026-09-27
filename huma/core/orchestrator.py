@@ -1780,6 +1780,7 @@ async def _send_with_human_delay(
                             )
                             await wa.notify_owner(client_data.owner_phone, owner_msg, client_id=cid)
                             log.info(f"Dono notificado (cancela) | {cid} | lead={phone}")
+                            await _notify_portfolio_owner(client_data, conv, owner_msg)
                         except Exception as e:
                             log.warning(
                                 f"notify_owner cancel falhou | {cid} | {phone} | "
@@ -1854,6 +1855,7 @@ async def _send_with_human_delay(
                     )
                     await wa.notify_owner(client_data.owner_phone, owner_msg, client_id=cid)
                     log.info(f"Dono notificado (agenda) | {cid} | lead={phone}")
+                    await _notify_portfolio_owner(client_data, conv, owner_msg)
                 except Exception as e:
                     log.warning(
                         f"notify_owner agenda falhou | {cid} | {phone} | "
@@ -3370,6 +3372,33 @@ async def _handle_calc_shipping_action(phone, action, client_data, conv) -> dict
 # a cada 10 minutos por conversa (Redis; sem Redis, memória do processo).
 _HUMAN_PING_TTL_SECONDS = 600
 _human_ping_memory: dict[str, float] = {}
+
+
+async def _notify_portfolio_owner(client_data, conv, message: str) -> bool:
+    """
+    Manda pra quem é DONO DO LEAD na equipe a mesma notícia que o dono da
+    conta recebe (agendou, cancelou, pagou). Só quando o lead é de alguém
+    com WhatsApp cadastrado e essa pessoa não é o próprio dono da conta.
+    Nunca levanta exceção.
+
+    Returns:
+        True se o aviso foi enviado.
+    """
+    try:
+        person = lead_routing.find_member(client_data, getattr(conv, "assigned_to", "") or "")
+        if not person or person["is_owner"] or not person["phone"]:
+            return False
+        if person["phone"] == lead_routing.normalize_phone(client_data.owner_phone):
+            return False
+        msg_id = await wa.notify_owner(person["phone"], message, client_id=client_data.client_id)
+        log.info(
+            f"Carteira notificada | client={client_data.client_id} | "
+            f"lead={getattr(conv, 'phone', '?')} | enviado={bool(msg_id)}"
+        )
+        return bool(msg_id)
+    except Exception as e:
+        log.warning(f"Carteira notificada | falhou | {type(e).__name__}: {e}")
+        return False
 
 
 async def _ping_human_lead_waiting(client_data, conv, phone: str, text: str) -> bool:

@@ -698,6 +698,7 @@ const AppointmentDetail = ({ ev, onClose, onOpenConversa }) => {
         <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 14, borderBottom: '1px solid var(--paper-edge)' }}>
           <DetailRow icon="calendar" label="Quando" value={`${dateLabel} · ${ev.start}–${ev.end}`} sub={`${durLabel}`} />
           <DetailRow icon="sparkle" label="Serviço" value={ev.service || '-'} />
+          {ev.assigned_name && <DetailRow icon="user" label="Cliente de" value={ev.assigned_name} />}
         </div>
 
         {/* Resumo da HUMA (briefing) */}

@@ -158,6 +158,10 @@ def build_payload(client_data: Any, conv: Any, event: str, data: dict) -> dict:
             "source_detail": getattr(conv, "lead_source_detail", "") or "",
             "stage": getattr(conv, "stage", "") or "",
             "facts": list(getattr(conv, "lead_facts", []) or [])[:10],
+            # De quem é o lead na equipe (vazio = de ninguém). Em TODO evento,
+            # pra o CRM/planilha do dono saber de quem é a venda ou o agendamento.
+            "assigned_to": getattr(conv, "assigned_to", "") or "",
+            "assigned_name": getattr(conv, "assigned_name", "") or "",
         },
         "data": {
             "summary": (data.get("summary") or "")[:1000],

@@ -82,7 +82,12 @@ async def approve_message(
     huma_session: Optional[str] = Cookie(None),
 ):
     """Aprova ou rejeita resposta pendente."""
-    await verify_api_key_manual(payload.client_id, creds, huma_session)
+    approver = await verify_api_key_manual(payload.client_id, creds, huma_session)
+    if _restricted_email(approver, creds, huma_session):
+        _ensure_conversation_access(
+            approver, creds, huma_session,
+            await db.get_conversation(payload.client_id, payload.phone),
+        )
 
     raw = await cache.get_pending(payload.client_id, payload.phone)
     if not raw:
@@ -1205,6 +1210,19 @@ async def list_conversations_cockpit(
         list_kwargs["portfolio"] = portfolio
     rows = await db.list_conversations_for_cockpit(client_id, filter, limit, **list_kwargs)
 
+    # "Precisa de você" e o contador da barra lateral só contam o que
+    # está com QUEM ESTÁ LOGADO. Conversa na mão de outra pessoa não é
+    # pendência do dono.
+    me = _cockpit_actor(client_data, creds, huma_session)
+    my_email = me["email"] if me else (getattr(client_data, "owner_email", "") or "").strip().lower()
+    i_am_owner = (me is None) or bool(me["is_owner"])
+
+    def _is_mine(row: dict) -> bool:
+        assigned = str(row.get("assigned_to") or "").strip().lower()
+        if not assigned:
+            return i_am_owner
+        return bool(my_email) and assigned == my_email
+
     import re as _re
     # Markers internos: mensagens que começam com "[MARKER..." (maiúsculas/underline/espaço).
     # Não exige `]` próximo porque o conteúdo do marker pode ter em-dash, parênteses,
@@ -1239,6 +1257,7 @@ async def list_conversations_cockpit(
             # Roteamento por vendedor: quem está com o lead (vazio = dono/ninguém)
             "assigned_to": r.get("assigned_to", "") or "",
             "assigned_name": r.get("assigned_name", "") or "",
+            "is_mine": _is_mine(r),
             # Quadro (kanban): o cartão mostra o que a HUMA já sabe do lead.
             "lead_facts": [f for f in (r.get("lead_facts") or []) if isinstance(f, str) and f.strip()][:3],
             "lead_hints": _lead_hints(r.get("lead_state")),
@@ -1915,6 +1934,9 @@ async def list_customers_cockpit(
 
     purchases = await db.list_approved_payments_by_phone(client_id) if rows else {}
     items = [_customer_row(r, purchases) for r in rows]
+    owners = await db.list_assignments(client_id) if rows else {}
+    for it in items:
+        it["assigned_name"] = (owners.get(it["phone"]) or {}).get("name", "")
 
     needle = (q or "").strip().lower()
     if needle:
@@ -2416,6 +2438,7 @@ async def list_appointments_cockpit(
 
     rows = await db.list_active_appointments(limit=300, client_id=client_id)
     rows = await _only_own_rows(client_data, creds, huma_session, client_id, rows)
+    owners = await db.list_assignments(client_id) if rows else {}
 
     now = datetime.utcnow()
     items: list[dict] = []
@@ -2453,6 +2476,7 @@ async def list_appointments_cockpit(
             "status": status,
             "phone": r.get("phone", ""),
             "briefing": _build_briefing(r),
+            "assigned_name": (owners.get(str(r.get("phone") or "")) or {}).get("name", ""),
         })
 
     log.info(f"Cockpit list_appointments | client_id={client_id} | count={len(items)}")
@@ -3851,6 +3875,9 @@ async def handle_payment_result(result: dict, payment_id: str) -> None:
                         client_id=client_id,
                     )
                     log.info(f"Dono notificado (pagamento) | {client_id} | lead={phone}")
+                    from huma.core.orchestrator import _notify_portfolio_owner
+                    lead_conv = await db.get_conversation(client_id, phone)
+                    await _notify_portfolio_owner(client_data, lead_conv, owner_msg)
             except Exception as e:
                 log.error(f"Erro notificando dono | {e}")
 

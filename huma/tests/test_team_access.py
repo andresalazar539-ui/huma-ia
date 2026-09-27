@@ -477,3 +477,165 @@ class TestEntrega:
         seen.clear()
         asyncio.run(api_routes.get_reports("cli_acc", client=_identity()))
         assert "seller" not in seen  # relatório geral: chamada idêntica à de antes
+
+
+# ================================================================
+# Varredura (2026-09-27): a lógica de "de quem é o lead" no resto do produto
+# ================================================================
+
+
+class TestFiltroDeQuemEOLead:
+
+    def test_lead_sem_dono(self):
+        rows = [
+            {"phone": "1", "assigned_to": "ana@x.com", "handoff_status": "active"},
+            {"phone": "2", "assigned_to": "", "handoff_status": "active"},
+            {"phone": "3", "handoff_status": "handed_off"},
+        ]
+        out = cf.apply_filters(rows, portfolio="ninguem", now_iso="2026-09-27T12:00:00")
+        assert [r["phone"] for r in out] == ["2", "3"]
+
+    def test_rota_aceita_ninguem(self, acc):
+        tc, store = acc
+        r = tc.get("/api/conversations", params={"client_id": "cli_acc", "portfolio": "ninguem"}, headers=H)
+        assert r.status_code == 200
+        assert store["list_kwargs"]["portfolio"] == "ninguem"
+
+
+class TestPendenciaSoDeQuemEstaLogado:
+
+    def _items(self, acc, email, rows):
+        tc, store = acc
+        store["email"] = email
+        from huma.routes import api as api_routes
+
+        async def _list(client_id, filter_mode="todas", limit=50, **kw):
+            return rows
+
+        api_routes.db.list_conversations_for_cockpit = _list
+        r = tc.get("/api/conversations", params={"client_id": "cli_acc"}, headers=H)
+        assert r.status_code == 200, r.text
+        return {i["phone"]: i["is_mine"] for i in r.json()["items"]}
+
+    ROWS = [
+        {"phone": "1", "assigned_to": "ana@x.com", "handoff_status": "handed_off", "history": []},
+        {"phone": "2", "assigned_to": "", "handoff_status": "handed_off", "history": []},
+        {"phone": "3", "assigned_to": "dona@x.com", "handoff_status": "handed_off", "history": []},
+        {"phone": "4", "assigned_to": "gil@x.com", "handoff_status": "handed_off", "history": []},
+    ]
+
+    def test_dono_nao_conta_o_que_esta_com_a_equipe(self, acc, monkeypatch):
+        from huma.routes import api as api_routes
+        monkeypatch.setattr(api_routes.db, "list_conversations_for_cockpit", None, raising=False)
+        mine = self._items(acc, "", self.ROWS)
+        assert mine == {"1": False, "2": True, "3": True, "4": False}
+
+    def test_admin_so_conta_o_que_e_dele(self, acc, monkeypatch):
+        from huma.routes import api as api_routes
+        monkeypatch.setattr(api_routes.db, "list_conversations_for_cockpit", None, raising=False)
+        mine = self._items(acc, "gil@x.com", self.ROWS)
+        assert mine == {"1": False, "2": False, "3": False, "4": True}
+
+
+class TestFollowUpNaoFalaPorCimaDoHumano:
+
+    def test_conversa_com_humano_sai_do_follow_up(self, monkeypatch):
+        from huma.services import db_service
+
+        class Q:
+            def __getattr__(self, name):
+                if name == "not_":
+                    return self
+                return lambda *a, **k: self
+
+            def execute(self):
+                class R:
+                    data = [
+                        {"phone": "1", "stage": "offer", "handoff_status": "active"},
+                        {"phone": "2", "stage": "offer", "handoff_status": "handed_off"},
+                        {"phone": "3", "stage": "closing"},
+                    ]
+                return R()
+
+        monkeypatch.setattr(db_service, "get_supabase", lambda: Q())
+        rows = asyncio.run(db_service.list_stuck_conversations())
+        assert [r["phone"] for r in rows] == ["1", "3"]
+
+
+class TestNoticiaProDonoDoLead:
+
+    def _mock(self, monkeypatch):
+        sent: list = []
+
+        async def fake_notify(owner_phone, message, client_id="", **kw):
+            sent.append({"phone": owner_phone, "text": message})
+            return "wamid"
+
+        from huma.services import whatsapp_service
+        monkeypatch.setattr(whatsapp_service, "notify_owner", fake_notify)
+        return sent
+
+    def test_vendedor_recebe_a_noticia_do_lead_dele(self, monkeypatch):
+        sent = self._mock(monkeypatch)
+        conv = _conv(assigned_to="ana@x.com", assigned_name="Ana")
+        ok = asyncio.run(orch._notify_portfolio_owner(_identity(), conv, "📅 Agendamento confirmado!"))
+        assert ok is True and sent == [{"phone": "5511911110001", "text": "📅 Agendamento confirmado!"}]
+
+    def test_sem_dono_do_lead_nao_manda_nada(self, monkeypatch):
+        sent = self._mock(monkeypatch)
+        assert asyncio.run(orch._notify_portfolio_owner(_identity(), _conv(), "x")) is False
+        assert sent == []
+
+    def test_lead_do_dono_da_conta_nao_duplica(self, monkeypatch):
+        sent = self._mock(monkeypatch)
+        conv = _conv(assigned_to="dona@x.com", assigned_name="Marina")
+        assert asyncio.run(orch._notify_portfolio_owner(_identity(), conv, "x")) is False
+        assert sent == []
+
+    def test_pessoa_sem_whatsapp(self, monkeypatch):
+        sent = self._mock(monkeypatch)
+        conv = _conv(assigned_to="gil@x.com", assigned_name="Gil")
+        assert asyncio.run(orch._notify_portfolio_owner(_identity(), conv, "x")) is False
+        assert sent == []
+
+    def test_evento_leva_de_quem_e_o_lead(self):
+        from huma.services import lead_events
+        conv = _conv(assigned_to="ana@x.com", assigned_name="Ana")
+        payload = lead_events.build_payload(_identity(), conv, "payment.approved", {"value_cents": 1000})
+        assert payload["lead"]["assigned_to"] == "ana@x.com"
+        assert payload["lead"]["assigned_name"] == "Ana"
+        vazio = lead_events.build_payload(_identity(), _conv(), "lead.new", {})
+        assert vazio["lead"]["assigned_to"] == "" and vazio["lead"]["assigned_name"] == ""
+
+
+class TestQuemSaiSoltaOsLeads:
+
+    def test_remover_pessoa_solta_a_carteira(self, monkeypatch):
+        from huma.routes import business
+        released: list = []
+
+        async def fake_update(client_id, updates):
+            return None
+
+        async def fake_release(client_id, email):
+            released.append(email)
+            return 3
+
+        monkeypatch.setattr(business.db, "update_client", fake_update)
+        monkeypatch.setattr(business.db, "release_portfolio", fake_release)
+        res = asyncio.run(business.team_remove("cli_acc", "Ana@x.com", client=_identity()))
+        assert released == ["ana@x.com"]
+        assert res["released_leads"] == 3
+        assert all(m["email"] != "ana@x.com" for m in res["members"])
+
+
+class TestAprovacaoDeRespostaPorAtendente:
+
+    def test_atendente_nao_aprova_resposta_de_lead_de_outro(self, acc):
+        tc, store = acc
+        store["email"] = "ana@x.com"
+        store["conv"] = _conv(assigned_to="bia@x.com", assigned_name="Bia")
+        r = tc.post("/api/approve", json={
+            "client_id": "cli_acc", "phone": "5511999998888", "approved": True,
+        }, headers=H)
+        assert r.status_code == 403, r.text

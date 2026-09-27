@@ -56,7 +56,10 @@ function activeFilterChips(filters, team) {
     chips.push({ key: 'channel', label: (CHANNEL_OPTIONS.find(o => o.key === f.channel) || {}).label || f.channel, clear: { channel: '' } });
   }
   if (f.assignee) {
-    chips.push({ key: 'assignee', label: assigneeLabel(f.assignee, team), clear: { assignee: '' } });
+    chips.push({ key: 'assignee', label: `Atende: ${assigneeLabel(f.assignee, team)}`, clear: { assignee: '' } });
+  }
+  if (f.owner && !f.mine) {
+    chips.push({ key: 'owner', label: f.owner === 'ninguem' ? 'Lead sem dono' : `Lead de ${assigneeLabel(f.owner, team)}`, clear: { owner: '' } });
   }
   return chips;
 }
@@ -194,6 +197,22 @@ const ConversationFilterBar = ({
               </select>
             </label>
           )}
+          {seesAll && members.length > 0 && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <Eyebrow>De quem é o lead</Eyebrow>
+              <select value={f.mine ? '' : (f.owner || '')} onChange={e => setF({ owner: e.target.value, mine: false })} style={fieldStyle}>
+                <option value="">Todo mundo</option>
+                <option value="ninguem">Ainda de ninguém (a HUMA está qualificando)</option>
+                <option value="dono">{ownerName}</option>
+                {members.map(m => (
+                  <option key={m.email} value={String(m.email).toLowerCase()}>{m.name || String(m.email).split('@')[0]}</option>
+                ))}
+              </select>
+              <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, color: 'var(--ink-3)', lineHeight: 1.4 }}>
+                Mostra a carteira inteira da pessoa, incluindo os leads que voltaram pra HUMA.
+              </span>
+            </label>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
             <button onClick={clearAll} disabled={!filtering} style={{
               border: 'none', background: 'transparent', padding: 0,
@@ -209,7 +228,7 @@ const ConversationFilterBar = ({
       <div style={{ padding: '8px 14px 4px', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
         {/* Minhas conversas (2026-09-27): só aparece quando a conta tem equipe */}
         {seesAll && members.length > 0 && (
-          <button onClick={() => setF({ mine: !f.mine })}
+          <button onClick={() => setF({ mine: !f.mine, owner: '' })}
             title="Leads que são seus, mesmo com a HUMA atendendo agora"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,

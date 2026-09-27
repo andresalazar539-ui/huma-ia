@@ -126,7 +126,7 @@ const KanbanCard = ({ c, active, dragging, onOpen, onMove, mobile }) => {
           {hints.sinal_de_compra && <span style={tinyChip('#EAF0E7', '#3E5540')}>Sinal de compra</span>}
           {hints.objecao && <span title={hints.objecao} style={tinyChip('#FADFD0', '#B33A18')}>Objeção: {hints.objecao}</span>}
           {hints.pressa === 'alta' && <span style={tinyChip('#FBF1D6', '#7A5A14')}>Com pressa</span>}
-          {c.status === 'aguardando' && <span style={tinyChip('#FADFD0', '#B33A18')}>Aguardando você</span>}
+          {c.status === 'aguardando' && c.is_mine !== false && <span style={tinyChip('#FADFD0', '#B33A18')}>Aguardando você</span>}
           {c.appointment && <span style={tinyChip('#DBE6EE', '#34556B')}><Icon name="calendar" size={10} stroke={2.2} />{_fmtAppt(c.appointment.datetime)}</span>}
           {stale && <span style={tinyChip('transparent', staleColor)}>parado {window.timeAgo ? window.timeAgo(c.last_message_at) : ''}</span>}
           {c.channel === 'web' && <ChannelChip captured={!!c.lead_whatsapp} />}
@@ -144,7 +144,7 @@ const KanbanColumn = ({ col, cards, over, dragging, onDragOver, onDragLeave, onD
     onDragLeave={onDragLeave}
     onDrop={e => { e.preventDefault(); onDrop(e.dataTransfer.getData('text/plain'), col.key); }}
     style={{
-      flex: mobile ? '0 0 78vw' : '1 1 0', minWidth: mobile ? undefined : 220, maxWidth: mobile ? undefined : 340,
+      flex: mobile ? '0 0 78vw' : '1 1 0', minWidth: mobile ? undefined : 164, maxWidth: mobile ? undefined : 340,
       scrollSnapAlign: mobile ? 'start' : undefined,
       display: 'flex', flexDirection: 'column', minHeight: 0,
       background: over ? 'var(--paper-sunk)' : 'transparent',

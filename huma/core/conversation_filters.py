@@ -36,6 +36,8 @@ CHANNELS = ("whatsapp", "instagram", "web")
 STAGES = ("discovery", "offer", "closing", "committed", "qualified", "won", "lost")
 STATUSES = ("andamento", "aguardando", "confirmado", "feito", "cancelado")
 ASSIGNEE_SPECIAL = ("huma", "dono")
+# Filtro de carteira: lead que ainda não é de ninguém.
+PORTFOLIO_NOBODY = "ninguem"
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TZ = ZoneInfo("America/Sao_Paulo")
@@ -169,8 +171,9 @@ def apply_filters(
         now_iso: agora em ISO naive UTC (default: agora de verdade).
         owner_email: e-mail do dono, pra "dono" pegar também o lead que
             o dono atribuiu a si mesmo.
-        portfolio: "dono" | e-mail | "" (todos). Carteira: de quem o
-            lead é, mesmo com a HUMA atendendo agora ("Minhas conversas").
+        portfolio: "dono" | e-mail | "ninguem" | "" (todos). Carteira:
+            de quem o lead é, mesmo com a HUMA atendendo agora ("Minhas
+            conversas"). "ninguem" = lead que ainda não é de ninguém.
     """
     now_iso = now_iso or datetime.utcnow().isoformat()
     want_status = status if status in STATUSES else ""
@@ -186,8 +189,13 @@ def apply_filters(
             continue
         if want_assignee and assignee_of(r, owner_email) != want_assignee:
             continue
-        if want_portfolio and portfolio_of(r, owner_email) != want_portfolio:
-            continue
+        if want_portfolio:
+            owner_of_lead = portfolio_of(r, owner_email)
+            if want_portfolio == PORTFOLIO_NOBODY:
+                if owner_of_lead:
+                    continue
+            elif owner_of_lead != want_portfolio:
+                continue
         if since_iso or until_iso:
             last = str(r.get("last_message_at") or "")
             if not last:

@@ -31,7 +31,8 @@ async function fetchConversations(filter = 'todas', opts = {}) {
 // converte pra janela UTC em horário de Brasília.
 // mine (2026-09-27): "Minhas conversas" = leads que são de quem está logado
 // (carteira), mesmo com a HUMA atendendo agora. O servidor resolve o "me".
-const DEFAULT_CONV_FILTERS = { period: 'all', from: '', to: '', channel: '', assignee: '', mine: false };
+// owner (2026-09-27): "De quem é o lead" = '' | 'dono' | 'ninguem' | e-mail.
+const DEFAULT_CONV_FILTERS = { period: 'all', from: '', to: '', channel: '', assignee: '', mine: false, owner: '' };
 
 function _localDateStr(d) {
   const pad = n => String(n).padStart(2, '0');
@@ -40,7 +41,7 @@ function _localDateStr(d) {
 
 function toConversationQuery(filters) {
   const f = { ...DEFAULT_CONV_FILTERS, ...(filters || {}) };
-  const out = { channel: f.channel || '', assignee: f.assignee || '', date_from: '', date_to: '', portfolio: f.mine ? 'me' : '' };
+  const out = { channel: f.channel || '', assignee: f.assignee || '', date_from: '', date_to: '', portfolio: f.mine ? 'me' : (f.owner || '') };
   const today = new Date();
   if (f.period === 'today') {
     out.date_from = out.date_to = _localDateStr(today);
@@ -65,6 +66,7 @@ function countActiveConversationFilters(filters) {
   if (f.channel) n += 1;
   if (f.assignee) n += 1;
   if (f.mine) n += 1;
+  if (f.owner && !f.mine) n += 1;
   return n;
 }
 
@@ -213,6 +215,8 @@ function mapListItem(item) {
     // Roteamento por vendedor: quem da equipe está com o lead ('' = dono/ninguém)
     assigned_to: item.assigned_to || '',
     assigned_name: item.assigned_name || '',
+    // Está com quem está logado? (servidor decide; ausente = sim, API antiga)
+    is_mine: item.is_mine !== false,
     // Quadro: o que a HUMA já sabe do lead (fatos + leitura viva)
     lead_facts: Array.isArray(item.lead_facts) ? item.lead_facts : [],
     hints: item.lead_hints || { objecao: '', sinal_de_compra: false, pressa: '' },

@@ -229,7 +229,7 @@ const CustomerSheet = ({ customer: c, onClose, onOpenConversation, onChanged, on
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 16, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</div>
             <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
-              {c.customer_reason_label ? c.customer_reason_label : 'cliente'}{c.customer_since ? ` · desde ${fmtDateShort(c.customer_since)}` : ''}
+              {c.customer_reason_label ? c.customer_reason_label : 'cliente'}{c.customer_since ? ` · desde ${fmtDateShort(c.customer_since)}` : ''}{c.assigned_name ? ` · cliente de ${c.assigned_name}` : ''}
             </div>
           </div>
           <button onClick={onClose} aria-label="Fechar" style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--ink-3)', padding: 6 }}>

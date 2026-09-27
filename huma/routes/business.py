@@ -329,8 +329,12 @@ async def team_remove(client_id: str, email: str, client=Depends(verify_api_key)
     if len(remaining) == len(members):
         raise HTTPException(404, "Essa pessoa não está na equipe.")
     await _persist(client_id, {"team_members": remaining})
-    log.info(f"Equipe | removido | client={client_id} | total={len(remaining)}")
-    return {"status": "ok", "members": remaining}
+    # Os leads de quem saiu não podem ficar presos num nome que não
+    # existe mais: voltam a não ser de ninguém (dono e admin veem, e a
+    # roleta escolhe de novo no próximo handoff).
+    released = await db.release_portfolio(client_id, target)
+    log.info(f"Equipe | removido | client={client_id} | total={len(remaining)} | leads_soltos={released}")
+    return {"status": "ok", "members": remaining, "released_leads": released}
 
 
 # ────────────────────────────────────────────────────────────────

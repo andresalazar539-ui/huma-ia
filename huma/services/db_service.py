@@ -616,6 +616,66 @@ async def set_assignment(client_id: str, phone: str, assigned_to: str, assigned_
         )
 
 
+async def list_assignments(client_id: str) -> dict[str, dict]:
+    """
+    De quem é cada lead desta conta: {phone: {"email", "name"}}, só dos
+    leads que têm dono. Usado pra Agenda e Clientes mostrarem com quem
+    está cada pessoa. Falha ou coluna ausente: {} (as telas só ficam sem
+    o nome, nunca quebram).
+    """
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("conversations")
+            .select("phone,assigned_to,assigned_name")
+            .eq("client_id", client_id).neq("assigned_to", "")
+            .limit(2000).execute()
+        )
+    except Exception as e:
+        log.warning(
+            f"list_assignments | falhou (rodou scripts/migration_lead_routing.sql?) | "
+            f"client={client_id} | {type(e).__name__}: {e}"
+        )
+        return {}
+    out: dict[str, dict] = {}
+    for r in resp.data or []:
+        phone = str(r.get("phone") or "")
+        email = str(r.get("assigned_to") or "").strip().lower()
+        if phone and email:
+            out[phone] = {"email": email, "name": str(r.get("assigned_name") or "").strip()}
+    return out
+
+
+async def release_portfolio(client_id: str, email: str) -> int:
+    """
+    Solta os leads de quem saiu da equipe: deixam de ser de alguém e
+    voltam pra roleta no próximo handoff. Não mexe em quem está
+    atendendo (handoff_status): conversa que estava com a pessoa passa a
+    aparecer pro dono como aguardando. Nunca levanta.
+
+    Returns:
+        Quantos leads foram soltos (0 em falha).
+    """
+    wanted = (email or "").strip().lower()
+    if not wanted:
+        return 0
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("conversations")
+            .update({
+                "assigned_to": "", "assigned_name": "", "assigned_at": None,
+                "updated_at": datetime.utcnow().isoformat(),
+            })
+            .eq("client_id", client_id).eq("assigned_to", wanted)
+            .execute()
+        )
+        count = len(resp.data or [])
+        log.info(f"Assignment | carteira solta | client={client_id} | leads={count}")
+        return count
+    except Exception as e:
+        log.warning(f"release_portfolio | falhou | client={client_id} | {type(e).__name__}: {e}")
+        return 0
+
+
 async def list_portfolio_phones(client_id: str, email: str) -> set[str]:
     """
     Telefones (chave da conversa) dos leads que são de uma pessoa da
@@ -1027,7 +1087,7 @@ async def list_stuck_conversations(
             .select(
                 "client_id,phone,last_message_at,stage,follow_up_count,"
                 "lead_name_canonical,active_appointment_event_id,"
-                "lead_facts,history_summary,history"
+                "lead_facts,history_summary,history,handoff_status"
             )
             .lte("last_message_at", cutoff_min)
             .gte("last_message_at", cutoff_max)
@@ -1043,7 +1103,9 @@ async def list_stuck_conversations(
         )
 
     resp = await run_in_threadpool(query)
-    return resp.data or []
+    # Conversa que um humano assumiu (Cockpit ou transferência) NÃO recebe
+    # follow-up da IA: a HUMA falaria por cima de quem está atendendo.
+    return [r for r in (resp.data or []) if (r.get("handoff_status") or "active") != "handed_off"]
 
 
 async def list_hot_stuck_conversations(

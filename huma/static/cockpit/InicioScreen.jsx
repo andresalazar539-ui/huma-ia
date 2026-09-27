@@ -587,7 +587,9 @@ const InicioScreen = ({ onOpenConversa, onGoto, ownerName }) => {
   const chipPct = r1 ? chipDoObjetivo(objetivo, s1, s2) : null;
   const chipLabel = periodo === 7 ? 'vs. semana passada' : 'vs. mês anterior';
 
-  const pendentes = (convs || []).filter(c => c.status === 'aguardando').slice(0, 3);
+  // Só o que está com quem está logado: conversa na mão de outra pessoa
+  // da equipe não é pendência sua.
+  const pendentes = (convs || []).filter(c => c.status === 'aguardando' && c.is_mine !== false).slice(0, 3);
   const temAgenda = !!(r1 && (r1.goals || []).includes('schedule'));
   const hoje = hojeLocalISO();
   const eventosHoje = (appts || [])
