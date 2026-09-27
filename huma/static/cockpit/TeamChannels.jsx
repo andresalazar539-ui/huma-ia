@@ -296,8 +296,8 @@ const TcLineModal = ({ email, name, mine = false, resume = false, onClose, onCha
 
   const first = String(name || '').trim().split(/\s+/)[0] || 'a pessoa';
   const title = mine ? 'Conectar o seu WhatsApp' : `Conectar o WhatsApp de ${first}`;
-  const lead = mine ? 'A HUMA atende primeiro nesse número e o lead já fica com você.'
-    : `A HUMA atende primeiro nesse número e o lead já fica com ${first}.`;
+  const lead = mine ? 'Pra quem recebe clientes no próprio celular. A HUMA atende primeiro nesse número e o lead já fica com você.'
+    : `Pra quem recebe clientes no próprio celular. A HUMA atende primeiro nesse número e o lead já fica com ${first}.`;
   const phoneOwner = mine ? 'No seu celular' : `No celular de ${first}`;
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 120, background: 'rgba(21,17,14,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
@@ -463,7 +463,7 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
         )}
         <div style={{ flex: '1 1 180px', minWidth: 0 }}>
           <div style={compact ? { fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600, color: 'var(--ink)' } : tcTitle}>
-            {compact ? 'WhatsApp da pessoa' : 'Meu WhatsApp'}
+            {compact ? 'Atender no número da pessoa' : 'Atender clientes no meu número'}
           </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: good ? 'var(--sage-ink)' : 'var(--ink-3)', marginTop: 2 }}>
             {data === null ? 'carregando…' : `${label}${line && line.phone ? ` · ${tcFmtPhone(line.phone)}` : ''}`}
@@ -504,7 +504,13 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
 
       {!compact && !line && (
         <div style={{ ...tcText, marginTop: 10 }}>
-          Conecte o WhatsApp que você já usa. A HUMA atende primeiro quem te chamar pela primeira vez, e o lead já fica com você. Seus contatos de hoje ela não toca.
+          <b style={{ color: 'var(--ink-2)' }}>Só conecte se clientes escrevem direto pro seu celular.</b> Aí a HUMA atende primeiro quem te chamar pela primeira vez, e o lead já fica com você. Seus contatos de hoje ela não toca.
+          <br/>Pra receber avisos você não precisa conectar nada aqui.
+        </div>
+      )}
+      {compact && !line && (
+        <div style={{ ...tcText, fontSize: 12, marginTop: 6 }}>
+          Opcional. Só se clientes escrevem direto pro celular dessa pessoa.
         </div>
       )}
       {data && !data.available && <div style={{ ...tcMsg('warn'), marginTop: 10 }}>A conexão por QR não está disponível no servidor agora.</div>}
@@ -556,11 +562,65 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
 };
 
 // Aba do Perfil: o que cada pessoa liga pra si mesma.
+const TcSection = ({ title, text }) => (
+  <div style={{ marginTop: 6 }}>
+    <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, letterSpacing: '-0.015em', color: 'var(--ink)' }}>{title}</div>
+    <div style={{ ...tcText, marginTop: 2, maxWidth: 640 }}>{text}</div>
+  </div>
+);
+
+// Onde os avisos por WhatsApp chegam: é só o número do cadastro, sem QR.
+const TcNoticeNumber = () => {
+  const [info, setInfo] = React.useState(null);
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const role = window.HUMA_ROLE || 'dono';
+        const me = String(window.HUMA_EMAIL || '').toLowerCase();
+        if (role === 'dono') {
+          const { settings } = await window.fetchSettings();
+          setInfo({ phone: settings.owner_phone || '', owner: true });
+        } else {
+          const team = await window.fetchTeam();
+          const m = (team.members || []).find(x => String(x.email || '').toLowerCase() === me) || {};
+          setInfo({ phone: m.phone || '', owner: false });
+        }
+      } catch (e) { setInfo({ phone: '', owner: (window.HUMA_ROLE || 'dono') === 'dono' }); }
+    })();
+  }, []);
+  return (
+    <div style={tcCard}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <span style={{ width: 36, height: 36, borderRadius: 10, background: 'var(--paper-sunk)', color: 'var(--ink-2)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <Icon name="message" size={17} stroke={1.8}/>
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={tcTitle}>Aviso por WhatsApp</div>
+          <div style={{ ...tcText, marginTop: 3 }}>
+            {info === null ? 'Carregando…'
+              : info.phone
+                ? <>Os avisos e o relatório chegam em <b style={{ color: 'var(--ink)' }}>{tcFmtPhone(info.phone)}</b>. É só o número do seu cadastro: não precisa conectar nem ler QR.</>
+                : (info.owner
+                  ? 'Você ainda não cadastrou o seu WhatsApp. Coloque o número na aba "Você" pra receber os avisos e o relatório. Não precisa conectar nem ler QR.'
+                  : 'Seu WhatsApp ainda não está no cadastro. Peça ao dono da conta pra colocar o seu número em Equipe. Não precisa conectar nem ler QR.')}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Aba do Perfil: o que cada pessoa liga pra si mesma.
 const MeusCanais = () => (
   <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <TcSection title="Onde você recebe os avisos"
+      text="Lead qualificado, lead que te escreveu, agendamento, pagamento e relatório. Nada aqui muda onde os clientes são atendidos."/>
     <TcNotifyCard/>
+    <TcNoticeNumber/>
+    <TcSection title="Onde os clientes são atendidos"
+      text="O número do negócio fica em Integrações. Aqui é só pra quem também recebe clientes no próprio celular."/>
     <TcLineCard/>
   </div>
 );
 
-Object.assign(window, { TcNotifyCard, TcNotifyPrompt, TcLineCard, TcLineModal, MeusCanais });
+Object.assign(window, { TcNotifyCard, TcNotifyPrompt, TcLineCard, TcLineModal, TcNoticeNumber, MeusCanais });
