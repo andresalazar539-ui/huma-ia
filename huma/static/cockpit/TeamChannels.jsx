@@ -101,15 +101,48 @@ const TcNotifyCard = () => {
     catch (e) { setMsg({ kind: 'err', text: e.message }); }
     setBusy(false);
   };
+  // asked: 'sim' | 'nao' | null — depois do teste a tela pergunta se apareceu,
+  // em vez de deixar a pessoa procurando.
+  const [asked, setAsked] = React.useState(null);
+  const [tested, setTested] = React.useState(false);
   const test = async () => {
-    setBusy(true); setMsg(null);
+    setBusy(true); setMsg(null); setAsked(null); setTested(false);
     try {
       const r = await tcCall('POST', '/api/push/test');
-      setMsg(r.delivered ? { kind: 'ok', text: 'Mandei uma notificação de teste. Deve aparecer em alguns segundos.' }
-        : { kind: 'err', text: 'Não consegui entregar o teste. Desligue e ligue a notificação de novo.' });
+      if (r.delivered) setTested(true);
+      else setMsg({ kind: 'err', text: 'O teste não saiu. Clique em "Desligar neste aparelho", depois em "Ligar" e tente de novo.' });
     } catch (e) { setMsg({ kind: 'err', text: e.message }); }
     setBusy(false);
   };
+  const ua = navigator.userAgent || '';
+  const system = /windows/i.test(ua) ? 'windows' : /android/i.test(ua) ? 'android' : /mac os/i.test(ua) && !tcIsIphone() ? 'mac' : tcIsIphone() ? 'iphone' : 'outro';
+  const whereItShows = {
+    windows: 'no canto de baixo, à direita da tela',
+    mac: 'no canto de cima, à direita da tela',
+    android: 'na barra de notificações, no topo do celular',
+    iphone: 'na tela de bloqueio e na central de notificações',
+    outro: 'junto das outras notificações do aparelho',
+  }[system];
+  const howToFix = {
+    windows: [
+      'Clique na data e hora, no canto direito da barra de tarefas. Se o aviso estiver na lista, ele chegou e o Windows só não mostrou na tela.',
+      'Abra Configurações do Windows, depois Sistema, depois Notificações. Deixe "Notificações" ligado e "Não perturbe" desligado.',
+      'Na mesma tela, na lista de aplicativos, deixe o seu navegador (Google Chrome, Edge) ligado.',
+    ],
+    mac: [
+      'Abra Ajustes do Sistema, depois Notificações, e escolha o seu navegador. Deixe "Permitir notificações" ligado.',
+      'Confira se o modo Foco (Não Perturbe) está desligado.',
+    ],
+    android: [
+      'Abra Configurações, depois Apps, escolha o seu navegador e entre em Notificações. Deixe tudo ligado.',
+      'Confira se o "Não perturbe" está desligado.',
+    ],
+    iphone: [
+      'Abra Ajustes, depois Notificações, e procure HUMA na lista. Deixe "Permitir Notificações" ligado.',
+      'Confira se o modo Foco está desligado.',
+    ],
+    outro: ['Confira nas configurações do aparelho se o navegador pode mostrar notificações.'],
+  }[system];
 
   const needsInstall = tcIsIphone() && !tcIsInstalled();
   return (
@@ -141,9 +174,34 @@ const TcNotifyCard = () => {
         )}
         {st && st.denied && <div style={tcMsg('err')}>As notificações estão bloqueadas pra este site. Libere nas configurações do navegador (no cadeado ao lado do endereço) e recarregue a página.</div>}
         {msg && <div style={tcMsg(msg.kind)}>{msg.text}</div>}
+        {tested && asked === null && (
+          <div style={{ ...tcMsg('ok'), display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ flex: '1 1 240px' }}>
+              Mandei agora. O aviso "Notificação ligada" aparece {whereItShows}. <b>Apareceu?</b>
+            </span>
+            <span style={{ display: 'flex', gap: 6 }}>
+              <Button variant="dark" size="sm" onClick={() => setAsked('sim')}>Apareceu</Button>
+              <Button variant="ghost" size="sm" onClick={() => setAsked('nao')}>Não apareceu</Button>
+            </span>
+          </div>
+        )}
+        {asked === 'sim' && (
+          <div style={tcMsg('ok')}>
+            Tudo certo. É assim que a HUMA vai te avisar, mesmo com o Cockpit fechado. Pra receber no celular, abra a HUMA no navegador do celular e ligue por lá também.
+          </div>
+        )}
+        {asked === 'nao' && (
+          <div style={tcMsg('warn')}>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>O aviso saiu daqui e chegou no seu navegador. Quem está escondendo é o aparelho. Confira nesta ordem:</div>
+            <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {howToFix.map((step, i) => <li key={i}>{step}</li>)}
+            </ol>
+            <div style={{ marginTop: 8 }}>Depois clique em "Mandar um teste" de novo.</div>
+          </div>
+        )}
         {st && st.on && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Button variant="ghost" size="sm" onClick={test} disabled={busy}>Mandar um teste</Button>
+            <Button variant="ghost" size="sm" onClick={test} disabled={busy}>{busy ? 'Mandando…' : (tested ? 'Mandar outro teste' : 'Mandar um teste')}</Button>
             <Button variant="plain" size="sm" onClick={turnOff} disabled={busy}>Desligar neste aparelho</Button>
           </div>
         )}
@@ -195,8 +253,9 @@ const tcFmtPhone = (d) => {
 };
 
 // Janela de conexão: aviso → QR → aprendizado → pronto.
-const TcLineModal = ({ email, name, onClose, onChanged }) => {
-  const [step, setStep] = React.useState('aviso'); // aviso | qr | aprendendo | pronto
+const TcLineModal = ({ email, name, mine = false, resume = false, onClose, onChanged }) => {
+  // resume = o número já existe (aviso já aceito): abre direto no QR.
+  const [step, setStep] = React.useState(resume ? 'qr' : 'aviso'); // aviso | qr | aprendendo | pronto
   const [accepted, setAccepted] = React.useState(false);
   const [qr, setQr] = React.useState('');
   const [line, setLine] = React.useState(null);
@@ -219,6 +278,7 @@ const TcLineModal = ({ email, name, onClose, onChanged }) => {
     catch (e) { setErr(e.message); }
     setBusy(false);
   };
+  React.useEffect(() => { if (resume) connect(true); }, []);
   React.useEffect(() => {
     if (step !== 'qr' && step !== 'aprendendo') return;
     timer.current = setInterval(async () => {
@@ -235,13 +295,17 @@ const TcLineModal = ({ email, name, onClose, onChanged }) => {
   }, [step, email]);
 
   const first = String(name || '').trim().split(/\s+/)[0] || 'a pessoa';
+  const title = mine ? 'Conectar o seu WhatsApp' : `Conectar o WhatsApp de ${first}`;
+  const lead = mine ? 'A HUMA atende primeiro nesse número e o lead já fica com você.'
+    : `A HUMA atende primeiro nesse número e o lead já fica com ${first}.`;
+  const phoneOwner = mine ? 'No seu celular' : `No celular de ${first}`;
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 120, background: 'rgba(21,17,14,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div onClick={e => e.stopPropagation()} style={{ background: 'var(--paper-raised)', borderRadius: 18, width: 460, maxWidth: '100%', maxHeight: '92vh', overflow: 'auto', boxShadow: '0 24px 60px rgba(28,23,20,0.16)' }}>
         <div style={{ padding: '20px 22px 14px', borderBottom: '1px solid var(--paper-edge)', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', letterSpacing: '-0.015em' }}>Conectar o WhatsApp de {first}</div>
-            <div style={{ ...tcText, marginTop: 3 }}>A HUMA atende primeiro nesse número e o lead já fica com {first}.</div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 18, color: 'var(--ink)', letterSpacing: '-0.015em' }}>{title}</div>
+            <div style={{ ...tcText, marginTop: 3 }}>{lead}</div>
           </div>
           <button onClick={onClose} aria-label="Fechar" style={{ width: 30, height: 30, borderRadius: 999, border: 'none', background: 'var(--paper-sunk)', color: 'var(--ink-2)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Icon name="x" size={13}/></button>
         </div>
@@ -279,7 +343,7 @@ const TcLineModal = ({ email, name, onClose, onChanged }) => {
                 {qr ? <img src={qr} alt="QR pra conectar o WhatsApp" style={{ width: 224, height: 224 }}/> : <div style={tcText}>Gerando o QR…</div>}
               </div>
               <div style={{ ...tcText, color: 'var(--ink-2)' }}>
-                No celular de {first}: abra o WhatsApp, toque nos três pontinhos (ou em Configurações, no iPhone), escolha "Dispositivos conectados", depois "Conectar dispositivo" e aponte pro QR.
+                {phoneOwner}: abra o WhatsApp, toque nos três pontinhos (ou em Configurações, no iPhone), escolha "Dispositivos conectados", depois "Conectar dispositivo" e aponte pro QR.
               </div>
               <div style={{ ...tcText, fontSize: 12 }}>O QR se renova sozinho. Assim que conectar, esta janela avança.</div>
             </>
@@ -328,6 +392,23 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
   const who = (email || (data && data.me) || '').toLowerCase();
   const line = ((data && data.lines) || []).find(l => (l.email || '').toLowerCase() === who) || null;
   const full = data && !line && (data.lines || []).length >= (data.max_lines || 3);
+  const mine = !email || (data && (data.me || '').toLowerCase() === who);
+  const learningNow = !!(line && line.learning && line.connected);
+
+  // Enquanto aprende, o cartão se atualiza sozinho e mostra quanto falta.
+  const [now, setNow] = React.useState(Date.now());
+  React.useEffect(() => {
+    if (!learningNow) return;
+    const a = setInterval(() => setNow(Date.now()), 5000);
+    const b = setInterval(load, 20000);
+    return () => { clearInterval(a); clearInterval(b); };
+  }, [learningNow, load]);
+  const totalMs = ((data && data.learning_minutes) || 10) * 60000;
+  const endsAt = line && line.learn_until ? new Date(line.learn_until).getTime() : 0;
+  const leftMs = endsAt ? Math.max(0, endsAt - now) : 0;
+  const pct = endsAt ? Math.min(100, Math.max(4, Math.round(100 * (1 - leftMs / totalMs)))) : 10;
+  const leftMin = Math.ceil(leftMs / 60000);
+  const endsLabel = endsAt ? new Date(endsAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
 
   const remove = async () => {
     if (!window.confirm('Remover esse número? As conversas que chegaram por ele continuam na conta, mas as próximas respostas pra esses leads saem pelo número principal.')) return;
@@ -348,7 +429,7 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
 
   const label = !line ? 'não conectado'
     : line.status === 'active' && line.connected ? 'HUMA atendendo'
-    : line.learning && line.connected ? 'aprendendo contatos'
+    : line.learning && line.connected ? 'conectado, preparando'
     : line.status === 'pending' ? 'falta ler o QR'
     : 'desconectado';
   const good = line && line.status === 'active' && line.connected;
@@ -372,9 +453,35 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
         {data && data.available && !line && !full && (
           <Button variant={compact ? 'ghost' : 'dark'} size="sm" onClick={() => setOpen(true)}>Conectar</Button>
         )}
-        {line && !good && <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>{line.learning ? 'Ver andamento' : 'Reconectar'}</Button>}
+        {line && !good && !learningNow && (
+          <Button variant="dark" size="sm" onClick={() => setOpen(true)}>{line.status === 'pending' ? 'Mostrar o QR' : 'Reconectar'}</Button>
+        )}
         {line && <Button variant="plain" size="sm" onClick={remove}>Remover</Button>}
       </div>
+
+      {learningNow && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ height: 6, borderRadius: 999, background: 'var(--paper-sunk)', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${pct}%`, borderRadius: 999, background: 'var(--terracotta)', transition: 'width 600ms ease' }}/>
+          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 600, color: 'var(--ink)', marginTop: 8 }}>
+            {leftMs > 0
+              ? `Conectado. A HUMA começa a atender em ${leftMin} min${endsLabel ? `, por volta das ${endsLabel}` : ''}.`
+              : 'Conectado. Terminando de aprender os contatos, falta pouco.'}
+          </div>
+          <div style={{ ...tcText, fontSize: 12.5, marginTop: 3 }}>
+            Ela está aprendendo quem já era {mine ? 'seu' : 'dela'} contato, pra nunca responder família, amigos ou cliente antigo. Até terminar ela não responde ninguém nesse número. Você não precisa fazer nada, pode sair desta tela.
+          </div>
+        </div>
+      )}
+      {line && line.status === 'pending' && !learningNow && (
+        <div style={{ ...tcText, marginTop: 10 }}>Falta ler o QR com o celular pra terminar a conexão.</div>
+      )}
+      {line && !good && !learningNow && line.status !== 'pending' && (
+        <div style={{ ...tcMsg('warn'), marginTop: 10 }}>
+          O WhatsApp desconectou esse número. Enquanto isso a HUMA não atende por ele. Clique em Reconectar e leia o QR de novo.
+        </div>
+      )}
 
       {!compact && !line && (
         <div style={{ ...tcText, marginTop: 10 }}>
@@ -399,7 +506,10 @@ const TcLineCard = ({ email = '', name = '', compact = false }) => {
         </div>
       )}
 
-      {open && <TcLineModal email={who} name={name || 'você'} onClose={() => { setOpen(false); load(); }} onChanged={load}/>}
+      {open && (
+        <TcLineModal email={who} name={name} mine={mine} resume={!!line}
+          onClose={() => { setOpen(false); load(); }} onChanged={load}/>
+      )}
     </div>
   );
 };
