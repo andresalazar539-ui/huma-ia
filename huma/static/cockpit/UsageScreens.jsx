@@ -37,7 +37,14 @@ const isSubscriberAccount = (billing) => {
 // próxima abertura ser instantânea.
 let _billingMemo = null;
 const rememberBilling = (b) => { if (b) _billingMemo = b; return b; };
-const knownBilling = (fromShell) => fromShell || _billingMemo || null;
+// Sem o status completo, vale a dica que o servidor mandou junto da página
+// (window.HUMA_IS_SUBSCRIBER): a tela certa aparece de primeira, uma só.
+const hintedBilling = () => (
+  typeof window.HUMA_IS_SUBSCRIBER === 'boolean'
+    ? { is_subscriber: window.HUMA_IS_SUBSCRIBER, _hint: true }
+    : null
+);
+const knownBilling = (fromShell) => fromShell || _billingMemo || hintedBilling();
 
 const SubscriberCheckingScreen = ({ onBack, title }) => (
   <div style={{ flex: 1, overflow: 'auto', background: 'var(--paper)', display: 'flex', flexDirection: 'column' }}>

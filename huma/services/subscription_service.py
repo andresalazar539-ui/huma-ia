@@ -859,6 +859,62 @@ async def credit_referral_conversion(client_id: str) -> None:
 # ================================================================
 
 
+async def _status_part(coro, default, label: str, client_id: str):
+    """Uma leitura opcional do status: em falha devolve `default` e registra."""
+    try:
+        return await coro
+    except Exception as e:
+        log.warning(f"Billing status | {label} indisponível | client={client_id} | {type(e).__name__}: {str(e)[:120]}")
+        return default
+
+
+async def subscriber_hint(client_id: str, timeout: float = 1.2) -> Optional[bool]:
+    """
+    Resposta RÁPIDA pra "essa conta é assinante?", usada pelo /cockpit pra
+    tela já nascer sabendo (trava de Indicação e Pacotes sem tela de espera).
+    Só o "sim" fica 60s no Redis. None = não deu pra saber a tempo (a tela confere
+    sozinha). Nunca levanta.
+    """
+    key = f"subscriber_hint:{client_id}"
+    try:
+        cached = await cache.get_value(key)
+        if cached == "1":
+            return True
+    except Exception as e:
+        log.warning(f"Assinante | cache da dica indisponível | client={client_id} | {type(e).__name__}")
+    try:
+        value = await asyncio.wait_for(_subscriber_strict(client_id), timeout=timeout)
+    except Exception as e:
+        log.warning(f"Assinante | dica indisponível | client={client_id} | {type(e).__name__}")
+        return None
+    if value is None:
+        return None
+    if not value:
+        # "Não assinante" nunca fica guardado: quem acabou de assinar
+        # não pode ver a tela travada por causa de resposta velha.
+        return False
+    try:
+        await cache.set_with_ttl(key, "1", ttl=60)
+    except Exception as e:
+        log.warning(f"Assinante | dica não guardada | client={client_id} | {type(e).__name__}")
+    return value
+
+
+async def _subscriber_strict(client_id: str) -> Optional[bool]:
+    """Igual a is_paying_subscriber, mas falha de leitura devolve None (não chuta)."""
+    row = await _current_subscription(client_id)
+    if row is None:
+        return None
+    status = (row.get("status") or "").strip()
+    provider_id = (row.get("payment_provider_id") or "").strip()
+    if status != "active":
+        return False
+    charged = True
+    if provider_id and not provider_id.startswith("coupon:"):
+        charged = await _preapproval_charged(client_id, provider_id)
+    return _is_paying_subscription(status, provider_id, charged)
+
+
 async def get_billing_status(client_id: str) -> dict:
     """
     Estado de cobrança pro Cockpit: plano, status, saldo e trial.
@@ -867,14 +923,35 @@ async def get_billing_status(client_id: str) -> dict:
     trial/trial_expired (bool), trial_days_left (int|None),
     trial_ends_at (ISO|None).
     """
+    # As leituras não dependem uma da outra: saem todas JUNTAS. Em fila
+    # (como era) a tela esperava de 2 a 13 segundos em produção.
     supa = get_supabase()
-    resp = await run_in_threadpool(
-        lambda: supa.table("subscriptions").select("*")
-            .eq("client_id", client_id)
-            .order("updated_at", desc=True).limit(1).execute()
+
+    async def _read_waiting() -> int:
+        raw = await cache.get_int(f"spend_waiting:{client_id}")
+        return raw if raw > 0 else 0
+
+    resp, balance, buckets, sc, spend, overage, waiting = await asyncio.gather(
+        run_in_threadpool(
+            lambda: supa.table("subscriptions").select("*")
+                .eq("client_id", client_id)
+                .order("updated_at", desc=True).limit(1).execute()
+        ),
+        billing.get_balance(client_id),
+        # Baldes de crédito pra tela Uso (indicação/extra/plano). Falha de
+        # leitura do razão não pode derrubar o status: degrada sem buckets.
+        _status_part(billing.get_credit_buckets(client_id), None, "buckets", client_id),
+        get_saved_card(client_id),
+        # Controle de gasto (aditivo): modo/teto + excedente do ciclo. Falha
+        # de leitura degrada pro padrão travado, sem derrubar o status.
+        _status_part(
+            billing.get_spend_settings(client_id),
+            {"mode": billing.SPEND_MODE_LOCKED, "cap_brl": 0.0}, "spend", client_id,
+        ),
+        _status_part(billing.get_cycle_overage(client_id), None, "overage", client_id),
+        _status_part(_read_waiting(), 0, "waiting", client_id),
     )
     sub = resp.data[0] if resp.data else None
-    balance = await billing.get_balance(client_id)
 
     plan_value = (sub or {}).get("plan", "")
     try:
@@ -913,32 +990,10 @@ async def get_billing_status(client_id: str) -> dict:
         plan_name = "Teste grátis"
         included = (sub or {}).get("included_conversations")
 
-    # Baldes de crédito pra tela Uso (indicação/extra/plano). Falha de
-    # leitura do razão não pode derrubar o status — degrada sem buckets.
-    try:
-        buckets = await billing.get_credit_buckets(client_id)
-    except Exception:
-        buckets = None
-
-    sc = await get_saved_card(client_id)
     saved_card = (
         {"card_id": sc["card_id"], "last4": sc["last4"], "brand": sc["brand"]}
         if sc else None
     )
-
-    # Controle de gasto (aditivo): modo/teto + excedente do ciclo. Falha
-    # de leitura degrada pro padrão travado, sem derrubar o status.
-    try:
-        spend = await billing.get_spend_settings(client_id)
-        overage = await billing.get_cycle_overage(client_id)
-    except Exception:
-        spend = {"mode": billing.SPEND_MODE_LOCKED, "cap_brl": 0.0}
-        overage = None
-    try:
-        waiting_raw = await cache.get_int(f"spend_waiting:{client_id}")
-        waiting = waiting_raw if waiting_raw > 0 else 0
-    except Exception:
-        waiting = 0
 
     overage_pending = float((sub or {}).get("overage_pending_brl") or 0.0)
     overage_base = float((sub or {}).get("overage_base_amount_brl") or 0.0)

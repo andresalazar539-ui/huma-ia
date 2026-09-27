@@ -99,8 +99,17 @@ async def cockpit_page(request: Request) -> HTMLResponse:
                     role = permissions.role_for(client, session_email)
             except Exception as e:
                 log.warning(f"Cockpit | falha lendo papel | client={session_client} | {type(e).__name__}: {e}")
+        # A tela já nasce sabendo se a conta é assinante: Indicação e Pacotes
+        # mostram direto a tela certa, sem esperar a consulta de cobrança.
+        is_subscriber = None
+        try:
+            from huma.services import subscription_service as subs
+            is_subscriber = await subs.subscriber_hint(session_client)
+        except Exception as e:
+            log.warning(f"Cockpit | falha lendo assinante | client={session_client} | {type(e).__name__}: {e}")
         inject = (
             f"<script>window.HUMA_CLIENT_ID = {json.dumps(session_client)};"
+            f"window.HUMA_IS_SUBSCRIBER = {json.dumps(is_subscriber)};"
             f"window.HUMA_ROLE = {json.dumps(role)};"
             f"window.HUMA_EMAIL = {json.dumps(session_email or '')};"
             f"window.HUMA_PERMS = {json.dumps(permissions.permissions_for(role))};"
