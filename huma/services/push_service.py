@@ -123,8 +123,19 @@ def build_payload(title: str, body: str, url: str = "/cockpit?screen=conversas",
     }, ensure_ascii=False)
 
 
-def _send_one(sub: dict, payload: str) -> int:
-    """Envia pra um aparelho. Devolve o status HTTP (0 = erro de rede)."""
+def _endpoint_host(endpoint: str) -> str:
+    """Só o domínio do serviço de notificação (pro log; o resto é segredo do aparelho)."""
+    try:
+        return str(endpoint).split("/")[2]
+    except IndexError:
+        return "?"
+
+
+def _send_one(sub: dict, payload: str) -> tuple[int, str]:
+    """
+    Envia pra um aparelho. Devolve (status HTTP, detalhe da recusa).
+    Status 0 = não chegou a ter resposta (rede, chave, criptografia).
+    """
     from pywebpush import WebPushException, webpush
 
     try:
@@ -139,9 +150,14 @@ def _send_one(sub: dict, payload: str) -> int:
             ttl=PUSH_TTL_SECONDS,
             timeout=10,
         )
-        return int(getattr(resp, "status_code", 201) or 201)
+        return int(getattr(resp, "status_code", 201) or 201), ""
     except WebPushException as e:
-        return int(getattr(getattr(e, "response", None), "status_code", 0) or 0)
+        response = getattr(e, "response", None)
+        status = int(getattr(response, "status_code", 0) or 0)
+        detail = (getattr(response, "text", "") or str(e))[:300]
+        return status, detail
+    except Exception as e:
+        return 0, f"{type(e).__name__}: {e}"[:300]
 
 
 async def send_to_person(
@@ -166,13 +182,23 @@ async def send_to_person(
         payload = build_payload(title, body, url, tag)
         delivered = 0
         for sub in subs:
-            status = await run_in_threadpool(_send_one, sub, payload)
+            status, detail = await run_in_threadpool(_send_one, sub, payload)
             if status in (200, 201, 202):
                 delivered += 1
-            elif status in (404, 410):
+                continue
+            host = _endpoint_host(sub["endpoint"])
+            if status in (404, 410):
+                # O navegador invalidou esse aparelho: some da lista.
                 await delete_subscription(sub["endpoint"])
+                log.warning(
+                    f"Push | aparelho invalidado e removido | client={client_id} | "
+                    f"status={status} | servico={host} | {detail}"
+                )
             else:
-                log.warning(f"Push | aparelho recusou | client={client_id} | status={status}")
+                log.warning(
+                    f"Push | aparelho recusou | client={client_id} | "
+                    f"status={status} | servico={host} | {detail}"
+                )
         if delivered:
             try:
                 now_iso = datetime.utcnow().isoformat()

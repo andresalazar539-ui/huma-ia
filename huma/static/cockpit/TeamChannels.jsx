@@ -46,6 +46,10 @@ async function tcPushState() {
     const reg = await navigator.serviceWorker.getRegistration('/');
     const sub = reg ? await reg.pushManager.getSubscription() : null;
     on = !!sub && Notification.permission === 'granted';
+    // O servidor pode ter perdido este aparelho: guarda de novo (não duplica).
+    if (on && cfg.available) {
+      try { await tcCall('POST', '/api/push/subscribe', { subscription: sub.toJSON() }); } catch (e) { /* segue */ }
+    }
   } catch (e) { /* navegador bloqueou */ }
   return { supported: true, available: !!cfg.available, key: cfg.public_key || '', on, denied: Notification.permission === 'denied' };
 }

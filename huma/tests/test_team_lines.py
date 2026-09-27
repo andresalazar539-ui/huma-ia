@@ -374,7 +374,7 @@ class TestPush:
 
         monkeypatch.setattr(push, "list_subscriptions", _list)
         monkeypatch.setattr(push, "delete_subscription", _delete)
-        monkeypatch.setattr(push, "_send_one", lambda sub, payload: statuses[sub["endpoint"]])
+        monkeypatch.setattr(push, "_send_one", lambda sub, payload: (statuses[sub["endpoint"]], "motivo"))
         assert asyncio.run(push.send_to_person("cli", "a@x.com", "t", "b")) == 1
         assert deleted == ["https://b"]
 
