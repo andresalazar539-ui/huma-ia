@@ -367,6 +367,9 @@ const ConversationView = ({ conversation, detailState = 'ready', onRetryDetail, 
         ) : (
           conversation.messages.map((m, i) => <Message key={i} {...m} />)
         )}
+        {detailState === 'ready' && conversation && conversation.id && (
+          <FuNextBanner phone={conversation.id} refreshKey={conversation.messages.length} />
+        )}
       </div>
 
       {/* Composer */}
@@ -520,7 +523,52 @@ const InternalNote = ({ note, text, time }) => (
   </div>
 );
 
-const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url, note, by, by_name, via }) => {
+// Follow-up programado pra essa conversa: o dono vê quando a HUMA vai
+// chamar de novo e cancela com um clique.
+const FuNextBanner = ({ phone, refreshKey }) => {
+  const [next, setNext] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    setNext(null);
+    if (!phone || /^(ig|web):/.test(String(phone))) return undefined;
+    fetchConversationFollowups(phone)
+      .then(d => { if (alive) setNext(d && d.next ? d.next : null); })
+      .catch(() => { if (alive) setNext(null); });
+    return () => { alive = false; };
+  }, [phone, refreshKey]);
+  if (!next) return null;
+  const when = new Date(next.due_at);
+  const late = !isNaN(when.getTime()) && when.getTime() <= Date.now();
+  const label = isNaN(when.getTime()) ? '' : when.toLocaleString('pt-BR', {
+    timeZone: 'America/Sao_Paulo', weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+  const cancel = async () => {
+    setBusy(true);
+    try { await cancelConversationFollowups(phone); setNext(null); } catch (e) { /* mantém o aviso */ }
+    setBusy(false);
+  };
+  return (
+    <div style={{
+      alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+      margin: '6px 0', padding: '8px 12px', borderRadius: 10,
+      background: 'var(--paper-sunk)', border: '1px solid var(--paper-edge)',
+      fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', maxWidth: 520,
+    }}>
+      <Icon name="clock" size={14} stroke={1.8}/>
+      <span style={{ flex: '1 1 220px' }}>
+        {late ? 'A HUMA vai chamar de novo assim que der o horário de envio' : `A HUMA vai chamar de novo ${label}`}
+        {next.name ? ` · ${next.name}` : ''}
+      </span>
+      <button onClick={cancel} disabled={busy} style={{
+        border: 'none', background: 'transparent', cursor: busy ? 'wait' : 'pointer',
+        fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, color: '#B33A18', padding: 0,
+      }}>{busy ? 'Cancelando' : 'Cancelar'}</button>
+    </div>
+  );
+};
+
+const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url, note, by, by_name, via, followup, reactivation }) => {
   if (from === 'note') return <InternalNote note={note} text={text} time={time} />;
   const isClient = from === 'client';
   const isHuma = from === 'huma' && by !== 'owner';
@@ -577,6 +625,16 @@ const Message = ({ from, text, time, responseTime, audio, audio_url, cards, imag
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 4px', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--ink-3)' }}>
         {isHuma && (
           <span style={{ fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#8E3724', background: '#FBEEE8', padding: '1px 5px', borderRadius: 3 }}>HUMA</span>
+        )}
+        {isHuma && reactivation && (
+          <span title="Mensagem enviada numa reativação da base" style={{ fontWeight: 500, color: '#4E3578', background: '#EFE9F7', padding: '1px 5px', borderRadius: 3 }}>
+            reativação
+          </span>
+        )}
+        {isHuma && followup && (
+          <span title="A HUMA puxou a conversa sozinha" style={{ fontWeight: 500, color: '#34556B', background: '#DBE6EE', padding: '1px 5px', borderRadius: 3 }}>
+            follow-up · {(window.FOLLOWUP_PLAY_NAMES || {})[followup] || 'retomada'}
+          </span>
         )}
         {!isClient && by === 'owner' && by_name && (
           <span style={{ fontWeight: 500, color: 'var(--ink-2)', background: 'var(--paper-sunk)', padding: '1px 5px', borderRadius: 3 }}>{by_name}</span>

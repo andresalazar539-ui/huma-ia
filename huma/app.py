@@ -202,6 +202,10 @@ def create_app() -> FastAPI:
     app.include_router(legal_router)
     app.include_router(whatsapp_connect_router)
     app.include_router(push_router)
+    from huma.routes.followup import router as followup_router
+    app.include_router(followup_router)
+    from huma.routes.reactivation import router as reactivation_router
+    app.include_router(reactivation_router)
     app.include_router(whatsapp_meta_router)
     app.include_router(wizard_router)
     app.include_router(onboarding_router)

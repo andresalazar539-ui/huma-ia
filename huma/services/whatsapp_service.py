@@ -1434,6 +1434,8 @@ def parse_meta_quality_events(body: dict) -> list[dict]:
                 "event": str(value.get("event", "") or ""),
                 "display_phone_number": str(value.get("display_phone_number", "") or ""),
                 "template_name": str(value.get("message_template_name", "") or ""),
+                # Motivo cru da recusa do modelo (wa_templates traduz pro dono).
+                "reason": str(value.get("reason", "") or ""),
                 "detail": " | ".join(str(p) for p in detail_parts)[:300],
             })
 

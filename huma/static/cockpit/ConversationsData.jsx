@@ -260,6 +260,8 @@ function mapHistory(history) {
         by: m.by || null,  // marker do dono (assistant + by=owner) pra UI futura
         by_name: m.by_name || '',  // quem da equipe respondeu pelo Cockpit
         via: m.via || '',          // 'phone' = mandado direto pelo aparelho
+        followup: m.followup || '', // id da jogada, quando a HUMA puxou a conversa
+        reactivation: m.reactivation || '', // mensagem de uma reativação da base
       };
       // Cards que o lead viu (produto, carrossel, "Finalizar pedido", "Pagar",
       // resumo do pedido): a bolha desenha o card, não o texto "📦 …".
@@ -337,6 +339,107 @@ async function setConversationStage(phone, stage) {
   if (!r.ok) throw new Error(await _readApiError(r));
   return r.json();
 }
+
+/* ---------------- Follow-up por jogadas ---------------- */
+// Regras em huma/core/followup_plays.py; rotas em huma/routes/followup.py.
+
+const FOLLOWUP_PLAY_NAMES = {
+  sumiu_na_conversa: 'Parou de responder',
+  sumiu_no_preco: 'Sumiu depois do preço',
+  pediu_pra_chamar_depois: 'Pediu pra chamar depois',
+  pagamento_pendente: 'Pagamento não concluído',
+  cancelou_horario: 'Cancelou o horário',
+  hora_de_voltar: 'Hora de voltar',
+  quem_desistiu: 'Quem desistiu',
+};
+
+async function _followupCall(path, method = 'GET', body = null) {
+  const url = `/api/clients/${encodeURIComponent(CLIENT_ID)}/followup${path}`;
+  const init = { method, headers: { ...AUTH_HEADERS } };
+  if (body !== null) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(url, init);
+  if (!r.ok) {
+    let detail = '';
+    try { const j = await r.json(); detail = typeof j.detail === 'string' ? j.detail : ''; } catch (e) { /* corpo não-JSON */ }
+    throw new Error(detail || `Erro ${r.status}`);
+  }
+  return r.json();
+}
+
+const fetchFollowup = () => _followupCall('');
+const saveFollowup = (config) => _followupCall('', 'PATCH', { config });
+const applyFollowupRecommended = () => _followupCall('/recommended', 'POST', {});
+const previewFollowup = (play, intensity) => _followupCall('/preview', 'POST', { play, intensity: intensity || '' });
+const testFollowup = (play, intensity) => _followupCall('/test', 'POST', { play, intensity: intensity || '' });
+
+async function fetchConversationFollowups(phone) {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/followups`;
+  const r = await fetch(url, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`Erro ${r.status}`);
+  return r.json();
+}
+
+async function cancelConversationFollowups(phone) {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/followups/cancel`;
+  const r = await fetch(url, { method: 'POST', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`Erro ${r.status}`);
+  return r.json();
+}
+
+/* ---------------- Reativação da base ---------------- */
+// Rotas em huma/routes/reactivation.py; motor em services/reactivation_engine.py.
+
+async function _reactivationCall(path, method = 'GET', body = null, isForm = false) {
+  const url = `/api/clients/${encodeURIComponent(CLIENT_ID)}/outbound/reactivation${path}`;
+  const init = { method, headers: { ...AUTH_HEADERS } };
+  if (body !== null && isForm) {
+    init.body = body;
+  } else if (body !== null) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(url, init);
+  if (!r.ok) {
+    let detail = '';
+    try { const j = await r.json(); detail = typeof j.detail === 'string' ? j.detail : ''; } catch (e) { /* corpo não-JSON */ }
+    throw new Error(detail || `Erro ${r.status}`);
+  }
+  return r.json();
+}
+
+const fetchReactivations = () => _reactivationCall('');
+const fetchReactivation = (rid) => _reactivationCall(`/${encodeURIComponent(rid)}`);
+const draftReactivation = (rid, goal, steps) => _reactivationCall(`/${encodeURIComponent(rid)}/draft`, 'POST', { goal, steps });
+const saveReactivationMessages = (rid, steps, columns, riskAccepted) =>
+  _reactivationCall(`/${encodeURIComponent(rid)}/messages`, 'PUT', { steps, columns: columns || [], risk_accepted: !!riskAccepted });
+const testReactivation = (rid, step) => _reactivationCall(`/${encodeURIComponent(rid)}/test`, 'POST', { step });
+const startReactivation = (rid, payload) => _reactivationCall(`/${encodeURIComponent(rid)}/start`, 'POST', payload);
+const reactivationAction = (rid, action) => _reactivationCall(`/${encodeURIComponent(rid)}/${action}`, 'POST', {});
+const reactivationSkippedUrl = (rid) =>
+  `/api/clients/${encodeURIComponent(CLIENT_ID)}/outbound/reactivation/${encodeURIComponent(rid)}/skipped.csv`;
+
+function importReactivation({ file, text, defaultDdd, includeCustomers, name }) {
+  const form = new FormData();
+  if (file) form.append('file', file, file.name);
+  if (text) form.append('text', text);
+  form.append('default_ddd', defaultDdd || '');
+  form.append('include_customers', includeCustomers ? 'true' : 'false');
+  form.append('name', name || '');
+  return _reactivationCall('/import', 'POST', form, true);
+}
+
+Object.assign(window, {
+  fetchReactivations, fetchReactivation, draftReactivation, saveReactivationMessages,
+  testReactivation, startReactivation, reactivationAction, reactivationSkippedUrl, importReactivation,
+});
+
+Object.assign(window, {
+  FOLLOWUP_PLAY_NAMES, fetchFollowup, saveFollowup, applyFollowupRecommended,
+  previewFollowup, testFollowup, fetchConversationFollowups, cancelConversationFollowups,
+});
 
 Object.assign(window, {
   fetchConversations, fetchConversationDetail, setConversationStage,

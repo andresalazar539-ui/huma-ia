@@ -2227,6 +2227,8 @@ async def generate_followup_message(
     recent_messages: list[dict] | None = None,
     attempt: int = 0,
     is_last_attempt: bool = False,
+    objective: str = "",
+    context: str = "",
 ) -> str:
     """
     Gera follow-up personalizado via Haiku pra lead que parou de responder.
@@ -2234,6 +2236,11 @@ async def generate_followup_message(
     Usa lead_facts + summary + últimas mensagens pra retomar o assunto REAL
     da conversa (em vez de template genérico). Retorna "" em qualquer falha —
     o caller (scheduler) usa o template fixo como fallback.
+
+    `objective` (jogadas de follow-up, core/followup_plays): quando vem
+    preenchido, substitui o objetivo padrão. `context`: fato verificado
+    da situação (pagamento pendente, data combinada) que a IA pode citar.
+    Os dois vazios = comportamento de antes.
 
     Custo: 1 chamada Haiku curta por follow-up enviado (~centavos).
     """
@@ -2271,6 +2278,8 @@ async def generate_followup_message(
             "na memória/conversa, retome ELE naturalmente. SE não houver, mande uma "
             "mensagem leve perguntando se ficou alguma dúvida. Termine com UMA pergunta leve."
         )
+    if objective and objective.strip():
+        objetivo = objective.strip()
 
     prompt = (
         f'Você é o atendente do "{identity.business_name}" ({category}) no WhatsApp. '
@@ -2280,6 +2289,7 @@ async def generate_followup_message(
         + (f"MEMÓRIA DO LEAD:\n{facts_text}\n" if facts_text else "")
         + (f"RESUMO DA CONVERSA: {history_summary}\n\n" if history_summary else "")
         + (f"ÚLTIMAS MENSAGENS:\n{msgs_text}\n" if msgs_text else "")
+        + (f"SITUAÇÃO (fato verificado): {context.strip()}\n\n" if context and context.strip() else "")
         + (f"{hint}\n\n" if hint else "")
         + f"OBJETIVO: {objetivo}\n\n"
         "REGRAS:\n"

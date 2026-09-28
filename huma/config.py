@@ -45,6 +45,15 @@ META_WEBHOOK_VERIFY_TOKEN = os.getenv("META_WEBHOOK_VERIFY_TOKEN", "huma_verify_
 META_GRAPH_VERSION = os.getenv("META_GRAPH_VERSION", "v21.0")
 META_GRAPH_BASE_URL = os.getenv("META_GRAPH_BASE_URL", "https://graph.facebook.com")
 
+# Preço de UMA mensagem de marketing (modelo aprovado) entregue no Brasil,
+# em reais. Quem cobra é a Meta, direto do dono do número; a HUMA só usa
+# o valor pra mostrar o custo ANTES do envio (tela Reativação). A Meta
+# muda a tabela: ajustar por env var, sem deploy de código.
+try:
+    META_MARKETING_PRICE_BRL = float(os.getenv("META_MARKETING_PRICE_BRL", "0.3217"))
+except ValueError:
+    META_MARKETING_PRICE_BRL = 0.3217
+
 # ID da Configuration do Embedded Signup (Facebook Login for Business).
 # Criada no painel do app Meta: Facebook Login for Business → Configurations.
 # É pública (vai no FB.login do Cockpit). Vazio = botão "Conectar WhatsApp

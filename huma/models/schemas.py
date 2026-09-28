@@ -909,6 +909,23 @@ class ClientIdentity(BaseModel):
     def _valid_report_reminders(cls, v: object) -> list:
         from huma.core.report_reminders import normalize_reminders
         return normalize_reminders(v)
+
+    # Follow-up por jogadas (2026-09-27). Migration:
+    # scripts/migration_followup_v2.sql. Sem a coluna, o default vale
+    # (leitura ok, follow-up de antes); o salvar devolve erro amigável.
+    followup_config: dict = Field(
+        default_factory=dict,
+        description=(
+            "Escolhas do dono no follow-up: jogadas ligadas, intensidade, "
+            "janela de horário e ciclo de retorno. Formato e validação em "
+            "huma/core/followup_plays.py. Vazio = só 'Parou de responder'."
+        ),
+    )
+
+    @field_validator("followup_config", mode="before")
+    @classmethod
+    def _valid_followup_config(cls, v: object) -> dict:
+        return v if isinstance(v, dict) else {}
     # Sprint 5 — opt-in por tipo de notificação. Defaults true: dono recebe
     # tudo até desligar conscientemente. notify_on_payment já era enviado.
     notify_owner_on_appointment: bool = Field(

@@ -3760,6 +3760,11 @@ async def _ingest_meta_statuses(statuses: list[dict]) -> None:
         except Exception as e:
             log.warning(f"Telemetria status falhou | client={cid} | {type(e).__name__}: {e}")
 
+        # Reativação da base: entregue, lida ou não entregue conta no
+        # andamento do contato (nunca levanta; ignora o que não é dela).
+        from huma.services import reactivation_engine
+        await reactivation_engine.on_status(cid, st.get("message_id", ""), status, code)
+
         if status != "failed":
             continue
 
@@ -3814,6 +3819,12 @@ async def _ingest_meta_quality_events(events: list[dict]) -> None:
             p for p in (ev.get("template_name", ""), ev.get("detail", "")) if p
         )
         await shield.record_quality_event(cid, field, event, detail)
+
+        # Modelo de mensagem aprovado, recusado ou pausado: atualiza o
+        # modelo da HUMA (nunca levanta; ignora modelo que não é dela).
+        if field == "message_template_status_update" and ev.get("template_name"):
+            from huma.services import wa_templates
+            await wa_templates.on_status_event(cid, ev["template_name"], event, ev.get("reason", ""))
 
         if event.upper() in _QUALITY_EVENTS_POSITIVOS:
             log.info(f"Meta qualidade MELHOROU | client={cid} | {field}={event} | {detail}")

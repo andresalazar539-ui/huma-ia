@@ -128,6 +128,8 @@ async def _run_followup_job() -> None:
     from huma.services import whatsapp_service as wa
     from huma.core.ai_schedule import resolve_effective_mode
     from huma.core.orchestrator import _is_silent_hours
+    from huma.core import followup_plays as plays
+    from huma.services import followup_engine as fu
 
     stuck = await db.list_stuck_conversations(
         hours_silent_min=1,  # gate fino por vertical é aplicado abaixo
@@ -135,6 +137,26 @@ async def _run_followup_job() -> None:
         max_follow_ups=_FOLLOWUP_MAX_ATTEMPTS,
         limit=200,
     )
+    stuck = [dict(r) for r in (stuck or [])]
+
+    # Follow-up por jogadas (2026-09-27): a intensidade "persistente" tem
+    # passos depois de 72h. Eles vêm de uma consulta À PARTE e só valem
+    # pra quem escolheu essa intensidade; a regra de antes fica intacta.
+    try:
+        extended = await db.list_stuck_conversations(
+            hours_silent_min=72,
+            hours_silent_max=int(plays.max_silence_hours()),
+            max_follow_ups=plays.max_sumiu_steps(),
+            limit=200,
+        )
+    except Exception as e:
+        log.warning(f"followup | passos longos indisponíveis | {type(e).__name__}: {e}")
+        extended = []
+    for r in extended or []:
+        row = dict(r)
+        row["_extended"] = True
+        stuck.append(row)
+
     if not stuck:
         log.info("followup | nenhuma conversa stuck")
         return
@@ -147,6 +169,8 @@ async def _run_followup_job() -> None:
     skipped_schedule = 0
     skipped_timing = 0
     skipped_spacing = 0
+    skipped_play = 0
+    skipped_window = 0
     optouts = 0
     errors = 0
 
@@ -165,6 +189,37 @@ async def _run_followup_job() -> None:
             hours_silent = _hours_since(conv_row.get("last_message_at"))
             if hours_silent is not None and hours_silent < _followup_min_hours(client_data):
                 skipped_timing += 1
+                continue
+
+            # Escolhas do dono (tela Follow-up). Config vazio = jogada
+            # "Parou de responder" ligada, 2 tentativas: igual a antes.
+            fu_config = getattr(client_data, "followup_config", None)
+            fu_category = getattr(client_data, "category", None)
+            if not plays.play_is_on(fu_config, plays.PLAY_SUMIU, fu_category):
+                skipped_play += 1
+                continue
+            fu_official = fu.is_official(client_data)
+            fu_intensity = plays.normalize_config(fu_config, fu_category)["plays"][plays.PLAY_SUMIU]["intensity"]
+            fu_steps = plays.steps_for(plays.PLAY_SUMIU, fu_intensity, fu_category, fu_official)
+            fu_attempt = int(conv_row.get("follow_up_count", 0) or 0)
+            if fu_attempt >= len(fu_steps):
+                skipped_play += 1
+                continue
+            if conv_row.get("_extended") and not (
+                fu_attempt >= _FOLLOWUP_MAX_ATTEMPTS
+                and plays.step_is_due(hours_silent, fu_steps, fu_attempt)
+            ):
+                skipped_timing += 1
+                continue
+
+            # O lead pediu "me chama semana que vem": a HUMA espera a data.
+            if await fu.is_on_hold(client_id, phone):
+                skipped_play += 1
+                continue
+
+            # Horário que o dono escolheu pra follow-up (só quando escolheu).
+            if plays.has_custom_window(fu_config) and not plays.inside_send_window(fu_config):
+                skipped_silent += 1
                 continue
 
             # Espaçamento entre tentativas (protege também contra re-execução do job)
@@ -210,7 +265,26 @@ async def _run_followup_job() -> None:
                 log.info(f"followup | optout | {client_id} | {phone}")
                 continue
 
-            is_last = attempt >= _FOLLOWUP_MAX_ATTEMPTS - 1
+            is_last = len(fu_steps) > 1 and attempt >= len(fu_steps) - 1
+
+            # WhatsApp oficial: texto livre só entrega até 24h depois da
+            # última mensagem do lead. Passou disso, só modelo aprovado.
+            if not await fu.can_send_free_text(
+                client_data, client_id, phone, conv_row.get("last_message_at"),
+            ):
+                skipped_window += 1
+                continue
+
+            # Sumiu depois de ouvir o preço? A abordagem é outra.
+            fu_play = plays.PLAY_SUMIU
+            if (
+                plays.play_is_on(fu_config, plays.PLAY_PRECO, fu_category)
+                and plays.looks_like_price_silence(conv_row.get("stage"), history)
+            ):
+                fu_play = plays.PLAY_PRECO
+            fu_objective = ""
+            if fu_play == plays.PLAY_PRECO and not is_last:
+                fu_objective = plays.objective_for(fu_play, attempt, fu_intensity, fu_category)
 
             # Mensagem via IA quando há contexto real; sem contexto o LLM não
             # faz melhor que template — não paga a chamada.
@@ -227,6 +301,7 @@ async def _run_followup_job() -> None:
                     recent_messages=history,
                     attempt=attempt,
                     is_last_attempt=is_last,
+                    objective=fu_objective,
                 )
             if msg:
                 sent_ai += 1
@@ -236,7 +311,7 @@ async def _run_followup_job() -> None:
                     service_hint = client_data.products_or_services[0].get("name", "")
                 msg = _format_followup_message(lead_name, service_hint, attempt)
 
-            await wa.send_text(phone, msg, client_id=client_id)
+            fu_message_id = await wa.send_text(phone, msg, client_id=client_id)
             await cache.set_with_ttl(spacing_key, "1", ttl=_FOLLOWUP_SPACING_TTL)
 
             # Atualiza follow_up_count via direto na tabela (evita race com conversa ativa)
@@ -253,6 +328,14 @@ async def _run_followup_job() -> None:
                 )
             await run_in_threadpool(update)
 
+            # O que o lead recebeu fica na conversa (Cockpit idêntico) e no
+            # registro de follow-ups. Só quando o canal aceitou o envio.
+            if fu_message_id:
+                await fu.record_in_conversation(client_id, phone, msg, fu_play, attempt)
+                await fu.log_sent(client_id, phone, fu_play, attempt, msg)
+            else:
+                log.warning(f"followup | canal recusou | {client_id} | {phone}")
+
             sent += 1
             await asyncio.sleep(0.2)  # throttle pra não estourar Twilio/Meta
 
@@ -267,8 +350,33 @@ async def _run_followup_job() -> None:
         f"followup | sent={sent} (ia={sent_ai}) | timing={skipped_timing} | "
         f"spacing={skipped_spacing} | silent={skipped_silent} | "
         f"schedule={skipped_schedule} | optout={optouts} | "
+        f"jogada={skipped_play} | janela24h={skipped_window} | "
         f"errors={errors} | total_stuck={len(stuck)}"
     )
+
+
+async def _run_followup_plays_job() -> None:
+    """
+    Follow-up por jogadas (2026-09-27). Acha as situações (pagamento
+    parado, cliente na hora de voltar, lead que desistiu), programa e
+    envia o que venceu, inclusive o "me chama semana que vem" e o
+    "cancelou o horário", que entram na fila na hora em que acontecem.
+    A jogada "Parou de responder" continua no job `followup`.
+    """
+    from huma.services import followup_engine as fu
+
+    await fu.run()
+
+
+async def _run_reactivation_job() -> None:
+    """
+    Reativação da base (2026-09-27). Confere as mensagens em análise na
+    Meta, começa o que foi aprovado e envia um lote de cada reativação
+    em andamento, com as proteções do Escudo. Só WhatsApp oficial.
+    """
+    from huma.services import reactivation_engine
+
+    await reactivation_engine.run()
 
 
 # ================================================================
@@ -1058,6 +1166,10 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("owner_report", _run_owner_report_job, 3600, 1800),
     # Item 19 — follow-up: roda a cada 1h, lock vale 30min
     ("followup", _run_followup_job, 3600, 1800),
+    # Follow-up por jogadas — fila de situações: a cada 15min, lock 10min
+    ("followup_plays", _run_followup_plays_job, 900, 600),
+    # Reativação da base — modelos em análise + lotes de envio: a cada 10min, lock 9min
+    ("reactivation", _run_reactivation_job, 600, 540),
     # Item 24 — lembrete pré-consulta: a cada 30min, lock 15min
     ("pre_appointment_reminder", _run_pre_appointment_reminder_job, 1800, 900),
     # Item 28 — NPS pós-atendimento: a cada 6h, lock 30min

@@ -177,6 +177,15 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
         log.warning(f"Rate limit cliente atingido | {payload.client_id} | bloqueando temporariamente")
         return {"status": "client_rate_limited"}
 
+    # Follow-up por jogadas: o lead escreveu, então o que estava programado
+    # pra ele cai, fica guardado quando ele escreveu (janela de 24h do
+    # oficial) e o "me chama semana que vem" vira data. Em background,
+    # nunca levanta, não muda a conversa.
+    from huma.services import followup_engine
+    background_tasks.add_task(
+        followup_engine.on_lead_message, payload.client_id, phone, payload.text or "",
+    )
+
     result = await buffer.buffer_message(
         client_id=payload.client_id,
         phone=phone,
@@ -269,6 +278,13 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         # que o dono conectou (webhook / planilha / pixel). Fire-and-forget.
         if not conv.history and not conv.last_message_at:
             lead_events.fire(client_data, conv, "lead.new")
+
+        # Reativação da base: se este lead está respondendo a uma
+        # reativação, o que ele recebeu entra no histórico, a origem é
+        # marcada e ele sai da régua. Uma leitura no Redis pra quem não
+        # está em reativação; nunca levanta.
+        from huma.services import reactivation_engine
+        await reactivation_engine.attach_to_conversation(client_data, conv, unified_text)
 
         # ── Fase 3 (QUALIFY): handoff humano em andamento ──
         # Se o humano já assumiu, IA não responde. Registra a msg no
@@ -2830,6 +2846,9 @@ async def _handle_cancel_appointment_action(phone, action, client_data, conv):
             f"cancel_appointment OK (6.C) | {phone} | event={prev_event} | "
             f"era={prev_dt} | stage=lost | cancel_attempts=0 | estado limpo"
         )
+        # Jogada "Cancelou o horário" (só se o dono ligou). Nunca levanta.
+        from huma.services import followup_engine
+        await followup_engine.on_appointment_cancelled(client_data, phone, service)
         return {"executed": True, "message": "", "reason": "calendar_deleted"}
 
     except Exception as e:

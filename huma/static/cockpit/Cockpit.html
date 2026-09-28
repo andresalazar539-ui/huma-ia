@@ -84,6 +84,8 @@
 <script type="text/babel" src="/static/cockpit/SettingsScreens.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/TeamChannels.jsx?v=__ASSET_V__"></script>
 <script type="text/babel" src="/static/cockpit/EquipeScreen.jsx?v=__ASSET_V__"></script>
+<script type="text/babel" src="/static/cockpit/FollowUpScreen.jsx?v=__ASSET_V__"></script>
+<script type="text/babel" src="/static/cockpit/ReativacaoScreen.jsx?v=__ASSET_V__"></script>
 
 <script type="text/babel">
 const { useState, useEffect, useCallback, useRef } = React;
@@ -245,7 +247,7 @@ function App() {
     const s = new URLSearchParams(location.search).get('screen');
     const valid = ['inicio', 'conversas', 'agenda', 'vendas', 'clientes', 'voz', 'relatorios',
                    'disparos', 'integracoes', 'ajustes', 'uso', 'indicacao',
-                   'creditos', 'planos', 'negocio', 'perfil', 'equipe'];
+                   'creditos', 'planos', 'negocio', 'perfil', 'equipe', 'followup', 'reativacao'];
     return valid.includes(s) ? s : 'inicio';
   })();
   const [route, setRoute] = useState(initialRoute);
@@ -556,6 +558,8 @@ function App() {
                           }} />; break;
     case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
     case 'equipe':      screen = <EquipeScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} inviteOpen={inviteOpen} />; break;
+    case 'followup':    screen = <FollowUpScreen onNav={setRoute} />; break;
+    case 'reativacao':  screen = <ReativacaoScreen onNav={setRoute} />; break;
     case 'perfil':      screen = <PerfilScreen />; break;
     default:            screen = <InicioScreen
       onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}

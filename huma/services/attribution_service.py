@@ -48,6 +48,8 @@ SOURCE_LABELS: dict[str, str] = {
     "email": "E-mail",
     "indicacao": "Indicação",
     "outbound": "Disparo HUMA",
+    # Contato da base antiga que respondeu a uma reativação (2026-09-27)
+    "reativacao": "Reativação da base",
     "organico": "Direto / contato salvo",
 }
 
@@ -61,6 +63,7 @@ SOURCE_CATEGORIES: dict[str, str] = {
     "indicacao": "indicacao",
     "ia": "ia",
     "outbound": "disparo",
+    "reativacao": "disparo",
 }
 
 # Códigos curtos dos links rastreáveis (#h<code>[-campanha]).
