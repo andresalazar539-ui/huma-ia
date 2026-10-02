@@ -87,7 +87,6 @@ SCREEN_PERMISSIONS: dict[str, str] = {
     "integracoes": "ajustes",
     "negocio": "ajustes",
     "followup": "ajustes",
-    "reativacao": "disparos",
     "equipe": "equipe",
 }
 

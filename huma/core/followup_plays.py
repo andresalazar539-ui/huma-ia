@@ -203,8 +203,8 @@ PLAYS: tuple[Play, ...] = (
     Play(
         id=PLAY_VOLTAR,
         name="Hora de voltar",
-        situation="Já é cliente e passou o tempo em que ele costuma voltar.",
-        what_huma_does="Lembra que está na hora e se oferece pra resolver ali mesmo.",
+        situation="Já é cliente e passou o tempo em que ele costuma voltar (por exemplo, 3 meses depois da compra).",
+        what_huma_does="Chama o cliente de volta no ciclo certo e se oferece pra resolver ali mesmo. É a reativação por ciclo de compra.",
         for_customers=True,
         uses_cycle=True,
         steps={

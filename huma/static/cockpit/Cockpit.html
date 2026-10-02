@@ -247,7 +247,7 @@ function App() {
     const s = new URLSearchParams(location.search).get('screen');
     const valid = ['inicio', 'conversas', 'agenda', 'vendas', 'clientes', 'voz', 'relatorios',
                    'disparos', 'integracoes', 'ajustes', 'uso', 'indicacao',
-                   'creditos', 'planos', 'negocio', 'perfil', 'equipe', 'followup', 'reativacao'];
+                   'creditos', 'planos', 'negocio', 'perfil', 'equipe', 'followup'];
     return valid.includes(s) ? s : 'inicio';
   })();
   const [route, setRoute] = useState(initialRoute);
@@ -540,7 +540,9 @@ function App() {
     case 'clientes':    screen = <ClientesScreen onOpen={(phone) => { setActiveId(phone); setRoute('conversas'); }} />; break;
     case 'voz':         screen = <VozScreen />; break;
     case 'relatorios':  screen = <ReportsScreen />; break;
-    case 'disparos':    screen = <CampaignsScreen client={client} onNav={setRoute} />; break;
+    // Disparos = a tela nova (lista + mensagem escrita pela HUMA + custo antes).
+    // A tela antiga (CampaignsScreen) saiu do menu em 2026-10-02 e segue no código.
+    case 'disparos':    screen = <ReativacaoScreen onNav={setRoute} />; break;
     case 'divulgacao':  screen = <LinksScreen />; break;
     case 'integracoes': screen = <IntegrationsScreen client={client} onReloadStatus={reloadIntegrationsStatus} />; break;
     case 'ajustes':     screen = <AjustesScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} />; break;
@@ -559,7 +561,6 @@ function App() {
     case 'negocio':     screen = <NegocioScreen onNavMain={setRoute} />; break;
     case 'equipe':      screen = <EquipeScreen onNav={setRoute} onInvite={() => setInviteOpen(true)} inviteOpen={inviteOpen} />; break;
     case 'followup':    screen = <FollowUpScreen onNav={setRoute} />; break;
-    case 'reativacao':  screen = <ReativacaoScreen onNav={setRoute} />; break;
     case 'perfil':      screen = <PerfilScreen />; break;
     default:            screen = <InicioScreen
       onOpenConversa={phone => { setRoute('conversas'); setActiveId(phone); setHandoff(false); }}

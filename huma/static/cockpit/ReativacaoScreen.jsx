@@ -1,4 +1,4 @@
-// ReativacaoScreen.jsx — Reativação da base (2026-09-27)
+// ReativacaoScreen.jsx — Disparos (2026-09-27; nasceu como "Reativação da base")
 // O dono sobe a lista de contatos antigos, a HUMA escreve as mensagens,
 // a Meta aprova e a HUMA vai atrás. Quem responde cai na conversa normal.
 //
@@ -86,10 +86,10 @@ const ReaLocked = ({ onNav }) => (
     <div style={{ maxWidth: 580, textAlign: 'center', padding: '44px 36px', border: '1px solid var(--paper-edge)', borderRadius: 20, background: 'var(--paper-raised)' }}>
       <div style={{ color: 'var(--ink-3)', display: 'flex', justifyContent: 'center' }}><Icon name="lock" size={42} stroke={1.6}/></div>
       <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 22, letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 16 }}>
-        Reativação funciona só no WhatsApp oficial
+        Disparos funcionam só no WhatsApp oficial
       </div>
       <div style={{ ...reaText, fontSize: 14, marginTop: 12 }}>
-        Aqui você sobe a lista de quem já falou com o seu negócio e sumiu, e a HUMA vai atrás de cada um. Quem responde cai na conversa normal, com a HUMA atendendo.
+        Aqui você sobe uma lista de contatos (quem pediu orçamento e sumiu, clientes antigos, uma promoção pra base) e a HUMA manda a mensagem pra cada um. Quem responde cai na conversa normal, com a HUMA atendendo.
       </div>
       <div style={{ ...reaText, fontSize: 14, marginTop: 10 }}>
         Seu número está conectado por QR Code. Mandar mensagem em volume por esse tipo de conexão faz o WhatsApp <strong>bloquear o número</strong>, e número bloqueado é negócio parado. Por isso essa função fica travada.
@@ -208,7 +208,7 @@ const ReaStepList = ({ gate, reactivation, onImported }) => {
             <div style={{ marginTop: 10 }}><ReaBanner>Sua lista não tem nome. A mensagem sai com um cumprimento neutro no lugar do nome. Com nome, a resposta costuma ser melhor.</ReaBanner></div>
           )}
           {imp.cortada && (
-            <div style={{ marginTop: 10 }}><ReaBanner>A planilha passa do limite. Li as primeiras {Number(gate.max_rows).toLocaleString('pt-BR')} linhas. O resto pode ir numa próxima reativação.</ReaBanner></div>
+            <div style={{ marginTop: 10 }}><ReaBanner>A planilha passa do limite. Li as primeiras {Number(gate.max_rows).toLocaleString('pt-BR')} linhas. O resto pode ir num próximo disparo.</ReaBanner></div>
           )}
           {(imp.colunas || []).length > 0 && (
             <div style={{ ...reaText, marginTop: 10 }}>
@@ -418,7 +418,7 @@ const ReaStepMessages = ({ gate, reactivation, onChanged, hasOwnerPhone }) => {
       {steps.length > 0 && (
         <div style={{ ...reaCard, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ flex: '1 1 300px', ...reaText }}>
-            Toda mensagem sai com o botão <strong>"Não quero receber"</strong>. Quem tocar nele sai da lista e nunca mais recebe reativação sua.
+            Toda mensagem sai com o botão <strong>"Não quero receber"</strong>. Quem tocar nele sai da lista e nunca mais recebe disparo seu.
           </div>
           {needsConfirm ? (
             <Button variant="outline" size="md" onClick={() => submit(true)} disabled={busy}>Enviar assim mesmo</Button>
@@ -483,7 +483,7 @@ const ReaStepConfirm = ({ gate, reactivation, team, onStarted }) => {
         </div>
         {e.saldo_pode_faltar && (
           <div style={{ marginTop: 10 }}><ReaBanner>
-            Se muita gente responder, suas conversas podem acabar no meio. Se isso acontecer eu pauso a reativação e te aviso, pra ninguém ficar sem resposta. Em Uso você pode liberar conversas extras.
+            Se muita gente responder, suas conversas podem acabar no meio. Se isso acontecer eu pauso o disparo e te aviso, pra ninguém ficar sem resposta. Em Uso você pode liberar conversas extras.
           </ReaBanner></div>
         )}
         <div style={{ ...reaText, marginTop: 10 }}>
@@ -494,7 +494,7 @@ const ReaStepConfirm = ({ gate, reactivation, team, onStarted }) => {
         </div>
         {!gate.subscriber && (
           <div style={{ marginTop: 10 }}><ReaBanner tone="info">
-            No teste grátis a reativação vai pra uma amostra de {gate.trial_sample} contatos, pra você ver funcionando. Assinando, vai pra lista inteira.
+            No teste grátis o disparo vai pra uma amostra de {gate.trial_sample} contatos, pra você ver funcionando. Assinando, vai pra lista inteira.
           </ReaBanner></div>
         )}
       </div>
@@ -644,7 +644,7 @@ const ReaTrack = ({ gate, reactivation, onChanged }) => {
         {status === 'paused' && <Button variant="dark" size="md" icon={<Icon name="play" size={14}/>} onClick={() => act('resume')} disabled={!!busy}>{busy === 'resume' ? 'Retomando' : 'Retomar'}</Button>}
         {(live || status === 'paused') && (
           <Button variant="ghost" size="md" icon={<Icon name="stop" size={14}/>} disabled={!!busy}
-            onClick={() => act('cancel', 'Encerrar essa reativação? Quem ainda está na fila não recebe mais nada. Quem já respondeu continua sendo atendido normalmente.')}>
+            onClick={() => act('cancel', 'Encerrar esse disparo? Quem ainda está na fila não recebe mais nada. Quem já respondeu continua sendo atendido normalmente.')}>
             {busy === 'cancel' ? 'Encerrando' : 'Encerrar'}
           </Button>
         )}
@@ -717,7 +717,7 @@ const ReativacaoScreen = ({ onNav }) => {
   if (home === false) {
     return (
       <div style={{ flex: 1, padding: 32, background: 'var(--paper)' }}>
-        <ReaBanner tone="bad">{err || 'Não consegui abrir a Reativação.'}</ReaBanner>
+        <ReaBanner tone="bad">{err || 'Não consegui abrir os Disparos.'}</ReaBanner>
         <div style={{ marginTop: 12 }}><Button variant="ghost" size="sm" onClick={() => { setErr(''); setHome(null); loadHome(); }}>Tentar de novo</Button></div>
       </div>
     );
@@ -733,25 +733,25 @@ const ReativacaoScreen = ({ onNav }) => {
       <div style={{ maxWidth: 980, margin: '0 auto', padding: '28px 24px 48px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
           <div>
-            <Eyebrow>reativação</Eyebrow>
+            <Eyebrow>disparos</Eyebrow>
             <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 28, letterSpacing: '-0.02em', color: 'var(--ink)', marginTop: 4 }}>
-              {view === 'home' ? 'Traga de volta quem sumiu' : (current ? current.name : 'Nova reativação')}
+              {view === 'home' ? 'Mande uma mensagem pra sua lista' : (current ? current.name : 'Novo disparo')}
             </div>
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', marginTop: 4, maxWidth: 620, lineHeight: 1.5 }}>
               {view === 'home'
-                ? 'Suba a lista de quem já falou com o seu negócio. A HUMA escreve, a Meta aprova, e ela vai atrás de cada um. Quem responde cai na conversa normal.'
+                ? 'Suba a lista de contatos que já falaram com o seu negócio. A HUMA escreve a mensagem, a Meta aprova, e ela manda pra cada um. Quem responde cai na conversa normal.'
                 : (current ? current.status_label : 'Três passos: a lista, as mensagens e a conferência.')}
             </div>
           </div>
           {view === 'home'
-            ? <Button variant="dark" size="md" icon={<Icon name="plus" size={15}/>} disabled={!gate.ready} onClick={() => { setCurrent(null); setStep(1); setView('wizard'); }}>Nova reativação</Button>
+            ? <Button variant="dark" size="md" icon={<Icon name="plus" size={15}/>} disabled={!gate.ready} onClick={() => { setCurrent(null); setStep(1); setView('wizard'); }}>Novo disparo</Button>
             : <Button variant="ghost" size="sm" icon={<Icon name="chevronL" size={14}/>} onClick={back}>Voltar pra lista</Button>}
         </div>
 
         {err && <ReaBanner tone="bad">{err}</ReaBanner>}
-        {!gate.ready && <ReaBanner>Essa função ainda está sendo ativada na sua conta. Assim que liberar, o botão "Nova reativação" acende.</ReaBanner>}
+        {!gate.ready && <ReaBanner>Essa função ainda está sendo ativada na sua conta. Assim que liberar, o botão "Novo disparo" acende.</ReaBanner>}
         {gate.health && gate.health.saude === 'critica' && (
-          <ReaBanner tone="bad">A Meta deu nota vermelha pro seu número. Enquanto a nota não melhorar, a HUMA não envia reativação, pra proteger o número.</ReaBanner>
+          <ReaBanner tone="bad">A Meta deu nota vermelha pro seu número. Enquanto a nota não melhorar, a HUMA não faz disparo, pra proteger o número.</ReaBanner>
         )}
         {gate.health && gate.health.saude === 'atencao' && (
           <ReaBanner>A nota do seu número na Meta está em atenção. A HUMA envia pela metade do ritmo até melhorar.</ReaBanner>
@@ -762,9 +762,9 @@ const ReativacaoScreen = ({ onNav }) => {
             {(home.items || []).length === 0 ? (
               <div style={{ ...reaCard, textAlign: 'center', padding: 36 }}>
                 <div style={{ color: 'var(--ink-3)', display: 'flex', justifyContent: 'center' }}><Icon name="broadcast" size={30} stroke={1.6}/></div>
-                <div style={{ ...reaTitle, marginTop: 10 }}>Nenhuma reativação ainda</div>
+                <div style={{ ...reaTitle, marginTop: 10 }}>Nenhum disparo ainda</div>
                 <div style={{ ...reaSub, maxWidth: 460, margin: '6px auto 0' }}>
-                  Todo negócio tem uma lista parada: quem pediu orçamento, quem comprou uma vez, quem perguntou o preço e sumiu. É por aí que começa.
+                  Todo negócio tem uma lista parada: quem pediu orçamento, quem comprou uma vez, quem perguntou o preço e sumiu. É por aí que começa. Pra chamar de volta quem já conversa com a HUMA, use o Follow-up.
                 </div>
               </div>
             ) : (home.items || []).map(item => {

@@ -1275,7 +1275,7 @@ class TestRotas:
         from huma.core import permissions
         assert permissions.permission_for("POST", _BASE + "/import") == "disparos"
         assert permissions.permission_for("GET", _BASE) == "disparos"
-        assert permissions.SCREEN_PERMISSIONS["reativacao"] == "disparos"
+        assert permissions.SCREEN_PERMISSIONS["disparos"] == "disparos"
 
     def test_atendente_nao_entra(self, monkeypatch):
         _route_world(monkeypatch)
