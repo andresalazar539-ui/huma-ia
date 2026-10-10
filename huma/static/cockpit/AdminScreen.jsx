@@ -1,109 +1,55 @@
-// AdminScreen.jsx — Painel do dono da HUMA (2026-10-10)
+// AdminScreen.jsx — Painel do dono da HUMA, "HUMA por dentro" (v2, 2026-10-10)
 // Só aparece pra quem está em HUMA_ADMIN_EMAILS (window.HUMA_IS_SUPERADMIN).
-// Reusa StatTile / SectionTitle / Grid do ReportsScreen (mesmo escopo global).
-// Prefixo "Ad" nos componentes próprios: os scripts do Cockpit dividem escopo.
-const { useState: useStateAd, useEffect: useEffectAd } = React;
+// Reusa StatTile / SectionTitle / Grid / DeltaChip / _pct / _isoShift /
+// _hojeIso do ReportsScreen (mesmo escopo global dos scripts do Cockpit).
+// Prefixo "Ad" nos componentes próprios.
+const { useState: useStateAd, useEffect: useEffectAd, useRef: useRefAd } = React;
 
 const AD_PERIODS = [
-  { days: 7, label: '7 dias' },
-  { days: 30, label: '30 dias' },
-  { days: 90, label: '90 dias' },
-  { days: 365, label: '12 meses' },
+  { key: '7', label: '7 dias' }, { key: '30', label: '30 dias' }, { key: '90', label: '90 dias' },
+  { key: '365', label: '12 meses' }, { key: 'custom', label: 'Personalizado' },
 ];
-
 const AD_SUB_LABEL = {
   trial: 'Teste grátis', trial_expired: 'Teste vencido', active: 'Ativa', paused: 'Pausada',
   cancelled: 'Cancelada', pending: 'Pendente', sem_assinatura: 'Sem assinatura',
 };
+const AD_STATUS = {
+  novo: 'Recebido', em_analise: 'Em análise', proposta: 'Proposta enviada', aceito: 'Aceito, em construção',
+  entregue: 'Entregue', recusado: 'Não dá por agora', cancelado: 'Cancelado',
+};
+const AD_KIND = { '': 'Sem caixa', ja_da: 'Já dá com o que existe (grátis)', integracao: 'Integração (preço de tabela)', sob_medida: 'Sob medida (setup + add-on)' };
 
-async function fetchAdminOverview(days) {
-  const r = await fetch(`/api/admin/overview?days=${encodeURIComponent(days)}`, { headers: { ...AUTH_HEADERS } });
+const adBrl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
+const adDate = (iso) => iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '';
+const adTh = { fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)' };
+const adNum = { fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', textAlign: 'right', whiteSpace: 'nowrap' };
+const adCard = { border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px', flexShrink: 0 };
+const adInput = { fontFamily: 'var(--font-sans)', fontSize: 13, padding: '7px 10px', borderRadius: 9, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)' };
+const adChip = (on) => ({
+  fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
+  border: '1px solid var(--paper-edge)', background: on ? 'var(--ink)' : 'var(--paper-raised)', color: on ? '#fff' : 'var(--ink-2)',
+});
+const adCopy = async (text) => { try { await navigator.clipboard.writeText(text); } catch (_) { window.prompt('Copie:', text); } };
+
+/* ---------------- API ---------------- */
+async function fetchAdminOverview({ days, from, to, compare }) {
+  const p = new URLSearchParams();
+  if (from && to) { p.set('date_from', from); p.set('date_to', to); } else p.set('days', days || 30);
+  if (compare) p.set('compare', 'true');
+  const r = await fetch(`/api/admin/overview?${p.toString()}`, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(await _readApiError(r));
   return r.json();
 }
-
-const AdClientsTable = ({ rows }) => {
-  const [filter, setFilter] = useStateAd('todos');
-  const [q, setQ] = useStateAd('');
-  if (!rows || rows.length === 0) return null;
-  const th = {
-    fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-    letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)',
-  };
-  const num = { fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', textAlign: 'right', whiteSpace: 'nowrap' };
-  const adBrl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
-  const cols = 'minmax(170px, 1.6fr) 110px 90px 110px 110px 110px 110px 90px';
-  const norm = (s) => String(s || '').toLowerCase();
-  const visible = rows.filter(r => {
-    if (filter === 'pagantes' && !r.pagante) return false;
-    if (filter === 'trial' && !(r.assinatura === 'trial' || r.assinatura === 'trial_expirado' || r.assinatura === 'trial_expired')) return false;
-    if (filter === 'parados' && !(r.assinatura === 'cancelled' || r.assinatura === 'paused' || r.assinatura === 'trial_expired')) return false;
-    if (q && !(norm(r.nome).includes(norm(q)) || norm(r.email).includes(norm(q)) || norm(r.client_id).includes(norm(q)))) return false;
-    return true;
-  });
-  const chip = (id, label) => (
-    <button key={id} onClick={() => setFilter(id)} style={{
-      fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
-      border: '1px solid var(--paper-edge)', background: filter === id ? 'var(--ink)' : 'var(--paper)', color: filter === id ? '#fff' : 'var(--ink-2)',
-    }}>{label}</button>
-  );
-  const margemColor = (r) => r.margem_pct === null ? 'var(--ink-3)' : (r.margem_pct >= 80 ? 'var(--success)' : (r.margem_pct >= 50 ? 'var(--warning)' : 'var(--danger)'));
-  return (
-    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px', overflowX: 'auto', flexShrink: 0 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
-        {chip('todos', `Todas (${rows.length})`)}
-        {chip('pagantes', `Pagantes (${rows.filter(r => r.pagante).length})`)}
-        {chip('trial', 'Em teste')}
-        {chip('parados', 'Paradas')}
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nome, e-mail ou ID" style={{
-          marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 13, padding: '6px 10px', borderRadius: 9,
-          border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', minWidth: 200,
-        }}/>
-      </div>
-      <div style={{ minWidth: 940 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
-          <div style={th}>Conta</div>
-          <div style={th}>Assinatura</div>
-          <div style={{ ...th, textAlign: 'right' }}>Conversas</div>
-          <div style={{ ...th, textAlign: 'right' }}>Receita</div>
-          <div style={{ ...th, textAlign: 'right' }}>IA conversas</div>
-          <div style={{ ...th, textAlign: 'right' }}>IA onboarding e outros</div>
-          <div style={{ ...th, textAlign: 'right' }}>Margem</div>
-          <div style={{ ...th, textAlign: 'right' }}>Sonnet</div>
-        </div>
-        {visible.map(r => (
-          <div key={r.client_id} style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, alignItems: 'center', padding: '11px 0', borderTop: '1px solid var(--paper-edge)' }}>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.client_id}>{r.nome}</div>
-              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {r.email}{r.criado_em ? ` · desde ${r.criado_em.split('-').reverse().join('/')}` : ''}{r.indicado_por ? ' · indicado' : ''}
-              </div>
-              <div onClick={async () => { try { await navigator.clipboard.writeText(r.client_id); } catch (_) { window.prompt('ID:', r.client_id); } }}
-                   title="Clique pra copiar o ID" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', cursor: 'pointer', marginTop: 2 }}>
-                {r.client_id}
-              </div>
-            </div>
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: r.pagante ? 'var(--success)' : 'var(--ink-2)' }}>
-              {r.pagante ? (r.cortesia ? 'Cortesia' : 'Pagante') : (AD_SUB_LABEL[r.assinatura] || r.assinatura)}
-              {r.spend_mode && r.spend_mode !== 'locked' ? <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>gasto {r.spend_mode === 'capped' ? 'com teto' : 'livre'}</div> : null}
-            </div>
-            <div style={num}>{r.conversas}{r.excedente_conversas ? <span style={{ color: 'var(--ink-3)', fontSize: 11 }}> (+{r.excedente_conversas} extra)</span> : null}</div>
-            <div style={num}>{r.receita_brl ? r.receita_display : <span style={{ color: 'var(--ink-3)' }}>R$ 0</span>}</div>
-            <div style={num} title={`${r.conversas_atendidas || 0} conversas atendidas pela IA`}>{adBrl(r.custo_conversas_brl)}</div>
-            <div style={num} title={`onboarding ${adBrl(r.custo_onboarding_brl)} · áudio ${adBrl(r.custo_audio_brl)} · outros ${adBrl(r.custo_outros_brl)} · total ${r.custo_ia_display}`}>{adBrl((r.custo_onboarding_brl || 0) + (r.custo_audio_brl || 0) + (r.custo_outros_brl || 0))}</div>
-            <div style={{ ...num, fontWeight: 600, color: margemColor(r) }}>{r.margem_pct === null ? r.margem_display : `${r.margem_pct}%`}</div>
-            <div style={num}>{r.share_modelo_forte_pct}%</div>
-          </div>
-        ))}
-        {visible.length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', padding: '14px 0' }}>Nenhuma conta nesse filtro.</div>}
-      </div>
-      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
-        Receita é o que o razão registrou no período (mensalidades cobradas a preço de tabela, pacotes e excedente). Margem = receita menos custo de IA; conta sem cobrança no período aparece em R$.
-      </div>
-    </div>
-  );
-};
-
+async function searchAdminAccounts(q) {
+  const r = await fetch(`/api/admin/accounts?q=${encodeURIComponent(q)}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+async function fetchAdminAccount(clientId, days) {
+  const r = await fetch(`/api/admin/accounts/${encodeURIComponent(clientId)}?days=${encodeURIComponent(days || 30)}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
 async function fetchAdminRequests(status) {
   const r = await fetch(`/api/admin/custom-requests${status ? `?status=${encodeURIComponent(status)}` : ''}`, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(await _readApiError(r));
@@ -117,12 +63,244 @@ async function patchAdminRequest(id, body) {
   return r.json();
 }
 
-const AD_STATUS = {
-  novo: 'Recebido', em_analise: 'Em análise', proposta: 'Proposta enviada', aceito: 'Aceito, em construção',
-  entregue: 'Entregue', recusado: 'Não dá por agora', cancelado: 'Cancelado',
+/* ---------------- Busca de conta ---------------- */
+const AdSearch = ({ onPick }) => {
+  const [q, setQ] = useStateAd('');
+  const [items, setItems] = useStateAd([]);
+  const [busy, setBusy] = useStateAd(false);
+  const [open, setOpen] = useStateAd(false);
+  const timer = useRefAd(null);
+  useEffectAd(() => {
+    if (timer.current) clearTimeout(timer.current);
+    if (q.trim().length < 2) { setItems([]); return; }
+    timer.current = setTimeout(() => {
+      setBusy(true);
+      searchAdminAccounts(q.trim()).then(d => { setItems(d.items || []); setOpen(true); }).catch(() => setItems([])).finally(() => setBusy(false));
+    }, 250);
+    return () => timer.current && clearTimeout(timer.current);
+  }, [q]);
+  return (
+    <div style={{ position: 'relative', flex: 1, minWidth: 260, maxWidth: 560 }}>
+      <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => items.length && setOpen(true)}
+             onKeyDown={e => { if (e.key === 'Enter' && items.length) { onPick(items[0].client_id); setOpen(false); } if (e.key === 'Escape') setOpen(false); }}
+             placeholder="Buscar conta por ID, nome, e-mail, dono ou telefone"
+             style={{ ...adInput, width: '100%', fontSize: 14, padding: '10px 14px', borderRadius: 12 }}/>
+      {busy && <span style={{ position: 'absolute', right: 12, top: 11, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>buscando…</span>}
+      {open && items.length > 0 && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0, zIndex: 40, background: 'var(--paper-raised)', border: '1px solid var(--paper-edge)', borderRadius: 12, boxShadow: '0 12px 32px rgba(28,23,20,0.10)', overflow: 'hidden' }}>
+          {items.map(it => (
+            <div key={it.client_id} onMouseDown={() => { onPick(it.client_id); setOpen(false); }} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 14px', cursor: 'pointer', borderTop: '1px solid var(--paper-edge)' }}
+                 onMouseEnter={e => e.currentTarget.style.background = 'var(--paper-sunk)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.nome}</div>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.email}{it.dono ? ` · ${it.dono}` : ''}{it.telefone ? ` · ${it.telefone}` : ''}</div>
+              </div>
+              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{it.client_id}</code>
+              <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, padding: '3px 8px', borderRadius: 999, background: 'var(--paper-sunk)', color: 'var(--ink-2)' }}>{AD_SUB_LABEL[it.assinatura] || it.assinatura}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };
-const AD_KIND = { '': 'Sem caixa', ja_da: 'Já dá com o que existe (grátis)', integracao: 'Integração (preço de tabela)', sob_medida: 'Sob medida (setup + add-on)' };
 
+/* ---------------- Ficha da conta ---------------- */
+const AdField = ({ label, children, mono }) => (
+  <div style={{ minWidth: 0 }}>
+    <div style={adTh}>{label}</div>
+    <div style={{ fontFamily: mono ? 'var(--font-mono)' : 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      {children === '' || children === null || children === undefined ? <span style={{ color: 'var(--ink-4)' }}>não informado</span> : children}
+    </div>
+  </div>
+);
+const AdBlock = ({ title, children, cols }) => (
+  <div style={{ ...adCard, padding: '16px 18px' }}>
+    <div style={{ ...adTh, marginBottom: 10 }}>{title}</div>
+    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols || 3}, minmax(0, 1fr))`, gap: 12 }}>{children}</div>
+  </div>
+);
+
+const AdAccountCard = ({ clientId, days, onClose }) => {
+  const [d, setD] = useStateAd(null);
+  const [err, setErr] = useStateAd('');
+  const [copied, setCopied] = useStateAd(false);
+  useEffectAd(() => {
+    setD(null); setErr('');
+    fetchAdminAccount(clientId, days).then(setD).catch(e => setErr(e.message || 'Não carregou.'));
+  }, [clientId, days]);
+  if (err) return <div style={{ ...adCard, color: 'var(--danger)', fontFamily: 'var(--font-sans)', fontSize: 13.5 }}>{err}</div>;
+  if (!d) return <div style={{ ...adCard, color: 'var(--ink-3)', fontFamily: 'var(--font-sans)', fontSize: 13.5 }}>Lendo a conta…</div>;
+  const i = d.identidade, a = d.assinatura, u = d.uso, c = d.canal, v = d.vendas_do_cliente, m = d.margem;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 24, letterSpacing: '-0.02em', color: 'var(--ink)' }}>{i.nome || clientId}</div>
+        <code onClick={() => { adCopy(clientId); setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Clique pra copiar" style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-2)', background: 'var(--paper-sunk)', padding: '4px 8px', borderRadius: 7, cursor: 'pointer' }}>{clientId}{copied ? ' · copiado' : ''}</code>
+        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)', color: a.pagante ? 'var(--success)' : 'var(--ink-2)' }}>
+          {a.pagante ? (a.cortesia ? 'Cortesia' : 'Pagante') : a.label}
+        </span>
+        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)' }}>na casa há {i.na_casa_dias} dias (desde {adDate(i.criado_em)})</span>
+        <span style={{ marginLeft: 'auto' }}><Button variant="ghost" size="sm" onClick={onClose}>Fechar ficha</Button></span>
+      </div>
+
+      <AdBlock title="Quem é" cols={4}>
+        <AdField label="Dono">{i.dono}</AdField>
+        <AdField label="E-mail">{i.email ? <a href={`mailto:${i.email}`} style={{ color: 'var(--ink)' }}>{i.email}</a> : ''}</AdField>
+        <AdField label="WhatsApp do dono">{i.telefone ? <a href={`https://wa.me/${String(i.telefone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer" style={{ color: 'var(--ink)' }}>{i.telefone}</a> : ''}</AdField>
+        <AdField label="Tipo de negócio">{i.categoria}</AdField>
+        <AdField label="Site">{i.site ? <a href={i.site} target="_blank" rel="noreferrer" style={{ color: 'var(--ink)' }}>{i.site.replace(/^https?:\/\//, '')}</a> : ''}</AdField>
+        <AdField label="Onboarding">{i.onboarding}</AdField>
+        <AdField label="Modo da IA">{i.modo}</AdField>
+        <AdField label="Funções ligadas">{(i.capabilities || []).join(', ')}</AdField>
+        <AdField label="Pessoas na equipe">{i.equipe}</AdField>
+        <AdField label="Indicado por" mono>{i.indicado_por}</AdField>
+      </AdBlock>
+
+      <AdBlock title="Assinatura e cobrança" cols={4}>
+        <AdField label="Status">{a.label}{a.aguardando_primeira_cobranca ? ' (aguardando 1ª cobrança)' : ''}</AdField>
+        <AdField label="Quanto paga">{a.cortesia ? 'R$ 0 (cortesia)' : (a.preco_brl ? `${a.preco_display} por mês` : '')}</AdField>
+        <AdField label="Assinatura desde">{adDate(a.desde)}</AdField>
+        <AdField label="Última mudança">{adDate(a.ultima_mudanca)}</AdField>
+        <AdField label="Cobranças aprovadas">{a.cobrancas}</AdField>
+        <AdField label="Já pagou (de sempre)">{a.pago_de_sempre_display}</AdField>
+        <AdField label="Primeira e última cobrança">{a.primeira_cobranca ? `${adDate(a.primeira_cobranca)} a ${adDate(a.ultima_cobranca)}` : ''}</AdField>
+        <AdField label="Saldo de conversas">{a.saldo === null || a.saldo === undefined ? '' : `${a.saldo} de ${a.conversas_inclusas || 0}`}</AdField>
+        <AdField label="Controle de gasto">{a.spend_mode === 'capped' ? 'com teto' : (a.spend_mode === 'unlimited' ? 'livre' : (a.spend_mode ? 'travado' : ''))}</AdField>
+        <AdField label="Excedente pendente">{a.excedente_pendente_brl ? adBrl(a.excedente_pendente_brl) : 'nenhum'}</AdField>
+        <AdField label="Teste grátis">{a.trial_label}</AdField>
+        <AdField label="Margem sobre a IA (mês)">{m.pct === null || m.pct === undefined ? '' : `${m.pct}%`}</AdField>
+      </AdBlock>
+
+      <AdBlock title={`Uso nos últimos ${u.dias} dias`} cols={4}>
+        <AdField label="Conversas (total de sempre)">{u.conversas_total}</AdField>
+        <AdField label="Conversas no período">{u.conversas_no_periodo}</AdField>
+        <AdField label="Conversas debitadas">{u.conversas_debitadas_no_periodo}</AdField>
+        <AdField label="Clientes que o negócio ganhou">{u.clientes_do_negocio}</AdField>
+        <AdField label="Custo de IA">{u.ia.custo_display}</AdField>
+        <AdField label="Por conversa atendida">{`${u.ia.custo_por_conversa_display} (${u.ia.conversas_atendidas})`}</AdField>
+        <AdField label="IA por finalidade">{Object.entries(u.ia.por_grupo || {}).filter(([, val]) => val !== 'R$ 0,00').map(([g, val]) => `${g} ${val}`).join(' · ') || 'nada no período'}</AdField>
+        <AdField label="Sonnet nas chamadas">{`${u.ia.share_modelo_forte_pct}%`}</AdField>
+      </AdBlock>
+
+      <AdBlock title="Canais e integrações" cols={4}>
+        <AdField label="WhatsApp">{c.whatsapp_conectado ? `conectado (${c.whatsapp_provider || 'qr'})` : 'não conectado'}</AdField>
+        <AdField label="Instagram">{c.instagram ? `@${c.instagram}` : 'não'}</AdField>
+        <AdField label="Google (agenda)">{c.google || 'não'}</AdField>
+        <AdField label="Loja ou ERP">{c.loja || 'não'}</AdField>
+        <AdField label="CRM">{c.crm || 'não'}</AdField>
+        <AdField label="Pagamento do lead">{c.pagamento || 'HUMA (fallback)'}</AdField>
+        <AdField label="Voz clonada">{c.voz ? 'sim' : 'não'}</AdField>
+        <AdField label={`Vendas do negócio (${v.dias} dias)`}>{v.pagamentos ? `${v.pagamentos} pagamentos · ${v.gmv_display} · ticket ${v.ticket_medio_display}` : 'nenhum pagamento pela HUMA'}</AdField>
+      </AdBlock>
+
+      <div style={{ ...adCard, padding: '16px 18px' }}>
+        <div style={{ ...adTh, marginBottom: 10 }}>Pedidos sob medida e contato com a HUMA</div>
+        {(d.pedidos_sob_medida || []).length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Nenhum pedido. Reclamações e suporte ainda não têm registro próprio; o que existe é o canal de pedidos sob medida.</div>}
+        {(d.pedidos_sob_medida || []).map(p => (
+          <div key={p.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--paper-edge)', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
+            <span style={{ flex: 1, color: 'var(--ink)' }}>{p.title}</span>
+            <span style={{ color: 'var(--ink-3)' }}>{adDate(p.created_at)}</span>
+            <span style={{ padding: '2px 8px', borderRadius: 999, background: 'var(--paper-sunk)', color: 'var(--ink-2)', fontSize: 11.5 }}>{p.status_label}</span>
+            {p.addon_brl > 0 && <span style={{ color: 'var(--ink-2)' }}>{adBrl(p.addon_brl)}/mês</span>}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ ...adCard, padding: '16px 18px', overflowX: 'auto' }}>
+        <div style={{ ...adTh, marginBottom: 10 }}>Razão de conversas (últimas 40 linhas)</div>
+        <div style={{ minWidth: 640 }}>
+          {(d.razao || []).map((r, idx) => (
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '130px 70px 80px 110px 1fr', gap: 10, padding: '6px 0', borderTop: '1px solid var(--paper-edge)', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)' }}>
+              <span>{r.quando}</span>
+              <span style={{ color: r.tipo === 'debit' ? 'var(--danger)' : 'var(--success)' }}>{r.tipo === 'debit' ? `-${r.quantidade}` : `+${r.quantidade}`}</span>
+              <span>saldo {r.saldo_depois === null || r.saldo_depois === undefined ? '' : r.saldo_depois}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{r.origem}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.descricao}>{r.descricao}</span>
+            </div>
+          ))}
+          {(d.razao || []).length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Sem movimentação.</div>}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ---------------- Tabela por conta ---------------- */
+const AdClientsTable = ({ rows, onOpen }) => {
+  const [filter, setFilter] = useStateAd('todos');
+  const [q, setQ] = useStateAd('');
+  if (!rows || rows.length === 0) return null;
+  const cols = 'minmax(190px, 1.6fr) 110px 80px 100px 100px 110px 90px 70px';
+  const norm = (s) => String(s || '').toLowerCase();
+  const visible = rows.filter(r => {
+    if (filter === 'pagantes' && !r.pagante) return false;
+    if (filter === 'trial' && !(r.assinatura === 'trial' || r.assinatura === 'trial_expired')) return false;
+    if (filter === 'parados' && !(r.assinatura === 'cancelled' || r.assinatura === 'paused' || r.assinatura === 'trial_expired')) return false;
+    if (q && !(norm(r.nome).includes(norm(q)) || norm(r.email).includes(norm(q)) || norm(r.client_id).includes(norm(q)))) return false;
+    return true;
+  });
+  const margemColor = (r) => r.margem_pct === null ? 'var(--ink-3)' : (r.margem_pct >= 80 ? 'var(--success)' : (r.margem_pct >= 50 ? 'var(--warning)' : 'var(--danger)'));
+  const chip = (id, label) => <button key={id} onClick={() => setFilter(id)} style={adChip(filter === id)}>{label}</button>;
+  return (
+    <div style={{ ...adCard, overflowX: 'auto' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+        {chip('todos', `Todas (${rows.length})`)}
+        {chip('pagantes', `Pagantes (${rows.filter(r => r.pagante).length})`)}
+        {chip('trial', 'Em teste')}
+        {chip('parados', 'Paradas')}
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrar esta lista" style={{ ...adInput, marginLeft: 'auto', minWidth: 200 }}/>
+      </div>
+      <div style={{ minWidth: 960 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
+          <div style={adTh}>Conta</div>
+          <div style={adTh}>Assinatura</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>Conversas</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>Receita</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>IA conversas</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>IA onboarding e outros</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>Margem</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>Sonnet</div>
+        </div>
+        {visible.map(r => (
+          <div key={r.client_id} onClick={() => onOpen && onOpen(r.client_id)} style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, alignItems: 'center', padding: '11px 0', borderTop: '1px solid var(--paper-edge)', cursor: 'pointer' }}
+               onMouseEnter={e => e.currentTarget.style.background = 'var(--paper-sunk)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.nome}</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.email}{r.criado_em ? ` · desde ${adDate(r.criado_em)}` : ''}{r.indicado_por ? ' · indicado' : ''}</div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)' }}>{r.client_id}</div>
+            </div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: r.pagante ? 'var(--success)' : 'var(--ink-2)' }}>
+              {r.pagante ? (r.cortesia ? 'Cortesia' : 'Pagante') : (AD_SUB_LABEL[r.assinatura] || r.assinatura)}
+              {r.spend_mode && r.spend_mode !== 'locked' ? <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>gasto {r.spend_mode === 'capped' ? 'com teto' : 'livre'}</div> : null}
+            </div>
+            <div style={adNum} title={`${r.conversas_atendidas || 0} atendidas pela IA · ${r.conversas || 0} debitadas`}>{r.conversas_atendidas || 0}{r.excedente_conversas ? <span style={{ color: 'var(--ink-3)', fontSize: 11 }}> (+{r.excedente_conversas} extra)</span> : null}</div>
+            <div style={adNum}>{r.receita_brl ? r.receita_display : <span style={{ color: 'var(--ink-3)' }}>R$ 0</span>}</div>
+            <div style={adNum}>{adBrl(r.custo_conversas_brl)}</div>
+            <div style={adNum} title={`onboarding ${adBrl(r.custo_onboarding_brl)} · áudio ${adBrl(r.custo_audio_brl)} · outros ${adBrl(r.custo_outros_brl)}`}>{adBrl((r.custo_onboarding_brl || 0) + (r.custo_audio_brl || 0) + (r.custo_outros_brl || 0))}</div>
+            <div style={{ ...adNum, fontWeight: 600, color: margemColor(r) }}>{r.margem_pct === null ? r.margem_display : `${r.margem_pct}%`}</div>
+            <div style={adNum}>{r.share_modelo_forte_pct}%</div>
+          </div>
+        ))}
+        {visible.length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', padding: '14px 0' }}>Nenhuma conta nesse filtro.</div>}
+      </div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
+        Clique numa linha pra abrir a ficha. Receita é o que o razão registrou no período (mensalidades a preço de tabela, pacotes e excedente). Margem = receita menos custo de IA.
+      </div>
+    </div>
+  );
+};
+
+/* ---------------- Listas: risco e tops ---------------- */
+const AdList = ({ title, items, render, empty }) => (
+  <div style={{ ...adCard, padding: '16px 18px' }}>
+    <div style={{ ...adTh, marginBottom: 8 }}>{title}</div>
+    {(!items || items.length === 0) && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>{empty}</div>}
+    {(items || []).map((it, i) => <div key={it.client_id || i} style={{ padding: '7px 0', borderTop: i ? '1px solid var(--paper-edge)' : 'none' }}>{render(it)}</div>)}
+  </div>
+);
+
+/* ---------------- Pedidos sob medida (fila) ---------------- */
 const AdRequestRow = ({ item, onSaved }) => {
   const [open, setOpen] = useStateAd(item.status === 'novo' || item.status === 'em_analise');
   const [form, setForm] = useStateAd({
@@ -146,46 +324,33 @@ const AdRequestRow = ({ item, onSaved }) => {
     } catch (e) { setMsg(e.message || 'Não salvou.'); }
     setBusy(false);
   };
-  const inp = { fontFamily: 'var(--font-sans)', fontSize: 13, padding: '7px 10px', borderRadius: 9, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', width: '100%' };
-  const lab = { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 };
+  const inp = { ...adInput, width: '100%' };
   return (
     <div style={{ borderTop: '1px solid var(--paper-edge)', padding: '12px 0' }}>
       <div onClick={() => setOpen(o => !o)} style={{ display: 'flex', gap: 12, alignItems: 'center', cursor: 'pointer' }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{item.title}</div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
-            {item.client_id}{item.requested_by ? ` · ${item.requested_by}` : ''} · {String(item.created_at || '').slice(0, 10).split('-').reverse().join('/')}
-          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>{item.client_id}{item.requested_by ? ` · ${item.requested_by}` : ''} · {adDate(item.created_at)}</div>
         </div>
-        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)', color: item.status === 'novo' ? 'var(--terracotta-ink)' : 'var(--ink-2)' }}>
-          {AD_STATUS[item.status] || item.status}
-        </span>
-        {item.addon_brl > 0 && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)' }}>R$ {Number(item.addon_brl).toFixed(2).replace('.', ',')}/mês</span>}
+        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)', color: item.status === 'novo' ? 'var(--terracotta-ink)' : 'var(--ink-2)' }}>{AD_STATUS[item.status] || item.status}</span>
+        {item.addon_brl > 0 && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)' }}>{adBrl(item.addon_brl)}/mês</span>}
       </div>
       {open && (
         <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', lineHeight: 1.5, background: 'var(--paper)', border: '1px solid var(--paper-edge)', borderRadius: 10, padding: '10px 12px' }}>{item.description || 'Sem descrição.'}</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div><div style={lab}>Caixa da triagem</div>
-              <select value={form.kind} onChange={e => set('kind', e.target.value)} style={inp}>
-                {Object.keys(AD_KIND).map(k => <option key={k} value={k}>{AD_KIND[k]}</option>)}
-              </select></div>
-            <div><div style={lab}>Status</div>
-              <select value={form.status} onChange={e => set('status', e.target.value)} style={inp}>
-                {Object.keys(AD_STATUS).map(k => <option key={k} value={k}>{AD_STATUS[k]}</option>)}
-              </select></div>
+            <div><div style={adTh}>Caixa da triagem</div><select value={form.kind} onChange={e => set('kind', e.target.value)} style={inp}>{Object.keys(AD_KIND).map(k => <option key={k} value={k}>{AD_KIND[k]}</option>)}</select></div>
+            <div><div style={adTh}>Status</div><select value={form.status} onChange={e => set('status', e.target.value)} style={inp}>{Object.keys(AD_STATUS).map(k => <option key={k} value={k}>{AD_STATUS[k]}</option>)}</select></div>
           </div>
-          <div><div style={lab}>Resposta que o cliente lê</div>
-            <textarea value={form.answer} onChange={e => set('answer', e.target.value)} rows={3} style={{ ...inp, resize: 'vertical' }} placeholder="O que dá pra fazer, como e quando."/></div>
+          <div><div style={adTh}>Resposta que o cliente lê</div><textarea value={form.answer} onChange={e => set('answer', e.target.value)} rows={3} style={{ ...inp, resize: 'vertical' }} placeholder="O que dá pra fazer, como e quando."/></div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-            <div><div style={lab}>Custo recorrente estimado (R$/mês, interno)</div><input type="number" step="0.01" value={form.monthly_cost_brl} onChange={e => set('monthly_cost_brl', e.target.value)} style={inp}/></div>
-            <div><div style={lab}>Setup único (R$)</div><input type="number" step="0.01" value={form.setup_brl} onChange={e => set('setup_brl', e.target.value)} style={inp}/></div>
-            <div><div style={lab}>Add-on mensal (R$)</div><input type="number" step="0.01" value={form.addon_brl} onChange={e => set('addon_brl', e.target.value)} style={inp}/>
-              {belowRule && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, color: 'var(--warning)', marginTop: 4 }}>Regra: add-on ≥ 3x o custo (mínimo R$ {minAddon.toFixed(2).replace('.', ',')}).</div>}
+            <div><div style={adTh}>Custo recorrente estimado (R$/mês, interno)</div><input type="number" step="0.01" value={form.monthly_cost_brl} onChange={e => set('monthly_cost_brl', e.target.value)} style={inp}/></div>
+            <div><div style={adTh}>Setup único (R$)</div><input type="number" step="0.01" value={form.setup_brl} onChange={e => set('setup_brl', e.target.value)} style={inp}/></div>
+            <div><div style={adTh}>Add-on mensal (R$)</div><input type="number" step="0.01" value={form.addon_brl} onChange={e => set('addon_brl', e.target.value)} style={inp}/>
+              {belowRule && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, color: 'var(--warning)', marginTop: 4 }}>Regra: add-on ≥ 3x o custo (mínimo {adBrl(minAddon)}).</div>}
             </div>
           </div>
-          <div><div style={lab}>Notas internas (só a HUMA vê)</div>
-            <textarea value={form.internal_notes} onChange={e => set('internal_notes', e.target.value)} rows={2} style={{ ...inp, resize: 'vertical' }}/></div>
+          <div><div style={adTh}>Notas internas (só a HUMA vê)</div><textarea value={form.internal_notes} onChange={e => set('internal_notes', e.target.value)} rows={2} style={{ ...inp, resize: 'vertical' }}/></div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Button variant="primary" size="sm" onClick={() => save()} disabled={busy}>{busy ? 'Salvando…' : 'Salvar'}</Button>
             {form.status !== 'proposta' && <Button variant="ghost" size="sm" onClick={() => save('proposta')} disabled={busy}>Salvar e enviar proposta</Button>}
@@ -208,11 +373,9 @@ const AdRequestsPanel = () => {
   if (!data) return null;
   const items = (data.items || []).filter(i => !onlyOpen || !['entregue', 'recusado', 'cancelado'].includes(i.status));
   return (
-    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px', flexShrink: 0 }}>
+    <div style={adCard}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
-          Pedidos sob medida · {data.active_custom} de {data.max_active} projetos em andamento
-        </div>
+        <div style={adTh}>Pedidos sob medida · {data.active_custom} de {data.max_active} projetos em andamento</div>
         <label style={{ marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 6, alignItems: 'center' }}>
           <input type="checkbox" checked={onlyOpen} onChange={e => setOnlyOpen(e.target.checked)}/> só em aberto
         </label>
@@ -220,52 +383,77 @@ const AdRequestsPanel = () => {
       {items.length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', padding: '10px 0' }}>Nenhum pedido{onlyOpen ? ' em aberto' : ''}.</div>}
       {items.map(i => <AdRequestRow key={i.id} item={i} onSaved={load} />)}
       <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 10, lineHeight: 1.5 }}>
-        Triagem em 3 caixas: já dá (grátis), integração (preço de tabela), sob medida (setup único + add-on mensal ≥ 3x o custo). O add-on entra na renovação do cliente depois de entregue; no 2º cliente pedindo a mesma coisa, vira função da plataforma.
+        Triagem em 3 caixas: já dá (grátis), integração (preço de tabela), sob medida (setup único + add-on mensal ≥ 3x o custo). O add-on entra na renovação do cliente depois de entregue.
       </div>
     </div>
   );
 };
 
+/* ---------------- Tela ---------------- */
 const AdminScreen = () => {
-  const [days, setDays] = useStateAd(30);
+  const [period, setPeriod] = useStateAd('30');
+  const [from, setFrom] = useStateAd(_isoShift(_hojeIso(), -29));
+  const [to, setTo] = useStateAd(_hojeIso());
+  const [compare, setCompare] = useStateAd(true);
   const [data, setData] = useStateAd(null);
   const [err, setErr] = useStateAd('');
   const [loading, setLoading] = useStateAd(true);
+  const [account, setAccount] = useStateAd('');
+  const accountRef = useRefAd(null);
 
+  const days = period === 'custom' ? 30 : parseInt(period);
   useEffectAd(() => {
     let alive = true;
     setLoading(true); setErr('');
-    fetchAdminOverview(days).then(d => { if (alive) { setData(d); setLoading(false); } })
+    const args = period === 'custom' ? { from, to, compare } : { days, compare };
+    fetchAdminOverview(args).then(d => { if (alive) { setData(d); setLoading(false); } })
       .catch(e => { if (alive) { setErr(e.message || 'Não deu pra carregar.'); setLoading(false); } });
     return () => { alive = false; };
-  }, [days]);
+  }, [period, from, to, compare]);
 
-  const a = (data && data.assinaturas) || {};
-  const rec = (data && data.receita) || {};
-  const ia = (data && data.ia) || {};
-  const m = (data && data.margem) || {};
-  const churn = (data && data.churn) || {};
-  const funil = (data && data.funil) || {};
-  const contas = (data && data.contas) || {};
-  const ind = (data && data.indicacoes) || {};
+  const openAccount = (cid) => {
+    setAccount(cid);
+    setTimeout(() => accountRef.current && accountRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  };
+
+  const s = (k) => (data && data[k]) || {};
+  const p = (k) => (data && data.anterior && data.anterior[k]) || null;
+  const dlt = (k, path) => {
+    const cur = path.reduce((o, key) => (o || {})[key], s(k));
+    const prevRoot = p(k);
+    const prev = prevRoot ? path.reduce((o, key) => (o || {})[key], prevRoot) : null;
+    return prev === null || prev === undefined ? null : _pct(cur, prev);
+  };
+  const a = s('assinaturas'), rec = s('receita'), ia = s('ia'), m = s('margem'), churn = s('churn'), funil = s('funil'), contas = s('contas'), ind = s('indicacoes'), g = s('growth');
+  const periodDays = data ? (data.periodo || {}).dias : days;
+  const periodLabel = data ? `${adDate(data.periodo.de)} a ${adDate(data.periodo.ate)}` : '';
+  const iaPct = g.custo_ia_sobre_receita_pct;
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px 60px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', flexShrink: 0 }}>
         <div>
           <div style={{ fontFamily: 'var(--font-serif)', fontSize: 28, letterSpacing: '-0.02em', color: 'var(--ink)' }}>HUMA por dentro</div>
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)', marginTop: 4 }}>
-            O negócio da HUMA, não de um cliente: assinaturas, receita, custo de IA e margem. Só quem administra a HUMA vê esta tela.
-          </div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)', marginTop: 4 }}>O negócio da HUMA, não de um cliente. Só quem administra a HUMA vê esta tela.</div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {AD_PERIODS.map(p => (
-            <button key={p.days} onClick={() => setDays(p.days)} style={{
-              fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
-              border: '1px solid var(--paper-edge)', background: days === p.days ? 'var(--ink)' : 'var(--paper-raised)', color: days === p.days ? '#fff' : 'var(--ink-2)',
-            }}>{p.label}</button>
-          ))}
-        </div>
+        <AdSearch onPick={openAccount} />
+      </div>
+
+      {account && <div ref={accountRef} style={{ flexShrink: 0 }}><AdAccountCard clientId={account} days={periodDays || 30} onClose={() => setAccount('')} /></div>}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', flexShrink: 0 }}>
+        {AD_PERIODS.map(pp => <button key={pp.key} onClick={() => setPeriod(pp.key)} style={adChip(period === pp.key)}>{pp.label}</button>)}
+        {period === 'custom' && (
+          <>
+            <input type="date" value={from} max={to} onChange={e => setFrom(e.target.value)} style={adInput}/>
+            <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)' }}>até</span>
+            <input type="date" value={to} min={from} max={_hojeIso()} onChange={e => setTo(e.target.value)} style={adInput}/>
+          </>
+        )}
+        <label style={{ marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input type="checkbox" checked={compare} onChange={e => setCompare(e.target.checked)}/> comparar com o período anterior
+        </label>
+        {data && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)' }}>{periodLabel} ({periodDays} dias){data.anterior ? ` vs ${adDate(data.anterior.periodo.de)} a ${adDate(data.anterior.periodo.ate)}` : ''}</span>}
       </div>
 
       {err && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--danger)' }}>{err}</div>}
@@ -275,48 +463,77 @@ const AdminScreen = () => {
         <>
           <SectionTitle>Dinheiro</SectionTitle>
           <Grid cols={4}>
-            <StatTile label="MRR (preço de tabela)" value={(data.mrr || {}).display} sub={`${a.pagantes || 0} pagantes${a.cortesia ? ` · ${a.cortesia} cortesia` : ''}`} accent />
-            <StatTile label={`Receita em ${data.periodo.dias} dias`} value={rec.total_display} sub={`${rec.cobrancas || 0} mensalidades · ${rec.pacotes || 0} pacotes · ${rec.excedente_conversas || 0} conversas extras`} />
-            <StatTile label="Custo de IA no período" value={ia.custo_display} sub={`${ia.custo_por_conversa_display} por conversa atendida (${ia.conversas_atendidas || 0}) · Sonnet em ${ia.share_modelo_forte_pct}% das chamadas`} />
-            <StatTile label="Margem sobre a IA" value={m.pct === null || m.pct === undefined ? m.display : `${m.pct}%`} sub={m.display} accent />
+            <StatTile label="MRR (preço de tabela)" value={(data.mrr || {}).display} sub={`${a.pagantes || 0} pagantes${a.cortesia ? ` · ${a.cortesia} cortesia` : ''}`} accent delta={dlt('mrr', ['brl'])} />
+            <StatTile label={`Receita em ${periodDays} dias`} value={rec.total_display} sub={`${rec.cobrancas || 0} mensalidades · ${rec.pacotes || 0} pacotes · ${rec.excedente_conversas || 0} conversas extras`} delta={dlt('receita', ['total_brl'])} />
+            <StatTile label="Custo de IA no período" value={ia.custo_display} sub={`${ia.custo_por_conversa_display} por conversa atendida (${ia.conversas_atendidas || 0}) · Sonnet em ${ia.share_modelo_forte_pct}% das chamadas`} delta={dlt('ia', ['custo_brl'])} deltaInvert />
+            <StatTile label="Margem sobre a IA" value={m.pct === null || m.pct === undefined ? m.display : `${m.pct}%`} sub={m.display} accent delta={dlt('margem', ['brl'])} />
+          </Grid>
+          <Grid cols={4}>
+            <StatTile label="IA nas conversas" value={((ia.por_grupo || {}).conversas || {}).display || 'R$ 0,00'} sub="respostas, juiz de português, memória e follow-up" delta={dlt('ia', ['por_grupo', 'conversas', 'brl'])} deltaInvert />
+            <StatTile label="IA no onboarding" value={((ia.por_grupo || {}).onboarding || {}).display || 'R$ 0,00'} sub="leitura do site, entrevista, análise de mercado, playbook e base de conhecimento" delta={dlt('ia', ['por_grupo', 'onboarding', 'brl'])} deltaInvert />
+            <StatTile label="Áudio e transcrição" value={((ia.por_grupo || {}).audio || {}).display || 'R$ 0,00'} sub="voz clonada (ElevenLabs) e áudios transcritos, estimado pelo tamanho" delta={dlt('ia', ['por_grupo', 'audio', 'brl'])} deltaInvert />
+            <StatTile label="Outros" value={((ia.por_grupo || {}).outros || {}).display || 'R$ 0,00'} sub="escudo de campanha, modelos da Meta, prospecção, playground" delta={dlt('ia', ['por_grupo', 'outros', 'brl'])} deltaInvert />
           </Grid>
 
+          <SectionTitle>Growth</SectionTitle>
           <Grid cols={4}>
-            <StatTile label="IA nas conversas" value={((ia.por_grupo || {}).conversas || {}).display || 'R$ 0,00'} sub="respostas, juiz de português, memória e follow-up" />
-            <StatTile label="IA no onboarding" value={((ia.por_grupo || {}).onboarding || {}).display || 'R$ 0,00'} sub="leitura do site, entrevista, análise de mercado, playbook e base de conhecimento" />
-            <StatTile label="Áudio e transcrição" value={((ia.por_grupo || {}).audio || {}).display || 'R$ 0,00'} sub="voz clonada (ElevenLabs) e áudios transcritos (estimado pelo tamanho)" />
-            <StatTile label="Outros" value={((ia.por_grupo || {}).outros || {}).display || 'R$ 0,00'} sub="escudo de campanha, modelos da Meta, prospecção, playground" />
+            <StatTile label="ARPU" value={g.arpu_display} sub="receita média mensal por pagante (sem cortesia)" delta={dlt('growth', ['arpu_brl'])} />
+            <StatTile label="LTV estimado" value={g.ltv_display} sub={`ARPU ÷ churn mensal (${g.churn_mensal_pct || 0}%)`} />
+            <StatTile label="Expansão" value={g.expansao_display} sub={`${g.expansao_pct || 0}% da receita veio de pacotes e excedente`} delta={dlt('growth', ['expansao_brl'])} />
+            <StatTile label="IA sobre a receita" value={iaPct === null || iaPct === undefined ? 'sem receita' : `${iaPct}%`} sub="quanto da receita a IA consome; meta abaixo de 20%" />
+          </Grid>
+          <Grid cols={4}>
+            <StatTile label="Ativação" value={`${g.ativacao_pct || 0}%`} sub={`${g.ativos_onboarding || 0} de ${contas.total || 0} contas terminaram o onboarding`} />
+            <StatTile label="WhatsApp conectado" value={`${g.whatsapp_conectado_pct || 0}%`} sub={`${g.whatsapp_conectado || 0} contas com WhatsApp ou Instagram ligado`} />
+            <StatTile label="Conversas por pagante" value={g.conversas_por_pagante || 0} sub={`${g.pagantes_sem_conversa || 0} pagantes sem nenhuma conversa no período`} delta={dlt('growth', ['conversas_por_pagante'])} />
+            <StatTile label="Viraram pagantes" value={funil.viraram_pagantes_no_periodo || 0} sub={`${funil.contas_novas || 0} contas novas no período · conversão de sempre ${funil.conversao_total_pct || 0}%`} delta={dlt('funil', ['viraram_pagantes_no_periodo'])} />
           </Grid>
 
           <SectionTitle>Assinaturas</SectionTitle>
           <Grid cols={4}>
-            <StatTile label="Contas" value={contas.total || 0} sub={`${contas.novas_no_periodo || 0} novas no período`} />
+            <StatTile label="Contas" value={contas.total || 0} sub={`${contas.novas_no_periodo || 0} novas no período`} delta={dlt('contas', ['novas_no_periodo'])} />
             <StatTile label="Em teste grátis" value={a.trial || 0} sub={`${a.trial_expirado || 0} com teste vencido`} />
             <StatTile label="Pausadas e canceladas" value={(a.pausadas || 0) + (a.canceladas || 0)} sub={`${a.pausadas || 0} pausadas · ${a.canceladas || 0} canceladas`} />
-            <StatTile label="Churn no período" value={`${churn.pct || 0}%`} sub={`${churn.canceladas_no_periodo || 0} cancelaram de ${churn.base_inicio || 0} (aproximado)`} deltaInvert />
+            <StatTile label="Churn no período" value={`${churn.pct || 0}%`} sub={`${churn.canceladas_no_periodo || 0} cancelaram de ${churn.base_inicio || 0} (aproximado)`} delta={dlt('churn', ['pct'])} deltaInvert />
+          </Grid>
+          <Grid cols={4}>
+            <StatTile label="Ticket médio por cobrança" value={rec.ticket_medio_display} sub="mensalidade + pacotes + excedente, por cobrança" delta={dlt('receita', ['ticket_medio_brl'])} />
+            <StatTile label="Indicações" value={ind.indicados || 0} sub={`${ind.convertidos || 0} viraram assinante`} />
+            <StatTile label="Conversas engajadas" value={ia.conversas_engajadas || 0} sub="debitadas do plano no período" delta={dlt('ia', ['conversas_engajadas'])} />
+            <StatTile label="Chamadas de IA" value={ia.chamadas || 0} sub="todas as finalidades" delta={dlt('ia', ['chamadas'])} deltaInvert />
           </Grid>
 
-          <SectionTitle>Funil e indicações</SectionTitle>
-          <Grid cols={4}>
-            <StatTile label="Viraram pagantes no período" value={funil.viraram_pagantes_no_periodo || 0} sub={`${funil.contas_novas || 0} contas novas no mesmo período`} />
-            <StatTile label="Conversão de sempre" value={`${funil.conversao_total_pct || 0}%`} sub={`${funil.pagantes_de_sempre || 0} contas já pagaram alguma vez`} />
-            <StatTile label="Ticket médio por cobrança" value={rec.ticket_medio_display} sub="mensalidade + pacotes + excedente, por cobrança" />
-            <StatTile label="Indicações" value={ind.indicados || 0} sub={`${ind.convertidos || 0} viraram assinante`} />
+          <SectionTitle>Atenção agora</SectionTitle>
+          <Grid cols={3}>
+            <AdList title="Contas em risco" items={data.em_risco} empty="Nenhuma conta em risco." render={it => (
+              <div onClick={() => openAccount(it.client_id)} style={{ cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
+                <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{it.nome}</div>
+                <div style={{ color: 'var(--danger)', fontSize: 12 }}>{it.motivo}</div>
+              </div>
+            )} />
+            <AdList title="Maior receita no período" items={data.top_receita} empty="Nenhuma cobrança no período." render={it => (
+              <div onClick={() => openAccount(it.client_id)} style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
+                <span style={{ color: 'var(--ink)' }}>{it.nome}</span><span style={{ color: 'var(--ink-2)' }}>{it.receita_display}</span>
+              </div>
+            )} />
+            <AdList title="Maior custo de IA" items={data.top_custo_ia} empty="Nenhum custo no período." render={it => (
+              <div onClick={() => openAccount(it.client_id)} style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
+                <span style={{ color: 'var(--ink)' }}>{it.nome}</span><span style={{ color: 'var(--ink-2)' }}>{it.custo_ia_display}{it.margem_pct !== null && it.margem_pct !== undefined ? ` · margem ${it.margem_pct}%` : ''}</span>
+              </div>
+            )} />
           </Grid>
 
           <SectionTitle>Pedidos sob medida</SectionTitle>
           <AdRequestsPanel />
 
           <SectionTitle>Por conta</SectionTitle>
-          <AdClientsTable rows={data.clientes} />
+          <AdClientsTable rows={data.clientes} onOpen={openAccount} />
 
           {data.fontes && data.fontes.truncado && (
-            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--warning)' }}>
-              Uma das leituras bateu no teto de linhas; os números deste período podem estar incompletos. Reduza o período.
-            </div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--warning)' }}>Uma das leituras bateu no teto de linhas; os números deste período podem estar incompletos. Reduza o período.</div>
           )}
-          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>
-            Período: {data.periodo.de.split('-').reverse().join('/')} a {data.periodo.ate.split('-').reverse().join('/')}. MRR usa o preço de tabela (cupom parcial fica só no Mercado Pago). Churn aproximado: cancelamentos do período sobre pagantes atuais mais cancelados.
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, flexShrink: 0 }}>
+            MRR usa o preço de tabela (cupom parcial fica só no Mercado Pago). Churn aproximado: cancelamentos do período sobre pagantes atuais mais cancelados. Custo de IA é estimado por tokens × tabela de preço × câmbio, não lido da fatura. Setas comparam com o período imediatamente anterior, do mesmo tamanho.
           </div>
         </>
       )}
@@ -324,4 +541,4 @@ const AdminScreen = () => {
   );
 };
 
-Object.assign(window, { AdminScreen, fetchAdminOverview, fetchAdminRequests, patchAdminRequest });
+Object.assign(window, { AdminScreen, fetchAdminOverview, fetchAdminRequests, patchAdminRequest, searchAdminAccounts, fetchAdminAccount });

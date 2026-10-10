@@ -48,8 +48,34 @@ async def require_admin(huma_session: Optional[str] = Cookie(default=None)) -> s
 
 
 @router.get("/api/admin/overview")
-async def admin_overview(days: int = 30, admin: str = Depends(require_admin)) -> dict:
-    """Painel do dono da HUMA: contas, assinaturas, MRR, churn, receita, custo de IA e margem."""
-    overview = await admin_service.build_overview(days)
-    log.info(f"Admin | overview | por={admin} | dias={overview['periodo']['dias']}")
+async def admin_overview(
+    days: int = 30,
+    date_from: str = "",
+    date_to: str = "",
+    compare: bool = False,
+    admin: str = Depends(require_admin),
+) -> dict:
+    """
+    Painel do dono da HUMA: contas, assinaturas, MRR, churn, receita, custo
+    de IA, margem, growth e risco. `date_from`/`date_to` (yyyy-mm-dd, BRT,
+    fim inclusivo) = período personalizado; `compare=true` traz `anterior`.
+    """
+    overview = await admin_service.build_overview(days, date_from, date_to, compare)
+    log.info(f"Admin | overview | por={admin} | de={overview['periodo']['de']} | ate={overview['periodo']['ate']} | compare={compare}")
     return overview
+
+
+@router.get("/api/admin/accounts")
+async def admin_search_accounts(q: str = "", admin: str = Depends(require_admin)) -> dict:
+    """Busca de conta por ID, nome, e-mail, dono ou telefone."""
+    return {"items": await admin_service.search_accounts(q)}
+
+
+@router.get("/api/admin/accounts/{client_id}")
+async def admin_account_detail(client_id: str, days: int = 30, admin: str = Depends(require_admin)) -> dict:
+    """Ficha completa de uma conta."""
+    detail = await admin_service.account_detail(client_id, days)
+    if detail is None:
+        raise HTTPException(404, "Conta não encontrada.")
+    log.info(f"Admin | ficha | por={admin} | client={client_id}")
+    return detail

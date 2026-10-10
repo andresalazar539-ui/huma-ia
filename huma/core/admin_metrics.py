@@ -141,6 +141,7 @@ def build_overview(
     plan_price: float,
     pack_prices: dict,
     overage_price: float,
+    until: datetime | None = None,
 ) -> dict:
     """
     Monta o painel do dono da HUMA.
@@ -157,6 +158,13 @@ def build_overview(
     """
     now = _dt(now) or datetime.now(timezone.utc)
     since = _dt(since) or (now - timedelta(days=30))
+    until = _dt(until) or now
+    if until <= since:
+        until = since + timedelta(days=1)
+
+    def _in_window(value: Any) -> bool:
+        t = _dt(value)
+        return t is not None and since <= t < until
 
     # Assinatura vigente por cliente (a mais recente)
     sub_by_client: dict[str, dict] = {}
@@ -201,8 +209,7 @@ def build_overview(
                     mrr += float(sub.get("price_brl") or 0)
                 except (TypeError, ValueError):
                     pass
-        changed = _dt(sub.get("updated_at"))
-        if changed is not None and changed >= since:
+        if _in_window(sub.get("updated_at")):
             if status == "cancelled":
                 canceladas_periodo += 1
             elif status == "paused":
@@ -230,8 +237,8 @@ def build_overview(
         for g, v in ((u or {}).get("by_group") or {}).items():
             custo_por_grupo[g] = round(custo_por_grupo.get(g, 0.0) + float(v or 0), 2)
 
-    novas = [c for c in clients if (_dt(c.get("created_at")) or now) >= since]
-    viraram_pagantes = [cid for cid, when in first_paid_at.items() if when >= since]
+    novas = [c for c in clients if _in_window(c.get("created_at"))]
+    viraram_pagantes = [cid for cid, when in first_paid_at.items() if since <= when < until]
     indicados = [c for c in clients if str(c.get("referred_by") or "").strip()]
     convertidos = [c for c in indicados if c.get("referral_credited_at")]
 
@@ -278,8 +285,65 @@ def build_overview(
     rows.sort(key=lambda r: (-r["receita_brl"], -r["custo_ia_brl"], r["nome"].lower()))
 
     base_inicio = len(pagantes) + canceladas_periodo
+    dias = max(1, round((until - since).total_seconds() / 86400))
+    churn_pct = _pct(canceladas_periodo, base_inicio)
+    churn_mensal = churn_pct * (30.0 / dias) if dias else churn_pct
+    arpu = round(mrr / len(pagantes - cortesias), 2) if (pagantes - cortesias) else 0.0
+    ltv = round(arpu / (churn_mensal / 100.0), 2) if churn_mensal > 0 and arpu > 0 else None
+    ativos_onboarding = sum(1 for c in clients if str(c.get("onboarding_status") or "") == "active")
+    conectados = [
+        c for c in clients
+        if (c.get("phone_number_id") or c.get("evolution_instance") or c.get("instagram_user_id"))
+    ]
+    pagantes_rows = [r for r in rows if r["pagante"]]
+    conversas_pagantes = sum(r["conversas_atendidas"] for r in pagantes_rows)
+    expansao = receita_total["pacotes_brl"] + receita_total["excedente_brl"]
+
+    # Contas que merecem atenção agora (motivo em linguagem do dono)
+    em_risco: list[dict] = []
+    for r in rows:
+        cid = r["client_id"]
+        sub = sub_by_client.get(cid) or {}
+        status = r["assinatura"]
+        motivo = ""
+        if status == "trial":
+            created = _dt(sub.get("created_at"))
+            if created is not None:
+                falta = (created + timedelta(days=int(trial_days)) - now).total_seconds() / 86400
+                if falta <= 2:
+                    motivo = f"teste grátis acaba em {max(0, int(falta))} dia(s)"
+                    if cid not in {str(c.get("client_id")) for c in conectados}:
+                        motivo += " e o WhatsApp não está conectado"
+        elif status == "trial_expired" and cid not in ever_paid:
+            created = _dt(sub.get("created_at"))
+            if created is not None and (now - (created + timedelta(days=int(trial_days)))).days <= 14:
+                motivo = "teste venceu há pouco e não assinou"
+        elif status == "paused":
+            motivo = "assinatura pausada (cartão recusado?)"
+        elif r["pagante"] and not r["cortesia"] and r["conversas_atendidas"] == 0 and r["custo_ia_brl"] == 0:
+            motivo = "pagante sem nenhuma conversa no período"
+        elif r["pagante"] and r["custo_ia_brl"] > 0.3 * float(plan_price):
+            motivo = f"custo de IA ({r['custo_ia_display']}) acima de 30% da mensalidade"
+        if motivo:
+            em_risco.append({"client_id": cid, "nome": r["nome"], "email": r["email"], "motivo": motivo})
+
     return {
-        "periodo": {"dias": max(1, (now - since).days), "de": since.date().isoformat(), "ate": now.date().isoformat()},
+        "periodo": {"dias": dias, "de": since.date().isoformat(), "ate": (until - timedelta(seconds=1)).date().isoformat()},
+        "growth": {
+            "arpu_brl": arpu, "arpu_display": brl(arpu),
+            "ltv_brl": ltv, "ltv_display": brl(ltv) if ltv is not None else "sem churn ainda",
+            "churn_mensal_pct": round(churn_mensal, 1),
+            "ativacao_pct": _pct(ativos_onboarding, len(clients)), "ativos_onboarding": ativos_onboarding,
+            "whatsapp_conectado": len(conectados), "whatsapp_conectado_pct": _pct(len(conectados), len(clients)),
+            "conversas_por_pagante": round(conversas_pagantes / len(pagantes_rows), 1) if pagantes_rows else 0.0,
+            "expansao_brl": round(expansao, 2), "expansao_display": brl(expansao),
+            "expansao_pct": _pct(expansao, receita_total["total_brl"]) if receita_total["total_brl"] else 0.0,
+            "custo_ia_sobre_receita_pct": _pct(custo_total, receita_total["total_brl"]) if receita_total["total_brl"] else None,
+            "pagantes_sem_conversa": sum(1 for r in pagantes_rows if r["conversas_atendidas"] == 0),
+        },
+        "em_risco": em_risco[:25],
+        "top_receita": [r for r in rows if r["receita_brl"] > 0][:5],
+        "top_custo_ia": sorted([r for r in rows if r["custo_ia_brl"] > 0], key=lambda r: -r["custo_ia_brl"])[:5],
         "contas": {"total": len(clients), "novas_no_periodo": len(novas), "sem_assinatura": status_counts["sem_assinatura"]},
         "assinaturas": {
             "trial": status_counts["trial"],
@@ -296,7 +360,7 @@ def build_overview(
             "canceladas_no_periodo": canceladas_periodo,
             "pausadas_no_periodo": pausadas_periodo,
             "base_inicio": base_inicio,
-            "pct": _pct(canceladas_periodo, base_inicio),
+            "pct": churn_pct,
         },
         "funil": {
             "contas_novas": len(novas),

@@ -64,8 +64,8 @@ _PAYING = [
     {"client_id": "e", "created_at": _iso(20)},
 ]
 _USAGE = {
-    "a": {"calls": 40, "cost_brl": 12.5, "strong_model_share": 0.25},
-    "b": {"calls": 10, "cost_brl": 3.0, "strong_model_share": 0.0},
+    "a": {"calls": 40, "cost_brl": 12.5, "strong_model_share": 0.25, "conversations": 2, "by_group": {"conversas": 10.0, "onboarding": 2.5}},
+    "b": {"calls": 10, "cost_brl": 3.0, "strong_model_share": 0.0, "conversations": 1, "by_group": {"conversas": 3.0}},
 }
 
 
@@ -133,8 +133,9 @@ class TestRota:
         import huma.services.admin_service as svc
         monkeypatch.setattr(svc, "HUMA_ADMIN_EMAILS", emails)
 
-        async def build_overview(days=30):
-            return {"periodo": {"dias": days}, "assinaturas": {"pagantes": 1}, "receita": {"total_brl": 0}, "ia": {"custo_brl": 0}}
+        async def build_overview(days=30, date_from="", date_to="", compare=False):
+            return {"periodo": {"dias": days, "de": date_from or "x", "ate": date_to or "y"}, "assinaturas": {"pagantes": 1},
+                    "receita": {"total_brl": 0}, "ia": {"custo_brl": 0}, "compare": compare}
 
         monkeypatch.setattr(svc, "build_overview", build_overview)
 
@@ -186,3 +187,65 @@ class TestRota:
         self._enable(monkeypatch)
         r = self._client().get("/api/admin/overview", headers={"Authorization": "Bearer chave-teste"})
         assert r.status_code == 403
+
+
+class TestV2:
+
+    def test_janela_personalizada_em_brt_e_fim_inclusivo(self):
+        from huma.services import admin_service as svc
+        since, until = svc.resolve_window(30, "2026-10-01", "2026-10-05")
+        assert since.isoformat().startswith("2026-10-01T03:00:00")   # 00:00 BRT
+        assert until.isoformat().startswith("2026-10-06T03:00:00")   # fim inclusivo
+        since, until = svc.resolve_window(7, "lixo", "2026-10-05")
+        assert (until - since).days == 7
+        since, until = svc.resolve_window(30, "2026-10-05", "2026-10-01")  # invertido = ignora
+        assert (until - since).days == 30
+
+    def test_overview_tem_growth_risco_e_tops(self):
+        o = _overview()
+        g = o["growth"]
+        assert g["arpu_brl"] == 397.0 and g["ativacao_pct"] == 80.0 and g["whatsapp_conectado"] == 0
+        assert g["expansao_brl"] == 352.98 and g["pagantes_sem_conversa"] == 0
+        assert o["churn"]["pct"] == 33.3 and g["ltv_brl"] is not None
+        motivos = {r["client_id"]: r["motivo"] for r in o["em_risco"]}
+        assert "d" not in motivos                                  # teste venceu há 33 dias: já não é "há pouco"
+        assert "c" not in motivos                                  # trial com 4 dias ainda
+        recente = dict(_SUBS[3], created_at=_iso(12))              # venceu há 5 dias → em risco
+        o2 = am.build_overview(clients=_CLIENTS, subs=_SUBS[:3] + [recente, _SUBS[4]], ledger=_LEDGER, paying_rows=_PAYING,
+                               usage_by_client=_USAGE, now=NOW, since=SINCE, trial_days=7, plan_price=397.0,
+                               pack_prices=PACKS, overage_price=1.99)
+        motivos2 = {r["client_id"]: r["motivo"] for r in o2["em_risco"]}
+        assert "teste venceu" in motivos2["d"]
+        assert o["top_receita"][0]["client_id"] == "a" and o["top_custo_ia"][0]["client_id"] == "a"
+
+    def test_janela_com_fim_exclui_o_que_veio_depois(self):
+        o = am.build_overview(
+            clients=_CLIENTS, subs=_SUBS, ledger=_LEDGER, paying_rows=_PAYING, usage_by_client=_USAGE,
+            now=NOW, since=SINCE, until=NOW - timedelta(days=15), trial_days=7, plan_price=397.0,
+            pack_prices=PACKS, overage_price=1.99,
+        )
+        assert o["periodo"]["dias"] == 15
+        assert o["funil"]["viraram_pagantes_no_periodo"] == 1       # "e" pagou há 20 dias: dentro
+        assert o["churn"]["canceladas_no_periodo"] == 0            # "e" cancelou há 5 dias: fora
+
+    def test_rotas_de_busca_e_ficha(self, monkeypatch):
+        import huma.services.admin_service as svc
+        self_ = TestRota()
+        self_._enable(monkeypatch)
+
+        async def search(q, limit=15):
+            return [{"client_id": "cli_1", "nome": "Loja", "email": "a@b", "dono": "", "telefone": "", "assinatura": "active", "criado_em": "2026-01-01"}] if q else []
+
+        async def detail(cid, days=30):
+            return {"client_id": cid, "identidade": {"nome": "Loja"}} if cid == "cli_1" else None
+
+        monkeypatch.setattr(svc, "search_accounts", search)
+        monkeypatch.setattr(svc, "account_detail", detail)
+        c = TestClient(app)
+        cookies = self_._cookie(monkeypatch)
+        assert c.get("/api/admin/accounts?q=lo", cookies=cookies).json()["items"][0]["client_id"] == "cli_1"
+        assert c.get("/api/admin/accounts/cli_1", cookies=cookies).status_code == 200
+        assert c.get("/api/admin/accounts/cli_9", cookies=cookies).status_code == 404
+        assert c.get("/api/admin/accounts?q=lo").status_code == 403
+        r = c.get("/api/admin/overview?date_from=2026-10-01&date_to=2026-10-05&compare=true", cookies=cookies)
+        assert r.status_code == 200 and r.json()["periodo"]["de"] == "2026-10-01" and r.json()["compare"] is True
