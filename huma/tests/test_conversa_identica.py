@@ -146,7 +146,7 @@ class TestMidiaDoLead:
         captured = {}
 
         async def fake_handle(payload, bg): captured["payload"] = payload
-        async def fake_transcribe(b): return "oi quero agendar"
+        async def fake_transcribe(b, **kw): return "oi quero agendar"
         async def fake_upload(client_id, phone, kind, raw, ct): return "https://s/lead.ogg"
         monkeypatch.setattr(api, "handle_message", fake_handle)
         monkeypatch.setattr(ts, "transcribe_bytes", fake_transcribe)
