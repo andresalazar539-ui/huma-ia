@@ -282,6 +282,17 @@ NUVEMSHOP_CLIENT_SECRET = os.getenv("NUVEMSHOP_CLIENT_SECRET", "")
 NUVEMSHOP_API_BASE_URL = os.getenv("NUVEMSHOP_API_BASE_URL", "https://api.tiendanube.com/v1")
 NUVEMSHOP_USER_AGENT = os.getenv("NUVEMSHOP_USER_AGENT", "HUMA IA (contato@humaia.com.br)")
 
+# ── Painel do dono da HUMA (2026-10-10): e-mails separados por vírgula que
+# veem /api/admin/* e a tela "HUMA por dentro" no Cockpit. Vazio = painel não existe.
+HUMA_ADMIN_EMAILS = os.getenv("HUMA_ADMIN_EMAILS", "")
+
+# ── Omie e Tiny (ERPs por credencial do cliente, sem OAuth, sem env de app) ──
+OMIE_API_BASE_URL = os.getenv("OMIE_API_BASE_URL", "https://app.omie.com.br/api/v1")
+TINY_API_BASE_URL = os.getenv("TINY_API_BASE_URL", "https://api.tiny.com.br/api2")
+
+# ── RD Station CRM — token da instância por cliente (sem OAuth, sem env de app) ──
+RDSTATION_API_BASE_URL = os.getenv("RDSTATION_API_BASE_URL", "https://crm.rdstation.com/api/v1")
+
 # ── HubSpot (CRM) — mesmo desenho do Pipedrive ──
 HUBSPOT_CLIENT_ID = os.getenv("HUBSPOT_CLIENT_ID", "")
 HUBSPOT_CLIENT_SECRET = os.getenv("HUBSPOT_CLIENT_SECRET", "")

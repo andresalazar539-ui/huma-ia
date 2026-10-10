@@ -341,7 +341,7 @@ const IniDiaZero = ({ setup, wa, onGoto }) => {
   const sells = caps.includes('sell_digital') || caps.includes('sell_physical');
   const agendaOn = !!setup && (setup.google_oauth === 'ok' || !!setup.google_calendar);
   const payOn = !!setup && (setup.mercadopago_connected === 'ok' || setup.asaas_connected === 'ok');
-  const lojaOn = !!setup && (setup.nuvemshop_connected === 'ok' || setup.bling_access_token === 'ok');
+  const lojaOn = !!setup && (setup.nuvemshop_connected === 'ok' || setup.bling_access_token === 'ok' || setup.omie_connected === 'ok' || setup.tiny_connected === 'ok');
   const linhas = [
     waLinha,
     ...(setup && caps.includes('schedule') ? [{

@@ -212,12 +212,12 @@ async def list_recent_conversations(client_id: str, limit: int = 300) -> list[di
 
 async def list_store_clients() -> list[ClientIdentity]:
     """
-    Clientes com loja virtual (Nuvemshop) ou ERP (Bling) conectado — pro job
+    Clientes com loja virtual (Nuvemshop) ou ERP (Omie, Tiny, Bling) conectado — pro job
     que mantém o catálogo no conhecimento da IA (catalog_refresh, 2026-09-07).
     Duas consultas simples e união por client_id (sem OR no PostgREST).
     """
     out: dict[str, ClientIdentity] = {}
-    for column in ("nuvemshop_access_token", "bling_access_token"):
+    for column in ("nuvemshop_access_token", "omie_app_key", "tiny_api_token", "bling_access_token"):
         resp = await run_in_threadpool(
             lambda col=column: get_supabase().table("clients").select("*").neq(col, "").execute()
         )

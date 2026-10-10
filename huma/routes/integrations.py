@@ -6,6 +6,9 @@
 #   Pixel do cliente:  PUT /api/clients/{id}/pixel  (+ /pixel/test)
 #   Planilha Google:   POST /api/clients/{id}/sheet  (recria se faltou)
 #   Asaas:             POST /api/clients/{id}/asaas/connect
+#   RD Station CRM:    POST /api/clients/{id}/rd_station/connect (token da instância)
+#   Omie ERP:          POST /api/clients/{id}/omie/connect (app_key + app_secret)
+#   Tiny ERP:          POST /api/clients/{id}/tiny/connect (token)
 #                      POST /webhook/asaas  (cobranças da conta do cliente)
 #
 # Todas as rotas do Cockpit usam verify_api_key (sessão ou Bearer).
@@ -227,6 +230,163 @@ async def asaas_connect(client_id: str, body: AsaasBody, client=Depends(verify_a
         f"webhook={hook.get('webhook_id')} | caps={updates.get('capabilities', 'inalteradas')}"
     )
     return {"status": "ok", "account_name": info.get("name", ""), "sandbox": bool(info.get("sandbox"))}
+
+
+# ================================================================
+# ERPs POR CREDENCIAL: OMIE e TINY (2026-10-10)
+# ================================================================
+
+
+async def _sync_erp_catalog(client_id: str, identity, adapter, source: str) -> int:
+    """
+    Lê o catálogo do ERP recém-conectado e grava conhecimento (itens com
+    `source`) + playbook novo. Mesmo desenho do Bling (oauth_bling).
+
+    Returns:
+        Itens aprendidos; 0 = catálogo indisponível; -1 = leu mas não gravou.
+    """
+    from huma.core.catalog_sync import merge_store_catalog, store_products_to_items
+    from huma.services import playbook_service
+
+    catalog = await adapter.list_products(limit=100, only_in_stock=False)
+    if catalog.get("status") != "ok":
+        log.warning(
+            f"{source} | sync catálogo pulado | client={client_id} | "
+            f"status={catalog.get('status')} | detail={catalog.get('detail', '')}"
+        )
+        return 0
+    items = store_products_to_items(catalog.get("products") or [], source=source)
+    existing = getattr(identity, "products_or_services", None) or []
+    try:
+        await db.update_client(client_id, {"products_or_services": merge_store_catalog(existing, items, source=source)})
+    except Exception as e:
+        log.error(f"{source} | sync catálogo falhou | client={client_id} | {type(e).__name__}: {e}")
+        return -1
+    log.info(f"{source} | sync catálogo | client={client_id} | itens={len(items)}")
+    if items:
+        playbook_service.schedule_regenerate(client_id, f"{source}_connect")
+    return len(items)
+
+
+class OmieBody(BaseModel):
+    app_key: str = Field(..., min_length=6, max_length=200)
+    app_secret: str = Field(..., min_length=6, max_length=200)
+
+
+@router.post("/api/clients/{client_id}/omie/connect")
+async def omie_connect(client_id: str, body: OmieBody, client=Depends(verify_api_key)) -> dict:
+    """
+    App Key + App Secret → a HUMA valida no Omie, liga a venda de produto
+    físico e aprende o catálogo (estoque é consultado ao vivo depois).
+    """
+    from huma.core.integration_effects import effects_for_connect
+    from huma.providers.inventory.omie import OmieAdapter
+
+    adapter = OmieAdapter(app_key=body.app_key.strip(), app_secret=body.app_secret.strip())
+    info = await adapter.validate_credentials()
+    if info.get("status") != "ok":
+        raise HTTPException(400, info.get("user_message") or "Credenciais inválidas.")
+    updates = {"omie_app_key": adapter.app_key, "omie_app_secret": adapter.app_secret}
+    updates.update(effects_for_connect(getattr(client, "capabilities", None), "omie"))
+    await _persist(client_id, updates)
+    synced = await _sync_erp_catalog(client_id, client, adapter, "omie")
+    log.info(
+        f"Omie | conectado | client={client_id} | produtos_na_conta={info.get('total_products', '?')} | "
+        f"aprendidos={synced} | caps={updates.get('capabilities', 'inalteradas')}"
+    )
+    return {"status": "ok", "synced": max(synced, 0), "total_products": info.get("total_products", 0)}
+
+
+class TinyBody(BaseModel):
+    token: str = Field(..., min_length=10, max_length=400)
+
+
+@router.post("/api/clients/{client_id}/tiny/connect")
+async def tiny_connect(client_id: str, body: TinyBody, client=Depends(verify_api_key)) -> dict:
+    """
+    Token da API v2 → a HUMA valida no Tiny, liga a venda de produto
+    físico e aprende o catálogo (saldo é consultado ao vivo por produto).
+    """
+    from huma.core.integration_effects import effects_for_connect
+    from huma.providers.inventory.tiny import TinyAdapter
+
+    adapter = TinyAdapter(api_token=body.token.strip())
+    info = await adapter.validate_token()
+    if info.get("status") != "ok":
+        raise HTTPException(400, info.get("user_message") or "Token inválido.")
+    updates = {"tiny_api_token": adapter.api_token}
+    updates.update(effects_for_connect(getattr(client, "capabilities", None), "tiny"))
+    await _persist(client_id, updates)
+    synced = await _sync_erp_catalog(client_id, client, adapter, "tiny")
+    log.info(
+        f"Tiny | conectado | client={client_id} | conta={info.get('account_name', '')} | "
+        f"aprendidos={synced} | caps={updates.get('capabilities', 'inalteradas')}"
+    )
+    return {"status": "ok", "synced": max(synced, 0), "account_name": info.get("account_name", "")}
+
+
+# ================================================================
+# RD STATION CRM (token da instância)
+# ================================================================
+
+
+class RDStationBody(BaseModel):
+    token: str = Field(..., min_length=10, max_length=400)
+
+
+@router.post("/api/clients/{client_id}/rd_station/connect")
+async def rd_station_connect(client_id: str, body: RDStationBody, client=Depends(verify_api_key)) -> dict:
+    """
+    Cola o token da instância → a HUMA valida no RD Station CRM, descobre
+    o funil padrão, o primeiro estágio e o dono do token, registra o
+    webhook de negócio (best-effort) e liga o RD Station como CRM do
+    cliente. Mesmo contrato do Pipedrive/HubSpot (CRMProvider), só
+    muda a credencial.
+    """
+    from huma.core.integration_effects import effects_for_connect
+    from huma.providers.crm.rd_station import RDStationAdapter
+
+    token = body.token.strip()
+    adapter = RDStationAdapter(api_token=token)
+    info = await adapter.check_token()
+    if info.get("status") != "ok":
+        raise HTTPException(400, info.get("user_message") or "Token inválido.")
+
+    defaults = await adapter.detect_default_pipeline()
+    updates = {
+        "crm_provider": "rd_station",
+        "crm_api_token": token,
+        "crm_access_token": "",
+        "crm_refresh_token": "",
+        "crm_token_expires_at": None,
+        "crm_api_base_url": "",
+        "crm_pipeline_id": defaults.get("crm_pipeline_id", ""),
+        "crm_stage_id": defaults.get("crm_stage_id", ""),
+    }
+    # O dono pode já ter escolhido quem recebe os negócios; só preenche se vazio.
+    if not (getattr(client, "crm_owner_id", "") or ""):
+        updates["crm_owner_id"] = defaults.get("crm_owner_id", "")
+    updates.update(effects_for_connect(getattr(client, "capabilities", None), "crm"))
+    await _persist(client_id, updates)
+
+    webhook = {"status": "skipped", "detail": "sem PUBLIC_BASE_URL"}
+    base = (PUBLIC_BASE_URL or "").rstrip("/")
+    if base:
+        webhook = await adapter.ensure_webhook(f"{base}/webhook/crm/rd_station")
+        if webhook.get("status") != "ok":
+            log.warning(f"RD Station | webhook não registrado | client={client_id} | {webhook.get('detail', '')}")
+    log.info(
+        f"RD Station | conectado | client={client_id} | conta={info.get('organization', '')} | "
+        f"stage={updates['crm_stage_id'] or '-'} | owner={updates.get('crm_owner_id', 'mantido')} | "
+        f"webhook={webhook.get('status')} | caps={updates.get('capabilities', 'inalteradas')}"
+    )
+    return {
+        "status": "ok",
+        "account_name": info.get("organization", "") or info.get("name", ""),
+        "user_name": info.get("name", ""),
+        "pipeline_ready": bool(updates["crm_stage_id"]),
+        "webhook": webhook.get("status", ""),
+    }
 
 
 @router.post("/webhook/asaas", include_in_schema=False)

@@ -1,0 +1,181 @@
+# ================================================================
+# Testes: painel do dono da HUMA (2026-10-10)
+# ================================================================
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+
+from fastapi.testclient import TestClient
+
+from huma.app import app
+from huma.core import admin_metrics as am
+from huma.models.schemas import ClientIdentity, OnboardingStatus
+
+NOW = datetime(2026, 10, 10, 12, 0, tzinfo=timezone.utc)
+SINCE = NOW - timedelta(days=30)
+PACKS = {"pack_200": {"conversations": 200, "price_brl": 349.0}, "pack_500": {"conversations": 500, "price_brl": 797.0}}
+
+
+def _iso(days_ago: float) -> str:
+    return (NOW - timedelta(days=days_ago)).isoformat()
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+_CLIENTS = [
+    {"client_id": "a", "business_name": "Clínica A", "owner_email": "a@x.com", "category": "clinica",
+     "onboarding_status": "active", "created_at": _iso(200), "referred_by": "", "referral_credited_at": None},
+    {"client_id": "b", "business_name": "Loja B", "owner_email": "b@x.com", "category": "ecommerce",
+     "onboarding_status": "active", "created_at": _iso(10), "referred_by": "a", "referral_credited_at": _iso(2)},
+    {"client_id": "c", "business_name": "Trial C", "owner_email": "c@x.com", "category": "servicos",
+     "onboarding_status": "sandbox", "created_at": _iso(3), "referred_by": "a", "referral_credited_at": None},
+    {"client_id": "d", "business_name": "Vencido D", "owner_email": "d@x.com", "category": "outros",
+     "onboarding_status": "active", "created_at": _iso(40), "referred_by": "", "referral_credited_at": None},
+    {"client_id": "e", "business_name": "Cancelou E", "owner_email": "e@x.com", "category": "outros",
+     "onboarding_status": "active", "created_at": _iso(120), "referred_by": "", "referral_credited_at": None},
+]
+_SUBS = [
+    {"client_id": "a", "status": "active", "plan": "start", "price_brl": 397.0, "payment_provider_id": "pre_a",
+     "spend_mode": "capped", "created_at": _iso(200), "updated_at": _iso(100)},
+    {"client_id": "b", "status": "active", "plan": "start", "price_brl": 397.0, "payment_provider_id": "coupon:TESTE100",
+     "spend_mode": "locked", "created_at": _iso(10), "updated_at": _iso(10)},
+    {"client_id": "c", "status": "trial", "plan": "trial", "price_brl": 0, "payment_provider_id": "",
+     "spend_mode": "locked", "created_at": _iso(3), "updated_at": _iso(3)},
+    {"client_id": "d", "status": "trial", "plan": "trial", "price_brl": 0, "payment_provider_id": "",
+     "spend_mode": "locked", "created_at": _iso(40), "updated_at": _iso(40)},
+    {"client_id": "e", "status": "cancelled", "plan": "start", "price_brl": 397.0, "payment_provider_id": "pre_e",
+     "spend_mode": "locked", "created_at": _iso(120), "updated_at": _iso(5)},
+]
+_LEDGER = [
+    {"client_id": "a", "type": "credit", "amount": 150, "source": "mp_renovacao", "description": "apid=1 payid=2 pre=pre_a plano start", "created_at": _iso(4)},
+    {"client_id": "a", "type": "credit", "amount": 200, "source": "pacote_extra", "description": "payid=9 pacote pack_200 R$349.0", "created_at": _iso(3)},
+    {"client_id": "a", "type": "credit", "amount": 1, "source": "excedente", "description": "Excedente R$ 1.99 | 5511", "created_at": _iso(2)},
+    {"client_id": "a", "type": "credit", "amount": 1, "source": "excedente", "description": "Excedente R$ 1.99 | 5512", "created_at": _iso(2)},
+    {"client_id": "a", "type": "debit", "amount": 1, "source": "conversa", "description": "Conversa com 5511", "created_at": _iso(2)},
+    {"client_id": "a", "type": "debit", "amount": 1, "source": "conversa", "description": "Conversa com 5512", "created_at": _iso(1)},
+    {"client_id": "a", "type": "credit", "amount": 0, "source": "mp_renovacao", "description": "mês já creditado", "created_at": _iso(1)},
+    {"client_id": "b", "type": "debit", "amount": 1, "source": "conversa", "description": "Conversa com 5513", "created_at": _iso(1)},
+    {"client_id": "e", "type": "credit", "amount": 150, "source": "mp_renovacao", "description": "apid=3 payid=4 pre=pre_e plano start", "created_at": _iso(20)},
+]
+_PAYING = [
+    {"client_id": "a", "created_at": _iso(190)}, {"client_id": "a", "created_at": _iso(4)},
+    {"client_id": "e", "created_at": _iso(20)},
+]
+_USAGE = {
+    "a": {"calls": 40, "cost_brl": 12.5, "strong_model_share": 0.25},
+    "b": {"calls": 10, "cost_brl": 3.0, "strong_model_share": 0.0},
+}
+
+
+def _overview():
+    return am.build_overview(
+        clients=_CLIENTS, subs=_SUBS, ledger=_LEDGER, paying_rows=_PAYING, usage_by_client=_USAGE,
+        now=NOW, since=SINCE, trial_days=7, plan_price=397.0, pack_prices=PACKS, overage_price=1.99,
+    )
+
+
+class TestMetricasPuras:
+
+    def test_status_efetivo_e_pagante(self):
+        assert am.effective_sub_status(_SUBS[3], NOW, 7) == "trial_expired"
+        assert am.effective_sub_status(_SUBS[2], NOW, 7) == "trial"
+        assert am.is_paying(_SUBS[0], {"a"}, NOW, 7) is True
+        assert am.is_paying(_SUBS[0], set(), NOW, 7) is False      # active sem cobrança não é pagante
+        assert am.is_paying(_SUBS[1], set(), NOW, 7) is True       # cortesia conta como pagante
+        assert am.is_paying(_SUBS[4], {"e"}, NOW, 7) is False
+
+    def test_receita_do_razao(self):
+        rec = am.revenue_from_ledger(_LEDGER, 397.0, PACKS, 1.99)
+        assert rec["cobrancas"] == 2 and rec["plano_brl"] == 794.0
+        assert rec["pacotes"] == 1 and rec["pacotes_brl"] == 349.0
+        assert rec["excedente_conversas"] == 2 and rec["excedente_brl"] == 3.98
+        assert rec["total_brl"] == 1146.98
+
+    def test_painel_completo(self):
+        o = _overview()
+        a = o["assinaturas"]
+        assert a["pagantes"] == 2 and a["cortesia"] == 1 and a["trial"] == 1 and a["trial_expirado"] == 1 and a["canceladas"] == 1
+        assert o["mrr"]["brl"] == 397.0                       # cortesia não entra no MRR
+        assert o["churn"]["canceladas_no_periodo"] == 1 and o["churn"]["pct"] == 33.3
+        assert o["funil"]["contas_novas"] == 2 and o["funil"]["viraram_pagantes_no_periodo"] == 1  # "e" pagou pela 1ª vez há 20 dias
+        assert o["funil"]["pagantes_de_sempre"] == 2 and o["funil"]["conversao_total_pct"] == 40.0
+        assert o["receita"]["total_brl"] == 1146.98 and o["receita"]["ticket_medio_brl"] == 573.49
+        assert o["ia"]["custo_brl"] == 15.5 and o["ia"]["conversas_engajadas"] == 3 and o["ia"]["chamadas"] == 50
+        assert o["ia"]["share_modelo_forte_pct"] == 20.0
+        assert o["margem"]["brl"] == 1131.48
+        assert o["indicacoes"] == {"indicados": 2, "convertidos": 1}
+        rows = {r["client_id"]: r for r in o["clientes"]}
+        assert o["clientes"][0]["client_id"] == "a"            # maior receita primeiro
+        assert rows["a"]["receita_brl"] == 749.98 and rows["a"]["custo_ia_brl"] == 12.5 and rows["a"]["margem_pct"] == 98.3
+        assert rows["a"]["conversas"] == 2 and rows["a"]["excedente_conversas"] == 2 and rows["a"]["spend_mode"] == "capped"
+        assert rows["b"]["pagante"] is True and rows["b"]["cortesia"] is True and rows["b"]["margem_pct"] is None
+        assert rows["d"]["assinatura"] == "trial_expired" and rows["c"]["indicado_por"] == "a"
+
+    def test_vazio_nao_quebra(self):
+        o = am.build_overview(clients=[], subs=[], ledger=[], paying_rows=[], usage_by_client={}, now=NOW, since=SINCE,
+                              trial_days=7, plan_price=397.0, pack_prices=PACKS, overage_price=1.99)
+        assert o["contas"]["total"] == 0 and o["mrr"]["brl"] == 0 and o["clientes"] == [] and o["margem"]["pct"] is None
+
+
+class TestRota:
+
+    def _client(self):
+        return TestClient(app)
+
+    def _cookie(self, monkeypatch, email="andre@humaia.com.br"):
+        import huma.core.auth as auth
+        monkeypatch.setattr(auth, "SESSION_SECRET", "segredo-teste")
+        return {"huma_session": auth.create_session_token("cli_x", email=email)}
+
+    def _enable(self, monkeypatch, emails="andre@humaia.com.br, ops@humaia.com.br"):
+        import huma.services.admin_service as svc
+        monkeypatch.setattr(svc, "HUMA_ADMIN_EMAILS", emails)
+
+        async def build_overview(days=30):
+            return {"periodo": {"dias": days}, "assinaturas": {"pagantes": 1}, "receita": {"total_brl": 0}, "ia": {"custo_brl": 0}}
+
+        monkeypatch.setattr(svc, "build_overview", build_overview)
+
+    def test_sem_env_e_404(self, monkeypatch):
+        import huma.services.admin_service as svc
+        monkeypatch.setattr(svc, "HUMA_ADMIN_EMAILS", "")
+        assert self._client().get("/api/admin/overview", cookies=self._cookie(monkeypatch)).status_code == 404
+
+    def test_email_de_fora_e_403(self, monkeypatch):
+        self._enable(monkeypatch)
+        r = self._client().get("/api/admin/overview", cookies=self._cookie(monkeypatch, email="cliente@loja.com.br"))
+        assert r.status_code == 403
+        assert self._client().get("/api/admin/overview").status_code == 403
+
+    def test_admin_ve_o_painel(self, monkeypatch):
+        self._enable(monkeypatch)
+        r = self._client().get("/api/admin/overview?days=7", cookies=self._cookie(monkeypatch, email="OPS@humaia.com.br"))
+        assert r.status_code == 200 and r.json()["periodo"]["dias"] == 7
+
+    def test_sessao_antiga_resolve_pelo_dono_da_conta(self, monkeypatch):
+        import huma.core.auth as auth
+        import huma.routes.admin as routes
+        self._enable(monkeypatch)
+        ident = ClientIdentity(client_id="cli_x", business_name="HUMA", owner_email="andre@humaia.com.br",
+                               onboarding_status=OnboardingStatus.ACTIVE)
+
+        async def get_client(cid): return ident
+        monkeypatch.setattr(routes.db, "get_client", get_client)
+        monkeypatch.setattr(auth, "SESSION_SECRET", "segredo-teste")
+        cookies = {"huma_session": auth.create_session_token("cli_x")}
+        assert self._client().get("/api/admin/overview", cookies=cookies).status_code == 200
+
+    def test_cockpit_injeta_flag(self, monkeypatch):
+        import huma.routes.cockpit as cp
+        self._enable(monkeypatch)
+        html = self._client().get("/cockpit", cookies=self._cookie(monkeypatch)).text
+        assert "window.HUMA_IS_SUPERADMIN = true" in html
+        html = self._client().get("/cockpit", cookies=self._cookie(monkeypatch, email="x@y.com")).text
+        assert "window.HUMA_IS_SUPERADMIN = false" in html
+
+    def test_bearer_de_cliente_nao_entra(self, monkeypatch):
+        self._enable(monkeypatch)
+        r = self._client().get("/api/admin/overview", headers={"Authorization": "Bearer chave-teste"})
+        assert r.status_code == 403

@@ -145,6 +145,8 @@ def is_enabled(identity: Any) -> bool:
         return False
     return bool(
         (getattr(identity, "nuvemshop_access_token", "") and getattr(identity, "nuvemshop_store_id", ""))
+        or (getattr(identity, "omie_app_key", "") and getattr(identity, "omie_app_secret", ""))
+        or getattr(identity, "tiny_api_token", "")
         or getattr(identity, "bling_access_token", "")
     )
 

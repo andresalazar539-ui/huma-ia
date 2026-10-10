@@ -1029,7 +1029,7 @@ const NegocioMissao = ({ settings, patch }) => {
   const caps = Array.isArray(settings.capabilities) ? settings.capabilities : (settings.capabilities_resolved || []);
   const toggleCap = (id) => patch('capabilities', caps.includes(id) ? caps.filter(c => c !== id) : [...caps, id]);
   // Loja virtual OU ERP liberam a venda física (mesma regra do onboarding: check_any_field).
-  const storeOn = !!(integ && (integ.bling_access_token || integ.nuvemshop_connected));
+  const storeOn = !!(integ && (integ.bling_access_token || integ.nuvemshop_connected || integ.omie_connected || integ.tiny_connected));
   const gcalOn = !!(integ && integ.google_calendar);
   const fields = Array.isArray(settings.lead_collection_fields) ? settings.lead_collection_fields : [];
   const methods = Array.isArray(settings.accepted_payment_methods) ? settings.accepted_payment_methods : [];
@@ -1050,7 +1050,7 @@ const NegocioMissao = ({ settings, patch }) => {
           {NEG_CAPS.map(c => {
             const on = caps.includes(c.id);
             const blocked = c.needs === 'store' && !storeOn && !on;
-            const warn = c.needs === 'store' && !storeOn ? 'Conecte a Nuvemshop ou o Bling em Integrações pra ligar.'
+            const warn = c.needs === 'store' && !storeOn ? 'Conecte a Nuvemshop, o Omie, o Tiny ou o Bling em Integrações pra ligar.'
               : (c.needs === 'gcal' && on && integ && !gcalOn ? 'Sua agenda do Google ainda não está conectada. Até conectar em Integrações, a HUMA não marca horário sozinha: ela pede ao lead 2 ou 3 opções e deixa a confirmação com você.' : '');
             return (
               <label key={c.id} style={{
@@ -1586,7 +1586,7 @@ const NegocioIntegShortcut = ({ onNavMain }) => {
         { name: 'WhatsApp', ...wa },
         { name: 'Balcão (chat no site)', on: true, sub: balcao.replace(/^https?:\/\//, '') || 'Link próprio' },
         { name: 'Google Calendar', on: !!c.google_calendar, sub: c.google_calendar ? (c.google_calendar_id || 'Sua agenda conectada') : 'Conecte sua agenda em Integrações' },
-        { name: 'Bling ERP', on: !!c.bling_access_token, sub: c.bling_access_token ? 'Estoque e pedidos' : 'Não conectado' },
+        { name: 'ERP', on: !!(c.bling_access_token || c.omie_connected || c.tiny_connected), sub: c.omie_connected ? 'Omie: catálogo e estoque' : (c.tiny_connected ? 'Tiny: catálogo e saldo' : (c.bling_access_token ? 'Bling: estoque e pedidos' : 'Não conectado')) },
         { name: 'CRM', on: !!c.crm_access_token, sub: c.crm_access_token ? (c.crm_provider || 'Conectado') : 'Nenhum conectado' },
         { name: 'Voz clonada', on: !!c.voice_id, sub: c.voice_id ? (c.enable_audio ? 'Áudios ligados' : 'Áudios desligados') : 'Sem voz' },
       ]);

@@ -615,7 +615,15 @@ async function createAppointment(payload) {
   if (!r.ok) throw new Error(await _readApiError(r));
   return r.json();
 }
-Object.assign(window, { fetchAppointments, createAppointment });
+// "Não veio": o dono marca na Agenda que o lead faltou. O horário sai da
+// conversa e a jogada "Não veio" do Follow-up é programada (se ligada).
+async function markNoShow(phone) {
+  const url = `/api/conversations/${encodeURIComponent(CLIENT_ID)}/${encodeURIComponent(phone)}/no-show`;
+  const r = await fetch(url, { method: 'POST', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+Object.assign(window, { fetchAppointments, createAppointment, markNoShow });
 
 /* ---------------- Bloco C: Status real das integrações ---------------- */
 // Retorna { bling_access_token, crm_access_token, crm_provider, voice_id, ... }
@@ -1324,6 +1332,36 @@ async function connectAsaas(api_key) {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/asaas/connect`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
     body: JSON.stringify({ api_key }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Omie ERP (App Key + App Secret do cliente)
+async function connectOmie(app_key, app_secret) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/omie/connect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ app_key, app_secret }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// Tiny ERP (token da API v2 do cliente)
+async function connectTiny(token) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/tiny/connect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ token }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+// RD Station CRM (token da instância do cliente)
+async function connectRdStation(token) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/rd_station/connect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ token }),
   });
   if (!r.ok) throw await _readApiError(r);
   return r.json();

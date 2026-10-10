@@ -2769,6 +2769,9 @@ async def integrations_status(
         "nuvemshop_store_name": getattr(identity, "nuvemshop_store_name", "") or "",
         "nuvemshop_store_url": getattr(identity, "nuvemshop_store_url", "") or "",
         "nuvemshop_server": _nuvemshop_server(),
+        # ERPs por credencial (2026-10-10) — só marcadores
+        "omie_connected": _truthy(getattr(identity, "omie_app_key", "") and getattr(identity, "omie_app_secret", "")),
+        "tiny_connected": _truthy(getattr(identity, "tiny_api_token", "")),
         "hubspot_server": _hubspot_server(),
         "asaas_connected": _truthy(getattr(identity, "asaas_api_key", "")),
         "payment_provider": getattr(identity, "payment_provider", "") or "",
@@ -2855,6 +2858,14 @@ async def integrations_disconnect(
         if any(isinstance(p, dict) and p.get("source") == "bling" for p in existing):
             from huma.core.catalog_sync import remove_store_items
             updates["products_or_services"] = remove_store_items(existing, source="bling")
+    elif integration_id in ("omie", "tiny"):
+        # ERP fora = catálogo dele sai do conhecimento; itens do dono ficam.
+        updates = {"omie_app_key": "", "omie_app_secret": ""} if integration_id == "omie" else {"tiny_api_token": ""}
+        identity = await db.get_client(client_id)
+        existing = (getattr(identity, "products_or_services", None) or []) if identity else []
+        if any(isinstance(p, dict) and p.get("source") == integration_id for p in existing):
+            from huma.core.catalog_sync import remove_store_items
+            updates["products_or_services"] = remove_store_items(existing, source=integration_id)
     elif integration_id in ("pipedrive", "hubspot", "rdstation", "rd_station", "crm"):
         updates = {
             "crm_access_token": "",
@@ -2933,7 +2944,7 @@ async def integrations_disconnect(
         raise HTTPException(
             400,
             f"Integração '{integration_id}' não suporta disconnect ainda. "
-            f"Disponíveis: bling, pipedrive, hubspot, google, instagram, nuvemshop, webhook, pixel, asaas.",
+            f"Disponíveis: bling, omie, tiny, pipedrive, hubspot, rd_station, google, instagram, nuvemshop, webhook, pixel, asaas.",
         )
 
     await db.update_client(client_id, updates)
@@ -2983,6 +2994,9 @@ async def crm_status(
         "connect_urls": {
             "pipedrive": f"/oauth/crm/pipedrive/start?client_id={client_id}",
             "hubspot": f"/oauth/crm/hubspot/start?client_id={client_id}",
+            # RD Station não tem OAuth: o Cockpit abre o modal do token
+            # e chama POST /api/clients/{id}/rd_station/connect.
+            "rd_station": "",
         },
     }
 

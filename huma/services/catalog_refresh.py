@@ -23,11 +23,8 @@ log = get_logger("catalog_refresh")
 
 def _store_source(identity) -> str:
     """Qual loja alimenta o catálogo deste cliente (mesma ordem do get_provider_for)."""
-    if (getattr(identity, "nuvemshop_access_token", "") or "") and (getattr(identity, "nuvemshop_store_id", "") or ""):
-        return "nuvemshop"
-    if getattr(identity, "bling_access_token", "") or "":
-        return "bling"
-    return ""
+    from huma.providers.inventory import store_source_for
+    return store_source_for(identity)
 
 
 def _fingerprint(items: list[dict]) -> list[tuple]:

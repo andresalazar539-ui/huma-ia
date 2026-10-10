@@ -29,9 +29,10 @@ def get_provider_for(identity: "ClientIdentity") -> InventoryProvider:
     """
     Resolve o provider de catálogo/estoque DESTE cliente (2026-09-05).
 
-    Ordem: Nuvemshop (loja conectada) → Bling (ERP conectado) → Bling em
-    modo no_credentials (mantém o contrato: os handlers do orchestrator
-    recebem status="no_credentials" e degradam como antes).
+    Ordem: Nuvemshop (loja conectada) → Omie → Tiny → Bling (ERP
+    conectado) → Bling em modo no_credentials (mantém o contrato: os
+    handlers do orchestrator recebem status="no_credentials" e degradam
+    como antes). Omie/Tiny entraram em 2026-10-10, antes do Bling.
     """
     if (getattr(identity, "nuvemshop_access_token", "") or "") and (
         getattr(identity, "nuvemshop_store_id", "") or ""
@@ -39,7 +40,32 @@ def get_provider_for(identity: "ClientIdentity") -> InventoryProvider:
         from huma.providers.inventory.nuvemshop import NuvemshopAdapter
 
         return NuvemshopAdapter(identity=identity)
+    if (getattr(identity, "omie_app_key", "") or "") and (getattr(identity, "omie_app_secret", "") or ""):
+        from huma.providers.inventory.omie import OmieAdapter
+
+        return OmieAdapter(identity=identity)
+    if getattr(identity, "tiny_api_token", "") or "":
+        from huma.providers.inventory.tiny import TinyAdapter
+
+        return TinyAdapter(identity=identity)
     return BlingAdapter(identity=identity)
+
+
+def store_source_for(identity: "ClientIdentity") -> str:
+    """
+    Qual loja/ERP alimenta o catálogo deste cliente, na MESMA ordem do
+    get_provider_for: "nuvemshop" | "omie" | "tiny" | "bling" | "".
+    É o `source` gravado nos itens de products_or_services.
+    """
+    if (getattr(identity, "nuvemshop_access_token", "") or "") and (getattr(identity, "nuvemshop_store_id", "") or ""):
+        return "nuvemshop"
+    if (getattr(identity, "omie_app_key", "") or "") and (getattr(identity, "omie_app_secret", "") or ""):
+        return "omie"
+    if getattr(identity, "tiny_api_token", "") or "":
+        return "tiny"
+    if getattr(identity, "bling_access_token", "") or "":
+        return "bling"
+    return ""
 
 
 def get_default_provider() -> InventoryProvider:
@@ -61,4 +87,4 @@ def get_default_provider() -> InventoryProvider:
     return _default_instance
 
 
-__all__ = ["InventoryProvider", "BlingAdapter", "get_default_provider", "get_provider_for"]
+__all__ = ["InventoryProvider", "BlingAdapter", "get_default_provider", "get_provider_for", "store_source_for"]

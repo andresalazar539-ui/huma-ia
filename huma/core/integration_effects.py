@@ -25,6 +25,8 @@ from typing import Iterable
 CONNECT_EFFECTS: dict[str, tuple[str, ...]] = {
     "nuvemshop": ("sell_physical",),
     "bling": ("sell_physical",),
+    "omie": ("sell_physical",),
+    "tiny": ("sell_physical",),
     "google_calendar": ("schedule",),
     "crm": ("qualify",),
     # Meio de pagamento próprio: o dono quer COBRAR na conversa. Só liga

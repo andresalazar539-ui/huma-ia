@@ -42,7 +42,7 @@ const INTEG = {
     kind: 'nuvemshop', title: 'Loja Nuvemshop',
     desc: 'Eu vejo seu catálogo, seus preços e o estoque em tempo real.',
     without: 'Sem a loja eu não sei o que tem em estoque.',
-    on: s => s.nuvemshop_connected === 'ok' || s.bling_access_token === 'ok', server: s => !!s.nuvemshop_server,
+    on: s => s.nuvemshop_connected === 'ok' || s.bling_access_token === 'ok' || s.omie_connected === 'ok' || s.tiny_connected === 'ok', server: s => !!s.nuvemshop_server,
   },
   instagram: {
     kind: 'instagram', title: 'Instagram',

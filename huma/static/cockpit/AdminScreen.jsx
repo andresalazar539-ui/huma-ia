@@ -1,0 +1,188 @@
+// AdminScreen.jsx — Painel do dono da HUMA (2026-10-10)
+// Só aparece pra quem está em HUMA_ADMIN_EMAILS (window.HUMA_IS_SUPERADMIN).
+// Reusa StatTile / SectionTitle / Grid do ReportsScreen (mesmo escopo global).
+// Prefixo "Ad" nos componentes próprios: os scripts do Cockpit dividem escopo.
+const { useState: useStateAd, useEffect: useEffectAd } = React;
+
+const AD_PERIODS = [
+  { days: 7, label: '7 dias' },
+  { days: 30, label: '30 dias' },
+  { days: 90, label: '90 dias' },
+  { days: 365, label: '12 meses' },
+];
+
+const AD_SUB_LABEL = {
+  trial: 'Teste grátis', trial_expired: 'Teste vencido', active: 'Ativa', paused: 'Pausada',
+  cancelled: 'Cancelada', pending: 'Pendente', sem_assinatura: 'Sem assinatura',
+};
+
+async function fetchAdminOverview(days) {
+  const r = await fetch(`/api/admin/overview?days=${encodeURIComponent(days)}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+
+const AdClientsTable = ({ rows }) => {
+  const [filter, setFilter] = useStateAd('todos');
+  const [q, setQ] = useStateAd('');
+  if (!rows || rows.length === 0) return null;
+  const th = {
+    fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+    letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)',
+  };
+  const num = { fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', textAlign: 'right', whiteSpace: 'nowrap' };
+  const cols = 'minmax(170px, 1.6fr) 110px 90px 110px 110px 110px 90px';
+  const norm = (s) => String(s || '').toLowerCase();
+  const visible = rows.filter(r => {
+    if (filter === 'pagantes' && !r.pagante) return false;
+    if (filter === 'trial' && !(r.assinatura === 'trial' || r.assinatura === 'trial_expirado' || r.assinatura === 'trial_expired')) return false;
+    if (filter === 'parados' && !(r.assinatura === 'cancelled' || r.assinatura === 'paused' || r.assinatura === 'trial_expired')) return false;
+    if (q && !(norm(r.nome).includes(norm(q)) || norm(r.email).includes(norm(q)))) return false;
+    return true;
+  });
+  const chip = (id, label) => (
+    <button key={id} onClick={() => setFilter(id)} style={{
+      fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, padding: '5px 11px', borderRadius: 999, cursor: 'pointer',
+      border: '1px solid var(--paper-edge)', background: filter === id ? 'var(--ink)' : 'var(--paper)', color: filter === id ? '#fff' : 'var(--ink-2)',
+    }}>{label}</button>
+  );
+  const margemColor = (r) => r.margem_pct === null ? 'var(--ink-3)' : (r.margem_pct >= 80 ? 'var(--success)' : (r.margem_pct >= 50 ? 'var(--warning)' : 'var(--danger)'));
+  return (
+    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px', overflowX: 'auto' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+        {chip('todos', `Todas (${rows.length})`)}
+        {chip('pagantes', `Pagantes (${rows.filter(r => r.pagante).length})`)}
+        {chip('trial', 'Em teste')}
+        {chip('parados', 'Paradas')}
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nome ou e-mail" style={{
+          marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 13, padding: '6px 10px', borderRadius: 9,
+          border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', minWidth: 200,
+        }}/>
+      </div>
+      <div style={{ minWidth: 820 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
+          <div style={th}>Conta</div>
+          <div style={th}>Assinatura</div>
+          <div style={{ ...th, textAlign: 'right' }}>Conversas</div>
+          <div style={{ ...th, textAlign: 'right' }}>Receita</div>
+          <div style={{ ...th, textAlign: 'right' }}>Custo de IA</div>
+          <div style={{ ...th, textAlign: 'right' }}>Margem</div>
+          <div style={{ ...th, textAlign: 'right' }}>Sonnet</div>
+        </div>
+        {visible.map(r => (
+          <div key={r.client_id} style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, alignItems: 'center', padding: '11px 0', borderTop: '1px solid var(--paper-edge)' }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.client_id}>{r.nome}</div>
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {r.email}{r.criado_em ? ` · desde ${r.criado_em.split('-').reverse().join('/')}` : ''}{r.indicado_por ? ' · indicado' : ''}
+              </div>
+            </div>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: r.pagante ? 'var(--success)' : 'var(--ink-2)' }}>
+              {r.pagante ? (r.cortesia ? 'Cortesia' : 'Pagante') : (AD_SUB_LABEL[r.assinatura] || r.assinatura)}
+              {r.spend_mode && r.spend_mode !== 'locked' ? <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>gasto {r.spend_mode === 'capped' ? 'com teto' : 'livre'}</div> : null}
+            </div>
+            <div style={num}>{r.conversas}{r.excedente_conversas ? <span style={{ color: 'var(--ink-3)', fontSize: 11 }}> (+{r.excedente_conversas} extra)</span> : null}</div>
+            <div style={num}>{r.receita_brl ? r.receita_display : <span style={{ color: 'var(--ink-3)' }}>R$ 0</span>}</div>
+            <div style={num}>{r.custo_ia_display}</div>
+            <div style={{ ...num, fontWeight: 600, color: margemColor(r) }}>{r.margem_pct === null ? r.margem_display : `${r.margem_pct}%`}</div>
+            <div style={num}>{r.share_modelo_forte_pct}%</div>
+          </div>
+        ))}
+        {visible.length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', padding: '14px 0' }}>Nenhuma conta nesse filtro.</div>}
+      </div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
+        Receita é o que o razão registrou no período (mensalidades cobradas a preço de tabela, pacotes e excedente). Margem = receita menos custo de IA; conta sem cobrança no período aparece em R$.
+      </div>
+    </div>
+  );
+};
+
+const AdminScreen = () => {
+  const [days, setDays] = useStateAd(30);
+  const [data, setData] = useStateAd(null);
+  const [err, setErr] = useStateAd('');
+  const [loading, setLoading] = useStateAd(true);
+
+  useEffectAd(() => {
+    let alive = true;
+    setLoading(true); setErr('');
+    fetchAdminOverview(days).then(d => { if (alive) { setData(d); setLoading(false); } })
+      .catch(e => { if (alive) { setErr(e.message || 'Não deu pra carregar.'); setLoading(false); } });
+    return () => { alive = false; };
+  }, [days]);
+
+  const a = (data && data.assinaturas) || {};
+  const rec = (data && data.receita) || {};
+  const ia = (data && data.ia) || {};
+  const m = (data && data.margem) || {};
+  const churn = (data && data.churn) || {};
+  const funil = (data && data.funil) || {};
+  const contas = (data && data.contas) || {};
+  const ind = (data && data.indicacoes) || {};
+
+  return (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '28px 32px 60px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontFamily: 'var(--font-serif)', fontSize: 28, letterSpacing: '-0.02em', color: 'var(--ink)' }}>HUMA por dentro</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)', marginTop: 4 }}>
+            O negócio da HUMA, não de um cliente: assinaturas, receita, custo de IA e margem. Só quem administra a HUMA vê esta tela.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {AD_PERIODS.map(p => (
+            <button key={p.days} onClick={() => setDays(p.days)} style={{
+              fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
+              border: '1px solid var(--paper-edge)', background: days === p.days ? 'var(--ink)' : 'var(--paper-raised)', color: days === p.days ? '#fff' : 'var(--ink-2)',
+            }}>{p.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {err && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--danger)' }}>{err}</div>}
+      {loading && !data && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-3)' }}>Lendo as contas…</div>}
+
+      {data && (
+        <>
+          <SectionTitle>Dinheiro</SectionTitle>
+          <Grid cols={4}>
+            <StatTile label="MRR (preço de tabela)" value={(data.mrr || {}).display} sub={`${a.pagantes || 0} pagantes${a.cortesia ? ` · ${a.cortesia} cortesia` : ''}`} accent />
+            <StatTile label={`Receita em ${data.periodo.dias} dias`} value={rec.total_display} sub={`${rec.cobrancas || 0} mensalidades · ${rec.pacotes || 0} pacotes · ${rec.excedente_conversas || 0} conversas extras`} />
+            <StatTile label="Custo de IA no período" value={ia.custo_display} sub={`${ia.custo_por_conversa_display} por conversa engajada · Sonnet em ${ia.share_modelo_forte_pct}% das chamadas`} />
+            <StatTile label="Margem sobre a IA" value={m.pct === null || m.pct === undefined ? m.display : `${m.pct}%`} sub={m.display} accent />
+          </Grid>
+
+          <SectionTitle>Assinaturas</SectionTitle>
+          <Grid cols={4}>
+            <StatTile label="Contas" value={contas.total || 0} sub={`${contas.novas_no_periodo || 0} novas no período`} />
+            <StatTile label="Em teste grátis" value={a.trial || 0} sub={`${a.trial_expirado || 0} com teste vencido`} />
+            <StatTile label="Pausadas e canceladas" value={(a.pausadas || 0) + (a.canceladas || 0)} sub={`${a.pausadas || 0} pausadas · ${a.canceladas || 0} canceladas`} />
+            <StatTile label="Churn no período" value={`${churn.pct || 0}%`} sub={`${churn.canceladas_no_periodo || 0} cancelaram de ${churn.base_inicio || 0} (aproximado)`} deltaInvert />
+          </Grid>
+
+          <SectionTitle>Funil e indicações</SectionTitle>
+          <Grid cols={4}>
+            <StatTile label="Viraram pagantes no período" value={funil.viraram_pagantes_no_periodo || 0} sub={`${funil.contas_novas || 0} contas novas no mesmo período`} />
+            <StatTile label="Conversão de sempre" value={`${funil.conversao_total_pct || 0}%`} sub={`${funil.pagantes_de_sempre || 0} contas já pagaram alguma vez`} />
+            <StatTile label="Ticket médio por cobrança" value={rec.ticket_medio_display} sub="mensalidade + pacotes + excedente, por cobrança" />
+            <StatTile label="Indicações" value={ind.indicados || 0} sub={`${ind.convertidos || 0} viraram assinante`} />
+          </Grid>
+
+          <SectionTitle>Por conta</SectionTitle>
+          <AdClientsTable rows={data.clientes} />
+
+          {data.fontes && data.fontes.truncado && (
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--warning)' }}>
+              Uma das leituras bateu no teto de linhas; os números deste período podem estar incompletos. Reduza o período.
+            </div>
+          )}
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+            Período: {data.periodo.de.split('-').reverse().join('/')} a {data.periodo.ate.split('-').reverse().join('/')}. MRR usa o preço de tabela (cupom parcial fica só no Mercado Pago). Churn aproximado: cancelamentos do período sobre pagantes atuais mais cancelados.
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+Object.assign(window, { AdminScreen, fetchAdminOverview });

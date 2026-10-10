@@ -38,7 +38,7 @@ const INTEGRATIONS = [
 const SECTIONS = [
   { id: 'canais', title: 'Canais de atendimento', desc: 'Por onde o lead fala com a HUMA. O mesmo clone, funil e memória em todos.', ids: ['whatsapp', 'instagram', 'balcao'] },
   { id: 'agenda', title: 'Agenda', desc: 'A HUMA só confirma horário que a sua agenda diz que está livre.', ids: ['gcal', 'doctoralia'] },
-  { id: 'loja', title: 'Loja e estoque', desc: 'Catálogo, preço e estoque reais dentro da conversa.', ids: ['nuvemshop', 'bling', 'tray'] },
+  { id: 'loja', title: 'Loja e estoque', desc: 'Catálogo, preço e estoque reais dentro da conversa.', ids: ['nuvemshop', 'omie', 'tiny', 'bling', 'tray'] },
   { id: 'pagamentos', title: 'Pagamentos', desc: 'Pix, boleto e cartão na conversa. O dinheiro cai na sua conta.', ids: ['mercadopago', 'asaas'] },
   { id: 'crm', title: 'CRM', desc: 'Lead qualificado vira negócio no seu funil, sem digitar nada.', ids: ['hubspot', 'pipedrive', 'rdstation'] },
   { id: 'anuncios', title: 'Anúncios e automação', desc: 'Resultados de volta pros seus anúncios e cada lead no seu sistema.', ids: ['pixel', 'webhook'] },
@@ -87,6 +87,56 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
         '/oauth/bling/start?client_id=' + encodeURIComponent(resolvedClientId);
     },
     onDisconnect: () => handleDisconnect('bling'),
+  };
+
+  // ── Omie ERP (App Key + App Secret, sem OAuth) ──
+  const [omieModal, setOmieModal] = React.useState(false);
+  const omieConnected = Boolean(client && client.omie_connected);
+  const omieCard = {
+    id: 'omie',
+    name: 'Omie ERP',
+    category: 'Loja e estoque',
+    glyph: { type: 'omie' },
+    status: omieConnected ? 'connected' : 'disconnected',
+    meta: omieConnected
+      ? [['STATUS', 'Conectado'], ['CONSULTA', 'Produtos, preço e estoque']]
+      : [['CONSULTA', 'Produtos, preço e estoque'], ['COMO', 'App Key + App Secret · 1 minuto']],
+    note: omieConnected
+      ? 'A HUMA conhece o catálogo do seu Omie e confere o estoque ao vivo antes de responder.'
+      : 'Já usa Omie? Cole a App Key e o App Secret: seu catálogo vira conhecimento da HUMA e o estoque é conferido ao vivo.',
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant={omieConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setOmieModal(true)}>
+          {omieConnected ? 'Trocar chaves' : 'Conectar'}
+        </Button>
+        {omieConnected && <Button variant="plain" size="sm" onClick={() => handleDisconnect('omie')}>Desconectar</Button>}
+      </div>
+    ),
+  };
+
+  // ── Tiny ERP / Olist (token da API v2, sem OAuth) ──
+  const [tinyModal, setTinyModal] = React.useState(false);
+  const tinyConnected = Boolean(client && client.tiny_connected);
+  const tinyCard = {
+    id: 'tiny',
+    name: 'Tiny ERP (Olist)',
+    category: 'Loja e estoque',
+    glyph: { type: 'tiny' },
+    status: tinyConnected ? 'connected' : 'disconnected',
+    meta: tinyConnected
+      ? [['STATUS', 'Conectado'], ['CONSULTA', 'Produtos, preço e saldo']]
+      : [['CONSULTA', 'Produtos, preço e saldo'], ['COMO', 'Token da API · 1 minuto']],
+    note: tinyConnected
+      ? 'A HUMA conhece o catálogo do seu Tiny e confere o saldo do produto ao vivo antes de responder.'
+      : 'Já usa Tiny? Cole o token da API: seu catálogo vira conhecimento da HUMA e o saldo é conferido ao vivo.',
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant={tinyConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setTinyModal(true)}>
+          {tinyConnected ? 'Trocar token' : 'Conectar'}
+        </Button>
+        {tinyConnected && <Button variant="plain" size="sm" onClick={() => handleDisconnect('tiny')}>Desconectar</Button>}
+      </div>
+    ),
   };
 
   // Pipedrive: connected = crm_provider == 'pipedrive' E tem token OAuth válido.
@@ -381,25 +431,34 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     ),
   };
 
-  // RD Station: conector ainda não existe (Fase E) — nunca aparece "conectado" sem token.
+  // ── RD Station CRM (token da instância, sem OAuth) ──
+  const [rdModal, setRdModal] = React.useState(false);
   const rdConnected = Boolean(client && client.crm_provider === 'rd_station' && client.crm_access_token);
   const rdCard = {
     id: 'rdstation',
-    name: 'RD Station',
+    name: 'RD Station CRM',
     category: 'CRM',
     glyph: { type: 'rdstation' },
     status: rdConnected ? 'connected' : 'disconnected',
     meta: rdConnected
-      ? [['STATUS', 'Conectado']]
-      : [['SINCRONIZA', 'Leads e oportunidades'], ['STATUS', 'Em breve']],
+      ? [['STATUS', 'Conectado'], ['FUNIL', client.crm_pipeline_ready ? 'Configurado' : 'Pendente']]
+      : [['SINCRONIZA', 'Contatos, negociações e anotações'], ['COMO', 'Cole o token da instância · 1 minuto']],
     note: rdConnected
-      ? 'HUMA cria e atualiza leads automaticamente'
-      : 'Em breve: HUMA cria e atualiza leads no RD Station automaticamente',
+      ? 'HUMA cria o contato e a negociação no seu funil quando o lead qualifica ou agenda, com o resumo na timeline.'
+      : 'Já usa RD Station CRM? Cole o token da instância: lead qualificado vira negociação no funil, sem digitar nada.',
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant={rdConnected ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setRdModal(true)}>
+          {rdConnected ? 'Trocar token' : 'Conectar'}
+        </Button>
+        {rdConnected && <Button variant="plain" size="sm" onClick={() => handleDisconnect('rd_station')}>Desconectar</Button>}
+      </div>
+    ),
   };
 
   const integrations = [
     instagramCard, balcaoCard, gcalCard, pixelCard, webhookCard,
-    nuvemshopCard, blingCard, mpCard, asaasCard, hubspotCard, pipedriveCard, rdCard, ...INTEGRATIONS,
+    nuvemshopCard, omieCard, tinyCard, blingCard, mpCard, asaasCard, hubspotCard, pipedriveCard, rdCard, ...INTEGRATIONS,
   ];
   const isOn = (i) => i.status === 'connected' || i.status === 'active';
   const connectedCount = integrations.filter(isOn).length;
@@ -465,6 +524,9 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       {webhookModal && <WebhookModal client={client} onClose={() => setWebhookModal(false)} onSaved={onReloadStatus} />}
       {pixelModal && <PixelModal client={client} onClose={() => setPixelModal(false)} onSaved={onReloadStatus} />}
       {asaasModal && <AsaasModal client={client} onClose={() => setAsaasModal(false)} onSaved={onReloadStatus} />}
+      {rdModal && <RdStationModal client={client} onClose={() => setRdModal(false)} onSaved={onReloadStatus} />}
+      {omieModal && <OmieModal client={client} onClose={() => setOmieModal(false)} onSaved={onReloadStatus} />}
+      {tinyModal && <TinyModal client={client} onClose={() => setTinyModal(false)} onSaved={onReloadStatus} />}
     </div>
   );
 };
@@ -640,6 +702,108 @@ const AsaasModal = ({ client, onClose, onSaved }) => {
         No Asaas: <b>Menu do usuário → Integrações → Chave de API → Gerar</b>. Cole a chave abaixo. A HUMA valida, cria o webhook de pagamento sozinha e passa a gerar os links de cobrança na sua conta.
       </ModalText>
       <div>{_modalLabel('Chave de API do Asaas')}<input value={key} onChange={e => setKey(e.target.value)} placeholder="$aact_…" type="password" style={_modalInput}
+             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}/></div>
+      <ModalMsg msg={msg} />
+    </IntegrationModal>
+  );
+};
+
+// Omie: App Key + App Secret → a HUMA valida e aprende o catálogo.
+const OmieModal = ({ client, onClose, onSaved }) => {
+  const [key, setKey] = React.useState('');
+  const [secret, setSecret] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const ready = key.trim().length >= 6 && secret.trim().length >= 6;
+  const connect = async () => {
+    if (busy || !ready) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await connectOmie(key.trim(), secret.trim());
+      setMsg({ kind: 'ok', text: `Conectado. ${r.synced ? `Aprendi ${r.synced} produtos do seu Omie.` : 'Não encontrei produtos no Omie ainda; quando cadastrar, eles entram sozinhos.'} O estoque é conferido ao vivo a cada pergunta.` });
+      if (onSaved) await onSaved();
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  return (
+    <IntegrationModal title="Conectar o Omie" onClose={onClose} footer={
+      <>
+        <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        <Button variant="primary" size="sm" onClick={connect} disabled={busy || !ready}>{busy ? 'Validando…' : 'Conectar'}</Button>
+      </>
+    }>
+      <ModalText>
+        No Omie: <b>Configurações → Aplicativos → Chaves de acesso</b>. Copie a App Key e o App Secret e cole abaixo. A HUMA valida, aprende seus produtos e passa a conferir o estoque antes de responder.
+      </ModalText>
+      <div>{_modalLabel('App Key')}<input value={key} onChange={e => setKey(e.target.value)} placeholder="App Key" style={_modalInput}/></div>
+      <div>{_modalLabel('App Secret')}<input value={secret} onChange={e => setSecret(e.target.value)} placeholder="App Secret" type="password" style={_modalInput}
+             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}/></div>
+      <ModalMsg msg={msg} />
+    </IntegrationModal>
+  );
+};
+
+// Tiny: token da API v2 → a HUMA valida e aprende o catálogo.
+const TinyModal = ({ client, onClose, onSaved }) => {
+  const [token, setToken] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const connect = async () => {
+    if (busy || token.trim().length < 10) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await connectTiny(token.trim());
+      const conta = r.account_name ? ` à conta ${r.account_name}` : '';
+      setMsg({ kind: 'ok', text: `Conectado${conta}. ${r.synced ? `Aprendi ${r.synced} produtos do seu Tiny.` : 'Não encontrei produtos no Tiny ainda; quando cadastrar, eles entram sozinhos.'} O saldo é conferido ao vivo a cada pergunta.` });
+      if (onSaved) await onSaved();
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  return (
+    <IntegrationModal title="Conectar o Tiny ERP" onClose={onClose} footer={
+      <>
+        <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        <Button variant="primary" size="sm" onClick={connect} disabled={busy || token.trim().length < 10}>{busy ? 'Validando…' : 'Conectar'}</Button>
+      </>
+    }>
+      <ModalText>
+        No Tiny: <b>Configurações → Usuários e API → Gerar token</b>. Cole o token abaixo. A HUMA valida, aprende seus produtos e passa a conferir o saldo antes de responder.
+      </ModalText>
+      <div>{_modalLabel('Token da API')}<input value={token} onChange={e => setToken(e.target.value)} placeholder="Token da API do Tiny" type="password" style={_modalInput}
+             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}/></div>
+      <ModalMsg msg={msg} />
+    </IntegrationModal>
+  );
+};
+
+// RD Station CRM: cola o token da instância → a HUMA valida, descobre o funil e registra o webhook.
+const RdStationModal = ({ client, onClose, onSaved }) => {
+  const [token, setToken] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const connect = async () => {
+    if (busy || token.trim().length < 10) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await connectRdStation(token.trim());
+      const conta = r.account_name ? ` à conta ${r.account_name}` : '';
+      const funil = r.pipeline_ready ? ' Funil e primeira etapa detectados.' : ' Não achei o funil: a negociação vai entrar no funil padrão.';
+      setMsg({ kind: 'ok', text: `Conectado${conta}.${funil} Lead qualificado já vira negociação no RD Station.` });
+      if (onSaved) await onSaved();
+    } catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  return (
+    <IntegrationModal title="Conectar o RD Station CRM" onClose={onClose} footer={
+      <>
+        <Button variant="ghost" size="sm" onClick={onClose}>Fechar</Button>
+        <Button variant="primary" size="sm" onClick={connect} disabled={busy || token.trim().length < 10}>{busy ? 'Validando…' : 'Conectar'}</Button>
+      </>
+    }>
+      <ModalText>
+        No RD Station CRM: <b>clique no seu nome (canto superior direito) → Perfil → Token da instância</b>. Cole o token abaixo. A HUMA valida, descobre o seu funil e passa a criar o contato e a negociação quando o lead qualifica.
+      </ModalText>
+      <div>{_modalLabel('Token da instância')}<input value={token} onChange={e => setToken(e.target.value)} placeholder="Token da instância do RD Station CRM" type="password" style={_modalInput}
              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}/></div>
       <ModalMsg msg={msg} />
     </IntegrationModal>
@@ -1315,6 +1479,14 @@ const IntegrationGlyph = ({ type }) => {
           <circle cx="12" cy="12" r="4"/>
           <circle cx="17" cy="7" r="0.9" fill="#FFFFFF"/>
         </svg>
+      ));
+    case 'omie':
+      return wrap('#00A3E0', (
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.03em' }}>omie</span>
+      ));
+    case 'tiny':
+      return wrap('#1F4FD8', (
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.03em' }}>tiny</span>
       ));
     case 'bling':
       return wrap('linear-gradient(135deg, #FDB913, #F58220)', (

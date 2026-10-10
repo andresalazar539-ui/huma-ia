@@ -119,10 +119,12 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
     { id: 'equipe',       label: 'Equipe',       icon: 'userPlus', count: null },
     { id: 'voz',          label: 'Voz',          icon: 'mic',      count: null },
     { id: 'relatorios',   label: 'Relatórios',   icon: 'chart',    count: null },
-    { id: 'followup',     label: 'Follow-up',    icon: 'zap',      count: null },
+    { id: 'followup',     label: 'Follow-up',    icon: 'zap',      count: null },
+
     { id: 'disparos',     label: 'Disparos',     icon: 'send',     count: null },
     { id: 'divulgacao',   label: 'Divulgação',   icon: 'link',     count: null },
     { id: 'integracoes',  label: 'Integrações',  icon: 'plug',     count: null },
+    ...(window.HUMA_IS_SUPERADMIN ? [{ id: 'admin', label: 'HUMA por dentro', icon: 'chart', count: null }] : []),
     { id: 'ajustes',      label: 'Ajustes',      icon: 'settings', count: null,
       children: [
         { id: 'uso',       label: 'Uso' },
@@ -389,6 +391,7 @@ const MOBILE_MORE_ITEMS = [
   { id: 'ajustes',     label: 'Conta & plano',            icon: 'settings' },
   { id: 'negocio',     label: 'Configurações do negócio', icon: 'building' },
   { id: 'perfil',      label: 'Seu perfil',               icon: 'user' },
+  ...(window.HUMA_IS_SUPERADMIN ? [{ id: 'admin', label: 'HUMA por dentro', icon: 'chart' }] : []),
 ];
 
 const MobileTabBar = ({ active, onNav, client }) => {

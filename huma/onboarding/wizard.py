@@ -91,7 +91,7 @@ _CAPABILITY_LABELS: dict[Capability, dict] = {
     Capability.SELL_PHYSICAL: {
         "verb": "Vender físico",
         "headline": "Vender produto físico (com estoque e frete)",
-        "description": "Sua loja conectada (Nuvemshop ou Bling). A IA consulta estoque e preço em tempo real e fecha o pedido dentro da conversa.",
+        "description": "Sua loja ou ERP conectado (Nuvemshop, Omie, Tiny ou Bling). A IA consulta estoque e preço em tempo real e fecha o pedido dentro da conversa.",
     },
     Capability.QUALIFY: {
         "verb": "Qualificar lead",
@@ -133,9 +133,9 @@ _CAPABILITY_REQUIREMENTS: dict[Capability, list[dict]] = {
         },
         {
             "provider": "loja_ou_erp",
-            "label": "Loja virtual (Nuvemshop) ou ERP (Bling)",
-            # Qualquer um dos dois conectado libera a capability (2026-09-05).
-            "check_any_field": ["nuvemshop_access_token", "bling_access_token"],
+            "label": "Loja virtual (Nuvemshop) ou ERP (Omie, Tiny ou Bling)",
+            # Qualquer um conectado libera a capability (2026-09-05; Omie/Tiny 2026-10-10).
+            "check_any_field": ["nuvemshop_access_token", "omie_app_key", "tiny_api_token", "bling_access_token"],
         },
     ],
     Capability.QUALIFY: [

@@ -57,7 +57,8 @@ def create_app() -> FastAPI:
                 _card_fields = [
                     "card_number", "card_cvv", "card_exp", "card_holder", "cvv", "ccv", "number",
                     "creditCard", "creditCardHolderInfo", "card", "holder", "cpf", "cpfCnpj", "cpf_cnpj",
-                    "cardNumber", "securityCode", "card_token_id", "asaas_api_key", "access_token",
+                    "cardNumber", "securityCode", "card_token_id", "asaas_api_key", "access_token", "crm_api_token",
+                    "omie_app_secret", "tiny_api_token", "app_secret",
                 ]
                 try:
                     _scrubber = EventScrubber(denylist=DEFAULT_DENYLIST + _card_fields, recursive=True)
@@ -206,6 +207,8 @@ def create_app() -> FastAPI:
     app.include_router(followup_router)
     from huma.routes.reactivation import router as reactivation_router
     app.include_router(reactivation_router)
+    from huma.routes.admin import router as admin_router
+    app.include_router(admin_router)
     app.include_router(whatsapp_meta_router)
     app.include_router(wizard_router)
     app.include_router(onboarding_router)

@@ -761,6 +761,11 @@ class ClientIdentity(BaseModel):
     instagram_token_expires_at: Optional[datetime] = Field(
         default=None, description="Quando o token do Instagram expira (UTC).",
     )
+    # ERPs por credencial (2026-10-10): Omie (App Key + App Secret) e Tiny (token).
+    # Migration: scripts/migration_erp_omie_tiny.sql. Vazio = não conectado.
+    omie_app_key: str = Field(default="", description="App Key do Omie do cliente.")
+    omie_app_secret: str = Field(default="", description="App Secret do Omie do cliente.")
+    tiny_api_token: str = Field(default="", description="Token da API v2 do Tiny ERP do cliente.")
     nuvemshop_store_id: str = Field(default="", description="ID da loja (user_id do OAuth).")
     nuvemshop_access_token: str = Field(default="", description="Token da loja (não expira).")
     nuvemshop_store_url: str = Field(default="", description="URL pública da loja (só exibição).")
