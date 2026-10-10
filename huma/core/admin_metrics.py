@@ -320,13 +320,17 @@ def build_overview(
     expansao = receita_total["pacotes_brl"] + receita_total["excedente_brl"]
 
     # Contas que merecem atenção agora (motivo em linguagem do dono)
+    client_by_id = {str(c.get("client_id") or ""): c for c in clients}
     em_risco: list[dict] = []
     for r in rows:
         cid = r["client_id"]
         sub = sub_by_client.get(cid) or {}
         status = r["assinatura"]
         motivo = ""
-        if status == "trial":
+        created_c = _dt((client_by_id.get(cid) or {}).get("created_at"))
+        if r["onboarding"] != "active" and created_c is not None and (now - created_c).days >= 1:
+            motivo = f"parou no onboarding há {(now - created_c).days} dia(s) ({r['onboarding'] or 'sem status'})"
+        elif status == "trial":
             created = _dt(sub.get("created_at"))
             if created is not None:
                 falta = (created + timedelta(days=int(trial_days)) - now).total_seconds() / 86400

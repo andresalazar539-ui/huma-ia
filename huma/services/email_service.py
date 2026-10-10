@@ -151,6 +151,35 @@ async def send_team_invite(
     )
 
 
+async def send_onboarding_nudge(
+    to: str,
+    subject: str,
+    title: str,
+    paragraphs: list[str],
+    action_url: str,
+    button_label: str = "Continuar de onde parei",
+) -> bool:
+    """
+    Lembrete de onboarding incompleto (core/onboarding_nudges). O botão
+    abre a sessão pelo token e cai no passo em que a pessoa parou. Nunca
+    levanta; sem RESEND_API_KEY é no-op.
+    """
+    paras = "".join(
+        f"<p style=\"font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:{_INK_SOFT};margin:0 0 16px 0;\">{p}</p>"
+        for p in paragraphs if (p or "").strip()
+    )
+    body = f"""
+{paras}
+<p style="margin:0 0 20px 0;">
+  <a href="{action_url}" style="display:inline-block;background-color:{_TERRACOTTA};color:#FFFFFF;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:10px;">{button_label}</a>
+</p>
+<p style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.5;color:{_MUTED};margin:0;">
+  O link entra na sua conta sem senha e vale por 7 dias. Se não foi você que se cadastrou, pode ignorar este e-mail.
+</p>
+"""
+    return await send_email(to=to, subject=subject, html=_shell(title, body))
+
+
 async def send_subscription_welcome(
     to: str,
     business_name: str,

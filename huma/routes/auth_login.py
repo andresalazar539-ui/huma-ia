@@ -952,6 +952,54 @@ _GOOGLE_ICON = (
 
 
 # ================================================================
+# CONTINUAR DE ONDE PAREI — GET /continuar/{token} (lembrete de onboarding)
+#
+# O e-mail do job `onboarding_nudge` aponta pra cá. O token (prefixo "onb",
+# 7 dias) abre a sessão da conta sem senha e manda pro passo em que a
+# pessoa parou (o /onboarding/page resolve o passo pela conta). Conta já
+# ativa cai no Cockpit. Token inválido = tela de login com aviso.
+# ================================================================
+
+
+@router.get("/continuar/{token}")
+async def resume_onboarding(token: str):
+    """Entra pelo link do lembrete e volta pro onboarding de onde parou."""
+    from datetime import datetime as _dtm, timezone as _tz
+
+    from fastapi.responses import RedirectResponse
+
+    from huma.core import onboarding_nudges as nudges
+    from huma.core.auth import verify_resume_token
+
+    client_id, key = verify_resume_token(token)
+    client = await db.get_client(client_id) if client_id else None
+    if client is None:
+        return RedirectResponse(url="/login?motivo=link_expirado", status_code=302)
+
+    status = getattr(client.onboarding_status, "value", client.onboarding_status)
+    target = "/cockpit" if str(status) == "active" else "/onboarding/page"
+    resp = RedirectResponse(url=target, status_code=302)
+    resp.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=create_session_token(client.client_id, email=(client.owner_email or "")),
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=_COOKIE_SECURE,
+        samesite="lax",
+        path="/",
+    )
+    # Mede o retorno: de qual lembrete a pessoa voltou (metadado, sem migration).
+    try:
+        if str(status) != "active":
+            meta = nudges.record(client.onboarding_answers, "", resumed_at=_dtm.now(_tz.utc).isoformat(), resumed_from=key or "link")
+            await db.update_client(client.client_id, {"onboarding_answers": meta})
+    except Exception as e:
+        log.warning(f"Lembrete onboarding | retorno não registrado | client={client.client_id} | {type(e).__name__}: {e}")
+    log.info(f"Lembrete onboarding | voltou pelo link | client={client.client_id} | de={key or 'link'} | status={status}")
+    return resp
+
+
+# ================================================================
 # CONVITE DE EQUIPE — GET /convite/{token} + POST /auth/invite/accept
 #
 # O e-mail de convite aponta pra cá. A pessoa ACEITA: entra com Google

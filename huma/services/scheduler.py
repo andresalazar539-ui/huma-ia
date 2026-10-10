@@ -20,7 +20,7 @@
 # ================================================================
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
 from huma.services import redis_service as cache
@@ -1077,6 +1077,79 @@ async def _run_catalog_refresh_job() -> None:
         log.error(f"sched | catalog_refresh | {type(e).__name__}: {e}")
 
 
+async def _run_onboarding_nudge_job() -> None:
+    """
+    Roda a cada 30 min. Lembra por e-mail quem se cadastrou e não terminou
+    o onboarding: 1h, 24h e 3 dias depois do cadastro, cada um UMA vez
+    (registro em onboarding_answers["_nudges"] + Redis onb_nudge:*). O
+    e-mail fala do passo exato e traz o link "Continuar de onde parei"
+    (token de 7 dias). Depois do 3º lembrete, silêncio. Nunca derruba o loop.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    from huma.config import PUBLIC_BASE_URL
+    from huma.core import onboarding_nudges as nudges
+    from huma.core.auth import create_resume_token
+    from huma.onboarding import interview
+    from huma.services import db_service as db
+    from huma.services import email_service
+    from huma.services.db_service import get_supabase
+
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=8)).isoformat()
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("clients").select("client_id,created_at,onboarding_status,owner_email")
+            .neq("onboarding_status", "active").gte("created_at", since).limit(2000).execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        log.error(f"onboarding_nudge | clients indisponível | {type(e).__name__}: {e}")
+        return
+
+    base = (PUBLIC_BASE_URL or "https://app.humaia.com.br").rstrip("/")
+    sent = skipped = errors = 0
+    for row in rows:
+        client_id = row.get("client_id", "")
+        try:
+            key = nudges.nudge_key(row.get("created_at"), now)
+            email = (row.get("owner_email") or "").strip()
+            if not client_id or not key or "@" not in email:
+                skipped += 1
+                continue
+            redis_key = f"onb_nudge:{client_id}:{key}"
+            if await cache.exists(redis_key):
+                skipped += 1
+                continue
+            client = await db.get_client(client_id)
+            if client is None or nudges.already_sent(client.onboarding_answers, key):
+                skipped += 1
+                continue
+            state = interview.build_interview_state(client)
+            step = nudges.current_step(client, state.get("answered_count", 0), state.get("total", 0))
+            if step is None:
+                skipped += 1
+                continue
+            await cache.set_with_ttl(redis_key, "1", ttl=9 * 86400)
+            copy = nudges.email_copy(step, key, getattr(client, "owner_name", ""), client.business_name)
+            url = f"{base}/continuar/{create_resume_token(client_id, key)}"
+            ok = await email_service.send_onboarding_nudge(
+                email, copy["subject"], copy["title"], copy["paragraphs"], url, copy["button_label"],
+            )
+            if ok:
+                await db.update_client(client_id, {
+                    "onboarding_answers": nudges.record(client.onboarding_answers, key, now, step=step["id"]),
+                })
+                sent += 1
+                log.info(f"onboarding_nudge | enviado | client={client_id} | lembrete={key} | passo={step['id']}")
+            else:
+                skipped += 1
+        except Exception as e:
+            errors += 1
+            log.warning(f"onboarding_nudge | {client_id} | {type(e).__name__}: {e}")
+    log.info(f"onboarding_nudge | sent={sent} | skipped={skipped} | errors={errors} | contas={len(rows)}")
+
+
 async def _run_trial_reminder_job() -> None:
     """
     Roda 1x/hora. Lembra o dono que o teste grátis está acabando: 2 dias
@@ -1158,6 +1231,8 @@ async def _run_trial_reminder_job() -> None:
 _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     # Teste grátis acabando — 2 dias antes, véspera e último dia: a cada 1h, lock 30min
     ("trial_reminder", _run_trial_reminder_job, 3600, 1800),
+    # Onboarding parado — e-mail 1h, 24h e 3 dias depois do cadastro: a cada 30min, lock 15min
+    ("onboarding_nudge", _run_onboarding_nudge_job, 1800, 900),
     # Controle de gasto — avisos de 80% e degraus de excedente: a cada 1h, lock 30min
     ("spend_alert", _run_spend_alert_job, 3600, 1800),
     # Excedente na fatura — programa na renovação: a cada 6h, lock 30min

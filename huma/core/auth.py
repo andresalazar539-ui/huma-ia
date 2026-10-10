@@ -157,6 +157,47 @@ def session_actor(token: str) -> tuple[Optional[str], str]:
 
 
 INVITE_TTL_SECONDS = 7 * 86400  # convite de equipe vale 7 dias
+RESUME_TTL_SECONDS = 7 * 86400  # "continuar de onde parei" (onboarding) vale 7 dias
+
+
+def create_resume_token(client_id: str, key: str = "", ttl_seconds: int = RESUME_TTL_SECONDS) -> str:
+    """
+    Token do link "Continuar de onde parei" dos lembretes de onboarding:
+    base64url("onb|client_id|exp|key|hmac"). `key` = qual lembrete (h1|d1|d3),
+    só pra medir de onde a pessoa voltou. O prefixo "onb" impede que valha
+    como sessão ou convite.
+    """
+    if not SESSION_SECRET:
+        raise RuntimeError("SESSION_SECRET não configurado — link indisponível")
+    exp = int(time.time()) + ttl_seconds
+    key = (key or "").replace("|", "")[:12]
+    payload = f"onb|{client_id}|{exp}|{key}"
+    sig = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{sig}".encode("utf-8")).decode("ascii")
+
+
+def verify_resume_token(token: str) -> tuple[Optional[str], str]:
+    """Valida o token de retomada. Devolve (client_id, key) ou (None, "")."""
+    if not SESSION_SECRET or not token:
+        return None, ""
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        parts = decoded.split("|")
+    except ValueError:
+        return None, ""
+    if len(parts) != 5 or parts[0] != "onb":
+        return None, ""
+    _, client_id, exp_str, key, sig = parts
+    payload = f"onb|{client_id}|{exp_str}|{key}"
+    expected = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected):
+        return None, ""
+    try:
+        if int(exp_str) < time.time():
+            return None, ""
+    except ValueError:
+        return None, ""
+    return (client_id or None), key
 
 
 def create_invite_token(client_id: str, email: str, ttl_seconds: int = INVITE_TTL_SECONDS) -> str:

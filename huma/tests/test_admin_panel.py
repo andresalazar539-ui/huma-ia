@@ -214,7 +214,7 @@ class TestV2:
         assert o["churn"]["pct"] == 33.3 and g["ltv_brl"] is not None
         motivos = {r["client_id"]: r["motivo"] for r in o["em_risco"]}
         assert "d" not in motivos                                  # teste venceu há 33 dias: já não é "há pouco"
-        assert "c" not in motivos                                  # trial com 4 dias ainda
+        assert "onboarding" in motivos["c"]                        # sandbox há 3 dias: parou no onboarding
         recente = dict(_SUBS[3], created_at=_iso(12))              # venceu há 5 dias → em risco
         o2 = am.build_overview(clients=_CLIENTS, subs=_SUBS[:3] + [recente, _SUBS[4]], ledger=_LEDGER, paying_rows=_PAYING,
                                usage_by_client=_USAGE, now=NOW, since=SINCE, trial_days=7, plan_price=397.0,
