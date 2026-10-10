@@ -179,7 +179,21 @@ const AgendaFullScreen = ({ onOpenConversa } = {}) => {
           fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, boxShadow: 'var(--sh-3, 0 6px 24px rgba(0,0,0,0.18))',
         }}>{flash}</div>
       )}
-      {selected && <AppointmentDetail ev={selected} onClose={() => setSelected(null)} onOpenConversa={onOpenConversa} />}
+      {selected && (
+        <AppointmentDetail
+          ev={selected}
+          onClose={() => setSelected(null)}
+          onOpenConversa={onOpenConversa}
+          onNoShow={(res) => {
+            setSelected(null);
+            setFlash(res && res.followup_programado
+              ? 'Marcado como não veio. A HUMA vai chamar pra remarcar.'
+              : 'Marcado como não veio.');
+            setTimeout(() => setFlash(null), 3000);
+            load({ silent: true });
+          }}
+        />
+      )}
       {creating && (
         <NewAppointmentModal
           initialDate={isoDate(cursor)}
@@ -630,8 +644,24 @@ const STATUS_INFO = {
   waiting:   { label: 'Aguarda',    bg: 'var(--paper-sunk)',      ink: 'var(--warning)' },
 };
 
-const AppointmentDetail = ({ ev, onClose, onOpenConversa }) => {
+const AppointmentDetail = ({ ev, onClose, onOpenConversa, onNoShow }) => {
   const [shown, setShown] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const [markErr, setMarkErr] = useState('');
+  // "Não veio" só faz sentido depois do horário, e só pra quem ainda tem o horário na conversa.
+  const canNoShow = ev.status === 'done' && !!onNoShow && !!window.markNoShow;
+  const handleNoShow = async () => {
+    if (marking) return;
+    if (!window.confirm(`Marcar que ${ev.name || 'o lead'} não veio? O horário sai da conversa e, se a jogada "Não veio" estiver ligada no Follow-up, a HUMA chama pra remarcar.`)) return;
+    setMarking(true); setMarkErr('');
+    try {
+      const res = await window.markNoShow(ev.phone);
+      onNoShow(res);
+    } catch (e) {
+      setMarkErr(e.message || 'Não deu pra marcar agora.');
+      setMarking(false);
+    }
+  };
   React.useEffect(() => {
     const r = requestAnimationFrame(() => setShown(true));
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -726,7 +756,18 @@ const AppointmentDetail = ({ ev, onClose, onOpenConversa }) => {
         </div>
 
         {/* Ação */}
-        <div style={{ padding: '0 22px 22px', marginTop: 'auto' }}>
+        <div style={{ padding: '0 22px 22px', marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {canNoShow && (
+            <button onClick={handleNoShow} disabled={marking} style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--danger)',
+              padding: '11px 16px', borderRadius: 10, border: '1px solid var(--paper-edge)',
+              background: 'var(--paper)', cursor: marking ? 'wait' : 'pointer', opacity: marking ? 0.7 : 1,
+            }}>
+              {marking ? 'Marcando...' : 'Não veio'}
+            </button>
+          )}
+          {markErr && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--danger)' }}>{markErr}</div>}
           <button onClick={() => { if (onOpenConversa) onOpenConversa(ev.phone); }} style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)',

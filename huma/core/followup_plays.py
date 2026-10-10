@@ -72,6 +72,7 @@ PLAY_PRECO = "sumiu_no_preco"
 PLAY_CHAMAR_DEPOIS = "pediu_pra_chamar_depois"
 PLAY_PAGAMENTO = "pagamento_pendente"
 PLAY_CANCELOU = "cancelou_horario"
+PLAY_FALTOU = "nao_veio"
 PLAY_VOLTAR = "hora_de_voltar"
 PLAY_PERDIDO = "quem_desistiu"
 
@@ -201,6 +202,24 @@ PLAYS: tuple[Play, ...] = (
         last_objective=_DESPEDIDA,
     ),
     Play(
+        id=PLAY_FALTOU,
+        name="Não veio",
+        situation="O cliente tinha horário marcado e não apareceu (você marca 'Não veio' na Agenda).",
+        what_huma_does="Pergunta se está tudo bem e oferece remarcar, sem cobrar.",
+        needs_any=("schedule",),
+        steps={
+            INTENSITY_LEVE: (2.0,),
+            INTENSITY_PADRAO: (2.0, 48.0),
+            INTENSITY_PERSISTENTE: (2.0, 48.0, 168.0),
+        },
+        objective=(
+            "O lead tinha horário marcado e NÃO apareceu. Mensagem gentil: pergunte se está tudo bem "
+            "e ofereça remarcar. NÃO cobre explicação, NÃO fale em multa nem em prejuízo. NUNCA "
+            "afirme que um horário está livre: pergunte qual dia ou período fica melhor pra ele."
+        ),
+        last_objective=_DESPEDIDA,
+    ),
+    Play(
         id=PLAY_VOLTAR,
         name="Hora de voltar",
         situation="Já é cliente e passou o tempo em que ele costuma voltar (por exemplo, 3 meses depois da compra).",
@@ -245,11 +264,11 @@ _PLAYS_BY_ID: dict[str, Play] = {p.id: p for p in PLAYS}
 _RECOMMENDED: dict[str, tuple[str, ...]] = {
     "ecommerce": (PLAY_SUMIU, PLAY_PRECO, PLAY_PAGAMENTO, PLAY_CHAMAR_DEPOIS, PLAY_VOLTAR),
     "restaurante": (PLAY_SUMIU, PLAY_PAGAMENTO, PLAY_VOLTAR),
-    "salao_barbearia": (PLAY_SUMIU, PLAY_CANCELOU, PLAY_CHAMAR_DEPOIS, PLAY_VOLTAR),
-    "pet": (PLAY_SUMIU, PLAY_CANCELOU, PLAY_CHAMAR_DEPOIS, PLAY_VOLTAR),
-    "clinica": (PLAY_SUMIU, PLAY_PRECO, PLAY_CANCELOU, PLAY_CHAMAR_DEPOIS, PLAY_VOLTAR),
-    "automotivo": (PLAY_SUMIU, PLAY_PRECO, PLAY_CANCELOU, PLAY_CHAMAR_DEPOIS),
-    "academia_personal": (PLAY_SUMIU, PLAY_PRECO, PLAY_CANCELOU, PLAY_CHAMAR_DEPOIS, PLAY_PERDIDO),
+    "salao_barbearia": (PLAY_SUMIU, PLAY_CANCELOU, PLAY_FALTOU, PLAY_CHAMAR_DEPOIS, PLAY_VOLTAR),
+    "pet": (PLAY_SUMIU, PLAY_CANCELOU, PLAY_FALTOU, PLAY_CHAMAR_DEPOIS, PLAY_VOLTAR),
+    "clinica": (PLAY_SUMIU, PLAY_PRECO, PLAY_CANCELOU, PLAY_FALTOU, PLAY_CHAMAR_DEPOIS, PLAY_VOLTAR),
+    "automotivo": (PLAY_SUMIU, PLAY_PRECO, PLAY_CANCELOU, PLAY_FALTOU, PLAY_CHAMAR_DEPOIS),
+    "academia_personal": (PLAY_SUMIU, PLAY_PRECO, PLAY_CANCELOU, PLAY_FALTOU, PLAY_CHAMAR_DEPOIS, PLAY_PERDIDO),
     "servicos": (PLAY_SUMIU, PLAY_PRECO, PLAY_CHAMAR_DEPOIS, PLAY_PERDIDO),
     "educacao": (PLAY_SUMIU, PLAY_PRECO, PLAY_PAGAMENTO, PLAY_CHAMAR_DEPOIS, PLAY_PERDIDO),
     "advocacia_financeiro": (PLAY_SUMIU, PLAY_CHAMAR_DEPOIS),
@@ -661,7 +680,7 @@ def catalog_for_screen(
         hours = steps_for(play.id, entry["intensity"], category, official)
         # Jogadas pra cliente e pra quem desistiu começam longe da última
         # mensagem do lead: no oficial, todo passo é template.
-        always_paid = official and (play.for_customers or play.id in (PLAY_PERDIDO, PLAY_CANCELOU, PLAY_CHAMAR_DEPOIS))
+        always_paid = official and (play.for_customers or play.id in (PLAY_PERDIDO, PLAY_CANCELOU, PLAY_FALTOU, PLAY_CHAMAR_DEPOIS))
         paid_steps = 0
         if official:
             paid_steps = len(hours) if always_paid else sum(1 for h in hours if h >= META_SAFE_WINDOW_HOURS)

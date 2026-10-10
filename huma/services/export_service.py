@@ -63,6 +63,9 @@ _SECTION_LAYOUT: list[tuple[str, str, list[tuple[str, str]]]] = [
     ("follow_up", "Follow-up", [
         ("leads_reengajados", "Leads sumidos reengajados"),
         ("voltaram_a_negociar", "Voltaram a negociar"),
+        ("enviados", "Follow-ups enviados"),
+        ("responderam", "Responderam ao follow-up"),
+        ("fecharam", "Fecharam depois do follow-up"),
     ]),
 ]
 

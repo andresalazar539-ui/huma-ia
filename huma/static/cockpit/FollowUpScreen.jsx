@@ -20,7 +20,7 @@ const FU_INTENSITY_TEXT = {
 const FU_NEEDS_LABEL = { schedule: 'Agendar', sell_digital: 'Vender e cobrar', sell_physical: 'Vender produto' };
 const FU_PLAY_ICON = {
   sumiu_na_conversa: 'message', sumiu_no_preco: 'card', pediu_pra_chamar_depois: 'calendar',
-  pagamento_pendente: 'zap', cancelou_horario: 'clock', hora_de_voltar: 'users', quem_desistiu: 'sparkle',
+  pagamento_pendente: 'zap', cancelou_horario: 'clock', nao_veio: 'calendar', hora_de_voltar: 'users', quem_desistiu: 'sparkle',
 };
 
 const fuCard = { border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: 20 };

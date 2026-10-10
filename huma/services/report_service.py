@@ -19,7 +19,7 @@
 # ================================================================
 
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi.concurrency import run_in_threadpool
@@ -29,6 +29,7 @@ from huma.core.capabilities import Capability
 from huma.models.schemas import ClientIdentity
 from huma.services import redis_service as cache
 from huma.services.attribution_service import SOURCE_CATEGORIES, SOURCE_LABELS
+from huma.services import followup_engine as fu
 from huma.services.db_service import get_supabase
 from huma.utils.logger import get_logger
 
@@ -353,6 +354,11 @@ async def build_report(
         "leads_reengajados": len(com_followup),
         "voltaram_a_negociar": resgatados,
     }
+    # Por jogada (2026-10-10): o que cada situação do Follow-up mandou,
+    # quem respondeu e quem fechou. Lê a fila `followups`; sem a
+    # migration a leitura devolve [] e o relatório fica como antes.
+    fu_rows = await fu.list_for_client(client_id, since.replace(tzinfo=timezone.utc))
+    sections["follow_up"].update(_followup_plays_section(fu_rows, until_iso, convs, pays))
 
     # ── Inteligência (sempre) — o que os leads pediram ──
     cls_rows: list[dict] = []
@@ -485,6 +491,46 @@ def _delivery_section(convs: list[dict], pays: list[dict]) -> dict:
     }
 
 
+def _followup_plays_section(rows: list[dict], until_iso: str, convs: list[dict], pays: list[dict]) -> dict:
+    """
+    Números do Follow-up por jogada (puro). Entra dentro de
+    `sections["follow_up"]` como chaves aditivas:
+        enviados, responderam, fecharam, por_jogada: [{id, name, enviados,
+        pessoas, responderam, fecharam}]
+    "fecharam" usa a MESMA regra de fechado da entrega: virou cliente, foi
+    ganho no CRM ou teve pagamento aprovado no período. Sem linhas
+    devolve {} (o relatório fica igual ao de antes).
+    """
+    rows = [r for r in (rows or []) if not until_iso or str(r.get("created_at") or "") <= until_iso]
+    if not rows:
+        return {}
+    resumo = fu.summarize(rows)
+    if not resumo.get("por_jogada"):
+        return {}
+    paid_phones = {str(p.get("phone") or "") for p in pays if p.get("phone")}
+    closed_phones = {
+        str(c.get("phone") or "") for c in convs
+        if c.get("is_customer") or c.get("crm_outcome") == "won" or str(c.get("phone") or "") in paid_phones
+    }
+    sent_by_play: dict[str, set] = {}
+    for r in rows:
+        if r.get("status") == fu.STATUS_SENT:
+            sent_by_play.setdefault(str(r.get("play") or ""), set()).add(str(r.get("phone") or ""))
+    por_jogada = []
+    for j in resumo["por_jogada"]:
+        fecharam = len(sent_by_play.get(j["id"], set()) & closed_phones)
+        por_jogada.append({**j, "fecharam": fecharam})
+    all_sent: set = set()
+    for phones in sent_by_play.values():
+        all_sent |= phones
+    return {
+        "enviados": resumo["enviados"],
+        "responderam": resumo["responderam"],
+        "fecharam": len(all_sent & closed_phones),
+        "por_jogada": por_jogada,
+    }
+
+
 def _team_section(convs: list[dict], pays: list[dict]) -> dict:
     """
     Resultado por pessoa da equipe no período (módulo puro sobre as
@@ -606,6 +652,14 @@ def _report_lines(report: dict) -> tuple[list[str], str]:
             f"🔁 {f['leads_reengajados']} leads que tinham sumido foram reengajados — "
             f"{f.get('voltaram_a_negociar', 0)} voltaram a negociar"
         )
+    jogadas = f.get("por_jogada") or []
+    if jogadas:
+        lines.append("🎯 Follow-up por situação:")
+        for j in jogadas[:6]:
+            linha = f"  {j.get('name', '')}: {j.get('enviados', 0)} enviados, {j.get('responderam', 0)} responderam"
+            if j.get("fecharam"):
+                linha += f", {j['fecharam']} fecharam"
+            lines.append(linha)
 
     # Origem: só aparece quando existe lead ATRIBUÍDO (anúncio/link
     # rastreável) — se tudo é orgânico/direto, a linha seria ruído.

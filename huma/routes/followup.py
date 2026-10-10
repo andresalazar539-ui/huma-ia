@@ -14,6 +14,9 @@
 #                                                 o que está programado
 #   POST  /api/conversations/{id}/{phone}/followups/cancel  cancela o
 #                                                 que está programado
+#   POST  /api/conversations/{id}/{phone}/no-show  o dono marca "Não veio"
+#                                                 na Agenda: limpa o horário
+#                                                 e programa a jogada
 #
 # Regras em huma/core/followup_plays.py; motor em
 # huma/services/followup_engine.py. Sem a migration
@@ -176,6 +179,8 @@ async def _sample_message(client: Any, play_id: str, intensity: str) -> str:
         context = "Pagamento gerado e ainda não pago (exemplo de demonstração)."
     elif play_id == plays.PLAY_CHAMAR_DEPOIS:
         context = "O lead escreveu: \"me chama semana que vem\". Hoje é o dia combinado."
+    elif play_id == plays.PLAY_FALTOU:
+        context = "O horário em que o lead não apareceu era de hoje (exemplo de demonstração)."
     elif play_id == plays.PLAY_VOLTAR:
         facts.append("já é cliente")
     text = await ai.generate_followup_message(
@@ -287,3 +292,52 @@ async def conversation_followups_cancel(
     cancelled = await fu.cancel_pending(client_id, phone, fu.REASON_OWNER)
     log.info(f"Followup | cancelado no Cockpit | client={client_id} | phone={phone} | qtd={cancelled}")
     return {"cancelled": cancelled}
+
+
+@router.post("/api/conversations/{client_id}/{phone}/no-show")
+async def conversation_no_show(
+    client_id: str,
+    phone: str,
+    client=Depends(verify_api_key),
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    huma_session: Optional[str] = Cookie(default=None),
+) -> dict:
+    """
+    O dono marcou "Não veio" na Agenda. O horário sai da conversa (o
+    evento já passou, nada é apagado no Google), fica um marcador no
+    histórico pra IA saber o que houve e a jogada "Não veio" é
+    programada quando o dono a ligou. A conversa volta pra "closing":
+    o lead continua quente, só não tem mais horário ativo.
+    """
+    from huma.routes.api import _ensure_conversation_access
+
+    conv = await db.get_conversation(client_id, phone)
+    if not conv.history and not conv.last_message_at:
+        raise HTTPException(404, "Conversa não encontrada")
+    _ensure_conversation_access(client, creds, huma_session, conv)
+    event_id = (conv.active_appointment_event_id or "").strip()
+    if not event_id:
+        raise HTTPException(409, "Essa conversa não tem horário marcado.")
+
+    prev_dt = conv.active_appointment_datetime or ""
+    service = conv.active_appointment_service or ""
+    conv.active_appointment_event_id = ""
+    conv.active_appointment_datetime = ""
+    conv.active_appointment_service = ""
+    if (conv.stage or "") == "committed":
+        conv.stage = "closing"
+    conv.history.append({
+        "role": "assistant",
+        "content": (
+            f"[NAO COMPARECEU event_id={event_id} | era={prev_dt} | service={service} | "
+            "marcado pelo dono na Agenda. SE o lead voltar a falar, NÃO cobre explicação: "
+            "ofereça remarcar.]"
+        ),
+    })
+    await db.save_conversation(conv)
+    programado = await fu.on_no_show(client, phone, service, prev_dt[:16].replace("T", " "))
+    log.info(
+        f"Followup | não veio | client={client_id} | phone={phone} | event={event_id} | "
+        f"era={prev_dt} | jogada_programada={programado}"
+    )
+    return {"ok": True, "followup_programado": bool(programado), "stage": conv.stage}

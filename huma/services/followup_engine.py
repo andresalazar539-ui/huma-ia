@@ -90,6 +90,7 @@ _FALLBACK_TEXT: dict[str, str] = {
     plays.PLAY_CHAMAR_DEPOIS: "Oi {nome}! Você pediu pra eu te chamar por agora. Quer retomar de onde a gente parou?",
     plays.PLAY_PAGAMENTO: "Oi {nome}! Vi que o pagamento ainda não entrou. Deu algum problema? Se quiser eu te ajudo a concluir.",
     plays.PLAY_CANCELOU: "Oi {nome}! Quer remarcar seu horário? Me diz que dia fica melhor pra você.",
+    plays.PLAY_FALTOU: "Oi {nome}! Senti sua falta no horário de hoje. Tá tudo bem? Se quiser, me diz que dia fica melhor e a gente remarca.",
     plays.PLAY_VOLTAR: "Oi {nome}! Faz um tempo que você não aparece por aqui. Quer que eu veja um horário pra você?",
     plays.PLAY_PERDIDO: "Oi {nome}! Passando pra saber se ainda faz sentido a gente conversar. Qualquer coisa é só me chamar.",
 }
@@ -474,6 +475,36 @@ async def on_appointment_cancelled(client_data: Any, phone: str, service: str = 
         return False
 
 
+async def on_no_show(client_data: Any, phone: str, service: str = "", when: str = "") -> bool:
+    """
+    O dono marcou "Não veio" na Agenda: programa a jogada "Não veio" se
+    ela estiver ligada. Chamado pela rota do Cockpit depois de limpar o
+    agendamento da conversa. Nunca levanta.
+    """
+    try:
+        client_id = getattr(client_data, "client_id", "") or ""
+        config = getattr(client_data, "followup_config", None)
+        category = getattr(client_data, "category", None)
+        caps = [c for c in (getattr(client_data, "capabilities_resolved", None) or [])]
+        if not plays.play_is_on(config, plays.PLAY_FALTOU, category, caps):
+            return False
+        intensity = plays.normalize_config(config, category)["plays"][plays.PLAY_FALTOU]["intensity"]
+        steps = plays.steps_for(plays.PLAY_FALTOU, intensity, category)
+        if not steps:
+            return False
+        anchor = _now()
+        due = anchor + timedelta(hours=steps[0])
+        if plays.has_custom_window(config):
+            due = plays.next_send_time(config, due)
+        return await enqueue(
+            client_id, phone, plays.PLAY_FALTOU, 0, due, anchor_at=anchor,
+            meta={"servico": (service or "")[:120], "quando": (when or "")[:40]},
+        )
+    except Exception as e:
+        log.warning(f"Followup | falta não programada | phone={phone} | {type(e).__name__}: {e}")
+        return False
+
+
 # ----------------------------------------------------------------
 # Gravar na conversa (o Cockpit mostra o que o lead viu)
 # ----------------------------------------------------------------
@@ -568,6 +599,13 @@ def _context_for(play: str, meta: dict) -> str:
         return ("Pagamento gerado e ainda não pago: " + ", ".join(parts) + ".") if parts else ""
     if play == plays.PLAY_CANCELOU and meta.get("servico"):
         return f"O horário cancelado era de: {meta['servico']}."
+    if play == plays.PLAY_FALTOU:
+        parts = []
+        if meta.get("servico"):
+            parts.append(f"era de: {meta['servico']}")
+        if meta.get("quando"):
+            parts.append(f"estava marcado para {meta['quando']}")
+        return ("O horário em que o lead não apareceu " + ", ".join(parts) + ".") if parts else ""
     return ""
 
 
@@ -577,6 +615,8 @@ async def _still_applies(row: dict, conv: Any) -> bool:
     if play == plays.PLAY_PERDIDO:
         return (conv.stage or "") == "lost"
     if play == plays.PLAY_CANCELOU:
+        return not (conv.active_appointment_event_id or "")
+    if play == plays.PLAY_FALTOU:
         return not (conv.active_appointment_event_id or "")
     if play == plays.PLAY_VOLTAR:
         return not (conv.active_appointment_event_id or "")

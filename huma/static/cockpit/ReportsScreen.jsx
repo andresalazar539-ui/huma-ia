@@ -241,6 +241,59 @@ const EquipeTable = ({ vendedores }) => {
 };
 
 // Tabela "De onde veio cada conversa — e o que virou" (seção origem)
+const FollowUpPlaysTable = ({ jogadas }) => {
+  if (!jogadas || jogadas.length === 0) return null;
+  const maxEnv = Math.max(...jogadas.map(j => j.enviados || 0), 1);
+  const th = {
+    fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+    letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)',
+  };
+  const num = { fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink)', textAlign: 'right' };
+  const cols = 'minmax(160px, 1.4fr) minmax(90px, 1fr) 90px 90px 120px 90px';
+  const pct = (a, b) => b ? `${Math.round(100 * a / b)}%` : '0%';
+
+  return (
+    <div style={{
+      border: '1px solid var(--paper-edge)', borderRadius: 16,
+      background: 'var(--paper-raised)', padding: '18px 20px',
+      display: 'flex', flexDirection: 'column', gap: 0, overflowX: 'auto',
+    }}>
+      <div style={{ ...th, marginBottom: 12 }}>O que cada situação do Follow-up rendeu</div>
+      <div style={{ minWidth: 640 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
+          <div style={th}>Situação</div>
+          <div/>
+          <div style={{ ...th, textAlign: 'right' }}>Enviados</div>
+          <div style={{ ...th, textAlign: 'right' }}>Pessoas</div>
+          <div style={{ ...th, textAlign: 'right' }}>Responderam</div>
+          <div style={{ ...th, textAlign: 'right' }}>Fecharam</div>
+        </div>
+        {jogadas.map((j, i) => (
+          <div key={j.id || i} style={{
+            display: 'grid', gridTemplateColumns: cols, gap: 12, alignItems: 'center',
+            padding: '12px 0', borderTop: '1px solid var(--paper-edge)',
+          }}>
+            <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{j.name}</div>
+            <div style={{ height: 6, borderRadius: 3, background: 'var(--paper-sunk)', overflow: 'hidden' }}>
+              <div style={{
+                height: '100%', borderRadius: 3, background: 'var(--ink)',
+                width: `${Math.max(4, Math.round(100 * (j.enviados || 0) / maxEnv))}%`,
+              }}/>
+            </div>
+            <div style={num}>{j.enviados || 0}</div>
+            <div style={num}>{j.pessoas || 0}</div>
+            <div style={num}>{j.responderam || 0} <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>({pct(j.responderam || 0, j.pessoas || 0)})</span></div>
+            <div style={{ ...num, fontWeight: 600 }}>{j.fecharam || 0}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
+        Responderam: quem escreveu de volta em até 7 dias. Fecharam: quem virou cliente, foi ganho no CRM ou pagou no período.
+      </div>
+    </div>
+  );
+};
+
 const OrigemTable = ({ fontes }) => {
   if (!fontes || fontes.length === 0) return null;
   const maxConv = Math.max(...fontes.map(f => f.conversas || 0), 1);
@@ -740,6 +793,9 @@ const ReportsScreen = () => {
               <StatTile label="Leads sumidos reengajados" value={fu.leads_reengajados ?? 0} delta={dl.reengajados}/>
               <StatTile label="Voltaram a negociar" value={fu.voltaram_a_negociar ?? 0} accent/>
             </Grid>
+            {fu.por_jogada && fu.por_jogada.length > 0 && (
+              <div style={{ marginTop: 14 }}><FollowUpPlaysTable jogadas={fu.por_jogada}/></div>
+            )}
 
             {/* Inteligência, sempre */}
             <SectionTitle>O que seus leads mais pediram</SectionTitle>
