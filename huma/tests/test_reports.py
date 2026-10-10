@@ -489,7 +489,7 @@ class TestSendReportNow:
         import huma.services.audio_service as audio_mod
         import huma.services.whatsapp_service as wa_mod
 
-        async def generate_and_upload(text, voice_id, sentiment="neutral", stage=""):
+        async def generate_and_upload(text, voice_id, sentiment="neutral", stage="", **kw):
             assert "prestar contas" in text
             return "https://storage/audios/x.mp3"
 

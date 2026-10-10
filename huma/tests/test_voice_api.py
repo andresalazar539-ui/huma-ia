@@ -243,7 +243,7 @@ class TestVoicePreview:
 
         async def get_voice(vid):
             return _own_clone(vid)
-        async def generate_and_upload(text, voice_id, sentiment="neutral", stage=""):
+        async def generate_and_upload(text, voice_id, sentiment="neutral", stage="", **kw):
             assert voice_id == "voz_abc12345"
             return "https://storage/audios/preview.mp3"
         monkeypatch.setattr(api_mod.vs, "get_voice", get_voice)

@@ -3449,7 +3449,7 @@ class TestSprint5OwnerNotifications:
         fake_conv.history_summary = ""
         fake_conv.lead_facts = []
 
-        async def fake_compress(history, summary, facts):
+        async def fake_compress(history, summary, facts, **kw):
             # Simula compressão real: retorna últimos 4 + summary novo + 1 fato
             return history[-4:], "resumo", ["perfil: nome=Camila"]
 

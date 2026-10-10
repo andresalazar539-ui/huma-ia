@@ -439,7 +439,7 @@ class TestMediaIngestion:
         async def fake_handle(payload, bg):
             captured["payload"] = payload
 
-        async def fake_transcribe(b):
+        async def fake_transcribe(b, **kw):
             return "oi quero agendar"
 
         monkeypatch.setattr(api, "handle_message", fake_handle)
