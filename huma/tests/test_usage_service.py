@@ -127,3 +127,77 @@ class TestPersistencia:
         monkeypatch.setattr(db, "get_supabase", boom)
         s = asyncio.run(us.get_ai_usage_summary("cli", days=999))
         assert s["calls"] == 0 and s["days"] == 365
+
+
+# ================================================================
+# Medição completa (2026-10-10): finalidade, grupos, serviços fora do Claude
+# ================================================================
+
+class _Usage:
+    def __init__(self, i=100, o=20, r=0, w=0):
+        self.input_tokens, self.output_tokens = i, o
+        self.cache_read_input_tokens, self.cache_creation_input_tokens = r, w
+
+
+class _Resp:
+    def __init__(self, usage):
+        self.usage = usage
+
+
+class TestFinalidadeEGrupos:
+    def test_grupo_por_finalidade(self):
+        assert us.group_for("reply") == "conversas" and us.group_for("judge") == "conversas"
+        assert us.group_for("onboarding") == "onboarding" and us.group_for("knowledge") == "onboarding"
+        assert us.group_for("audio") == "audio" and us.group_for("transcription") == "audio"
+        assert us.group_for("shield") == "outros" and us.group_for("") == "outros"
+
+    def test_resumo_separa_por_finalidade_e_ignora_audio_no_share(self):
+        rows = [
+            {"phone": "1", "model": "claude-haiku-4-5", "purpose": "reply", "cost_brl": 0.02},
+            {"phone": "1", "model": "claude-sonnet-4-5", "purpose": "onboarding", "cost_brl": 0.50},
+            {"phone": "1", "model": "elevenlabs", "purpose": "audio", "cost_brl": 0.10},
+            {"phone": "2", "model": "whisper-groq", "purpose": "transcription", "cost_brl": 0.001},
+            {"phone": "", "model": "claude-haiku-4-5", "purpose": "shield", "cost_brl": 0.01},
+        ]
+        s = us.summarize_usage_rows(rows)
+        assert s["by_purpose"]["reply"] == {"calls": 1, "cost_brl": 0.02}
+        assert s["by_group"]["conversas"] == 0.02 and s["by_group"]["onboarding"] == 0.5
+        assert abs(s["by_group"]["audio"] - 0.101) < 1e-6 and s["by_group"]["outros"] == 0.01
+        assert abs(s["strong_model_share"] - 1 / 3) < 1e-3  # 3 chamadas Claude, 1 Sonnet
+
+    def test_record_response_grava_com_finalidade(self, monkeypatch):
+        sink: dict = {}
+        monkeypatch.setattr(db, "get_supabase", lambda: _FakeSupabase(sink))
+        asyncio.run(us.record_response("cli", _Resp(_Usage(1000, 50, 4000, 0)), "claude-haiku-4-5", "judge", phone="5511"))
+        row = sink["inserts"][0]
+        assert row["purpose"] == "judge" and row["phone"] == "5511" and row["cache_read_tokens"] == 4000 and row["cost_brl"] > 0
+
+    def test_record_response_sem_cliente_ou_sem_usage_nao_grava(self, monkeypatch):
+        sink: dict = {}
+        monkeypatch.setattr(db, "get_supabase", lambda: _FakeSupabase(sink))
+        asyncio.run(us.record_response("", _Resp(_Usage()), "m", "reply"))
+        asyncio.run(us.record_response("cli", object(), "m", "reply"))
+        assert "inserts" not in sink
+
+    def test_audio_e_transcricao_viram_custo_em_reais(self, monkeypatch):
+        sink: dict = {}
+        monkeypatch.setattr(db, "get_supabase", lambda: _FakeSupabase(sink))
+        monkeypatch.setattr(us, "USD_BRL_RATE", 5.0)
+        monkeypatch.setattr(us, "ELEVENLABS_USD_PER_1K_CHARS", 0.20)
+        monkeypatch.setattr(us, "TRANSCRIPTION_USD_PER_MINUTE_GROQ", 0.0006)
+        assert us.audio_cost_brl(500) == 0.5          # 0,5k chars × 0,20 × 5
+        assert abs(us.transcription_cost_brl(120000, "groq") - 0.003) < 1e-6  # 60s = 1 min
+        asyncio.run(us.log_audio_usage("cli", "5511", 500))
+        asyncio.run(us.log_transcription_usage("cli", "5511", 120000, "groq"))
+        assert [r["model"] for r in sink["inserts"]] == ["elevenlabs", "whisper-groq"]
+        assert sink["inserts"][0]["purpose"] == "audio" and sink["inserts"][0]["cost_brl"] == 0.5
+        assert sink["inserts"][1]["purpose"] == "transcription" and sink["inserts"][1]["input_tokens"] == 0
+
+    def test_assinaturas_antigas_continuam_valendo(self):
+        import inspect
+        from huma.services import ai_service, audio_service, portuguese_judge, transcription_service
+        assert "client_id" in inspect.signature(ai_service.compress_history).parameters
+        assert inspect.signature(ai_service.compress_history).parameters["client_id"].default == ""
+        assert inspect.signature(portuguese_judge.judge_response).parameters["client_id"].default == ""
+        assert inspect.signature(audio_service.generate_and_upload).parameters["client_id"].default == ""
+        assert inspect.signature(transcription_service.transcribe_bytes).parameters["client_id"].default == ""

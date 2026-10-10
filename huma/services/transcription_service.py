@@ -24,7 +24,7 @@ from huma.utils.logger import get_logger
 log = get_logger("transcription")
 
 
-async def transcribe_audio(audio_url: str, auth: tuple | None = None) -> str | None:
+async def transcribe_audio(audio_url: str, auth: tuple | None = None, client_id: str = "", phone: str = "") -> str | None:
     """
     Transcreve áudio de URL pra texto em português.
 
@@ -44,10 +44,12 @@ async def transcribe_audio(audio_url: str, auth: tuple | None = None) -> str | N
         return None
 
     # 2. Transcreve os bytes (Groq → OpenAI)
-    return await transcribe_bytes(audio_bytes)
+    return await transcribe_bytes(audio_bytes, client_id=client_id, phone=phone)
 
 
-async def transcribe_bytes(audio_bytes: bytes, hint: str = "") -> str | None:
+async def transcribe_bytes(
+    audio_bytes: bytes, hint: str = "", client_id: str = "", phone: str = "", purpose: str = "transcription",
+) -> str | None:
     """
     Transcreve bytes de áudio (Groq → OpenAI) pra texto em português.
 
@@ -67,15 +69,31 @@ async def transcribe_bytes(audio_bytes: bytes, hint: str = "") -> str | None:
     if GROQ_API_KEY:
         text = await _transcribe_groq(audio_bytes, hint=hint)
         if text:
+            await _log_cost(client_id, phone, len(audio_bytes), "groq", purpose)
             return text
 
     if OPENAI_API_KEY:
         text = await _transcribe_openai(audio_bytes, hint=hint)
         if text:
+            await _log_cost(client_id, phone, len(audio_bytes), "openai", purpose)
             return text
 
     log.error("Transcrição falhou em todos os providers")
     return None
+
+
+async def _log_cost(client_id: str, phone: str, audio_bytes_len: int, provider: str, purpose: str) -> None:
+    """Custo estimado da transcrição em ai_usage (2026-10-10). Sem client_id não grava. Nunca levanta."""
+    if not client_id:
+        return
+    try:
+        from huma.services.usage_service import log_service_usage, transcription_cost_brl
+        await log_service_usage(
+            client_id, phone, f"whisper-{provider}", purpose if purpose == "onboarding" else "transcription",
+            transcription_cost_brl(audio_bytes_len, provider),
+        )
+    except Exception as e:
+        log.debug(f"transcrição | custo não gravado | {type(e).__name__}: {e}")
 
 
 async def _download_audio(url: str, auth: tuple | None = None) -> bytes | None:

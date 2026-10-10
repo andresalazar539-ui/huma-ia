@@ -111,6 +111,8 @@ def _build_user_prompt(reply_parts: list[str]) -> str:
 async def judge_response(
     reply_parts: list[str],
     timeout_sec: float = 3.0,
+    client_id: str = "",
+    phone: str = "",
 ) -> tuple[bool, str | None]:
     """
     Avalia se uma resposta tem erro de português.
@@ -154,6 +156,10 @@ async def judge_response(
     except Exception as e:
         log.warning(f"pt_judge|api_error|err={type(e).__name__}: {e}|degrade=allow")
         return False, None
+
+    # Medição (2026-10-10): o juiz é uma chamada a mais por resposta.
+    from huma.services.usage_service import record_response
+    await record_response(client_id, response, AI_MODEL_FAST, "judge", phone=phone)
 
     # Parse do JSON da resposta
     try:

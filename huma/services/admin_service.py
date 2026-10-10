@@ -98,7 +98,7 @@ async def build_overview(days: int = 30) -> dict:
             "client_id,created_at"
         ).in_("source", list(admin_metrics.PAYING_SOURCES)).gt("amount", 0).limit(_ROW_LIMIT)),
         _rows("ai_usage", lambda: supa.table("ai_usage").select(
-            "client_id,phone,model,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_brl"
+            "client_id,phone,model,purpose,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_brl"
         ).gte("created_at", since_iso).limit(_ROW_LIMIT)),
     )
 

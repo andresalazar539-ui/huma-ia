@@ -297,7 +297,7 @@ def _parse_bodies(text: str) -> list[str]:
     return [rules.clean_body(i) for i in (items or []) if isinstance(i, str) and i.strip()]
 
 
-async def _ask_writer(prompt: str) -> list[str]:
+async def _ask_writer(prompt: str, client_id: str = "") -> list[str]:
     import asyncio
 
     from huma.services import ai_service as ai
@@ -313,6 +313,8 @@ async def _ask_writer(prompt: str) -> list[str]:
             ),
             timeout=DRAFT_TIMEOUT_SECONDS,
         )
+        from huma.services.usage_service import record_response
+        await record_response(client_id, response, AI_MODEL_PRIMARY, "templates")
         return _parse_bodies(response.content[0].text)
     except Exception as e:
         log.warning(f"Modelo | escrita pela IA falhou | {type(e).__name__}: {e}")
@@ -374,7 +376,7 @@ async def draft_messages(
     steps = max(1, min(rules.MAX_STEPS, int(steps or 1)))
     columns = [c for c in (columns or []) if c][:2]
     prompt = _writer_prompt(identity, goal or "", columns, samples or [], steps)
-    bodies = await _ask_writer(prompt)
+    bodies = await _ask_writer(prompt, client_id=getattr(identity, "client_id", ""))
 
     bad = [i for i, b in enumerate(bodies[:steps]) if rules.validate_body(b)]
     if bodies and bad:
@@ -382,7 +384,8 @@ async def draft_messages(
         for i in bad:
             notes.append(f"Mensagem {i + 1}: " + " ".join(rules.validate_body(bodies[i])))
         retry = await _ask_writer(
-            prompt + "\n\nSUA VERSÃO ANTERIOR TINHA PROBLEMAS. Corrija e reescreva TODAS:\n" + "\n".join(notes)
+            prompt + "\n\nSUA VERSÃO ANTERIOR TINHA PROBLEMAS. Corrija e reescreva TODAS:\n" + "\n".join(notes),
+            client_id=getattr(identity, "client_id", ""),
         )
         if retry:
             bodies = retry
@@ -415,7 +418,7 @@ async def rewrite_after_rejection(identity: Any, body: str, reason: str) -> str:
         "Reescreva UMA mensagem com a mesma intenção, mais neutra e mais clara sobre quem fala e por quê. "
         "Mantenha os mesmos campos variáveis."
     )
-    bodies = await _ask_writer(prompt)
+    bodies = await _ask_writer(prompt, client_id=getattr(identity, "client_id", ""))
     for candidate in bodies:
         if not rules.validate_body(candidate) and candidate != rules.clean_body(body):
             return candidate

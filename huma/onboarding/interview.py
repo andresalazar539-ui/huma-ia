@@ -566,7 +566,7 @@ def _instagram_url(handle: str) -> str:
     return f"https://www.instagram.com/{h}/" if h else ""
 
 
-async def analyze_source(url: str, instagram: str = "") -> dict:
+async def analyze_source(url: str, instagram: str = "", client_id: str = "") -> dict:
     """
     Lê a fonte (site e/ou Instagram) e propõe a identidade inicial via IA.
 
@@ -620,6 +620,8 @@ async def analyze_source(url: str, instagram: str = "") -> dict:
             tools=[SOURCE_ANALYSIS_TOOL],
             tool_choice={"type": "tool", "name": SOURCE_ANALYSIS_TOOL["name"]},
         )
+        from huma.services.usage_service import record_response
+        await record_response(client_id, response, AI_MODEL_PRIMARY, "onboarding")
         parsed = _parse_source_response(response, url)
         if not parsed:
             log.warning(
@@ -865,6 +867,8 @@ async def generate_reaction(question: str, answer: str, identity: ClientIdentity
                 "content": f"Pergunta feita: {question}\nResposta do dono: {answer[:800]}",
             }],
         )
+        from huma.services.usage_service import record_response
+        await record_response(identity.client_id, response, AI_MODEL_FAST, "onboarding")
         return response.content[0].text.strip()
     except anthropic.APIError as e:
         log.warning(f"Reação indisponível | client={identity.client_id} | {type(e).__name__}: {e}")
@@ -1028,6 +1032,8 @@ async def compile_identity_updates(identity: ClientIdentity) -> dict:
             max_tokens=3000,
             messages=[{"role": "user", "content": _build_compile_prompt(identity, transcript)}],
         )
+        from huma.services.usage_service import record_response
+        await record_response(identity.client_id, response, AI_MODEL_PRIMARY, "onboarding")
         raw = response.content[0].text.strip()
         parsed = json.loads(raw.replace("```json", "").replace("```", "").strip())
     except json.JSONDecodeError:

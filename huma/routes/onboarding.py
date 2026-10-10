@@ -307,7 +307,7 @@ async def analyze_business_source(client_id: str, payload: SourcePayload, _=Depe
     url, instagram = payload.url.strip(), payload.instagram.strip()
     if len(url) < 4 and len(instagram) < 2:
         raise HTTPException(400, "Me passa o site ou o Instagram do seu negócio (pelo menos um dos dois).")
-    result = await interview.analyze_source(url, instagram=instagram)
+    result = await interview.analyze_source(url, instagram=instagram, client_id=client_id)
     log.info(
         f"Fonte analisada | client={client_id} | status={result.get('status')} | "
         f"site={bool(url)} | instagram={bool(instagram)}"
@@ -417,7 +417,7 @@ async def submit_answer_audio(
         raise HTTPException(413, "Áudio muito grande (máximo 15MB)")
 
     # hint: o dono fala "a HUMA" o tempo todo e o Whisper escrevia "a uma"
-    transcript = await transcription_service.transcribe_bytes(audio_bytes, hint=_TRANSCRIPTION_HINT)
+    transcript = await transcription_service.transcribe_bytes(audio_bytes, hint=_TRANSCRIPTION_HINT, client_id=client_id, purpose="onboarding")
     if not transcript:
         raise HTTPException(
             422, "Não consegui entender o áudio. Tenta de novo ou responde por texto."

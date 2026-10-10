@@ -221,10 +221,14 @@ def build_overview(
     custo_total = round(sum(float((u or {}).get("cost_brl") or 0) for u in usage_by_client.values()), 2)
     chamadas_total = sum(int((u or {}).get("calls") or 0) for u in usage_by_client.values())
     conversas_total = sum(conversas_por_cliente.values())
+    conversas_atendidas = sum(int((u or {}).get("conversations") or 0) for u in usage_by_client.values())
     strong_calls = 0
+    custo_por_grupo: dict[str, float] = {"conversas": 0.0, "onboarding": 0.0, "audio": 0.0, "outros": 0.0}
     for u in usage_by_client.values():
         calls = int((u or {}).get("calls") or 0)
         strong_calls += int(round(calls * float((u or {}).get("strong_model_share") or 0)))
+        for g, v in ((u or {}).get("by_group") or {}).items():
+            custo_por_grupo[g] = round(custo_por_grupo.get(g, 0.0) + float(v or 0), 2)
 
     novas = [c for c in clients if (_dt(c.get("created_at")) or now) >= since]
     viraram_pagantes = [cid for cid, when in first_paid_at.items() if when >= since]
@@ -238,6 +242,7 @@ def build_overview(
         rec = revenue_from_ledger(ledger_by_client.get(cid, []), plan_price, pack_prices, overage_price)
         usage = usage_by_client.get(cid) or {}
         custo = round(float(usage.get("cost_brl") or 0), 2)
+        grupos = usage.get("by_group") or {}
         margem = round(rec["total_brl"] - custo, 2)
         rows.append({
             "client_id": cid,
@@ -258,6 +263,11 @@ def build_overview(
             "excedente_conversas": rec["excedente_conversas"],
             "custo_ia_brl": custo,
             "custo_ia_display": brl(custo),
+            "custo_conversas_brl": round(float(grupos.get("conversas") or 0), 2),
+            "custo_onboarding_brl": round(float(grupos.get("onboarding") or 0), 2),
+            "custo_audio_brl": round(float(grupos.get("audio") or 0), 2),
+            "custo_outros_brl": round(float(grupos.get("outros") or 0), 2),
+            "conversas_atendidas": int(usage.get("conversations") or 0),
             "chamadas_ia": int(usage.get("calls") or 0),
             "share_modelo_forte_pct": round(100 * float(usage.get("strong_model_share") or 0), 1),
             "margem_brl": margem,
@@ -308,9 +318,11 @@ def build_overview(
             "custo_display": brl(custo_total),
             "chamadas": chamadas_total,
             "conversas_engajadas": conversas_total,
-            "custo_por_conversa_brl": round(custo_total / conversas_total, 4) if conversas_total else 0.0,
-            "custo_por_conversa_display": brl(custo_total / conversas_total) if conversas_total else "R$ 0,00",
+            "conversas_atendidas": conversas_atendidas,
+            "custo_por_conversa_brl": round(custo_por_grupo["conversas"] / conversas_atendidas, 4) if conversas_atendidas else 0.0,
+            "custo_por_conversa_display": brl(custo_por_grupo["conversas"] / conversas_atendidas) if conversas_atendidas else "R$ 0,00",
             "share_modelo_forte_pct": _pct(strong_calls, chamadas_total),
+            "por_grupo": {g: {"brl": v, "display": brl(v)} for g, v in custo_por_grupo.items()},
         },
         "margem": {
             "brl": round(receita_total["total_brl"] - custo_total, 2),

@@ -330,6 +330,23 @@ PLAYGROUND_TOKEN = os.getenv("PLAYGROUND_TOKEN", "")
 AI_MODEL_PRIMARY = os.getenv("AI_MODEL_PRIMARY", "claude-sonnet-4-5-20250929")  # Sonnet (complexo)
 AI_MODEL_FAST = os.getenv("AI_MODEL_FAST", "claude-haiku-4-5-20251001")        # Haiku (simples)
 
+# Medição de custos fora do Claude (2026-10-10): áudio clonado e transcrição
+# entram na mesma tabela ai_usage (model = "elevenlabs" | "whisper-groq" |
+# "whisper-openai") com custo estimado por estas tabelas. Só afetam o
+# painel do dono; nada do fluxo muda.
+try:
+    ELEVENLABS_USD_PER_1K_CHARS = float(os.getenv("ELEVENLABS_USD_PER_1K_CHARS", "0.24"))
+except ValueError:
+    ELEVENLABS_USD_PER_1K_CHARS = 0.24
+try:
+    TRANSCRIPTION_USD_PER_MINUTE_GROQ = float(os.getenv("TRANSCRIPTION_USD_PER_MINUTE_GROQ", "0.0007"))
+except ValueError:
+    TRANSCRIPTION_USD_PER_MINUTE_GROQ = 0.0007
+try:
+    TRANSCRIPTION_USD_PER_MINUTE_OPENAI = float(os.getenv("TRANSCRIPTION_USD_PER_MINUTE_OPENAI", "0.006"))
+except ValueError:
+    TRANSCRIPTION_USD_PER_MINUTE_OPENAI = 0.006
+
 # F6 (medição) — câmbio pra estimar custo de IA em BRL na tabela ai_usage.
 # Só afeta o número mostrado ao dono; não muda nada do fluxo.
 try:

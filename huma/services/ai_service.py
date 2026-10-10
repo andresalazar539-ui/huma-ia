@@ -2308,6 +2308,8 @@ async def generate_followup_message(
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )
+        from huma.services.usage_service import record_response
+        await record_response(identity.client_id, response, AI_MODEL_FAST, "followup")
         text = response.content[0].text.strip().strip('"').strip()
         text = _sanitize_text(text)
         if not text or len(text) > 500:
@@ -2335,12 +2337,14 @@ async def generate_outbound_message(identity, lead, template=""):
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
+        from huma.services.usage_service import record_response
+        await record_response(getattr(identity, "client_id", ""), response, AI_MODEL_PRIMARY, "outbound")
         return response.content[0].text.strip()
     except Exception:
         return ""
 
 
-async def compress_history(history, summary, facts):
+async def compress_history(history, summary, facts, client_id: str = "", phone: str = ""):
     """
     Comprime histórico preservando memória do lead — versão acumulativa.
 
@@ -2409,6 +2413,8 @@ async def compress_history(history, summary, facts):
             max_tokens=1200,  # antes 800 — espaço pra summary acumulativo + facts ricos
             messages=[{"role": "user", "content": prompt}],
         )
+        from huma.services.usage_service import record_response
+        await record_response(client_id, response, AI_MODEL_FAST, "compress", phone=phone)
         raw = response.content[0].text.strip()
 
         raw = raw.replace("```json", "").replace("```", "").strip()
@@ -2439,7 +2445,7 @@ async def compress_history(history, summary, facts):
         return recent, summary, facts
 
 
-async def analyze_speech_patterns(chat_text):
+async def analyze_speech_patterns(chat_text, client_id: str = ""):
     """Analisa padrões de fala do dono a partir de export do WhatsApp."""
     lines = chat_text.strip().split("\n")[-500:]
 
@@ -2456,6 +2462,8 @@ async def analyze_speech_patterns(chat_text):
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
+        from huma.services.usage_service import record_response
+        await record_response(client_id, response, AI_MODEL_PRIMARY, "voice_profile")
         parsed = json.loads(
             response.content[0].text.strip().replace("```json", "").replace("```", "")
         )

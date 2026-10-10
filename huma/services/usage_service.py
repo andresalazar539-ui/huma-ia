@@ -24,7 +24,14 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.concurrency import run_in_threadpool
 
-from huma.config import USD_BRL_RATE
+from typing import Any
+
+from huma.config import (
+    ELEVENLABS_USD_PER_1K_CHARS,
+    TRANSCRIPTION_USD_PER_MINUTE_GROQ,
+    TRANSCRIPTION_USD_PER_MINUTE_OPENAI,
+    USD_BRL_RATE,
+)
 from huma.utils.logger import get_logger
 
 log = get_logger("usage")
@@ -36,6 +43,33 @@ MODEL_PRICES_USD: list[tuple[str, tuple[float, float, float, float]]] = [
     ("opus", (5.00, 25.00, 0.50, 10.00)),
 ]
 _DEFAULT_PRICE = (3.00, 15.00, 0.30, 6.00)  # Sonnet — conservador
+
+
+# Finalidade de cada chamada → grupo que o painel do dono mostra.
+# "conversas" = custo de atender o lead; "onboarding" = aprender o negócio
+# (entrevista, análise de mercado/playbook, base de conhecimento, voz);
+# "audio" = voz clonada e transcrição; o resto é "outros".
+PURPOSE_GROUPS: dict[str, tuple[str, ...]] = {
+    "conversas": ("reply", "judge", "compress", "followup"),
+    "onboarding": ("onboarding", "playbook", "knowledge", "voice_profile"),
+    "audio": ("audio", "transcription"),
+}
+GROUP_LABELS = {"conversas": "Conversas", "onboarding": "Onboarding", "audio": "Áudio", "outros": "Outros"}
+_CLAUDE_KEYS = ("haiku", "sonnet", "opus", "claude")
+
+
+def group_for(purpose: str) -> str:
+    """Grupo do painel pra uma finalidade ("outros" quando não mapeada)."""
+    p = (purpose or "").strip().lower()
+    for group, purposes in PURPOSE_GROUPS.items():
+        if p in purposes:
+            return group
+    return "outros"
+
+
+def _is_claude(model: str) -> bool:
+    m = (model or "").lower()
+    return any(k in m for k in _CLAUDE_KEYS)
 
 
 def price_for(model: str) -> tuple[float, float, float, float]:
@@ -105,25 +139,95 @@ async def log_ai_usage(
         cache_creation_tokens: tokens escritos no cache.
         purpose: "reply" | "judge" | "followup" | "compress" | "onboarding".
     """
+    await _insert_row({
+        "client_id": client_id,
+        "phone": phone or "",
+        "model": model or "",
+        "tier": int(tier or 0),
+        "purpose": purpose,
+        "input_tokens": int(input_tokens or 0),
+        "output_tokens": int(output_tokens or 0),
+        "cache_read_tokens": int(cache_read_tokens or 0),
+        "cache_creation_tokens": int(cache_creation_tokens or 0),
+        "cost_brl": estimate_cost_brl(model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens),
+    })
+
+
+async def _insert_row(row: dict) -> None:
+    """Grava uma linha em ai_usage. Nunca levanta."""
     try:
         from huma.services.db_service import get_supabase
 
-        row = {
-            "client_id": client_id,
-            "phone": phone or "",
-            "model": model or "",
-            "tier": int(tier or 0),
-            "purpose": purpose,
-            "input_tokens": int(input_tokens or 0),
-            "output_tokens": int(output_tokens or 0),
-            "cache_read_tokens": int(cache_read_tokens or 0),
-            "cache_creation_tokens": int(cache_creation_tokens or 0),
-            "cost_brl": estimate_cost_brl(model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
+        row = {**row, "created_at": datetime.now(timezone.utc).isoformat()}
         await run_in_threadpool(lambda: get_supabase().table("ai_usage").insert(row).execute())
     except Exception as e:
-        log.warning(f"ai_usage | falha ao gravar (rodou scripts/migration_ai_usage.sql?) | client={client_id} | {type(e).__name__}: {e}")
+        log.warning(
+            f"ai_usage | falha ao gravar (rodou scripts/migration_ai_usage.sql?) | "
+            f"client={row.get('client_id')} | purpose={row.get('purpose')} | {type(e).__name__}: {e}"
+        )
+
+
+async def record_response(
+    client_id: str,
+    response: Any,
+    model: str,
+    purpose: str,
+    phone: str = "",
+    tier: int = 0,
+) -> None:
+    """
+    Grava o uso de UMA resposta do Claude (lê `response.usage`). É o
+    jeito único de medir qualquer chamada fora do generate_response.
+    Sem client_id ou sem usage, não grava. Nunca levanta.
+    """
+    try:
+        usage = getattr(response, "usage", None)
+        if not client_id or usage is None:
+            return
+        await log_ai_usage(
+            client_id, phone or "", model, tier,
+            int(getattr(usage, "input_tokens", 0) or 0),
+            int(getattr(usage, "output_tokens", 0) or 0),
+            int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+            int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+            purpose=purpose,
+        )
+    except Exception as e:
+        log.debug(f"ai_usage | record_response skip | purpose={purpose} | {type(e).__name__}: {e}")
+
+
+async def log_service_usage(client_id: str, phone: str, service: str, purpose: str, cost_brl: float) -> None:
+    """Custo de um serviço que não é o Claude (áudio, transcrição), já em BRL. Nunca levanta."""
+    if not client_id:
+        return
+    await _insert_row({
+        "client_id": client_id, "phone": phone or "", "model": service, "tier": 0, "purpose": purpose,
+        "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0,
+        "cost_brl": round(max(0.0, float(cost_brl or 0)), 5),
+    })
+
+
+def audio_cost_brl(chars: int) -> float:
+    """Custo estimado de um áudio da ElevenLabs por caracteres sintetizados."""
+    return round(max(0, int(chars or 0)) / 1000.0 * ELEVENLABS_USD_PER_1K_CHARS * USD_BRL_RATE, 5)
+
+
+def transcription_cost_brl(audio_bytes_len: int, provider: str = "groq") -> float:
+    """
+    Custo estimado de uma transcrição. A duração é estimada pelo tamanho
+    do arquivo (áudio de WhatsApp ≈ 2 KB por segundo).
+    """
+    minutes = max(0, int(audio_bytes_len or 0)) / 2000.0 / 60.0
+    rate = TRANSCRIPTION_USD_PER_MINUTE_OPENAI if provider == "openai" else TRANSCRIPTION_USD_PER_MINUTE_GROQ
+    return round(minutes * rate * USD_BRL_RATE, 5)
+
+
+async def log_audio_usage(client_id: str, phone: str, chars: int) -> None:
+    await log_service_usage(client_id, phone, "elevenlabs", "audio", audio_cost_brl(chars))
+
+
+async def log_transcription_usage(client_id: str, phone: str, audio_bytes_len: int, provider: str = "groq") -> None:
+    await log_service_usage(client_id, phone, f"whisper-{provider}", "transcription", transcription_cost_brl(audio_bytes_len, provider))
 
 
 def summarize_usage_rows(rows: list[dict]) -> dict:
@@ -138,7 +242,10 @@ def summarize_usage_rows(rows: list[dict]) -> dict:
     tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
     cost = 0.0
     by_model: dict[str, dict] = {}
+    by_purpose: dict[str, dict] = {}
+    by_group: dict[str, float] = {g: 0.0 for g in list(PURPOSE_GROUPS) + ["outros"]}
     strong_calls = 0
+    claude_calls = 0
 
     for r in rows or []:
         if not isinstance(r, dict):
@@ -156,8 +263,17 @@ def summarize_usage_rows(rows: list[dict]) -> dict:
         bm = by_model.setdefault(model, {"calls": 0, "cost_brl": 0.0})
         bm["calls"] += 1
         bm["cost_brl"] = round(bm["cost_brl"] + c, 5)
-        if "haiku" not in model.lower():
-            strong_calls += 1
+        purpose = str(r.get("purpose") or "reply")
+        bp = by_purpose.setdefault(purpose, {"calls": 0, "cost_brl": 0.0})
+        bp["calls"] += 1
+        bp["cost_brl"] = round(bp["cost_brl"] + c, 5)
+        by_group[group_for(purpose)] = round(by_group[group_for(purpose)] + c, 5)
+        # Share do modelo forte só entre chamadas do Claude (áudio e
+        # transcrição não entram na conta).
+        if _is_claude(model):
+            claude_calls += 1
+            if "haiku" not in model.lower():
+                strong_calls += 1
 
     conversations = len(phones)
     return {
@@ -167,8 +283,10 @@ def summarize_usage_rows(rows: list[dict]) -> dict:
         "cost_brl": round(cost, 4),
         "cost_per_conversation_brl": round(cost / conversations, 4) if conversations else 0.0,
         "cost_per_call_brl": round(cost / calls, 5) if calls else 0.0,
-        "strong_model_share": round(strong_calls / calls, 3) if calls else 0.0,
+        "strong_model_share": round(strong_calls / claude_calls, 3) if claude_calls else 0.0,
         "by_model": by_model,
+        "by_purpose": by_purpose,
+        "by_group": {g: round(v, 4) for g, v in by_group.items()},
     }
 
 
@@ -182,7 +300,7 @@ async def get_ai_usage_summary(client_id: str, days: int = 30) -> dict:
         resp = await run_in_threadpool(
             lambda: get_supabase()
             .table("ai_usage")
-            .select("phone,model,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_brl")
+            .select("phone,model,purpose,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_brl")
             .eq("client_id", client_id)
             .gte("created_at", since)
             .limit(20000)

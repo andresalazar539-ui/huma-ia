@@ -171,6 +171,9 @@ async def review_campaign(
         log.warning(f"Shield api_error | client={client_id} | {type(e).__name__}: {e} | degrade=allow")
         return _fallback_verdict()
 
+    from huma.services.usage_service import record_response
+    await record_response(client_id, response, AI_MODEL_FAST, "shield")
+
     try:
         text = response.content[0].text.strip()
         if text.startswith("```"):

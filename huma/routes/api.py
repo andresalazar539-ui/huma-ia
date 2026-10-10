@@ -800,7 +800,7 @@ async def voice_preview(
         raise HTTPException(403, "Essa voz não pertence a este cliente.")
 
     text = (payload.text or "").strip() or vs.build_preview_text(client.business_name)
-    url = await audio.generate_and_upload(text, voice_id, sentiment="neutral")
+    url = await audio.generate_and_upload(text, voice_id, sentiment="neutral", client_id=client_id)
     if not url:
         raise HTTPException(502, "Falha ao gerar a prévia. Tenta de novo em instantes.")
 
@@ -3006,7 +3006,7 @@ async def crm_status(
 @router.post("/api/clients/{client_id}/import-whatsapp", tags=["Identidade"])
 async def import_whatsapp(client_id: str, payload: WhatsAppImportPayload, _=Depends(verify_api_key)):
     """Importa padrões de fala do dono via export do WhatsApp."""
-    patterns = await ai.analyze_speech_patterns(payload.chat_text)
+    patterns = await ai.analyze_speech_patterns(payload.chat_text, client_id=client_id)
     if not patterns:
         raise HTTPException(500, "Erro na análise de padrões")
 
@@ -3214,6 +3214,8 @@ async def playground_chat(request: Request):
             system=system_prompt,
             messages=clean_msgs,
         )
+        from huma.services.usage_service import record_response
+        await record_response("_playground", response, AI_MODEL_FAST, "playground")
         reply = response.content[0].text.strip()
         parts = [p.strip() for p in reply.split("\n\n") if p.strip()]
         if not parts:
@@ -3382,7 +3384,7 @@ async def twilio_webhook(request: Request, bg: BackgroundTasks):
     # Se é áudio, transcreve
     if is_audio and media_url and not text.strip():
         from huma.services.transcription_service import transcribe_audio
-        transcribed = await transcribe_audio(media_url, auth=twilio_auth)
+        transcribed = await transcribe_audio(media_url, auth=twilio_auth, client_id=client_id, phone=phone)
         if transcribed:
             text = transcribed
             log.info(f"Áudio transcrito | {phone} | chars={len(text)} | preview={text[:60]}...")
@@ -3460,7 +3462,7 @@ async def _ingest_media_message(
     if media_type == "audio":
         if raw_bytes:
             from huma.services.transcription_service import transcribe_bytes
-            transcribed = await transcribe_bytes(raw_bytes)
+            transcribed = await transcribe_bytes(raw_bytes, client_id=client_id, phone=phone)
             if transcribed:
                 text = transcribed
         if not text:

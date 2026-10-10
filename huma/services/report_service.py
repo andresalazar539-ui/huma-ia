@@ -812,7 +812,7 @@ async def _generate_report_audio(
     script = format_report_audio_script(identity, report, frequency)
     vendeu = bool((report.get("sections", {}).get("vendas") or {}).get("pagamentos"))
     return await audio_service.generate_and_upload(
-        script, voice_id, sentiment="excited" if vendeu else "neutral",
+        script, voice_id, sentiment="excited" if vendeu else "neutral", client_id=identity.client_id,
     )
 
 

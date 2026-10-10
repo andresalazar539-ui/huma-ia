@@ -578,6 +578,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                 _has_err, _reason = await judge_response(
                     _parts,
                     timeout_sec=PT_JUDGE_TIMEOUT_SEC,
+                    client_id=client_id, phone=phone,
                 )
 
                 if _has_err:
@@ -605,6 +606,7 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
                         _has_err_retry, _retry_reason = await judge_response(
                             _retry_parts,
                             timeout_sec=PT_JUDGE_TIMEOUT_SEC,
+                            client_id=client_id, phone=phone,
                         )
 
                         if not _has_err_retry:
@@ -1101,7 +1103,7 @@ async def _compress_history_async(client_id: str, phone: str) -> None:
             # Já comprimida por outra task ou turn anterior — nada a fazer
             return
         new_history, new_summary, new_facts = await ai.compress_history(
-            conv.history, conv.history_summary, conv.lead_facts
+            conv.history, conv.history_summary, conv.lead_facts, client_id=client_id, phone=phone,
         )
         conv.history = new_history
         conv.history_summary = new_summary
@@ -1936,6 +1938,7 @@ async def _send_with_human_delay(
                 voice_id=voice_id,
                 sentiment=sentiment_value,
                 stage=conv.stage,
+                client_id=client_data.client_id, phone=phone,
                 # Instagram Direct não aceita mp3 como anexo; WAV sim.
                 audio_format="wav" if phone.startswith("ig:") else "mp3",
             )

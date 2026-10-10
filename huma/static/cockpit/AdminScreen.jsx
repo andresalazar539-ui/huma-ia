@@ -31,7 +31,8 @@ const AdClientsTable = ({ rows }) => {
     letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)',
   };
   const num = { fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', textAlign: 'right', whiteSpace: 'nowrap' };
-  const cols = 'minmax(170px, 1.6fr) 110px 90px 110px 110px 110px 90px';
+  const adBrl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
+  const cols = 'minmax(170px, 1.6fr) 110px 90px 110px 110px 110px 110px 90px';
   const norm = (s) => String(s || '').toLowerCase();
   const visible = rows.filter(r => {
     if (filter === 'pagantes' && !r.pagante) return false;
@@ -48,7 +49,7 @@ const AdClientsTable = ({ rows }) => {
   );
   const margemColor = (r) => r.margem_pct === null ? 'var(--ink-3)' : (r.margem_pct >= 80 ? 'var(--success)' : (r.margem_pct >= 50 ? 'var(--warning)' : 'var(--danger)'));
   return (
-    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px', overflowX: 'auto' }}>
+    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px', overflowX: 'auto', flexShrink: 0 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
         {chip('todos', `Todas (${rows.length})`)}
         {chip('pagantes', `Pagantes (${rows.filter(r => r.pagante).length})`)}
@@ -59,13 +60,14 @@ const AdClientsTable = ({ rows }) => {
           border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', minWidth: 200,
         }}/>
       </div>
-      <div style={{ minWidth: 820 }}>
+      <div style={{ minWidth: 940 }}>
         <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
           <div style={th}>Conta</div>
           <div style={th}>Assinatura</div>
           <div style={{ ...th, textAlign: 'right' }}>Conversas</div>
           <div style={{ ...th, textAlign: 'right' }}>Receita</div>
-          <div style={{ ...th, textAlign: 'right' }}>Custo de IA</div>
+          <div style={{ ...th, textAlign: 'right' }}>IA conversas</div>
+          <div style={{ ...th, textAlign: 'right' }}>IA onboarding e outros</div>
           <div style={{ ...th, textAlign: 'right' }}>Margem</div>
           <div style={{ ...th, textAlign: 'right' }}>Sonnet</div>
         </div>
@@ -87,7 +89,8 @@ const AdClientsTable = ({ rows }) => {
             </div>
             <div style={num}>{r.conversas}{r.excedente_conversas ? <span style={{ color: 'var(--ink-3)', fontSize: 11 }}> (+{r.excedente_conversas} extra)</span> : null}</div>
             <div style={num}>{r.receita_brl ? r.receita_display : <span style={{ color: 'var(--ink-3)' }}>R$ 0</span>}</div>
-            <div style={num}>{r.custo_ia_display}</div>
+            <div style={num} title={`${r.conversas_atendidas || 0} conversas atendidas pela IA`}>{adBrl(r.custo_conversas_brl)}</div>
+            <div style={num} title={`onboarding ${adBrl(r.custo_onboarding_brl)} · áudio ${adBrl(r.custo_audio_brl)} · outros ${adBrl(r.custo_outros_brl)} · total ${r.custo_ia_display}`}>{adBrl((r.custo_onboarding_brl || 0) + (r.custo_audio_brl || 0) + (r.custo_outros_brl || 0))}</div>
             <div style={{ ...num, fontWeight: 600, color: margemColor(r) }}>{r.margem_pct === null ? r.margem_display : `${r.margem_pct}%`}</div>
             <div style={num}>{r.share_modelo_forte_pct}%</div>
           </div>
@@ -205,7 +208,7 @@ const AdRequestsPanel = () => {
   if (!data) return null;
   const items = (data.items || []).filter(i => !onlyOpen || !['entregue', 'recusado', 'cancelado'].includes(i.status));
   return (
-    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px' }}>
+    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px', flexShrink: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
         <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
           Pedidos sob medida · {data.active_custom} de {data.max_active} projetos em andamento
@@ -274,8 +277,15 @@ const AdminScreen = () => {
           <Grid cols={4}>
             <StatTile label="MRR (preço de tabela)" value={(data.mrr || {}).display} sub={`${a.pagantes || 0} pagantes${a.cortesia ? ` · ${a.cortesia} cortesia` : ''}`} accent />
             <StatTile label={`Receita em ${data.periodo.dias} dias`} value={rec.total_display} sub={`${rec.cobrancas || 0} mensalidades · ${rec.pacotes || 0} pacotes · ${rec.excedente_conversas || 0} conversas extras`} />
-            <StatTile label="Custo de IA no período" value={ia.custo_display} sub={`${ia.custo_por_conversa_display} por conversa engajada · Sonnet em ${ia.share_modelo_forte_pct}% das chamadas`} />
+            <StatTile label="Custo de IA no período" value={ia.custo_display} sub={`${ia.custo_por_conversa_display} por conversa atendida (${ia.conversas_atendidas || 0}) · Sonnet em ${ia.share_modelo_forte_pct}% das chamadas`} />
             <StatTile label="Margem sobre a IA" value={m.pct === null || m.pct === undefined ? m.display : `${m.pct}%`} sub={m.display} accent />
+          </Grid>
+
+          <Grid cols={4}>
+            <StatTile label="IA nas conversas" value={((ia.por_grupo || {}).conversas || {}).display || 'R$ 0,00'} sub="respostas, juiz de português, memória e follow-up" />
+            <StatTile label="IA no onboarding" value={((ia.por_grupo || {}).onboarding || {}).display || 'R$ 0,00'} sub="leitura do site, entrevista, análise de mercado, playbook e base de conhecimento" />
+            <StatTile label="Áudio e transcrição" value={((ia.por_grupo || {}).audio || {}).display || 'R$ 0,00'} sub="voz clonada (ElevenLabs) e áudios transcritos (estimado pelo tamanho)" />
+            <StatTile label="Outros" value={((ia.por_grupo || {}).outros || {}).display || 'R$ 0,00'} sub="escudo de campanha, modelos da Meta, prospecção, playground" />
           </Grid>
 
           <SectionTitle>Assinaturas</SectionTitle>

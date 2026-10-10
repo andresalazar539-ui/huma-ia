@@ -549,6 +549,8 @@ async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
             tools=[MARKET_ANALYSIS_TOOL],
             tool_choice={"type": "tool", "name": MARKET_ANALYSIS_TOOL["name"]},
         )
+        from huma.services.usage_service import record_response
+        await record_response(str(identity_data.get("client_id") or ""), response, AI_MODEL_PRIMARY, "onboarding")
 
         for block in (response.content or []):
             if getattr(block, "type", "") == "tool_use" and isinstance(getattr(block, "input", None), dict):
