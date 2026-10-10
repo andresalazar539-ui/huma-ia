@@ -209,6 +209,8 @@ def create_app() -> FastAPI:
     app.include_router(reactivation_router)
     from huma.routes.admin import router as admin_router
     app.include_router(admin_router)
+    from huma.routes.custom_requests import router as custom_requests_router
+    app.include_router(custom_requests_router)
     app.include_router(whatsapp_meta_router)
     app.include_router(wizard_router)
     app.include_router(onboarding_router)

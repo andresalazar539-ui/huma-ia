@@ -97,6 +97,128 @@ const AdClientsTable = ({ rows }) => {
   );
 };
 
+async function fetchAdminRequests(status) {
+  const r = await fetch(`/api/admin/custom-requests${status ? `?status=${encodeURIComponent(status)}` : ''}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+async function patchAdminRequest(id, body) {
+  const r = await fetch(`/api/admin/custom-requests/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+
+const AD_STATUS = {
+  novo: 'Recebido', em_analise: 'Em análise', proposta: 'Proposta enviada', aceito: 'Aceito, em construção',
+  entregue: 'Entregue', recusado: 'Não dá por agora', cancelado: 'Cancelado',
+};
+const AD_KIND = { '': 'Sem caixa', ja_da: 'Já dá com o que existe (grátis)', integracao: 'Integração (preço de tabela)', sob_medida: 'Sob medida (setup + add-on)' };
+
+const AdRequestRow = ({ item, onSaved }) => {
+  const [open, setOpen] = useStateAd(item.status === 'novo' || item.status === 'em_analise');
+  const [form, setForm] = useStateAd({
+    status: item.status, kind: item.kind || '', answer: item.answer || '', internal_notes: item.internal_notes || '',
+    setup_brl: item.setup_brl || 0, addon_brl: item.addon_brl || 0, monthly_cost_brl: item.monthly_cost_brl || 0,
+  });
+  const [busy, setBusy] = useStateAd(false);
+  const [msg, setMsg] = useStateAd('');
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const minAddon = Math.round(Number(form.monthly_cost_brl || 0) * 3 * 100) / 100;
+  const belowRule = Number(form.monthly_cost_brl || 0) > 0 && Number(form.addon_brl || 0) < minAddon;
+  const save = async (statusOverride) => {
+    if (busy) return;
+    setBusy(true); setMsg('');
+    try {
+      const body = { ...form, status: statusOverride || form.status };
+      ['setup_brl', 'addon_brl', 'monthly_cost_brl'].forEach(k => { body[k] = Number(body[k] || 0); });
+      const r = await patchAdminRequest(item.id, body);
+      setMsg('Salvo.'); setForm(f => ({ ...f, status: r.item.status }));
+      if (onSaved) onSaved();
+    } catch (e) { setMsg(e.message || 'Não salvou.'); }
+    setBusy(false);
+  };
+  const inp = { fontFamily: 'var(--font-sans)', fontSize: 13, padding: '7px 10px', borderRadius: 9, border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', width: '100%' };
+  const lab = { fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 };
+  return (
+    <div style={{ borderTop: '1px solid var(--paper-edge)', padding: '12px 0' }}>
+      <div onClick={() => setOpen(o => !o)} style={{ display: 'flex', gap: 12, alignItems: 'center', cursor: 'pointer' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{item.title}</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)' }}>
+            {item.client_id}{item.requested_by ? ` · ${item.requested_by}` : ''} · {String(item.created_at || '').slice(0, 10).split('-').reverse().join('/')}
+          </div>
+        </div>
+        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, fontWeight: 500, padding: '3px 9px', borderRadius: 999, background: 'var(--paper-sunk)', color: item.status === 'novo' ? 'var(--terracotta-ink)' : 'var(--ink-2)' }}>
+          {AD_STATUS[item.status] || item.status}
+        </span>
+        {item.addon_brl > 0 && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)' }}>R$ {Number(item.addon_brl).toFixed(2).replace('.', ',')}/mês</span>}
+      </div>
+      {open && (
+        <div style={{ marginTop: 12, display: 'grid', gap: 10 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', lineHeight: 1.5, background: 'var(--paper)', border: '1px solid var(--paper-edge)', borderRadius: 10, padding: '10px 12px' }}>{item.description || 'Sem descrição.'}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div><div style={lab}>Caixa da triagem</div>
+              <select value={form.kind} onChange={e => set('kind', e.target.value)} style={inp}>
+                {Object.keys(AD_KIND).map(k => <option key={k} value={k}>{AD_KIND[k]}</option>)}
+              </select></div>
+            <div><div style={lab}>Status</div>
+              <select value={form.status} onChange={e => set('status', e.target.value)} style={inp}>
+                {Object.keys(AD_STATUS).map(k => <option key={k} value={k}>{AD_STATUS[k]}</option>)}
+              </select></div>
+          </div>
+          <div><div style={lab}>Resposta que o cliente lê</div>
+            <textarea value={form.answer} onChange={e => set('answer', e.target.value)} rows={3} style={{ ...inp, resize: 'vertical' }} placeholder="O que dá pra fazer, como e quando."/></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div><div style={lab}>Custo recorrente estimado (R$/mês, interno)</div><input type="number" step="0.01" value={form.monthly_cost_brl} onChange={e => set('monthly_cost_brl', e.target.value)} style={inp}/></div>
+            <div><div style={lab}>Setup único (R$)</div><input type="number" step="0.01" value={form.setup_brl} onChange={e => set('setup_brl', e.target.value)} style={inp}/></div>
+            <div><div style={lab}>Add-on mensal (R$)</div><input type="number" step="0.01" value={form.addon_brl} onChange={e => set('addon_brl', e.target.value)} style={inp}/>
+              {belowRule && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11.5, color: 'var(--warning)', marginTop: 4 }}>Regra: add-on ≥ 3x o custo (mínimo R$ {minAddon.toFixed(2).replace('.', ',')}).</div>}
+            </div>
+          </div>
+          <div><div style={lab}>Notas internas (só a HUMA vê)</div>
+            <textarea value={form.internal_notes} onChange={e => set('internal_notes', e.target.value)} rows={2} style={{ ...inp, resize: 'vertical' }}/></div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Button variant="primary" size="sm" onClick={() => save()} disabled={busy}>{busy ? 'Salvando…' : 'Salvar'}</Button>
+            {form.status !== 'proposta' && <Button variant="ghost" size="sm" onClick={() => save('proposta')} disabled={busy}>Salvar e enviar proposta</Button>}
+            {form.status === 'aceito' && <Button variant="ghost" size="sm" onClick={() => save('entregue')} disabled={busy}>Marcar como entregue</Button>}
+            {msg && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: msg === 'Salvo.' ? 'var(--success)' : 'var(--danger)' }}>{msg}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AdRequestsPanel = () => {
+  const [data, setData] = useStateAd(null);
+  const [err, setErr] = useStateAd('');
+  const [onlyOpen, setOnlyOpen] = useStateAd(true);
+  const load = () => fetchAdminRequests('').then(setData).catch(e => setErr(e.message || 'Não carregou.'));
+  useEffectAd(() => { load(); }, []);
+  if (err) return <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--danger)' }}>{err}</div>;
+  if (!data) return null;
+  const items = (data.items || []).filter(i => !onlyOpen || !['entregue', 'recusado', 'cancelado'].includes(i.status));
+  return (
+    <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', padding: '18px 20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+          Pedidos sob medida · {data.active_custom} de {data.max_active} projetos em andamento
+        </div>
+        <label style={{ marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input type="checkbox" checked={onlyOpen} onChange={e => setOnlyOpen(e.target.checked)}/> só em aberto
+        </label>
+      </div>
+      {items.length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', padding: '10px 0' }}>Nenhum pedido{onlyOpen ? ' em aberto' : ''}.</div>}
+      {items.map(i => <AdRequestRow key={i.id} item={i} onSaved={load} />)}
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 10, lineHeight: 1.5 }}>
+        Triagem em 3 caixas: já dá (grátis), integração (preço de tabela), sob medida (setup único + add-on mensal ≥ 3x o custo). O add-on entra na renovação do cliente depois de entregue; no 2º cliente pedindo a mesma coisa, vira função da plataforma.
+      </div>
+    </div>
+  );
+};
+
 const AdminScreen = () => {
   const [days, setDays] = useStateAd(30);
   const [data, setData] = useStateAd(null);
@@ -168,6 +290,9 @@ const AdminScreen = () => {
             <StatTile label="Indicações" value={ind.indicados || 0} sub={`${ind.convertidos || 0} viraram assinante`} />
           </Grid>
 
+          <SectionTitle>Pedidos sob medida</SectionTitle>
+          <AdRequestsPanel />
+
           <SectionTitle>Por conta</SectionTitle>
           <AdClientsTable rows={data.clientes} />
 
@@ -185,4 +310,4 @@ const AdminScreen = () => {
   );
 };
 
-Object.assign(window, { AdminScreen, fetchAdminOverview });
+Object.assign(window, { AdminScreen, fetchAdminOverview, fetchAdminRequests, patchAdminRequest });

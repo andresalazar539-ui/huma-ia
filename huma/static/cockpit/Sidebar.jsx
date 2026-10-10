@@ -129,12 +129,13 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
       children: [
         { id: 'uso',       label: 'Uso' },
         { id: 'ajustes',   label: 'Conta & plano' },
+        { id: 'sobmedida', label: 'Sob medida' },
       ],
     },
   ]);
 
   // Ajustes group expanded if active is one of its children or ajustes itself
-  const ajustesGroup = ['ajustes', 'uso'];
+  const ajustesGroup = ['ajustes', 'uso', 'sobmedida'];
   const [expanded, setExpanded] = React.useState(ajustesGroup.includes(active));
   React.useEffect(() => {
     if (ajustesGroup.includes(active)) setExpanded(true);
@@ -389,6 +390,7 @@ const MOBILE_MORE_ITEMS = [
   { id: 'integracoes', label: 'Integrações',              icon: 'plug' },
   { id: 'uso',        label: 'Plano e uso',              icon: 'card' },
   { id: 'ajustes',     label: 'Conta & plano',            icon: 'settings' },
+  { id: 'sobmedida',   label: 'Pedir algo sob medida',    icon: 'sparkle' },
   { id: 'negocio',     label: 'Configurações do negócio', icon: 'building' },
   { id: 'perfil',      label: 'Seu perfil',               icon: 'user' },
   ...(window.HUMA_IS_SUPERADMIN ? [{ id: 'admin', label: 'HUMA por dentro', icon: 'chart' }] : []),

@@ -2583,14 +2583,21 @@ async def schedule_overage_charge(client_id: str, lead_days: int = OVERAGE_LEAD_
 
     unbilled = await billing.get_unbilled_overage(client_id, sub.get("overage_billed_until") or "")
     brl = float(unbilled.get("brl") or 0.0)
-    if brl < billing.OVERAGE_PRICE_BRL:
+    # Add-ons sob medida (2026-10-10): add-on mensal dos pedidos entregues +
+    # setup ainda não cobrado entram na MESMA fatura que o excedente.
+    # Sem a tabela custom_requests devolve zeros (nunca levanta).
+    from huma.services import custom_requests_service as custom
+    addons = await custom.billable_addons(client_id)
+    addon_brl = round(float(addons.get("addon_brl") or 0.0) + float(addons.get("setup_brl") or 0.0), 2)
+    extra = round(brl + addon_brl, 2)
+    if extra < billing.OVERAGE_PRICE_BRL:
         return {"status": "skipped", "detail": "sem excedente", "brl": 0.0, "conversations": 0}
 
     auto = pre.get("auto_recurring") or {}
     base = float(auto.get("transaction_amount") or sub.get("price_brl") or 0.0)
     if base <= 0:
         return {"status": "error", "detail": "valor base do preapproval desconhecido"}
-    new_amount = round(base + brl, 2)
+    new_amount = round(base + extra, 2)
 
     updated = await _mp_put(f"/preapproval/{preapproval_id}", {
         "auto_recurring": {"transaction_amount": new_amount, "currency_id": "BRL"},
@@ -2601,7 +2608,7 @@ async def schedule_overage_charge(client_id: str, lead_days: int = OVERAGE_LEAD_
     try:
         await run_in_threadpool(
             lambda: supa.table("subscriptions").update({
-                "overage_pending_brl": brl,
+                "overage_pending_brl": extra,
                 "overage_base_amount_brl": base,
                 "overage_billed_until": unbilled["until"],
                 "updated_at": datetime.utcnow().isoformat(),
@@ -2616,13 +2623,15 @@ async def schedule_overage_charge(client_id: str, lead_days: int = OVERAGE_LEAD_
         return {"status": "error", "detail": "não consegui registrar a foto"}
 
     # Registro no razão (amount 0): auditoria do que foi programado.
+    addon_txt = f" + R$ {addon_brl:.2f} de add-on sob medida" if addon_brl > 0 else ""
     await billing.add_conversations(
         client_id, 0, source="excedente_faturado",
         description=(
-            f"R$ {brl:.2f} ({unbilled['conversations']} conversas extras) programado na "
+            f"R$ {brl:.2f} ({unbilled['conversations']} conversas extras){addon_txt} programado na "
             f"renovação de {next_dt.strftime('%d/%m')} | pre={preapproval_id}"
         ),
     )
+    await custom.mark_setup_billed(addons.get("setup_ids") or [])
 
     # Aviso ao dono ANTES da cobrança — sem surpresa na fatura.
     try:
@@ -2634,9 +2643,10 @@ async def schedule_overage_charge(client_id: str, lead_days: int = OVERAGE_LEAD_
                 client.owner_phone,
                 (
                     f"🧾 Sua próxima fatura HUMA (dia {next_dt.strftime('%d/%m')}): "
-                    f"R$ {base:.2f} do plano + R$ {brl:.2f} de {unbilled['conversations']} "
-                    f"conversas extras = R$ {new_amount:.2f}. "
-                    f"Extrato em Ajustes > Uso no Cockpit."
+                    f"R$ {base:.2f} do plano"
+                    + (f" + R$ {brl:.2f} de {unbilled['conversations']} conversas extras" if brl > 0 else "")
+                    + (f" + R$ {addon_brl:.2f} de add-on sob medida" if addon_brl > 0 else "")
+                    + f" = R$ {new_amount:.2f}. Extrato em Ajustes > Uso no Cockpit."
                 ),
                 client_id=client_id,
             )
@@ -2645,9 +2655,12 @@ async def schedule_overage_charge(client_id: str, lead_days: int = OVERAGE_LEAD_
 
     log.info(
         f"EXCEDENTE PROGRAMADO | client={client_id} | pre={preapproval_id} | "
-        f"base={base:.2f} | extra={brl:.2f} | total={new_amount:.2f} | renovacao={next_dt.date()}"
+        f"base={base:.2f} | excedente={brl:.2f} | addon={addon_brl:.2f} | total={new_amount:.2f} | renovacao={next_dt.date()}"
     )
-    return {"status": "scheduled", "brl": brl, "conversations": unbilled["conversations"], "total": new_amount}
+    return {
+        "status": "scheduled", "brl": brl, "addon_brl": addon_brl,
+        "conversations": unbilled["conversations"], "total": new_amount,
+    }
 
 
 async def settle_overage_after_charge(client_id: str) -> None:

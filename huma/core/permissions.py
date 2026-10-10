@@ -87,6 +87,7 @@ SCREEN_PERMISSIONS: dict[str, str] = {
     "integracoes": "ajustes",
     "negocio": "ajustes",
     "followup": "ajustes",
+    "sobmedida": "ajustes",
     "equipe": "equipe",
 }
 
@@ -117,7 +118,7 @@ _ROUTE_RULES: tuple[tuple[str, str, Optional[str]], ...] = (
     ("*", rf"^{_C}/(outbound|media|tracking-link)(/|$)", "disparos"),
     # Ajustes do negócio e integrações
     ("*", rf"^{_C}/(settings|mode|funnel|playbook|knowledge|gaps|voice|calendar|"
-          rf"pixel|sheet|asaas|rd_station|omie|tiny|analytics-ids|import-whatsapp|followup)(/|$)", "ajustes"),
+          rf"pixel|sheet|asaas|rd_station|omie|tiny|custom-requests|analytics-ids|import-whatsapp|followup)(/|$)", "ajustes"),
     ("*", r"^/api/integrations/", "ajustes"),
     ("*", r"^/whatsapp/", "ajustes"),
     ("*", r"^/instagram/", "ajustes"),
