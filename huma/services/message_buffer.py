@@ -43,6 +43,11 @@ if REDIS_URL:
 # 8s é o sweet spot: rápido o suficiente pra não parecer lento,
 # longo o suficiente pra capturar mensagens picadas.
 BUFFER_WAIT_SECONDS = 8
+# Trava do flush: cobre a resposta inteira (IA + partes com digitação de
+# até 15 s cada). Quem chega com ela ocupada espera até FLUSH_WAIT_MAX_SECONDS.
+FLUSH_LOCK_TTL_SECONDS = 90
+FLUSH_WAIT_MAX_SECONDS = 75.0
+FLUSH_WAIT_STEP_SECONDS = 0.5
 
 # Máximo de tempo que o buffer pode acumular (segurança).
 # Se o lead mandar msgs por 60 segundos direto, processa mesmo assim.
@@ -198,11 +203,25 @@ async def _flush_buffer(client_id, phone, process_callback, callback_args):
     timer_key = f"msgbuf_timer:{client_id}:{phone}"
     first_msg_key = f"msgbuf_first:{client_id}:{phone}"
 
-    # Lock pra garantir flush único
+    # Lock pra garantir flush único. Ele fica preso durante TODO o
+    # processamento (IA + juiz + digitação humana, que passa de 30 s em
+    # resposta com várias partes). Achado no teste de carga de 500 leads
+    # (2026-10-10): a mensagem que chegava nesse meio-tempo ficava no
+    # buffer SEM ninguém processar até o lead escrever de novo (254 de
+    # 1.500 sem resposta). Agora quem chega com o flush ocupado ESPERA
+    # liberar e processa em seguida; o que acumulou no buffer sai junto.
     flush_lock = f"msgbuf_flush:{client_id}:{phone}"
-    acquired = await _client.set(flush_lock, "1", nx=True, ex=30)
+    acquired = await _client.set(flush_lock, "1", nx=True, ex=FLUSH_LOCK_TTL_SECONDS)
+    waited = 0.0
+    while not acquired and waited < FLUSH_WAIT_MAX_SECONDS:
+        await asyncio.sleep(FLUSH_WAIT_STEP_SECONDS)
+        waited += FLUSH_WAIT_STEP_SECONDS
+        acquired = await _client.set(flush_lock, "1", nx=True, ex=FLUSH_LOCK_TTL_SECONDS)
     if not acquired:
-        return  # Outro worker já está processando
+        log.warning(f"Buffer flush | {phone} | processamento anterior passou de {FLUSH_WAIT_MAX_SECONDS}s, mensagem fica pro próximo flush")
+        return
+    if waited:
+        log.info(f"Buffer flush | {phone} | esperou a resposta anterior | {waited:.1f}s")
 
     try:
         # Busca todas as mensagens do buffer
