@@ -148,7 +148,7 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
       background: 'var(--paper)',
       padding: '18px 14px',
       display: 'flex', flexDirection: 'column', gap: 20,
-      height: '100%', boxSizing: 'border-box',
+      height: '100%', boxSizing: 'border-box', overflow: 'hidden',
     }}>
       {/* Brand */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px' }}>
@@ -166,8 +166,8 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
       {/* Workspace switcher */}
       <WorkspaceSwitcher onNav={onNav} onInvite={onInvite} client={client} />
 
-      {/* Nav */}
-      <nav style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {/* Nav: rola sozinho quando a lista não cabe (o bloco de baixo fica fixo) */}
+      <nav style={{ display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto', minHeight: 0, flex: '0 1 auto', margin: '0 -6px', padding: '0 6px' }}>
         {items.map(item => {
           const isGroup = !!item.children;
           const groupActive = isGroup && (item.children.some(c => c.id === active));
@@ -230,7 +230,7 @@ const SidebarNav = ({ active, onNav, onInvite, client, waitingCount }) => {
       </nav>
 
       {/* Tema + live status block */}
-      <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ marginTop: 'auto', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <ThemeToggle />
         <LiveNowBlock client={client} />
       </div>

@@ -35,8 +35,23 @@ def admin_emails() -> set[str]:
     return {e.strip().lower() for e in (HUMA_ADMIN_EMAILS or "").split(",") if e.strip()}
 
 
+def _canonical(email: str) -> str:
+    """minúsculo, sem espaços e, no Gmail, sem o +alias (nome+x@gmail.com é a mesma caixa)."""
+    e = (email or "").strip().lower()
+    if "@" not in e:
+        return e
+    local, domain = e.rsplit("@", 1)
+    if domain in ("gmail.com", "googlemail.com") and "+" in local:
+        local = local.split("+", 1)[0]
+    return f"{local}@{domain}"
+
+
 def is_admin_email(email: str) -> bool:
-    return bool(email) and email.strip().lower() in admin_emails()
+    """E-mail da lista de admins; alias +x do Gmail conta como o mesmo e-mail."""
+    if not email:
+        return False
+    allowed = {_canonical(a) for a in admin_emails()}
+    return _canonical(email) in allowed
 
 
 async def _rows(label: str, build) -> list[dict]:

@@ -149,6 +149,13 @@ class TestRota:
         assert r.status_code == 403
         assert self._client().get("/api/admin/overview").status_code == 403
 
+    def test_alias_do_gmail_conta_como_o_mesmo_email(self, monkeypatch):
+        import huma.services.admin_service as svc
+        monkeypatch.setattr(svc, "HUMA_ADMIN_EMAILS", "andresalazar539@gmail.com")
+        assert svc.is_admin_email("AndreSalazar539+loja1@gmail.com") is True
+        assert svc.is_admin_email("andresalazar539+x@outlook.com") is False
+        assert svc.is_admin_email("outro+andresalazar539@gmail.com") is False
+
     def test_admin_ve_o_painel(self, monkeypatch):
         self._enable(monkeypatch)
         r = self._client().get("/api/admin/overview?days=7", cookies=self._cookie(monkeypatch, email="OPS@humaia.com.br"))
