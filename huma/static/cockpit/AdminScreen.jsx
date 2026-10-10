@@ -37,7 +37,7 @@ const AdClientsTable = ({ rows }) => {
     if (filter === 'pagantes' && !r.pagante) return false;
     if (filter === 'trial' && !(r.assinatura === 'trial' || r.assinatura === 'trial_expirado' || r.assinatura === 'trial_expired')) return false;
     if (filter === 'parados' && !(r.assinatura === 'cancelled' || r.assinatura === 'paused' || r.assinatura === 'trial_expired')) return false;
-    if (q && !(norm(r.nome).includes(norm(q)) || norm(r.email).includes(norm(q)))) return false;
+    if (q && !(norm(r.nome).includes(norm(q)) || norm(r.email).includes(norm(q)) || norm(r.client_id).includes(norm(q)))) return false;
     return true;
   });
   const chip = (id, label) => (
@@ -54,7 +54,7 @@ const AdClientsTable = ({ rows }) => {
         {chip('pagantes', `Pagantes (${rows.filter(r => r.pagante).length})`)}
         {chip('trial', 'Em teste')}
         {chip('parados', 'Paradas')}
-        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nome ou e-mail" style={{
+        <input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar por nome, e-mail ou ID" style={{
           marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 13, padding: '6px 10px', borderRadius: 9,
           border: '1px solid var(--paper-edge)', background: 'var(--paper)', color: 'var(--ink)', minWidth: 200,
         }}/>
@@ -75,6 +75,10 @@ const AdClientsTable = ({ rows }) => {
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.client_id}>{r.nome}</div>
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {r.email}{r.criado_em ? ` · desde ${r.criado_em.split('-').reverse().join('/')}` : ''}{r.indicado_por ? ' · indicado' : ''}
+              </div>
+              <div onClick={async () => { try { await navigator.clipboard.writeText(r.client_id); } catch (_) { window.prompt('ID:', r.client_id); } }}
+                   title="Clique pra copiar o ID" style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', cursor: 'pointer', marginTop: 2 }}>
+                {r.client_id}
               </div>
             </div>
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: r.pagante ? 'var(--success)' : 'var(--ink-2)' }}>

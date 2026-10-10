@@ -274,6 +274,28 @@ const ThemeToggle = () => {
   );
 };
 
+// ID da conta: o identificador que o cliente informa ao suporte. É o
+// client_id de sempre (cli_ + 12 caracteres), só que visível e copiável.
+const AccountIdLine = ({ compact }) => {
+  const id = (typeof CLIENT_ID !== 'undefined' && CLIENT_ID) || window.HUMA_CLIENT_ID || '';
+  const [copied, setCopied] = React.useState(false);
+  if (!id || id === 'dev') return null;
+  const copy = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    try { await navigator.clipboard.writeText(id); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch (_) { window.prompt('Copie o ID da conta:', id); }
+  };
+  return (
+    <div onClick={copy} title="Clique pra copiar. Informe este ID ao falar com o suporte HUMA." style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: compact ? 3 : 0, cursor: 'pointer',
+      fontFamily: 'var(--font-mono)', fontSize: compact ? 10.5 : 12, color: 'var(--ink-3)', letterSpacing: '0.02em',
+    }}>
+      <span>ID {id}</span>
+      <span style={{ fontFamily: 'var(--font-sans)', fontSize: 10.5, color: copied ? 'var(--success)' : 'var(--ink-4)' }}>{copied ? 'copiado' : 'copiar'}</span>
+    </div>
+  );
+};
+
 const WorkspaceSwitcher = ({ onNav, onInvite, client }) => {
   // Nome e categoria REAIS da conta (nada de mock)
   const bizName = (client && client.business_name) || 'Seu negócio';
@@ -342,6 +364,7 @@ const WorkspaceSwitcher = ({ onNav, onInvite, client }) => {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{bizName}</div>
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)' }}>{bizSub}</div>
+              <AccountIdLine compact />
             </div>
             <span style={{ color: 'var(--sage)' }}><Icon name="check" size={14} stroke={2}/></span>
           </button>
@@ -488,4 +511,4 @@ const MobileMoreSheet = ({ active, onNav, onClose, extraItems = [] }) => {
   );
 };
 
-Object.assign(window, { SidebarNav, WorkspaceSwitcher, ThemeToggle, MobileTabBar, MobileMoreSheet, pipelineTabs });
+Object.assign(window, { AccountIdLine, SidebarNav, WorkspaceSwitcher, ThemeToggle, MobileTabBar, MobileMoreSheet, pipelineTabs });

@@ -2277,6 +2277,19 @@ const PerfilSecurity = ({ settings }) => {
         {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
       </Card>
 
+      <Card title="ID da conta">
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+          Este é o identificador da sua conta na HUMA. Informe ele ao falar com o suporte: é como a gente acha a sua conta sem confundir com outra.
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <code style={{ fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--ink)', background: 'var(--paper-sunk)', padding: '6px 10px', borderRadius: 8 }}>{CLIENT_ID}</code>
+          <Button variant="ghost" size="sm" onClick={async () => {
+            try { await navigator.clipboard.writeText(CLIENT_ID); window.alert('ID copiado.'); }
+            catch (_) { window.prompt('Copie o ID da conta:', CLIENT_ID); }
+          }}>Copiar</Button>
+        </div>
+      </Card>
+
       <Card title="Sessão">
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 }}>
           Você está logado como <b style={{ color: 'var(--ink)' }}>{email || 'esta conta'}</b>. Num computador compartilhado, saia ao terminar.
