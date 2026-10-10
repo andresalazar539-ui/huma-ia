@@ -354,6 +354,7 @@ class Metrics:
         self.cpu: list[float] = []
         self.log_errors = 0
         self.lock_busy = 0
+        self.flush_busy = 0
         self.pending: dict[str, list[float]] = defaultdict(list)   # phone → [t_post]
         self.proc = psutil.Process()
         self.proc.cpu_percent(interval=None)
@@ -377,17 +378,27 @@ _REPLIES = [
 def _ai_result(identity, conv, text: str) -> dict:
     turn = len([h for h in (conv.history or []) if h.get("role") == "assistant"])
     reply = _REPLIES[min(turn, len(_REPLIES) - 1)]
+    # 30% das contas respondem em 3 partes (estilo SPLIT): digitação longa,
+    # é o caso que segura a trava do flush por mais tempo.
+    parts = [reply] if int(str(getattr(identity, "client_id", "0"))[-1]) % 10 >= 3 else [reply, "Posso te ajudar com mais alguma coisa?", "Fico por aqui."]
     return {
-        "reply": reply, "reply_parts": [reply], "intent": "duvida", "sentiment": "neutral",
+        "reply": reply, "reply_parts": parts, "intent": "duvida", "sentiment": "neutral",
         "stage_action": "stay", "confidence": 0.9, "lead_facts": [], "actions": [],
         "micro_objective": "", "emotional_reading": "", "audio_text": reply if getattr(identity, "enable_audio", False) else "",
         "lead_read": {},
     }
 
 
+# STRESS_SLOW_AI_SECONDS: nas contas 0, 1 e 2, a "IA" demora isso (simula
+# resposta longa / API lenta) pra forçar o lead a escrever no meio da
+# resposta anterior e provar que nada se perde.
+_SLOW_AI = float(os.getenv("STRESS_SLOW_AI_SECONDS", "0"))
+
+
 async def fake_generate_response(identity, conv, user_text, *a, **k):
     M.ai_calls += 1
-    await asyncio.sleep(_RNG.uniform(1.2, 2.5))
+    slow = _SLOW_AI and int(str(getattr(identity, "client_id", "9"))[-1]) < 3
+    await asyncio.sleep(_SLOW_AI if slow else _RNG.uniform(1.2, 2.5))
     return _ai_result(identity, conv, user_text)
 
 
@@ -403,10 +414,13 @@ async def fake_judge(parts, timeout_sec=3.0, **k):
 
 
 def _mark_delivered(phone: str):
+    """Uma resposta cobre TODAS as mensagens do lead postadas antes dela
+    (o buffer junta o que chegou na janela de 8 s numa resposta só)."""
     pend = M.pending.get(phone)
-    if pend:
+    now = time.perf_counter()
+    while pend and pend[0] <= now:
         t0 = pend.pop(0)
-        M.e2e.append((time.perf_counter() - t0) * 1000)
+        M.e2e.append((now - t0) * 1000)
 
 
 async def fake_send_text(phone, text, *a, **k):
@@ -532,6 +546,18 @@ def install_patches():
         return ok
 
     redis_service.acquire_lock = counting_acquire
+
+    # Conta quantas vezes o flush do buffer achou a trava ocupada (resposta
+    # anterior ainda saindo) e precisou esperar.
+    _orig_set = _FAKE_REDIS.set
+
+    async def counting_set(key, value, *a, **k):
+        ok = await _orig_set(key, value, *a, **k)
+        if not ok and str(key).startswith("msgbuf_flush:") and k.get("nx"):
+            M.flush_busy += 1
+        return ok
+
+    _FAKE_REDIS.set = counting_set
     logging.getLogger().addHandler(_ErrorCounter())
     for name in ("huma", "uvicorn"):
         logging.getLogger(name).setLevel(logging.ERROR)
@@ -725,6 +751,7 @@ async def run(n_leads: int) -> dict:
         "conversas_no_banco": conv_rows, "operacoes_no_banco": store.ops,
         "http_erros": len(M.http_errors), "excecoes": len(M.exceptions), "logs_de_erro": M.log_errors,
         "msgs_descartadas_lock_ocupado": M.lock_busy,
+        "flush_esperou_resposta_anterior": M.flush_busy,
         "memoria_mb": {"inicio": round(M.mem[0]) if M.mem else 0, "pico": round(max(M.mem)) if M.mem else 0, "fim": round(M.mem[-1]) if M.mem else 0},
         "cpu_pct": {"media": round(statistics.mean(M.cpu)) if M.cpu else 0, "pico": round(max(M.cpu)) if M.cpu else 0},
         "throughput_msgs_por_s": round(expected / total_s, 1) if total_s else 0,
