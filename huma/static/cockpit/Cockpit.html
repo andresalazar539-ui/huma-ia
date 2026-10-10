@@ -337,12 +337,15 @@ function App() {
   // --- Status das integrações (Bloco C) — alimenta IntegrationsScreen ---
   // Carrega uma vez no mount + repoll quando o dono navega pra "integracoes".
   const [client, setClient] = useState(null);
-  const reloadIntegrationsStatus = useCallback(async () => {
+  // Se a primeira leitura falhar (servidor ocupado, conexão caiu), tenta de
+  // novo sozinho: sem isso a barra lateral ficava em "Carregando…" até o F5.
+  const reloadIntegrationsStatus = useCallback(async (attempt = 1) => {
     try {
       const c = await fetchIntegrationsStatus();
       setClient(c);
     } catch (e) {
       console.error('Integrações | falha ao carregar status', e);
+      if (attempt < 4) setTimeout(() => reloadIntegrationsStatus(attempt + 1), 1500 * attempt);
     }
   }, []);
   useEffect(() => { reloadIntegrationsStatus(); }, [reloadIntegrationsStatus]);

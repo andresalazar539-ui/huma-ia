@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi.concurrency import run_in_threadpool
 
 from huma.config import HUMA_ADMIN_EMAILS, TRIAL_DAYS
@@ -54,14 +55,39 @@ def is_admin_email(email: str) -> bool:
     return _canonical(email) in allowed
 
 
+# O cliente do Supabase é um só pro processo inteiro. Uma rajada de leituras
+# em paralelo (visto em prod 2026-10-10: painel + comparação + ficha) fez o
+# servidor derrubar a conexão ("Server disconnected") e levou junto chamadas
+# de outras telas. Por isso o painel lê EM SEQUÊNCIA e tenta de novo uma vez
+# quando a conexão cai no meio.
+_RETRY_ERRORS = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.ReadTimeout)
+
+
 async def _rows(label: str, build) -> list[dict]:
-    """Executa a consulta no threadpool; [] com WARNING em falha."""
-    try:
-        resp = await run_in_threadpool(lambda: build().execute())
-        return resp.data or []
-    except Exception as e:
-        log.warning(f"Admin | leitura falhou | fonte={label} | {type(e).__name__}: {e}")
-        return []
+    """Executa a consulta no threadpool; [] com WARNING em falha. Conexão caída = 1 nova tentativa."""
+    for attempt in (1, 2):
+        try:
+            resp = await run_in_threadpool(lambda: build().execute())
+            return resp.data or []
+        except _RETRY_ERRORS as e:
+            if attempt == 1:
+                log.warning(f"Admin | conexão caiu, tentando de novo | fonte={label} | {type(e).__name__}: {e}")
+                await asyncio.sleep(0.3)
+                continue
+            log.warning(f"Admin | leitura falhou | fonte={label} | {type(e).__name__}: {e}")
+            return []
+        except Exception as e:
+            log.warning(f"Admin | leitura falhou | fonte={label} | {type(e).__name__}: {e}")
+            return []
+    return []
+
+
+async def _seq(*coros):
+    """Aguarda as corrotinas uma por vez (mesma assinatura de uso do gather)."""
+    out = []
+    for c in coros:
+        out.append(await c)
+    return out
 
 
 BRT = timezone(timedelta(hours=-3))
@@ -104,7 +130,7 @@ async def _overview_for(since: datetime, until: datetime) -> dict:
         return admin_metrics.build_overview(clients=[], subs=[], ledger=[], paying_rows=[], usage_by_client={}, **kwargs)
 
     since_iso, until_iso = since.isoformat(), until.isoformat()
-    clients, subs, ledger, paying_rows, usage_rows = await asyncio.gather(
+    clients, subs, ledger, paying_rows, usage_rows = await _seq(
         _rows("clients", lambda: supa.table("clients").select(CLIENT_COLS).limit(_ROW_LIMIT)),
         _rows("subscriptions", lambda: supa.table("subscriptions").select(SUB_COLS).limit(_ROW_LIMIT)),
         _rows("credit_transactions", lambda: supa.table("credit_transactions").select(
@@ -232,14 +258,22 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
             return None
 
     async def _count(label, build):
-        try:
-            resp = await run_in_threadpool(lambda: build().execute())
-            return int(resp.count or 0)
-        except Exception as e:
-            log.warning(f"Admin | ficha | contagem falhou | fonte={label} | {type(e).__name__}: {e}")
-            return 0
+        for attempt in (1, 2):
+            try:
+                resp = await run_in_threadpool(lambda: build().execute())
+                return int(resp.count or 0)
+            except _RETRY_ERRORS as e:
+                if attempt == 1:
+                    await asyncio.sleep(0.3)
+                    continue
+                log.warning(f"Admin | ficha | contagem falhou | fonte={label} | {type(e).__name__}: {e}")
+                return 0
+            except Exception as e:
+                log.warning(f"Admin | ficha | contagem falhou | fonte={label} | {type(e).__name__}: {e}")
+                return 0
+        return 0
 
-    sub_rows, billing_status, ledger, paying, usage_rows, payments, conv_total, conv_periodo, clientes_do_cliente, pedidos = await asyncio.gather(
+    sub_rows, billing_status, ledger, paying, usage_rows, payments, conv_total, conv_periodo, clientes_do_cliente, pedidos = await _seq(
         _rows("subscriptions(ficha)", lambda: supa.table("subscriptions").select(SUB_COLS + ",included_conversations,overage_pending_brl")
               .eq("client_id", client_id).order("updated_at", desc=True).limit(1)),
         _billing(),
