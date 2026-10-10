@@ -110,9 +110,10 @@ async def _overview_for(since: datetime, until: datetime) -> dict:
         _rows("credit_transactions", lambda: supa.table("credit_transactions").select(
             "client_id,type,amount,source,description,created_at"
         ).gte("created_at", since_iso).lt("created_at", until_iso).limit(_ROW_LIMIT)),
-        _rows("credit_transactions(pagas)", lambda: supa.table("credit_transactions").select(
-            "client_id,created_at"
-        ).in_("source", list(admin_metrics.PAYING_SOURCES)).gt("amount", 0).limit(_ROW_LIMIT)),
+        _rows("credit_transactions(de sempre)", lambda: supa.table("credit_transactions").select(
+            "client_id,type,amount,source,description,created_at"
+        ).in_("source", list(admin_metrics.PAYING_SOURCES) + [admin_metrics.PACK_SOURCE, admin_metrics.OVERAGE_SOURCE])
+        .gt("amount", 0).limit(_ROW_LIMIT)),
         _rows("ai_usage", lambda: supa.table("ai_usage").select(
             "client_id,phone,model,purpose,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_brl"
         ).gte("created_at", since_iso).lt("created_at", until_iso).limit(_ROW_LIMIT)),
@@ -245,8 +246,10 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
         _rows("credit_transactions(ficha)", lambda: supa.table("credit_transactions").select(
             "type,amount,balance_after,source,description,created_at").eq("client_id", client_id)
             .order("created_at", desc=True).limit(40)),
-        _rows("credit_transactions(pagas)", lambda: supa.table("credit_transactions").select("created_at,source,description")
-              .eq("client_id", client_id).in_("source", list(admin_metrics.PAYING_SOURCES)).gt("amount", 0).limit(200)),
+        _rows("credit_transactions(de sempre)", lambda: supa.table("credit_transactions").select("type,amount,created_at,source,description")
+              .eq("client_id", client_id)
+              .in_("source", list(admin_metrics.PAYING_SOURCES) + [admin_metrics.PACK_SOURCE, admin_metrics.OVERAGE_SOURCE])
+              .gt("amount", 0).limit(5000)),
         _rows("ai_usage(ficha)", lambda: supa.table("ai_usage").select(
             "phone,model,purpose,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_brl")
             .eq("client_id", client_id).gte("created_at", since_iso).limit(20000)),
@@ -261,8 +264,12 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
     )
 
     sub = sub_rows[0] if sub_rows else {}
-    ever_paid = {client_id} if paying else set()
-    paid_dates = sorted(d for d in (admin_metrics._dt(p.get("created_at")) for p in paying) if d is not None)
+    plan_charges = [p for p in paying if p.get("source") in admin_metrics.PAYING_SOURCES]
+    ever_paid = {client_id} if plan_charges else set()
+    paid_dates = sorted(d for d in (admin_metrics._dt(p.get("created_at")) for p in plan_charges) if d is not None)
+    acumulada = admin_metrics.revenue_from_ledger(
+        paying, billing.PLAN_CONFIG[billing.Plan.START]["price_brl"], billing.EXTRA_PACKS, billing.OVERAGE_PRICE_BRL,
+    )
     usage = summarize_usage_rows(usage_rows)
     aprovados = [p for p in payments if str(p.get("status") or "") == "approved"]
     gmv_cents = sum(int(p.get("amount_cents") or 0) for p in aprovados)
@@ -318,9 +325,12 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
             "ultima_mudanca": str(sub.get("updated_at") or "")[:10] if sub else "",
             "primeira_cobranca": paid_dates[0].date().isoformat() if paid_dates else "",
             "ultima_cobranca": paid_dates[-1].date().isoformat() if paid_dates else "",
-            "cobrancas": len(paying),
-            "pago_de_sempre_brl": round(len(paying) * preco, 2) if preco else 0.0,
-            "pago_de_sempre_display": admin_metrics.brl(len(paying) * preco) if preco else "R$ 0,00",
+            "cobrancas": len(plan_charges),
+            "pago_de_sempre_brl": acumulada["total_brl"],
+            "pago_de_sempre_display": admin_metrics.brl(acumulada["total_brl"]),
+            "acumulado_plano_display": admin_metrics.brl(acumulada["plano_brl"]),
+            "acumulado_pacotes_display": admin_metrics.brl(acumulada["pacotes_brl"]),
+            "acumulado_excedente_display": admin_metrics.brl(acumulada["excedente_brl"]),
             "saldo": (billing_status or {}).get("balance"),
             "trial_label": (billing_status or {}).get("trial_ends_label", ""),
             "aguardando_primeira_cobranca": bool((billing_status or {}).get("awaiting_first_charge")),

@@ -176,12 +176,26 @@ def build_overview(
         if prev is None or (_dt(s.get("updated_at")) or since) >= (_dt(prev.get("updated_at")) or since):
             sub_by_client[cid] = s
 
+    # `paying_rows` são linhas de TODA a vida: cobranças do plano (ever_paid e
+    # 1ª cobrança) e, quando vierem com `source`, também pacotes e excedente
+    # (receita acumulada por cliente). Linha sem `source` = cobrança do plano
+    # (formato antigo).
     ever_paid: set[str] = set()
     first_paid_at: dict[str, datetime] = {}
+    lifetime_by_client: dict[str, list[dict]] = {}
     for r in paying_rows:
         cid = str(r.get("client_id") or "")
         when = _dt(r.get("created_at"))
         if not cid:
+            continue
+        source = r.get("source")
+        if source is not None:
+            lifetime_by_client.setdefault(cid, []).append(r)
+        try:
+            amount = int(r.get("amount") if r.get("amount") is not None else 1)
+        except (TypeError, ValueError):
+            amount = 0
+        if source is not None and (source not in PAYING_SOURCES or amount <= 0):
             continue
         ever_paid.add(cid)
         if when is not None and (cid not in first_paid_at or when < first_paid_at[cid]):
@@ -247,6 +261,7 @@ def build_overview(
         cid = str(c.get("client_id") or "")
         sub = sub_by_client.get(cid) or {}
         rec = revenue_from_ledger(ledger_by_client.get(cid, []), plan_price, pack_prices, overage_price)
+        acumulada = revenue_from_ledger(lifetime_by_client.get(cid, []), plan_price, pack_prices, overage_price)
         usage = usage_by_client.get(cid) or {}
         custo = round(float(usage.get("cost_brl") or 0), 2)
         grupos = usage.get("by_group") or {}
@@ -265,6 +280,9 @@ def build_overview(
             "conversas": conversas_por_cliente.get(cid, 0),
             "receita_brl": rec["total_brl"],
             "receita_display": brl(rec["total_brl"]),
+            "receita_acumulada_brl": acumulada["total_brl"],
+            "receita_acumulada_display": brl(acumulada["total_brl"]),
+            "cobrancas_de_sempre": acumulada["cobrancas"],
             "cobrancas": rec["cobrancas"],
             "pacotes": rec["pacotes"],
             "excedente_conversas": rec["excedente_conversas"],
@@ -296,6 +314,8 @@ def build_overview(
         if (c.get("phone_number_id") or c.get("evolution_instance") or c.get("instagram_user_id"))
     ]
     pagantes_rows = [r for r in rows if r["pagante"]]
+    receita_acumulada_total = round(sum(r["receita_acumulada_brl"] for r in rows), 2)
+    pagaram = sum(1 for r in rows if r["receita_acumulada_brl"] > 0)
     conversas_pagantes = sum(r["conversas_atendidas"] for r in pagantes_rows)
     expansao = receita_total["pacotes_brl"] + receita_total["excedente_brl"]
 
@@ -342,6 +362,12 @@ def build_overview(
             "pagantes_sem_conversa": sum(1 for r in pagantes_rows if r["conversas_atendidas"] == 0),
         },
         "em_risco": em_risco[:25],
+        "receita_acumulada": {
+            "brl": receita_acumulada_total, "display": brl(receita_acumulada_total),
+            "clientes_que_pagaram": pagaram,
+            "media_por_cliente_display": brl(receita_acumulada_total / pagaram) if pagaram else "R$ 0,00",
+        },
+        "top_acumulado": sorted([r for r in rows if r["receita_acumulada_brl"] > 0], key=lambda r: -r["receita_acumulada_brl"])[:5],
         "top_receita": [r for r in rows if r["receita_brl"] > 0][:5],
         "top_custo_ia": sorted([r for r in rows if r["custo_ia_brl"] > 0], key=lambda r: -r["custo_ia_brl"])[:5],
         "contas": {"total": len(clients), "novas_no_periodo": len(novas), "sem_assinatura": status_counts["sem_assinatura"]},

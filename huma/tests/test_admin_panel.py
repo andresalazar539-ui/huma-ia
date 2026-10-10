@@ -60,8 +60,10 @@ _LEDGER = [
     {"client_id": "e", "type": "credit", "amount": 150, "source": "mp_renovacao", "description": "apid=3 payid=4 pre=pre_e plano start", "created_at": _iso(20)},
 ]
 _PAYING = [
-    {"client_id": "a", "created_at": _iso(190)}, {"client_id": "a", "created_at": _iso(4)},
-    {"client_id": "e", "created_at": _iso(20)},
+    {"client_id": "a", "created_at": _iso(190), "source": "mp_primeira_cobranca", "amount": 150, "type": "credit", "description": "payid=1"},
+    {"client_id": "a", "created_at": _iso(4), "source": "mp_renovacao", "amount": 150, "type": "credit", "description": "payid=2"},
+    {"client_id": "a", "created_at": _iso(3), "source": "pacote_extra", "amount": 200, "type": "credit", "description": "payid=9 pacote pack_200 R$349.0"},
+    {"client_id": "e", "created_at": _iso(20), "source": "mp_renovacao", "amount": 150, "type": "credit", "description": "payid=4"},
 ]
 _USAGE = {
     "a": {"calls": 40, "cost_brl": 12.5, "strong_model_share": 0.25, "conversations": 2, "by_group": {"conversas": 10.0, "onboarding": 2.5}},
@@ -106,6 +108,9 @@ class TestMetricasPuras:
         assert o["ia"]["share_modelo_forte_pct"] == 20.0
         assert o["margem"]["brl"] == 1131.48
         assert o["indicacoes"] == {"indicados": 2, "convertidos": 1}
+        assert o["receita_acumulada"]["brl"] == 1540.0 and o["receita_acumulada"]["clientes_que_pagaram"] == 2
+        assert o["top_acumulado"][0]["client_id"] == "a" and o["top_acumulado"][0]["receita_acumulada_brl"] == 1143.0
+        assert o["top_acumulado"][0]["cobrancas_de_sempre"] == 2
         rows = {r["client_id"]: r for r in o["clientes"]}
         assert o["clientes"][0]["client_id"] == "a"            # maior receita primeiro
         assert rows["a"]["receita_brl"] == 749.98 and rows["a"]["custo_ia_brl"] == 12.5 and rows["a"]["margem_pct"] == 98.3

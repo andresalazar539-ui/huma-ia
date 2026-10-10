@@ -163,7 +163,7 @@ const AdAccountCard = ({ clientId, days, onClose }) => {
         <AdField label="Assinatura desde">{adDate(a.desde)}</AdField>
         <AdField label="Última mudança">{adDate(a.ultima_mudanca)}</AdField>
         <AdField label="Cobranças aprovadas">{a.cobrancas}</AdField>
-        <AdField label="Já pagou (de sempre)">{a.pago_de_sempre_display}</AdField>
+        <AdField label="Receita acumulada (de sempre)">{`${a.pago_de_sempre_display} (plano ${a.acumulado_plano_display} · pacotes ${a.acumulado_pacotes_display} · excedente ${a.acumulado_excedente_display})`}</AdField>
         <AdField label="Primeira e última cobrança">{a.primeira_cobranca ? `${adDate(a.primeira_cobranca)} a ${adDate(a.ultima_cobranca)}` : ''}</AdField>
         <AdField label="Saldo de conversas">{a.saldo === null || a.saldo === undefined ? '' : `${a.saldo} de ${a.conversas_inclusas || 0}`}</AdField>
         <AdField label="Controle de gasto">{a.spend_mode === 'capped' ? 'com teto' : (a.spend_mode === 'unlimited' ? 'livre' : (a.spend_mode ? 'travado' : ''))}</AdField>
@@ -231,7 +231,7 @@ const AdClientsTable = ({ rows, onOpen }) => {
   const [filter, setFilter] = useStateAd('todos');
   const [q, setQ] = useStateAd('');
   if (!rows || rows.length === 0) return null;
-  const cols = 'minmax(190px, 1.6fr) 110px 80px 100px 100px 110px 90px 70px';
+  const cols = 'minmax(190px, 1.6fr) 110px 80px 100px 110px 100px 110px 90px 70px';
   const norm = (s) => String(s || '').toLowerCase();
   const visible = rows.filter(r => {
     if (filter === 'pagantes' && !r.pagante) return false;
@@ -251,12 +251,13 @@ const AdClientsTable = ({ rows, onOpen }) => {
         {chip('parados', 'Paradas')}
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrar esta lista" style={{ ...adInput, marginLeft: 'auto', minWidth: 200 }}/>
       </div>
-      <div style={{ minWidth: 960 }}>
+      <div style={{ minWidth: 1060 }}>
         <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 12, padding: '0 0 10px' }}>
           <div style={adTh}>Conta</div>
           <div style={adTh}>Assinatura</div>
           <div style={{ ...adTh, textAlign: 'right' }}>Conversas</div>
           <div style={{ ...adTh, textAlign: 'right' }}>Receita</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>Acumulado</div>
           <div style={{ ...adTh, textAlign: 'right' }}>IA conversas</div>
           <div style={{ ...adTh, textAlign: 'right' }}>IA onboarding e outros</div>
           <div style={{ ...adTh, textAlign: 'right' }}>Margem</div>
@@ -276,6 +277,7 @@ const AdClientsTable = ({ rows, onOpen }) => {
             </div>
             <div style={adNum} title={`${r.conversas_atendidas || 0} atendidas pela IA · ${r.conversas || 0} debitadas`}>{r.conversas_atendidas || 0}{r.excedente_conversas ? <span style={{ color: 'var(--ink-3)', fontSize: 11 }}> (+{r.excedente_conversas} extra)</span> : null}</div>
             <div style={adNum}>{r.receita_brl ? r.receita_display : <span style={{ color: 'var(--ink-3)' }}>R$ 0</span>}</div>
+            <div style={{ ...adNum, fontWeight: 600 }} title={`${r.cobrancas_de_sempre || 0} mensalidades de sempre`}>{r.receita_acumulada_brl ? r.receita_acumulada_display : <span style={{ color: 'var(--ink-3)', fontWeight: 400 }}>R$ 0</span>}</div>
             <div style={adNum}>{adBrl(r.custo_conversas_brl)}</div>
             <div style={adNum} title={`onboarding ${adBrl(r.custo_onboarding_brl)} · áudio ${adBrl(r.custo_audio_brl)} · outros ${adBrl(r.custo_outros_brl)}`}>{adBrl((r.custo_onboarding_brl || 0) + (r.custo_audio_brl || 0) + (r.custo_outros_brl || 0))}</div>
             <div style={{ ...adNum, fontWeight: 600, color: margemColor(r) }}>{r.margem_pct === null ? r.margem_display : `${r.margem_pct}%`}</div>
@@ -500,11 +502,11 @@ const AdminScreen = () => {
             <StatTile label="Ticket médio por cobrança" value={rec.ticket_medio_display} sub="mensalidade + pacotes + excedente, por cobrança" delta={dlt('receita', ['ticket_medio_brl'])} />
             <StatTile label="Indicações" value={ind.indicados || 0} sub={`${ind.convertidos || 0} viraram assinante`} />
             <StatTile label="Conversas engajadas" value={ia.conversas_engajadas || 0} sub="debitadas do plano no período" delta={dlt('ia', ['conversas_engajadas'])} />
-            <StatTile label="Chamadas de IA" value={ia.chamadas || 0} sub="todas as finalidades" delta={dlt('ia', ['chamadas'])} deltaInvert />
+            <StatTile label="Receita acumulada de sempre" value={(data.receita_acumulada || {}).display} sub={`${(data.receita_acumulada || {}).clientes_que_pagaram || 0} clientes já pagaram · média ${(data.receita_acumulada || {}).media_por_cliente_display || 'R$ 0,00'} por cliente`} accent />
           </Grid>
 
           <SectionTitle>Atenção agora</SectionTitle>
-          <Grid cols={3}>
+          <Grid cols={4}>
             <AdList title="Contas em risco" items={data.em_risco} empty="Nenhuma conta em risco." render={it => (
               <div onClick={() => openAccount(it.client_id)} style={{ cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
                 <div style={{ color: 'var(--ink)', fontWeight: 500 }}>{it.nome}</div>
@@ -514,6 +516,11 @@ const AdminScreen = () => {
             <AdList title="Maior receita no período" items={data.top_receita} empty="Nenhuma cobrança no período." render={it => (
               <div onClick={() => openAccount(it.client_id)} style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
                 <span style={{ color: 'var(--ink)' }}>{it.nome}</span><span style={{ color: 'var(--ink-2)' }}>{it.receita_display}</span>
+              </div>
+            )} />
+            <AdList title="Maior receita acumulada (de sempre)" items={data.top_acumulado} empty="Ninguém pagou ainda." render={it => (
+              <div onClick={() => openAccount(it.client_id)} style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
+                <span style={{ color: 'var(--ink)' }}>{it.nome}</span><span style={{ color: 'var(--ink-2)' }}>{it.receita_acumulada_display}</span>
               </div>
             )} />
             <AdList title="Maior custo de IA" items={data.top_custo_ia} empty="Nenhum custo no período." render={it => (
