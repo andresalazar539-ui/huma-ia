@@ -5,5 +5,6 @@ builder = "nixpacks"
 startCommand = "uvicorn huma.app:app --host 0.0.0.0 --port ${PORT:-8000}"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 3
+# ALWAYS (2026-10-11): com ON_FAILURE e 3 tentativas, três quedas seguidas
+# (Redis fora, deploy ruim) deixavam o serviço parado até alguém olhar.
+restartPolicyType = "ALWAYS"

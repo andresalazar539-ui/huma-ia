@@ -8,6 +8,9 @@
 import json
 from datetime import datetime
 
+import asyncio
+
+import httpx
 from fastapi.concurrency import run_in_threadpool
 from supabase import create_client
 
@@ -48,10 +51,40 @@ async def ping() -> bool:
         return False
 
 
+# Resguardo do caminho quente (2026-10-11): o cliente do Supabase é um só
+# pro processo e uma rajada de leituras em paralelo fez o servidor derrubar
+# a conexão ("Server disconnected"), levando junto chamadas de outras
+# telas. As quatro funções mais chamadas passam por aqui: no máximo
+# DB_MAX_CONCURRENT consultas ao mesmo tempo e UMA nova tentativa quando a
+# conexão cai no meio. Erros de dado (PGRST204 etc.) seguem iguais.
+DB_MAX_CONCURRENT = 12
+_DB_RETRY_ERRORS = (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError, httpx.ReadTimeout)
+_db_gate: asyncio.Semaphore | None = None
+
+
+def _gate() -> asyncio.Semaphore:
+    global _db_gate
+    if _db_gate is None:
+        _db_gate = asyncio.Semaphore(DB_MAX_CONCURRENT)
+    return _db_gate
+
+
+async def _db(fn, label: str = ""):
+    """Roda a consulta no threadpool com teto de concorrência e 1 retry em queda de conexão."""
+    async with _gate():
+        try:
+            return await run_in_threadpool(fn)
+        except _DB_RETRY_ERRORS as e:
+            log.warning(f"DB | conexão caiu, tentando de novo | op={label} | {type(e).__name__}: {e}")
+            await asyncio.sleep(0.2)
+            return await run_in_threadpool(fn)
+
+
 async def get_client(client_id: str) -> ClientIdentity | None:
     """Busca identidade completa de um cliente."""
-    resp = await run_in_threadpool(
-        lambda: get_supabase().table("clients").select("*").eq("client_id", client_id).execute()
+    resp = await _db(
+        lambda: get_supabase().table("clients").select("*").eq("client_id", client_id).execute(),
+        "get_client",
     )
     if not resp.data:
         return None
@@ -367,8 +400,9 @@ async def update_client(client_id: str, updates: dict):
     Agora: qualquer update_client invalida o cache na hora.
     Import tardio pra evitar ciclo (orchestrator importa db_service).
     """
-    await run_in_threadpool(
-        lambda: get_supabase().table("clients").update(updates).eq("client_id", client_id).execute()
+    await _db(
+        lambda: get_supabase().table("clients").update(updates).eq("client_id", client_id).execute(),
+        "update_client",
     )
     log.info(f"Cliente atualizado | {client_id} | fields={list(updates.keys())}")
 
@@ -382,9 +416,10 @@ async def update_client(client_id: str, updates: dict):
 
 async def get_conversation(client_id: str, phone: str) -> Conversation:
     """Busca conversa existente ou cria nova."""
-    resp = await run_in_threadpool(
+    resp = await _db(
         lambda: get_supabase().table("conversations").select("*")
-            .eq("client_id", client_id).eq("phone", phone).execute()
+            .eq("client_id", client_id).eq("phone", phone).execute(),
+        "get_conversation",
     )
 
     if resp.data:
@@ -547,8 +582,9 @@ async def save_conversation(conv: Conversation):
     if conv.line_instance:
         data["line_instance"] = conv.line_instance
     try:
-        await run_in_threadpool(
-            lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+        await _db(
+            lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute(),
+            "save_conversation",
         )
     except Exception as e:
         err = str(e)
@@ -558,8 +594,9 @@ async def save_conversation(conv: Conversation):
                 f"client={conv.client_id} | phone={conv.phone} | retry sem ela"
             )
             data.pop("line_instance", None)
-            await run_in_threadpool(
-                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            await _db(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute(),
+                "save_conversation",
             )
         elif "assigned_to" in data and any(k in err for k in _ASSIGN_COLUMNS):
             log.warning(
@@ -568,8 +605,9 @@ async def save_conversation(conv: Conversation):
             )
             for k in _ASSIGN_COLUMNS:
                 data.pop(k, None)
-            await run_in_threadpool(
-                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            await _db(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute(),
+                "save_conversation",
             )
         elif "lead_state" in data and "lead_state" in err:
             log.warning(
@@ -577,8 +615,9 @@ async def save_conversation(conv: Conversation):
                 f"client={conv.client_id} | phone={conv.phone} | retry sem lead_state"
             )
             data.pop("lead_state", None)
-            await run_in_threadpool(
-                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            await _db(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute(),
+                "save_conversation",
             )
         elif any(k in data for k in _CUSTOMER_COLUMNS) and any(k in err for k in _CUSTOMER_COLUMNS):
             log.warning(
@@ -587,8 +626,9 @@ async def save_conversation(conv: Conversation):
             )
             for k in _CUSTOMER_COLUMNS:
                 data.pop(k, None)
-            await run_in_threadpool(
-                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute()
+            await _db(
+                lambda: get_supabase().table("conversations").upsert(data, on_conflict="client_id,phone").execute(),
+                "save_conversation",
             )
         else:
             raise

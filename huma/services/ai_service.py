@@ -2065,12 +2065,33 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         except Exception as e:
             last_error = e
             error_str = str(e)
-            if attempt < max_retries and ("529" in error_str or "overloaded" in error_str.lower() or "timeout" in error_str.lower() or "500" in error_str or "429" in error_str or "rate_limit" in error_str.lower()):
+            transient = ("529" in error_str or "overloaded" in error_str.lower() or "timeout" in error_str.lower() or "500" in error_str or "429" in error_str or "rate_limit" in error_str.lower())
+            if attempt < max_retries and transient:
                 wait = (attempt + 1) * 2
                 log.warning(f"IA retry {attempt + 1}/{max_retries} | {type(e).__name__} | aguardando {wait}s")
                 import asyncio as _aio
                 await _aio.sleep(wait)
                 continue
+            # Resguardo (2026-10-11): esgotou as tentativas com a Anthropic
+            # instável no modelo forte → UMA tentativa no modelo rápido vale
+            # mais que a mensagem de desculpa. Mesmo prompt e mesma tool (o
+            # cache do bloco estático pode não valer no outro modelo).
+            if transient and model != AI_MODEL_FAST:
+                try:
+                    log.warning(f"IA instável no modelo {model}: tentando {AI_MODEL_FAST} | {type(e).__name__}")
+                    response = await _get_ai_client().messages.create(
+                        model=AI_MODEL_FAST,
+                        max_tokens=800,
+                        system=system_blocks,
+                        tools=[reply_tool],
+                        tool_choice={"type": "tool", "name": "send_reply"},
+                        messages=messages,
+                    )
+                    model = AI_MODEL_FAST
+                    break
+                except Exception as e2:
+                    log.error(f"IA falhou no modelo forte e no rápido | {type(e2).__name__}: {e2}")
+                    return _fallback_result(identity.fallback_message)
             log.error(f"Erro na IA | {e}")
             return _fallback_result(identity.fallback_message)
     else:

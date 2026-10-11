@@ -5,6 +5,7 @@
 import base64
 import hashlib
 import hmac
+import os
 import time
 from typing import Optional
 
@@ -28,8 +29,19 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 async def verify_webhook(request: Request, x_webhook_secret: Optional[str] = Header(None)):
-    """Verifica secret do webhook do WhatsApp."""
+    """
+    Verifica a senha do webhook genérico (/api/message).
+
+    Sem WEBHOOK_SECRET: em dev/teste libera; em PRODUÇÃO (RAILWAY_ENVIRONMENT
+    definido) FECHA com 503. Achado em 2026-10-11: a variável não existia
+    no Railway e qualquer um com um client_id (visível no Cockpit) podia
+    injetar mensagem como lead, gastar a IA do cliente e fazer a HUMA
+    escrever pra qualquer telefone. Nenhum canal real usa essa rota (Meta e
+    Evolution têm os próprios webhooks assinados).
+    """
     if not WEBHOOK_SECRET:
+        if os.getenv("RAILWAY_ENVIRONMENT"):
+            raise HTTPException(503, "Webhook sem senha configurada (WEBHOOK_SECRET)")
         return True
     if not x_webhook_secret:
         raise HTTPException(401, "Webhook secret ausente")
