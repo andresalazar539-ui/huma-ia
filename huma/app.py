@@ -209,6 +209,9 @@ def create_app() -> FastAPI:
     app.include_router(reactivation_router)
     from huma.routes.admin import router as admin_router
     app.include_router(admin_router)
+    # Conector MCP (Claude e ChatGPT, 2026-10-12): /mcp + OAuth 2.1 em /oauth/mcp/*
+    from huma.routes.mcp import router as mcp_router
+    app.include_router(mcp_router)
     from huma.routes.custom_requests import router as custom_requests_router
     app.include_router(custom_requests_router)
     app.include_router(whatsapp_meta_router)

@@ -1301,6 +1301,16 @@ function show(kind, text) {{
   $("msg").textContent = text;
 }}
 
+// Conector MCP (Claude/ChatGPT, 2026-10-12): o assistente manda a pessoa
+// pra /oauth/mcp/authorize; sem sessão ela cai aqui com ?next= e, depois de
+// entrar, volta pra tela "Conectar". Só caminhos internos desse fluxo valem.
+function safeNext(raw) {{
+  const v = String(raw || "");
+  return v.startsWith("/oauth/mcp/authorize") ? v : "";
+}}
+const NEXT_URL = safeNext(new URLSearchParams(location.search).get("next"));
+function afterLogin(fallback) {{ return NEXT_URL || fallback; }}
+
 function setTab(signup) {{
   $("pane-login").className = signup ? "hidden" : "";
   $("pane-signup").className = signup ? "" : "hidden";
@@ -1337,7 +1347,7 @@ async function doLogin() {{
       body: JSON.stringify({{email, password, remember: $("remember").checked}}),
     }});
     const data = await r.json();
-    if (r.ok) {{ track("login", {{method: "password"}}); location.href = data.redirect; return; }}
+    if (r.ok) {{ track("login", {{method: "password"}}); location.href = afterLogin(data.redirect); return; }}
     show("err", data.detail || "Não foi possível entrar. Tente de novo.");
   }} catch (e) {{
     show("err", "Erro de conexão. Tente de novo.");
@@ -1388,7 +1398,7 @@ async function checkSession() {{
     const d = await r.json();
     if (d && d.authenticated && d.redirect) {{
       clearInterval(waitTimer);
-      location.href = d.redirect;
+      location.href = afterLogin(d.redirect);
       return true;
     }}
   }} catch (e) {{ /* rede piscou: a próxima checagem tenta de novo */ }}
@@ -1449,6 +1459,8 @@ $("signup").addEventListener("click", doSignup);
 $("forgot").addEventListener("click", doForgot);
 $("google").addEventListener("click", () => {{
   if (!AUTHORIZE_URL) {{ show("err", "Login com Google não configurado neste ambiente."); return; }}
+  // O Google volta em /auth/callback; o destino do conector sobrevive na aba.
+  try {{ if (NEXT_URL) sessionStorage.setItem("huma_next", NEXT_URL); else sessionStorage.removeItem("huma_next"); }} catch (e) {{}}
   location.href = AUTHORIZE_URL;
 }});
 </script>
@@ -1500,7 +1512,9 @@ async def oauth_callback_page() -> HTMLResponse:
     if (r.ok) {{
       // Analytics: login via Google (inclui o primeiro acesso pós-confirmação)
       try {{ (window.dataLayer = window.dataLayer || []).push({{event: "login", method: "google"}}); }} catch (e) {{}}
-      location.replace(data.redirect);
+      let next = "";
+      try {{ next = sessionStorage.getItem("huma_next") || ""; sessionStorage.removeItem("huma_next"); }} catch (e) {{}}
+      location.replace(next.startsWith("/oauth/mcp/authorize") ? next : data.redirect);
       return;
     }}
     document.getElementById("msg").className = "msg err";

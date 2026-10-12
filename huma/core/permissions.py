@@ -106,6 +106,11 @@ _ROUTE_RULES: tuple[tuple[str, str, Optional[str]], ...] = (
     # (a rota confere se é o dono do número; dono e admin mexem em todos).
     ("*", r"^/whatsapp/lines(/|$)", None),
     ("*", r"^/api/push(/|$)", None),
+    # Conector MCP (Claude/ChatGPT): cada pessoa conecta o próprio
+    # assistente; o que ela pode fazer lá dentro é o papel dela, conferido
+    # pelas rotas que o conector chama. Tem que vir antes de "^/oauth/".
+    ("*", r"^/oauth/mcp(/|$)", None),
+    ("*", rf"^{_C}/mcp(/|$)", None),
     # Equipe
     ("*", rf"^{_C}/team(/|$)", "equipe"),
     # Faturamento

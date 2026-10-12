@@ -42,6 +42,7 @@ const SECTIONS = [
   { id: 'pagamentos', title: 'Pagamentos', desc: 'Pix, boleto e cartão na conversa. O dinheiro cai na sua conta.', ids: ['mercadopago', 'asaas'] },
   { id: 'crm', title: 'CRM', desc: 'Lead qualificado vira negócio no seu funil, sem digitar nada.', ids: ['hubspot', 'pipedrive', 'rdstation'] },
   { id: 'anuncios', title: 'Anúncios e automação', desc: 'Resultados de volta pros seus anúncios e cada lead no seu sistema.', ids: ['pixel', 'webhook'] },
+  { id: 'assistentes', title: 'Assistentes de IA', desc: 'Pergunte sobre o seu negócio e mande a HUMA agir de dentro do Claude e do ChatGPT.', ids: ['mcp'] },
 ];
 
 const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
@@ -344,6 +345,36 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     ),
   };
 
+  // ── Claude e ChatGPT (conector MCP, 2026-10-12) ──
+  const [mcpModal, setMcpModal] = React.useState(false);
+  const [mcpInfo, setMcpInfo] = React.useState(null);
+  const loadMcp = React.useCallback(async () => {
+    try { setMcpInfo(await fetchMcpStatus(resolvedClientId)); }
+    catch (e) { setMcpInfo({ available: false, error: (e && e.message) || String(e) }); }
+  }, [resolvedClientId]);
+  React.useEffect(() => { loadMcp(); }, [loadMcp]);
+  const mcpOn = Boolean(mcpInfo && mcpInfo.connected);
+  const mcpCard = {
+    id: 'mcp',
+    name: 'Claude e ChatGPT',
+    category: 'Assistentes de IA',
+    glyph: { type: 'mcp' },
+    status: mcpOn ? 'connected' : 'disconnected',
+    meta: mcpOn
+      ? [['ÚLTIMO USO', formatMcpWhen(mcpInfo.last_used_at)], ['QUEM', (mcpInfo.email || 'dono').slice(0, 32)]]
+      : [['FUNCIONA EM', 'Claude.ai, Claude Code, ChatGPT'], ['ACESSO', 'Login da HUMA, sem senha extra']],
+    note: mcpOn
+      ? 'Seu assistente já conversa com a HUMA: conversas, agenda, clientes, vendas, relatórios e respostas a leads, com o seu papel na equipe.'
+      : 'Cole a URL no Claude ou no ChatGPT, entre com a sua conta da HUMA e pergunte "como foi hoje?" ou "responde o João".',
+    actions: (
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Button variant={mcpOn ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setMcpModal(true)}>
+          {mcpOn ? 'Como conectar' : 'Conectar'}
+        </Button>
+      </div>
+    ),
+  };
+
   // ── Pixel / anúncios da Meta ──
   const [pixelModal, setPixelModal] = React.useState(false);
   const pxConnected = Boolean(client && client.meta_pixel_id);
@@ -458,7 +489,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
 
   const integrations = [
     instagramCard, balcaoCard, gcalCard, pixelCard, webhookCard,
-    nuvemshopCard, omieCard, tinyCard, blingCard, mpCard, asaasCard, hubspotCard, pipedriveCard, rdCard, ...INTEGRATIONS,
+    nuvemshopCard, omieCard, tinyCard, blingCard, mpCard, asaasCard, hubspotCard, pipedriveCard, rdCard, mcpCard, ...INTEGRATIONS,
   ];
   const isOn = (i) => i.status === 'connected' || i.status === 'active';
   const connectedCount = integrations.filter(isOn).length;
@@ -527,6 +558,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       {rdModal && <RdStationModal client={client} onClose={() => setRdModal(false)} onSaved={onReloadStatus} />}
       {omieModal && <OmieModal client={client} onClose={() => setOmieModal(false)} onSaved={onReloadStatus} />}
       {tinyModal && <TinyModal client={client} onClose={() => setTinyModal(false)} onSaved={onReloadStatus} />}
+      {mcpModal && <AssistantsModal clientId={resolvedClientId} info={mcpInfo} onClose={() => setMcpModal(false)} onChanged={loadMcp} />}
     </div>
   );
 };
@@ -1534,12 +1566,128 @@ const IntegrationGlyph = ({ type }) => {
       return wrap('#E6196E', (
         <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 19, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.04em' }}>t</span>
       ));
+    case 'mcp':
+      return wrap('#1C1714', (
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, color: '#F6F2EC', lineHeight: 1, letterSpacing: '-0.03em' }}>IA</span>
+      ));
     default:
       return wrap('var(--paper-sunk)', <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600 }}>?</span>);
   }
 };
 
+// ── Conector MCP: Claude e ChatGPT (2026-10-12) ──
+// A HUMA é um servidor MCP remoto em /mcp. Quem conecta entra com a própria
+// conta da HUMA (OAuth), então o assistente só vê e faz o que o papel da
+// pessoa permite no Cockpit. Sem token pra copiar, sem senha extra.
+async function fetchMcpStatus(clientId) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(clientId)}/mcp`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+async function revokeMcp(clientId) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(clientId)}/mcp/revoke`, { method: 'POST', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json();
+}
+function formatMcpWhen(iso) {
+  if (!iso) return 'nunca';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'nunca';
+  return d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+const McpCopyRow = ({ label, value }) => {
+  const [done, setDone] = React.useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(value); setDone(true); setTimeout(() => setDone(false), 1800); }
+    catch (e) { window.prompt('Copie:', value); }
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <code style={{ flex: 1, minWidth: 0, overflowX: 'auto', whiteSpace: 'nowrap', padding: '9px 11px', borderRadius: 9, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)', fontSize: 12.5, color: 'var(--ink)' }}>{value}</code>
+        <Button variant="outline" size="sm" onClick={copy}>{done ? 'Copiado' : 'Copiar'}</Button>
+      </div>
+    </div>
+  );
+};
+const McpSteps = ({ title, steps }) => (
+  <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 12, padding: '12px 14px', background: 'var(--paper-raised)' }}>
+    <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)', marginBottom: 6 }}>{title}</div>
+    <ol style={{ margin: 0, paddingLeft: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+      {steps.map((st, i) => <li key={i}>{st}</li>)}
+    </ol>
+  </div>
+);
+const AssistantsModal = ({ clientId, info, onClose, onChanged }) => {
+  const [tab, setTab] = React.useState('claude');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const url = (info && info.url) || '';
+  const available = Boolean(info && info.available && url);
+  const disconnect = async () => {
+    if (busy) return;
+    if (!window.confirm('Desconectar o Claude e o ChatGPT da sua conta? Eles vão pedir pra entrar de novo.')) return;
+    setBusy(true); setMsg(null);
+    try { await revokeMcp(clientId); setMsg({ kind: 'ok', text: 'Desconectado. Os assistentes param de valer em até 1 hora e pedem login de novo.' }); if (onChanged) await onChanged(); }
+    catch (e) { setMsg({ kind: 'err', text: e.message }); }
+    setBusy(false);
+  };
+  const tabs = [['claude', 'Claude'], ['claudecode', 'Claude Code'], ['chatgpt', 'ChatGPT']];
+  const tabBtn = (id, label) => (
+    <button key={id} onClick={() => setTab(id)} style={{
+      border: '1px solid var(--paper-edge)', background: tab === id ? 'var(--ink)' : 'transparent', color: tab === id ? 'var(--paper)' : 'var(--ink-2)',
+      borderRadius: 999, padding: '6px 12px', fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
+    }}>{label}</button>
+  );
+  return (
+    <IntegrationModal title="Claude e ChatGPT" onClose={onClose} footer={
+      <>
+        {info && info.connected && <Button variant="plain" size="sm" onClick={disconnect} disabled={busy}>Desconectar tudo</Button>}
+        <Button variant="outline" size="sm" onClick={onClose}>Fechar</Button>
+      </>
+    }>
+      <ModalText>
+        Sua HUMA vira uma ferramenta dentro do assistente que você já usa. Você entra com a sua conta da HUMA
+        (sem senha nova) e o assistente passa a ver e fazer só o que o seu papel permite aqui no Cockpit.
+      </ModalText>
+      {!available && <ModalMsg msg={{ kind: 'err', text: (info && info.error) || 'O conector não está disponível neste servidor (falta a URL pública ou o segredo de sessão).' }} />}
+      {available && <McpCopyRow label="URL do conector" value={url} />}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{tabs.map(([id, l]) => tabBtn(id, l))}</div>
+      {tab === 'claude' && <McpSteps title="No Claude (claude.ai, app ou celular)" steps={[
+        'Abra Configurações, depois Conectores (em alguns planos fica em Integrações).',
+        'Clique em "Adicionar conector personalizado" e cole a URL acima. Nome: HUMA.',
+        'Clique em Conectar: abre a tela da HUMA pra entrar e autorizar.',
+        'Numa conversa nova, ative o conector HUMA e pergunte: "como foi o atendimento hoje?"',
+        'Conectores personalizados existem nos planos Pro, Max, Team e Enterprise do Claude.',
+      ]} />}
+      {tab === 'claudecode' && (
+        <>
+          <McpSteps title="No Claude Code (terminal)" steps={[
+            'Rode o comando abaixo uma vez.',
+            'Digite /mcp, escolha "huma" e autentique: abre o navegador na HUMA.',
+            'Pronto: "liste as conversas aguardando" já funciona.',
+          ]} />
+          {available && <McpCopyRow label="Comando" value={info.claude_code_command || `claude mcp add --transport http huma ${url}`} />}
+        </>
+      )}
+      {tab === 'chatgpt' && <McpSteps title="No ChatGPT" steps={[
+        'Abra Configurações, depois Apps (ou Conectores) e ligue o "Modo desenvolvedor" em Avançado.',
+        'Clique em Criar (ou Adicionar) e preencha: nome HUMA, a URL acima e autenticação OAuth.',
+        'Clique em Criar e depois em Conectar: abre a tela da HUMA pra entrar e autorizar.',
+        'Numa conversa, abra Ferramentas, escolha HUMA e pergunte o que quiser.',
+        'O modo desenvolvedor existe nos planos Plus, Pro, Business, Enterprise e Edu do ChatGPT.',
+      ]} />}
+      <div style={{ border: '1px dashed var(--paper-edge)', borderRadius: 12, padding: '10px 14px', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.6 }}>
+        Exemplos: "quem está aguardando a equipe?", "resumo da semana", "o que o Pedro perguntou e a HUMA não soube?",
+        "responde pra Ana que o horário das 15h está confirmado", "anota que a Carla prefere Pix".
+      </div>
+      <ModalMsg msg={msg} />
+    </IntegrationModal>
+  );
+};
+
 Object.assign(window, {
   IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal, BalcaoActions,
-  WebhookModal, PixelModal, AsaasModal, IntegrationModal,
+  WebhookModal, PixelModal, AsaasModal, IntegrationModal, AssistantsModal, fetchMcpStatus, revokeMcp,
 });
