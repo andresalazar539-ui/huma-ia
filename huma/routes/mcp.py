@@ -638,11 +638,55 @@ async def mcp_endpoint(request: Request) -> Response:
     return JSONResponse(res, headers={"Cache-Control": "no-store"})
 
 
+def _human_page() -> HTMLResponse:
+    """Uma pessoa abriu a URL do conector no navegador: explica em vez de um 401 seco."""
+    url = html.escape(resource_url())
+    page = f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HUMA IA · Conector pra Claude e ChatGPT</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  {_FONTS}
+  <style>{_CSS}
+    .url {{ display:block; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; color:var(--ink);
+           background:var(--paper-sunk); border:1px solid var(--paper-edge); border-radius:10px; padding:10px 12px; margin:0 0 18px; word-break:break-all; }}
+    ol {{ text-align:left; color:var(--ink-2); font-size:13.5px; line-height:1.6; margin:0 0 20px; padding-left:20px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand"><img src="/favicon.svg" alt=""><span>HUMA IA</span></div>
+    <div class="mark ok">⇄</div>
+    <h1>Este endereço é pro seu assistente, não pro navegador</h1>
+    <p>Ele é a porta por onde o <b>Claude</b> e o <b>ChatGPT</b> conversam com a HUMA. Aqui não tem tela: o que abre é a tela do assistente.</p>
+    <code class="url">{url}</code>
+    <ol>
+      <li>No Claude ou no ChatGPT, adicione um conector (ou app) e cole esse endereço.</li>
+      <li>Clique em Conectar: a HUMA pede pra você entrar com a sua conta e autorizar.</li>
+      <li>Pronto. Pergunte "como foi o atendimento hoje?".</li>
+    </ol>
+    <a class="btn" href="/cockpit?screen=integracoes">Ver o passo a passo no Cockpit</a>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(page, headers={"Cache-Control": "no-store"})
+
+
+def _wants_html(request: Request) -> bool:
+    """Navegador de gente: pede text/html e não manda token. Cliente MCP pede JSON/SSE."""
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept and "text/event-stream" not in accept and not _bearer(request)
+
+
 @router.get(MCP_PATH, include_in_schema=False)
 async def mcp_get(request: Request) -> Response:
-    """Sem stream servidor→cliente neste conector (405). Sem token, 401 pra começar o login."""
+    """Sem stream servidor→cliente neste conector (405). Sem token, 401 pra começar o login; pessoa no navegador vê a explicação."""
     if not ready():
         return JSONResponse({"error": "conector indisponível"}, status_code=404)
+    if _wants_html(request):
+        return _human_page()
     if await _authenticate(request) is None:
         return _challenge()
     return Response(status_code=405, headers={"Allow": "POST, DELETE"})

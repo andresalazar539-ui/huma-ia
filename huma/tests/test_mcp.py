@@ -194,6 +194,13 @@ class TestDescobertaEOAuth:
         assert www.startswith("Bearer ") and f'resource_metadata="{BASE}/.well-known/oauth-protected-resource/mcp"' in www
         assert 'scope="huma"' in www
 
+    def test_navegador_ve_pagina_e_cliente_mcp_ve_401(self):
+        c = TestClient(app)
+        r = c.get("/mcp", headers={"Accept": "text/html,application/xhtml+xml"})
+        assert r.status_code == 200 and "assistente" in r.text and f"{BASE}/mcp" in r.text
+        r = c.get("/mcp", headers={"Accept": "application/json, text/event-stream"})
+        assert r.status_code == 401 and "resource_metadata" in r.headers["www-authenticate"]
+
     def test_authorize_sem_sessao_manda_pro_login_com_next(self):
         c = TestClient(app)
         cid = _register(c)
