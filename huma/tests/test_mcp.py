@@ -312,6 +312,9 @@ class TestJsonRpc:
         assert r.status_code == 200, r.text
         res = r.json()["result"]
         assert res["protocolVersion"] == "2025-06-18" and res["serverInfo"]["name"] == "HUMA IA" and "HUMA" in res["instructions"]
+        icons = res["serverInfo"]["icons"]
+        assert icons[0]["src"] == f"{BASE}/static/brand/icon-512.png" and icons[0]["mimeType"] == "image/png"
+        assert res["serverInfo"]["websiteUrl"] == BASE
         r = c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=_bearer())
         assert r.status_code == 202
         r = c.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, headers=_bearer())

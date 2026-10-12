@@ -527,6 +527,28 @@ def _rpc_result(msg_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "result": result}
 
 
+def _server_info() -> dict[str, Any]:
+    """
+    Identidade do servidor no initialize. `icons` (MCP 2025-11-25, SEP-973)
+    é o que o ChatGPT/Codex desenham na lista de conectores; o claude.ai
+    ainda ignora e cai na letra inicial (issue aberta), mas o campo já vai
+    pra valer onde for lido. PNG primeiro (todo cliente é obrigado a
+    aceitar), SVG como escalável.
+    """
+    base = _base()
+    return {
+        "name": "HUMA IA",
+        "title": "HUMA IA",
+        "version": APP_VERSION,
+        "websiteUrl": base or "https://humaia.com.br",
+        "icons": [
+            {"src": f"{base}/static/brand/icon-512.png", "mimeType": "image/png", "sizes": ["512x512"]},
+            {"src": f"{base}/apple-touch-icon.png", "mimeType": "image/png", "sizes": ["180x180"]},
+            {"src": f"{base}/favicon.svg", "mimeType": "image/svg+xml", "sizes": ["any"]},
+        ],
+    }
+
+
 def _protocol_version(requested: Any) -> str:
     """Ecoa a versão pedida quando é uma data válida (o conector só usa tools, estável entre versões)."""
     s = str(requested or "")
@@ -546,7 +568,7 @@ async def _handle_rpc(msg: Any, actor: dict[str, str]) -> Optional[dict[str, Any
         return _rpc_result(msg_id, {
             "protocolVersion": _protocol_version(params.get("protocolVersion")),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "HUMA IA", "title": "HUMA IA", "version": APP_VERSION},
+            "serverInfo": _server_info(),
             "instructions": mcp_tools.SERVER_INSTRUCTIONS,
         })
     if method == "ping":
