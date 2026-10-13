@@ -1453,241 +1453,69 @@ const StatusDot = ({ status }) => {
   );
 };
 
+// Logos oficiais das integrações (2026-10-12): arquivos em
+// huma/static/brand/integrations/ (SVG do kit oficial quando existe, senão o
+// ícone oficial do site da marca). Uso nominativo "funciona com": nenhum
+// logo é alterado nem combinado com o da HUMA. Trocar um logo = trocar o
+// arquivo; o componente só desenha.
+const INTEGRATION_LOGOS = {
+  gcal: '/static/brand/integrations/gcal.svg',
+  whatsapp: '/static/brand/integrations/whatsapp.svg',
+  instagram: '/static/brand/integrations/instagram.svg',
+  nuvemshop: '/static/brand/integrations/nuvemshop.png',
+  bling: '/static/brand/integrations/bling.png',
+  omie: '/static/brand/integrations/omie.png',
+  tiny: '/static/brand/integrations/tiny.png',
+  rdstation: '/static/brand/integrations/rdstation.png',
+  pipedrive: '/static/brand/integrations/pipedrive.png',
+  hubspot: '/static/brand/integrations/hubspot.svg',
+  mercadopago: '/static/brand/integrations/mercadopago.svg',
+  asaas: '/static/brand/integrations/asaas.png',
+  doctoralia: '/static/brand/integrations/doctoralia.png',
+  tray: '/static/brand/integrations/tray.png',
+  pixel: '/static/brand/integrations/meta.svg',
+  claude: '/static/brand/integrations/claude.svg',
+  chatgpt: '/static/brand/integrations/chatgpt.svg',
+  zapier: '/static/brand/integrations/zapier.svg',
+  make: '/static/brand/integrations/make.svg',
+  n8n: '/static/brand/integrations/n8n.svg',
+};
 const IntegrationGlyph = ({ type }) => {
   const size = 40;
-  const wrap = (bg, content) => (
+  const box = (content, bg = '#FFFFFF') => (
     <div style={{
-      width: size, height: size, borderRadius: 10,
+      width: size, height: size, borderRadius: 10, overflow: 'hidden',
       background: bg, display: 'flex', alignItems: 'center', justifyContent: 'center',
       flexShrink: 0, border: '1px solid var(--paper-edge)',
     }}>{content}</div>
   );
+  const logo = (key, px) => (
+    <img key={key} src={INTEGRATION_LOGOS[key]} alt="" width={px} height={px} draggable={false}
+         style={{ width: px, height: px, objectFit: 'contain', display: 'block' }} />
+  );
   switch (type) {
     case 'balcao':
-      return wrap('var(--sage)', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="9"/>
-          <line x1="3" y1="12" x2="21" y2="12"/>
-          <path d="M12 3a13.7 13.7 0 0 1 3.6 9 13.7 13.7 0 0 1-3.6 9 13.7 13.7 0 0 1-3.6-9A13.7 13.7 0 0 1 12 3z"/>
-        </svg>
-      ));
-    case 'gcal':
-      return wrap('#FFFFFF', (
-        <svg width="22" height="22" viewBox="0 0 24 24">
-          <rect x="3" y="5" width="18" height="16" rx="2" fill="#FFFFFF" stroke="#4285F4" strokeWidth="1.5"/>
-          <rect x="3" y="5" width="18" height="4" fill="#4285F4"/>
-          <text x="12" y="18" textAnchor="middle" fontFamily="system-ui" fontSize="9" fontWeight="700" fill="#4285F4">31</text>
-        </svg>
-      ));
-    case 'whatsapp':
-      return wrap('#25D366', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
-        </svg>
-      ));
-    case 'rdstation':
-      return wrap('#1668E3', (
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 15, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.04em' }}>RD</span>
-      ));
-    case 'pipedrive':
-      return wrap('#1C8A4B', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="#FFFFFF">
-          <path d="M9 3 H14 a6 6 0 0 1 0 12 H12 v6 H9 Z M12 6 V12 h2 a3 3 0 0 0 0 -6 Z"/>
-        </svg>
-      ));
-    case 'hubspot':
-      return wrap('#FF7A59', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="2">
-          <circle cx="7" cy="16" r="3"/>
-          <circle cx="17" cy="9" r="3"/>
-          <circle cx="17" cy="4" r="1.2" fill="#FFFFFF"/>
-          <path d="M9.5 14.5 L14.5 10.5 M17 6 V6"/>
-        </svg>
-      ));
-    case 'instagram':
-      return wrap('linear-gradient(135deg, #F58529, #DD2A7B, #8134AF)', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75">
-          <rect x="3.5" y="3.5" width="17" height="17" rx="5"/>
-          <circle cx="12" cy="12" r="4"/>
-          <circle cx="17" cy="7" r="0.9" fill="#FFFFFF"/>
-        </svg>
-      ));
-    case 'omie':
-      return wrap('#00A3E0', (
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.03em' }}>omie</span>
-      ));
-    case 'tiny':
-      return wrap('#1F4FD8', (
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.03em' }}>tiny</span>
-      ));
-    case 'bling':
-      return wrap('linear-gradient(135deg, #FDB913, #F58220)', (
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 20, color: '#FFFFFF', lineHeight: 1 }}>B</span>
-      ));
-    case 'doctoralia':
-      return wrap('#00A5A7', (
-        <svg width="22" height="22" viewBox="0 0 24 24">
-          <text x="12" y="17" textAnchor="middle" fontFamily="system-ui" fontSize="16" fontWeight="700" fill="#FFFFFF">d</text>
-        </svg>
-      ));
-    case 'nuvemshop':
-      return wrap('#029CDC', (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="#FFFFFF">
-          <path d="M6.6 18.5 C4.1 18.5 3 16.6 3 15 C3 13.3 4.3 12 6 11.9 C6.3 9 8.7 6.8 11.7 6.8 C14.3 6.8 16.5 8.6 17.2 11 C19.3 11.1 21 12.8 21 14.9 C21 16.9 19.4 18.5 17.4 18.5 Z"/>
-        </svg>
-      ));
+      return box(<img src="/favicon.svg" alt="" style={{ width: 26, height: 26, display: 'block' }} />, 'var(--paper-raised)');
     case 'webhook':
-      return wrap('var(--ink)', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/>
-          <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/>
-        </svg>
-      ));
-    case 'pixel':
-      return wrap('#0866FF', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 17l6-6 4 4 8-8"/>
-          <path d="M14 7h7v7"/>
-        </svg>
-      ));
-    case 'mercadopago':
-      return wrap('#009EE3', (
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-          <ellipse cx="12" cy="12" rx="9" ry="6.5"/>
-          <path d="M7 12c1.5-1.5 3-2 4.5-1s2.5 1.5 4 .5"/>
-          <path d="M8 14.5c1.5-.8 2.6-.8 3.8 0s2.5.9 4.2 0"/>
-        </svg>
-      ));
-    case 'asaas':
-      return wrap('#0030B9', (
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 18, color: '#FFFFFF', lineHeight: 1 }}>A</span>
-      ));
-    case 'tray':
-      return wrap('#E6196E', (
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 19, color: '#FFFFFF', lineHeight: 1, letterSpacing: '-0.04em' }}>t</span>
-      ));
+      return box(
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3, padding: 4 }}>
+          {logo('zapier', 14)}{logo('make', 14)}{logo('n8n', 14)}
+          <span style={{ width: 14, height: 14, fontFamily: 'var(--font-sans)', fontSize: 9, fontWeight: 700, color: 'var(--ink-3)', lineHeight: '14px', textAlign: 'center' }}>+</span>
+        </div>
+      );
     case 'mcp':
-      return wrap('#1C1714', (
-        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 15, color: '#F6F2EC', lineHeight: 1, letterSpacing: '-0.03em' }}>IA</span>
-      ));
-    default:
-      return wrap('var(--paper-sunk)', <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600 }}>?</span>);
+      return box(<div style={{ display: 'flex', gap: 4 }}>{logo('claude', 16)}{logo('chatgpt', 16)}</div>);
+    default: {
+      // Logos quadrados (ícone de app) ocupam a caixa inteira; os demais
+      // ficam com respiro de 8px dentro do fundo branco.
+      const FULL = new Set(['bling', 'omie', 'rdstation', 'asaas', 'tray', 'pipedrive', 'nuvemshop']);
+      if (INTEGRATION_LOGOS[type]) return box(logo(type, FULL.has(type) ? size : size - 14));
+      return box(<span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, color: 'var(--ink-3)' }}>?</span>, 'var(--paper-sunk)');
+    }
   }
 };
 
-// ── Conector MCP: Claude e ChatGPT (2026-10-12) ──
-// A HUMA é um servidor MCP remoto em /mcp. Quem conecta entra com a própria
-// conta da HUMA (OAuth), então o assistente só vê e faz o que o papel da
-// pessoa permite no Cockpit. Sem token pra copiar, sem senha extra.
-async function fetchMcpStatus(clientId) {
-  const r = await fetch(`/api/clients/${encodeURIComponent(clientId)}/mcp`, { headers: { ...AUTH_HEADERS } });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
-  return r.json();
-}
-async function revokeMcp(clientId) {
-  const r = await fetch(`/api/clients/${encodeURIComponent(clientId)}/mcp/revoke`, { method: 'POST', headers: { ...AUTH_HEADERS } });
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
-  return r.json();
-}
-function formatMcpWhen(iso) {
-  if (!iso) return 'nunca';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return 'nunca';
-  return d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
-const McpCopyRow = ({ label, value }) => {
-  const [done, setDone] = React.useState(false);
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(value); setDone(true); setTimeout(() => setDone(false), 1800); }
-    catch (e) { window.prompt('Copie:', value); }
-  };
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <code style={{ flex: 1, minWidth: 0, overflowX: 'auto', whiteSpace: 'nowrap', padding: '9px 11px', borderRadius: 9, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)', fontSize: 12.5, color: 'var(--ink)' }}>{value}</code>
-        <Button variant="outline" size="sm" onClick={copy}>{done ? 'Copiado' : 'Copiar'}</Button>
-      </div>
-    </div>
-  );
-};
-const McpSteps = ({ title, steps }) => (
-  <div style={{ border: '1px solid var(--paper-edge)', borderRadius: 12, padding: '12px 14px', background: 'var(--paper-raised)' }}>
-    <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13.5, color: 'var(--ink)', marginBottom: 6 }}>{title}</div>
-    <ol style={{ margin: 0, paddingLeft: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
-      {steps.map((st, i) => <li key={i}>{st}</li>)}
-    </ol>
-  </div>
-);
-const AssistantsModal = ({ clientId, info, onClose, onChanged }) => {
-  const [tab, setTab] = React.useState('claude');
-  const [busy, setBusy] = React.useState(false);
-  const [msg, setMsg] = React.useState(null);
-  const url = (info && info.url) || '';
-  const available = Boolean(info && info.available && url);
-  const disconnect = async () => {
-    if (busy) return;
-    if (!window.confirm('Desconectar o Claude e o ChatGPT da sua conta? Eles vão pedir pra entrar de novo.')) return;
-    setBusy(true); setMsg(null);
-    try { await revokeMcp(clientId); setMsg({ kind: 'ok', text: 'Desconectado. Os assistentes param de valer em até 1 hora e pedem login de novo.' }); if (onChanged) await onChanged(); }
-    catch (e) { setMsg({ kind: 'err', text: e.message }); }
-    setBusy(false);
-  };
-  const tabs = [['claude', 'Claude'], ['claudecode', 'Claude Code'], ['chatgpt', 'ChatGPT']];
-  const tabBtn = (id, label) => (
-    <button key={id} onClick={() => setTab(id)} style={{
-      border: '1px solid var(--paper-edge)', background: tab === id ? 'var(--ink)' : 'transparent', color: tab === id ? 'var(--paper)' : 'var(--ink-2)',
-      borderRadius: 999, padding: '6px 12px', fontFamily: 'var(--font-sans)', fontSize: 12.5, fontWeight: 500, cursor: 'pointer',
-    }}>{label}</button>
-  );
-  return (
-    <IntegrationModal title="Claude e ChatGPT" onClose={onClose} footer={
-      <>
-        {info && info.connected && <Button variant="plain" size="sm" onClick={disconnect} disabled={busy}>Desconectar tudo</Button>}
-        <Button variant="outline" size="sm" onClick={onClose}>Fechar</Button>
-      </>
-    }>
-      <ModalText>
-        Sua HUMA vira uma ferramenta dentro do assistente que você já usa. Você entra com a sua conta da HUMA
-        (sem senha nova) e o assistente passa a ver e fazer só o que o seu papel permite aqui no Cockpit.
-      </ModalText>
-      {!available && <ModalMsg msg={{ kind: 'err', text: (info && info.error) || 'O conector não está disponível neste servidor (falta a URL pública ou o segredo de sessão).' }} />}
-      {available && <McpCopyRow label="URL do conector" value={url} />}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{tabs.map(([id, l]) => tabBtn(id, l))}</div>
-      {tab === 'claude' && <McpSteps title="No Claude (claude.ai, app ou celular)" steps={[
-        'Abra Configurações, depois Conectores (em alguns planos fica em Integrações).',
-        'Clique em "Adicionar conector personalizado" e cole a URL acima. Nome: HUMA.',
-        'Clique em Conectar: abre a tela da HUMA pra entrar e autorizar.',
-        'Numa conversa nova, ative o conector HUMA e pergunte: "como foi o atendimento hoje?"',
-        'Conectores personalizados existem nos planos Pro, Max, Team e Enterprise do Claude.',
-      ]} />}
-      {tab === 'claudecode' && (
-        <>
-          <McpSteps title="No Claude Code (terminal)" steps={[
-            'Rode o comando abaixo uma vez.',
-            'Digite /mcp, escolha "huma" e autentique: abre o navegador na HUMA.',
-            'Pronto: "liste as conversas aguardando" já funciona.',
-          ]} />
-          {available && <McpCopyRow label="Comando" value={info.claude_code_command || `claude mcp add --transport http huma ${url}`} />}
-        </>
-      )}
-      {tab === 'chatgpt' && <McpSteps title="No ChatGPT" steps={[
-        'Abra Configurações, depois Apps (ou Conectores) e ligue o "Modo desenvolvedor" em Avançado.',
-        'Clique em Criar (ou Adicionar) e preencha: nome HUMA, a URL acima e autenticação OAuth.',
-        'Clique em Criar e depois em Conectar: abre a tela da HUMA pra entrar e autorizar.',
-        'Numa conversa, abra Ferramentas, escolha HUMA e pergunte o que quiser.',
-        'O modo desenvolvedor existe nos planos Plus, Pro, Business, Enterprise e Edu do ChatGPT.',
-      ]} />}
-      <div style={{ border: '1px dashed var(--paper-edge)', borderRadius: 12, padding: '10px 14px', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.6 }}>
-        Exemplos: "quem está aguardando a equipe?", "resumo da semana", "o que o Pedro perguntou e a HUMA não soube?",
-        "responde pra Ana que o horário das 15h está confirmado", "anota que a Carla prefere Pix".
-      </div>
-      <ModalMsg msg={msg} />
-    </IntegrationModal>
-  );
-};
-
 Object.assign(window, {
-  IntegrationsScreen, IntegrationCard, IntegrationGlyph, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal, BalcaoActions,
+  IntegrationsScreen, IntegrationCard, IntegrationGlyph, INTEGRATION_LOGOS, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal, BalcaoActions,
   WebhookModal, PixelModal, AsaasModal, IntegrationModal, AssistantsModal, fetchMcpStatus, revokeMcp,
 });
