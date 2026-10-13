@@ -328,10 +328,23 @@ SPECs are written by humans and can contain dangerous generalizations. If you re
 
 When in doubt, preserve current behavior.
 
+### 11b. Cockpit JSX: run the faithful smoke test before any push (2026-10-12)
+
+The Cockpit is React via Babel standalone: one `<script type="text/babel">` per file, injected as a classic script in a SHARED global scope. A `ReferenceError` or a bad export in one file kills that whole file and the screen goes blank (incident 2026-10-12: a patch wiped the components another patch had added; syntax check passed, production went white). Before pushing any change to `huma/static/cockpit/*.jsx`:
+
+```bash
+cd scripts/cockpit_smoke && npm install && node run.js            # all screens, real Babel pipeline in jsdom
+node run.js integracoes relatorios                                 # only some screens
+node prod_check.js                                                 # after deploy: same against app.humaia.com.br
+```
+
+Patch JSX only by exact marker (`replace` with `count == 1`), never "from X to the next Y". A `vm`-based simulator is stricter than the browser (it rejects collisions the browser tolerates), so trust only the faithful harness.
+
 ### 12. Verification before commit
 
 Before considering any task complete:
 - [ ] `pytest huma/tests/ -v` passes
+- [ ] Touched a Cockpit `.jsx`? `node scripts/cockpit_smoke/run.js` passes (rule 11b)
 - [ ] `grep -r "renamed_function" huma/` shows no stale references
 - [ ] No new `TODO` or `FIXME` added without a corresponding issue
 - [ ] Redis keys used follow existing patterns (`category:id:field`)
