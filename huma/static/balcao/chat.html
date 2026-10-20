@@ -296,10 +296,25 @@
   if (isNaN(seen)) seen = null;
   function setSeen(n) { seen = n; sSet(seenKey, String(n)); }
 
+  // Links no texto viram <a> (o resto segue como texto puro, sem HTML).
+  var URL_RE = /https?:\/\/[^\s<>"')\]]+/g;
+  function fillText(el, text) {
+    var s = String(text || ''); var last = 0; var m;
+    URL_RE.lastIndex = 0;
+    while ((m = URL_RE.exec(s)) !== null) {
+      if (m.index > last) el.appendChild(document.createTextNode(s.slice(last, m.index)));
+      var a = document.createElement('a'); a.href = m[0]; a.target = '_blank'; a.rel = 'noopener'; a.textContent = m[0];
+      el.appendChild(a);
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) el.appendChild(document.createTextNode(s.slice(last)));
+    URL_RE.lastIndex = 0;
+  }
+  function hasUrl(text) { URL_RE.lastIndex = 0; var r = URL_RE.test(String(text || '')); URL_RE.lastIndex = 0; return r; }
   function addMsg(kind, text, persist) {
     var el = document.createElement('div');
     el.className = 'msg ' + kind;
-    el.textContent = text;
+    if (kind === 'bot' && hasUrl(text)) fillText(el, text); else el.textContent = text;
     chat.appendChild(el);
     chat.scrollTop = chat.scrollHeight;
     if (persist !== false && kind !== 'sys') {
@@ -323,7 +338,7 @@
         img.className = 'img'; img.src = c.image_url; img.alt = c.title || ''; img.loading = 'lazy';
         card.appendChild(img);
       } else {
-        var ph = document.createElement('div'); ph.className = 'noimg'; ph.textContent = '🛍️';
+        var ph = document.createElement('div'); ph.className = 'noimg'; ph.textContent = c.kind === 'link' ? '🚀' : '🛍️';
         card.appendChild(ph);
       }
       var body = document.createElement('div'); body.className = 'body';
@@ -339,6 +354,11 @@
         body.appendChild(pay);
       } else if (c.kind === 'order') {
         // resumo do pedido: só leitura
+      } else if (c.kind === 'link' && c.url) {
+        // Próximo passo por link (2026-10-19): botão que abre o link do dono.
+        var go = document.createElement('a'); go.className = 'buy'; go.href = c.url; go.target = '_blank'; go.rel = 'noopener';
+        go.textContent = (c.buttons && c.buttons[0] && c.buttons[0].title) || c.title || 'Abrir';
+        body.appendChild(go);
       } else {
         if (c.url) {
           var a = document.createElement('a'); a.className = 'buy'; a.href = c.url; a.target = '_blank'; a.rel = 'noopener';

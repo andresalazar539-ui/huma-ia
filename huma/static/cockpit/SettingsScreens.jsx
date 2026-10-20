@@ -740,6 +740,15 @@ const NegocioInfo = ({ settings, patch }) => {
           <Field label="Site (opcional)" half hint="A HUMA lê o site pra montar o playbook e as provas reais.">
             <Input value={settings.website || ''} placeholder="https://seusite.com.br" onChange={e => patch('website', e.target.value)}/>
           </Field>
+          <Field label="Próximo passo por link (opcional)" hint="Seu cliente resolve sozinho numa página (criar conta, teste grátis, agendar, formulário)? Cole o link. Quando o lead quiser dar esse passo, a HUMA manda o link na hora em vez de pedir e-mail ou dizer que alguém vai chamar.">
+            <Input value={settings.self_serve_url || ''} placeholder="https://seusite.com.br/comecar" onChange={e => patch('self_serve_url', e.target.value)}/>
+          </Field>
+          <Field label="Texto do botão" half hint="Como o link aparece no chat do site.">
+            <Input value={settings.self_serve_label || ''} placeholder="Criar conta e testar grátis" onChange={e => patch('self_serve_label', e.target.value)}/>
+          </Field>
+          <Field label="Quando mandar" half hint="Complete: 'quando o lead...'">
+            <Input value={settings.self_serve_when || ''} placeholder="quiser testar, começar ou criar a conta" onChange={e => patch('self_serve_when', e.target.value)}/>
+          </Field>
           <Field label="WhatsApp do dono (avisos da HUMA)" half hint="Agendamentos, pagamentos e alertas chegam aqui.">
             <Input value={settings.owner_phone || ''} onChange={e => patch('owner_phone', e.target.value)} placeholder="5511987654321"/>
           </Field>

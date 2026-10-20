@@ -285,10 +285,34 @@ const AccountIdLine = ({ compact }) => {
     try { await navigator.clipboard.writeText(id); setCopied(true); setTimeout(() => setCopied(false), 1500); }
     catch (_) { window.prompt('Copie o ID da conta:', id); }
   };
+  // compact = linha inteira dentro do menu do workspace (ID à esquerda,
+  // "copiar" com ícone à direita). Antes ficava espremida na coluna ao lado
+  // do avatar e o "copiar" saía cortado (feedback do André, 2026-10-19).
+  if (compact) {
+    return (
+      <div onClick={copy} title="Clique pra copiar. Informe este ID ao falar com o suporte HUMA." style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+        margin: '4px 0 0', padding: '7px 10px', borderRadius: 8, cursor: 'pointer',
+        background: 'var(--paper-sunk)', width: '100%', boxSizing: 'border-box',
+      }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--ink-3)', letterSpacing: '0.02em', whiteSpace: 'nowrap' }}>
+          ID {id}
+        </span>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4, flexShrink: 0,
+          fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 500,
+          color: copied ? 'var(--success)' : 'var(--ink-3)',
+        }}>
+          <Icon name={copied ? 'check' : 'copy'} size={12} stroke={2}/>
+          {copied ? 'copiado' : 'copiar'}
+        </span>
+      </div>
+    );
+  }
   return (
     <div onClick={copy} title="Clique pra copiar. Informe este ID ao falar com o suporte HUMA." style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: compact ? 3 : 0, cursor: 'pointer',
-      fontFamily: 'var(--font-mono)', fontSize: compact ? 10.5 : 12, color: 'var(--ink-3)', letterSpacing: '0.02em',
+      display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+      fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)', letterSpacing: '0.02em',
     }}>
       <span>ID {id}</span>
       <span style={{ fontFamily: 'var(--font-sans)', fontSize: 10.5, color: copied ? 'var(--success)' : 'var(--ink-4)' }}>{copied ? 'copiado' : 'copiar'}</span>
@@ -364,10 +388,10 @@ const WorkspaceSwitcher = ({ onNav, onInvite, client }) => {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500, color: 'var(--ink)' }}>{bizName}</div>
               <div style={{ fontFamily: 'var(--font-sans)', fontSize: 11, color: 'var(--ink-3)' }}>{bizSub}</div>
-              <AccountIdLine compact />
             </div>
             <span style={{ color: 'var(--sage)' }}><Icon name="check" size={14} stroke={2}/></span>
           </button>
+          <AccountIdLine compact />
           <div style={{ height: 1, background: 'var(--paper-edge)', margin: '6px 0' }}/>
 
           {/* BLOCO 2 */}

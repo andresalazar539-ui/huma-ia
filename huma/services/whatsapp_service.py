@@ -28,6 +28,7 @@ from huma.config import (
 )
 from huma.utils.logger import get_logger
 from huma.utils.retry import with_retry
+from huma.core.contact_import import VALID_DDDS as _BR_DDDS
 
 log = get_logger("whatsapp")
 
@@ -89,6 +90,33 @@ async def _resolve_channel(client_id: str) -> tuple[str, object | None]:
 def _digits(phone: str) -> str:
     """Normaliza telefone pra dígitos com DDI (formato Meta/Evolution)."""
     return re.sub(r"\D", "", phone or "")
+
+
+def br_e164(phone: str) -> str:
+    """
+    Dígitos prontos pra ENVIAR: número brasileiro digitado sem o DDI
+    ("11984023038", "(11) 98402-3038") ganha o 55 na frente. Tudo que
+    já tem DDI, é sintético (ig:/web:) ou não parece BR volta como está.
+
+    Incidente 2026-10-19: o dono cadastrou o próprio WhatsApp e o do
+    relatório sem o 55; o Evolution respondeu `exists: false` pra todo
+    aviso, follow-up de teste e relatório, e a tela só dizia "confira se
+    está conectado". (puro)
+    """
+    raw = str(phone or "")
+    if raw.startswith(("ig:", "web:")):
+        return raw
+    d = _digits(raw.split("@")[0]).lstrip("0")
+    if len(d) == 11 and d[:2] in _BR_DDDS and d[2] == "9":
+        return "55" + d          # celular com o 9
+    if len(d) == 10 and d[:2] in _BR_DDDS:
+        return "55" + d          # fixo ou celular antigo
+    return d
+
+
+def _dest_digits(phone: str) -> str:
+    """Destino de envio (Meta/Evolution): dígitos com DDI garantido."""
+    return br_e164(phone)
 
 
 def _format_whatsapp(phone: str) -> str:
@@ -190,7 +218,7 @@ async def _meta_send(identity, body: dict) -> str | None:
 async def _meta_send_text(identity, phone: str, message: str, reply_to: str | None) -> str | None:
     body = {
         "messaging_product": "whatsapp",
-        "to": _digits(phone),
+        "to": _dest_digits(phone),
         "type": "text",
         "text": {"body": message, "preview_url": True},
     }
@@ -211,7 +239,7 @@ async def _meta_send_media(
         media_obj["filename"] = filename
     body = {
         "messaging_product": "whatsapp",
-        "to": _digits(phone),
+        "to": _dest_digits(phone),
         "type": media_kind,
         media_kind: media_obj,
     }
@@ -246,7 +274,7 @@ async def _meta_send_template(
         }]
     body = {
         "messaging_product": "whatsapp",
-        "to": _digits(phone),
+        "to": _dest_digits(phone),
         "type": "template",
         "template": template_obj,
     }
@@ -322,7 +350,7 @@ async def _evo_destination(identity, phone: str) -> str:
     contatos @lid, cujo número real é mascarado: responder pros dígitos do
     @lid não entrega; responder pro jid @lid entrega. Fallback: dígitos.
     """
-    digits = _digits(phone)
+    digits = _dest_digits(phone)
     client_id = getattr(identity, "client_id", "") or ""
     if not client_id:
         return digits

@@ -519,6 +519,8 @@ SETTINGS_EDITABLE_FIELDS = frozenset({
     # as flags legadas enable_scheduling/enable_payments no PATCH.
     "category", "website", "competitors", "capabilities",
     "lead_collection_fields", "collect_before_offer",
+    # Próximo passo por link (2026-10-19): link + rótulo + quando usar.
+    "self_serve_url", "self_serve_label", "self_serve_when",
     # Checkout de Conversa (2026-09-08): frete ao fechar produto da loja na conversa.
     "store_checkout_shipping", "store_checkout_shipping_cents",
 })
@@ -637,6 +639,15 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
     # Persiste SÓ o que mudou (valores já normalizados pelo model)
     dumped = validated.model_dump(mode="json")
     persisted = {k: dumped[k] for k in accepted}
+    # Número digitado sem o DDI 55 não existe pro WhatsApp (2026-10-19):
+    # grava já no formato que o envio usa.
+    if "owner_phone" in persisted and persisted["owner_phone"]:
+        persisted["owner_phone"] = wa.br_e164(str(persisted["owner_phone"]))
+    if "report_recipients" in persisted and isinstance(persisted["report_recipients"], list):
+        persisted["report_recipients"] = [
+            (wa.br_e164(str(r)) if "@" not in str(r) else str(r).strip())
+            for r in persisted["report_recipients"] if str(r).strip()
+        ]
     # Missão do clone: capabilities explícitas mandam nas flags legadas
     # que partes do código (status da agenda, jobs) ainda leem.
     if "capabilities" in accepted:

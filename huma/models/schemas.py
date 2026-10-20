@@ -426,6 +426,13 @@ class ClientIdentity(BaseModel):
     category: Optional[BusinessCategory] = None
     business_description: str = ""
     website: str = ""
+    # ── Próximo passo por link (2026-10-19) ──
+    # Negócio que se vende sozinho (teste grátis, agenda própria, cadastro)
+    # cadastra o link que é o próximo passo do lead. Regra em
+    # huma/core/self_serve_link.py; migration scripts/migration_self_serve_link.sql.
+    self_serve_url: str = ""
+    self_serve_label: str = ""
+    self_serve_when: str = ""
 
     # ── Identidade ──
     tone_of_voice: str = ""

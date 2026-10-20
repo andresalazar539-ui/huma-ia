@@ -153,10 +153,15 @@ def build_web_identity(identity: ClientIdentity) -> ClientIdentity:
     # Caixinha universal (2026-09-10): quem vende mantém SÓ as capabilities de
     # venda (o tool lista generate_payment / create_store_order); agendar,
     # qualificar e áudio continuam fora — o canal não executa.
+    # Próximo passo por link (2026-10-19): com link cadastrado, a intenção
+    # "quero começar/testar" vai pro link, não pra "me passa o WhatsApp".
+    from huma.core.self_serve_link import web_rule_line as _self_serve_rule
     return identity.model_copy(update={
         "capabilities": list(sells),
         "enable_audio": False,
-        "custom_rules": (identity.custom_rules or "") + (_WEB_CHANNEL_RULES_SELLS if sells else _WEB_CHANNEL_RULES),
+        "custom_rules": (identity.custom_rules or "")
+            + (_WEB_CHANNEL_RULES_SELLS if sells else _WEB_CHANNEL_RULES)
+            + _self_serve_rule(identity),
     })
 
 
@@ -623,6 +628,20 @@ async def _process_web_message_locked(
         from huma.core.product_cards import history_entry as _hist
         conv.history.append(_hist(checkout_cards))
         cards = list(cards) + list(checkout_cards)
+
+    # Próximo passo por link (2026-10-19): a IA colou o link cadastrado na
+    # resposta → o widget ganha um botão e o histórico guarda o que o
+    # visitante viu. Falha aqui nunca derruba o turno.
+    try:
+        from huma.core import self_serve_link as _ssl
+        if _ssl.reply_has_link(reply, client_data):
+            _link_card = _ssl.link_card(client_data, "site")
+            if _link_card:
+                conv.history.append(_ssl.history_entry(_link_card))
+                cards = list(cards) + [_link_card]
+                log.info(f"Próximo passo por link (web) | {phone} | client={client_id}")
+    except Exception as e:
+        log.error(f"Card de link falhou (web) | {phone} | {type(e).__name__}: {e}")
     conv.last_message_at = datetime.utcnow()
 
     await db.save_conversation(conv)

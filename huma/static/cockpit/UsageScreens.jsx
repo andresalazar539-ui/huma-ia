@@ -1637,9 +1637,21 @@ const HUMA_PLANS = [
   },
 ];
 
-const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
-  const [currentPlan, setCurrentPlan] = useStateU(null);
-  const [billing, setBilling] = useStateU(null);
+// Espera o SDK do Mercado Pago aparecer (o script carrega de fora e pode
+// chegar depois do clique). Devolve true se carregou dentro do prazo.
+const _waitForMpSdk = async (ms = 4000) => {
+  const t0 = Date.now();
+  while (!window.MercadoPago && Date.now() - t0 < ms) {
+    await new Promise(r => setTimeout(r, 150));
+  }
+  return !!window.MercadoPago;
+};
+
+// billing (opcional) = status que o shell já carregou. Evita o dono clicar
+// "Assinar" antes da leitura própria voltar e cair no checkout hospedado.
+const PlanosScreen = ({ onBack, onGoto, onCheckout, billing: billingShell = null }) => {
+  const [currentPlan, setCurrentPlan] = useStateU(billingShell && billingShell.subscription_status === 'active' ? billingShell.plan : null);
+  const [billing, setBilling] = useStateU(billingShell || null);
   const [busy, setBusy] = useStateU('');
   const [err, setErr] = useStateU('');
   const [ok, setOk] = useStateU('');
@@ -1652,7 +1664,7 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
         setBilling(d);
         setCurrentPlan(d.subscription_status === 'active' ? d.plan : null);
       })
-      .catch(() => { setBilling(null); setCurrentPlan(null); });
+      .catch(() => { /* mantém o que o shell já carregou (ou null) */ });
   }, []);
 
   const doValidateCoupon = async () => {
@@ -1680,14 +1692,26 @@ const PlanosScreen = ({ onBack, onGoto, onCheckout }) => {
     setErr(''); setOk('');
 
     // Caminho padrão: checkout TRANSPARENTE — cartão dentro do Cockpit,
-    // sem redirect. Cupom 100% e SDK indisponível seguem os outros ramos.
+    // sem redirect. Cupom 100% segue o ramo de cortesia; o checkout
+    // hospedado do MP é ÚLTIMO recurso (SDK bloqueado ou sem public key).
+    // Incidente 2026-10-19: clicar antes de /billing responder (segundos em
+    // prod) caía no redirect pra página do MP. Agora espera a leitura.
     const isComp = couponInfo && couponInfo.percent_off >= 100;
-    if (!isComp && onCheckout && window.MercadoPago && billing && billing.mp_public_key) {
-      onCheckout({ planId, coupon: coupon.trim(), couponInfo });
-      return;
+    setBusy(planId);
+    if (!isComp && onCheckout) {
+      let b = billing || billingShell;
+      if (!b || !b.mp_public_key) {
+        try { b = await fetchBillingStatus(); setBilling(b); } catch (e) { /* decide abaixo */ }
+      }
+      const sdkOk = await _waitForMpSdk();
+      if (sdkOk && b && b.mp_public_key) {
+        setBusy('');
+        onCheckout({ planId, coupon: coupon.trim(), couponInfo, billing: b });
+        return;
+      }
+      console.warn('Planos | checkout interno indisponível | sdk=' + sdkOk + ' key=' + !!(b && b.mp_public_key));
     }
 
-    setBusy(planId);
     try {
       const data = await subscribePlan(planId, coupon.trim());
       if (data.comp) {
@@ -1940,7 +1964,10 @@ const checkoutInputStyle = {
   outline: 'none', width: '100%',
 };
 
-const CheckoutScreen = ({ ctx, billing, onBack, onDone }) => {
+const CheckoutScreen = ({ ctx, billing: billingShell, onBack, onDone }) => {
+  // O shell pode ainda não ter o status de cobrança; a tela de Planos manda
+  // no ctx o que já leu, então a chave do MP nunca falta aqui.
+  const billing = billingShell || (ctx && ctx.billing) || null;
   const [num, setNum] = useStateU('');
   const [name, setName] = useStateU('');
   const [exp, setExp] = useStateU('');

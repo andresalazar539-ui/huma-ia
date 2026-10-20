@@ -1232,6 +1232,13 @@ def build_dynamic_prompt(
     from huma.core.customers import build_customer_prompt
     prompt += build_customer_prompt(conv)
 
+    # ── Próximo passo por link (2026-10-19) ──
+    # "" quando o dono não cadastrou link. Fica no DINÂMICO porque o UTM
+    # leva o canal da conversa (site/instagram/whatsapp).
+    from huma.core.self_serve_link import build_prompt as _build_self_serve_prompt
+    from huma.services.store_orders import channel_of as _channel_of
+    prompt += _build_self_serve_prompt(identity, _channel_of(conv.phone))
+
     # ── Insights aprendidos (Tier 2 também aprende) ──
     # Fica no bloco DINÂMICO de propósito: o texto muda quando novas conversas
     # won/lost são analisadas, e no estático invalidaria o cache Haiku.

@@ -473,7 +473,9 @@ const MessageCard = ({ card, dark }) => {
     ? [{ title: (card.buttons && card.buttons[0] && card.buttons[0].title) || 'Finalizar pedido', primary: true }]
     : kind === 'order'
       ? []
-      : [...(card.url ? [{ title: 'Comprar', href: card.url }] : []), { title: 'Quero esse' }];
+      : kind === 'link'
+        ? [{ title: (card.buttons && card.buttons[0] && card.buttons[0].title) || card.title || 'Abrir', href: card.url, primary: true }]
+        : [...(card.url ? [{ title: 'Comprar', href: card.url }] : []), { title: 'Quero esse' }];
   const fg = dark ? 'var(--paper-raised)' : 'var(--ink)';
   const sub = dark ? 'rgba(251,248,243,0.75)' : 'var(--ink-3)';
   const edge = dark ? 'rgba(251,248,243,0.28)' : 'var(--paper-edge)';
@@ -482,7 +484,7 @@ const MessageCard = ({ card, dark }) => {
       {card.image_url ? (
         <img src={card.image_url} alt={card.title || ''} loading="lazy" style={{ display: 'block', width: '100%', height: 150, objectFit: 'cover', background: 'rgba(0,0,0,0.06)' }} />
       ) : (
-        <div style={{ height: 96, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, background: 'rgba(0,0,0,0.06)' }}>{kind === 'order' ? '🧾' : kind === 'checkout' ? '🔒' : '🛍️'}</div>
+        <div style={{ height: 96, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, background: 'rgba(0,0,0,0.06)' }}>{kind === 'order' ? '🧾' : kind === 'checkout' ? '🔒' : kind === 'link' ? '🚀' : '🛍️'}</div>
       )}
       <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 13, lineHeight: 1.3, color: fg }}>{card.title}</div>

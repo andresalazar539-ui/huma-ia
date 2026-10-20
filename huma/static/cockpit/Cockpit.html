@@ -555,7 +555,7 @@ function App() {
                           onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
     case 'indicacao':   screen = <IndicacaoScreen onBack={() => setRoute('uso')} onGoto={setRoute} billing={billing} />; break;
     case 'creditos':    screen = <CreditosScreen onBack={() => setRoute('uso')} onGoto={setRoute} billing={billing} />; break;
-    case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute}
+    case 'planos':      screen = <PlanosScreen onBack={() => setRoute('uso')} onGoto={setRoute} billing={billing}
                           onCheckout={(ctx) => { setCheckoutCtx(ctx); setRoute('checkout'); }} />; break;
     case 'checkout':    screen = <CheckoutScreen ctx={checkoutCtx} billing={billing}
                           onBack={() => setRoute(checkoutCtx && checkoutCtx.mode === 'update_card' ? 'uso' : 'planos')}
