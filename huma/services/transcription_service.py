@@ -66,9 +66,17 @@ def _upload_name(filename: str) -> tuple[str, str]:
     return "audio.ogg", "audio/ogg"
 
 
+# Transcritores de melhor qualidade (quality="best", 2026-10-25): usados no
+# briefing do dono, onde nome de marca errado vira regra errada. Caros em
+# latência, não em dinheiro (mesma faixa de preço por minuto).
+OPENAI_BEST_MODEL = "gpt-4o-transcribe"
+GROQ_BEST_MODEL = "whisper-large-v3"
+_BEST_TIMEOUT = 90.0
+
+
 async def transcribe_bytes(
     audio_bytes: bytes, hint: str = "", client_id: str = "", phone: str = "", purpose: str = "transcription",
-    filename: str = "",
+    filename: str = "", quality: str = "fast",
 ) -> str | None:
     """
     Transcreve bytes de áudio (Groq → OpenAI) pra texto em português.
@@ -85,6 +93,19 @@ async def transcribe_bytes(
     if not audio_bytes or len(audio_bytes) < 500:
         log.warning(f"Áudio vazio ou muito pequeno pra transcrever | size={len(audio_bytes or b'')}")
         return None
+
+    if quality == "best":
+        # Melhor disponível primeiro; se falhar, cai na cascata rápida de sempre.
+        if OPENAI_API_KEY:
+            text = await _transcribe_openai(audio_bytes, hint=hint, filename=filename, model=OPENAI_BEST_MODEL, timeout=_BEST_TIMEOUT)
+            if text:
+                await _log_cost(client_id, phone, len(audio_bytes), "openai", purpose)
+                return text
+        if GROQ_API_KEY:
+            text = await _transcribe_groq(audio_bytes, hint=hint, filename=filename, model=GROQ_BEST_MODEL, timeout=_BEST_TIMEOUT)
+            if text:
+                await _log_cost(client_id, phone, len(audio_bytes), "groq", purpose)
+                return text
 
     if GROQ_API_KEY:
         text = await _transcribe_groq(audio_bytes, hint=hint, filename=filename)
@@ -109,7 +130,7 @@ async def _log_cost(client_id: str, phone: str, audio_bytes_len: int, provider: 
     try:
         from huma.services.usage_service import log_service_usage, transcription_cost_brl
         await log_service_usage(
-            client_id, phone, f"whisper-{provider}", purpose if purpose == "onboarding" else "transcription",
+            client_id, phone, f"whisper-{provider}", (purpose or "").strip() or "transcription",
             transcription_cost_brl(audio_bytes_len, provider),
         )
     except Exception as e:
@@ -159,11 +180,14 @@ async def _download_audio(url: str, auth: tuple | None = None) -> bytes | None:
     return None
 
 
-async def _transcribe_groq(audio_bytes: bytes, hint: str = "", filename: str = "") -> str | None:
-    """Transcreve com Groq Whisper (whisper-large-v3-turbo)."""
+async def _transcribe_groq(
+    audio_bytes: bytes, hint: str = "", filename: str = "",
+    model: str = "whisper-large-v3-turbo", timeout: float = 30.0,
+) -> str | None:
+    """Transcreve com Groq Whisper (turbo por padrão; large-v3 no modo best)."""
     upload_name, upload_mime = _upload_name(filename)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as http:
+        async with httpx.AsyncClient(timeout=timeout) as http:
             resp = await http.post(
                 "https://api.groq.com/openai/v1/audio/transcriptions",
                 headers={
@@ -173,7 +197,7 @@ async def _transcribe_groq(audio_bytes: bytes, hint: str = "", filename: str = "
                     "file": (upload_name, audio_bytes, upload_mime),
                 },
                 data={
-                    "model": "whisper-large-v3-turbo",
+                    "model": model,
                     "language": "pt",
                     "response_format": "text",
                     **({"prompt": hint[:400]} if hint else {}),
@@ -192,7 +216,7 @@ async def _transcribe_groq(audio_bytes: bytes, hint: str = "", filename: str = "
                 log.warning("Groq retornou texto vazio")
                 return None
 
-            log.info(f"Groq transcrição OK | chars={len(text)} | preview={text[:80]}...")
+            log.info(f"Groq transcrição OK | model={model} | chars={len(text)} | preview={text[:80]}...")
             return text
 
     except Exception as e:
@@ -200,11 +224,14 @@ async def _transcribe_groq(audio_bytes: bytes, hint: str = "", filename: str = "
         return None
 
 
-async def _transcribe_openai(audio_bytes: bytes, hint: str = "", filename: str = "") -> str | None:
-    """Transcreve com OpenAI Whisper (fallback)."""
+async def _transcribe_openai(
+    audio_bytes: bytes, hint: str = "", filename: str = "",
+    model: str = "whisper-1", timeout: float = 30.0,
+) -> str | None:
+    """Transcreve com OpenAI (whisper-1 como reserva; gpt-4o-transcribe no modo best)."""
     upload_name, upload_mime = _upload_name(filename)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as http:
+        async with httpx.AsyncClient(timeout=timeout) as http:
             resp = await http.post(
                 "https://api.openai.com/v1/audio/transcriptions",
                 headers={
@@ -214,7 +241,7 @@ async def _transcribe_openai(audio_bytes: bytes, hint: str = "", filename: str =
                     "file": (upload_name, audio_bytes, upload_mime),
                 },
                 data={
-                    "model": "whisper-1",
+                    "model": model,
                     "language": "pt",
                     "response_format": "text",
                     **({"prompt": hint[:400]} if hint else {}),
@@ -233,7 +260,7 @@ async def _transcribe_openai(audio_bytes: bytes, hint: str = "", filename: str =
                 log.warning("OpenAI retornou texto vazio")
                 return None
 
-            log.info(f"OpenAI transcrição OK | chars={len(text)} | preview={text[:80]}...")
+            log.info(f"OpenAI transcrição OK | model={model} | chars={len(text)} | preview={text[:80]}...")
             return text
 
     except Exception as e:

@@ -174,7 +174,37 @@ async def knowledge_delete(client_id: str, doc_id: str, client=Depends(verify_ap
 
 # ────────────────────────────────────────────────────────────────
 # "Conte pra HUMA" por voz (2026-10-25)
+#
+# Duas etapas, porque o dono precisa VER o que foi ouvido antes de a
+# HUMA organizar: /brief/transcribe devolve o texto em segundos (o Cockpit
+# mostra editável) e /brief organiza o texto em campos. Nada é gravado
+# aqui: o Cockpit aplica o que o dono marcar via PATCH /settings.
 # ────────────────────────────────────────────────────────────────
+
+
+@router.post("/api/clients/{client_id}/brief/transcribe")
+async def business_brief_transcribe(
+    client_id: str,
+    audio: UploadFile = File(...),
+    client=Depends(verify_api_key),
+) -> dict:
+    """
+    Etapa 1: áudio do dono → texto, com o melhor transcritor disponível e o
+    vocabulário do negócio como dica. Teto diário próprio ("ouvir").
+    """
+    blob = await audio.read()
+    if not blob:
+        raise HTTPException(400, "Não recebi o áudio. Grave de novo.")
+    try:
+        await brief.take_quota(client_id, "ouvir")
+    except brief.BriefQuotaExceeded as e:
+        raise HTTPException(429, str(e))
+    try:
+        transcript = await brief.transcribe(client_id, blob, filename=audio.filename or "", identity=client)
+    except brief.BriefError as e:
+        raise HTTPException(422, str(e))
+    log.info(f"VoiceBrief | ouvido | client={client_id} | bytes={len(blob)} | chars={len(transcript)}")
+    return {"status": "ok", "transcript": transcript}
 
 
 @router.post("/api/clients/{client_id}/brief")
@@ -185,36 +215,31 @@ async def business_brief(
     client=Depends(verify_api_key),
 ) -> dict:
     """
-    O dono conta por áudio (ou texto) como a HUMA deve atender. Transcreve,
-    organiza em campos e devolve a PROPOSTA (antes/depois por campo).
-
-    NÃO grava nada: o Cockpit aplica o que o dono marcar via PATCH /settings
-    (mesma whitelist, mesma regeneração de playbook). Áudio e texto juntos:
-    o áudio vence; sem nenhum dos dois, 400. Teto de `MAX_PER_DAY`
-    briefings por conta e por dia (429 em PT quando estoura).
+    Etapa 2: texto (já conferido pelo dono) → PROPOSTA por campo
+    (antes/depois). Ainda aceita áudio direto (transcreve e organiza na
+    mesma chamada) pra quem usa a API sem o Cockpit. Áudio e texto juntos:
+    o áudio vence; sem nenhum dos dois, 400. Teto diário por etapa (429 em PT).
     """
     transcript = (text or "").strip()
-    if audio is not None:
-        blob = await audio.read()
-    else:
-        blob = b""
+    blob = await audio.read() if audio is not None else b""
     if not blob and not transcript:
         raise HTTPException(400, "Grave um áudio ou escreva o que quer contar pra HUMA.")
 
-    # Teto diário ANTES de gastar transcrição ou IA (conta a tentativa).
+    if blob:
+        try:
+            await brief.take_quota(client_id, "ouvir")
+        except brief.BriefQuotaExceeded as e:
+            raise HTTPException(429, str(e))
+        try:
+            transcript = await brief.transcribe(client_id, blob, filename=audio.filename or "", identity=client)
+        except brief.BriefError as e:
+            raise HTTPException(422, str(e))
+
+    # Teto diário ANTES de gastar IA (conta a tentativa).
     try:
-        await brief.take_quota(client_id)
+        await brief.take_quota(client_id, "organizar")
     except brief.BriefQuotaExceeded as e:
         raise HTTPException(429, str(e))
-
-    if audio is not None:
-        if blob:
-            try:
-                transcript = await brief.transcribe(client_id, blob, filename=audio.filename or "")
-            except brief.BriefError as e:
-                raise HTTPException(422, str(e))
-    if not transcript:
-        raise HTTPException(400, "Grave um áudio ou escreva o que quer contar pra HUMA.")
 
     try:
         result = await brief.propose(client, transcript)
@@ -224,7 +249,7 @@ async def business_brief(
         raise HTTPException(502, str(e))
 
     log.info(
-        f"VoiceBrief | ok | client={client_id} | via={'audio' if audio is not None else 'texto'} | "
+        f"VoiceBrief | ok | client={client_id} | via={'audio' if blob else 'texto'} | "
         f"changes={len(result['changes'])}"
     )
     return {

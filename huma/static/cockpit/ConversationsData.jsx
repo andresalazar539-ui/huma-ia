@@ -1154,7 +1154,19 @@ async function sendBusinessBrief({ blob, text }) {
   if (!r.ok) throw await _readApiError(r);
   return r.json();
 }
-Object.assign(window, { sendBusinessBrief });
+// Etapa 1 do briefing: só transcreve (o texto aparece na hora, editável).
+async function transcribeBusinessBrief(blob) {
+  const fd = new FormData();
+  const mime = blob.type || '';
+  const ext = mime.includes('mp4') ? 'm4a' : (mime.includes('ogg') ? 'ogg' : 'webm');
+  fd.append('audio', blob, `brief.${ext}`);
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/brief/transcribe`, {
+    method: 'POST', headers: { ...AUTH_HEADERS }, body: fd,
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+Object.assign(window, { sendBusinessBrief, transcribeBusinessBrief });
 
 async function fetchTeam() {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team`, { headers: { ...AUTH_HEADERS } });

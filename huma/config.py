@@ -329,6 +329,10 @@ PLAYGROUND_TOKEN = os.getenv("PLAYGROUND_TOKEN", "")
 # ── Modelos de IA ──
 AI_MODEL_PRIMARY = os.getenv("AI_MODEL_PRIMARY", "claude-sonnet-4-5-20250929")  # Sonnet (complexo)
 AI_MODEL_FAST = os.getenv("AI_MODEL_FAST", "claude-haiku-4-5-20251001")        # Haiku (simples)
+# "Conte pra HUMA" por voz (2026-10-25): modelo que organiza o briefing do dono.
+# Vazio = AI_MODEL_PRIMARY. Pouco volume (teto 10/dia por conta) e alto valor:
+# dá pra apontar pro modelo mais forte que existir sem mexer em código.
+AI_MODEL_BRIEF = os.getenv("AI_MODEL_BRIEF", "")
 
 # Medição de custos fora do Claude (2026-10-10): áudio clonado e transcrição
 # entram na mesma tabela ai_usage (model = "elevenlabs" | "whisper-groq" |

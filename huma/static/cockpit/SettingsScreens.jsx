@@ -844,18 +844,59 @@ const NegocioInfo = ({ settings, patch }) => {
   );
 };
 
-// ---------- "Conte pra HUMA" por voz (2026-10-25) ----------
-// O dono grava um áudio (ou escreve) dizendo o que a HUMA pode, o que não
-// pode, preços, horários. Backend: POST /api/clients/{id}/brief
-// (routes/business.py + services/voice_brief_service.py) transcreve,
-// organiza em campos e devolve o que MUDA por campo; nada é gravado até
-// a pessoa conferir e clicar em Aplicar (applyFields → PATCH /settings).
+// ---------- "Conte pra HUMA" por voz (2026-10-25, refeito no mesmo dia) ----------
+// Fluxo: gravar (prévia ao vivo no Chrome/Edge de computador) → o servidor
+// transcreve com o melhor transcritor disponível e o TEXTO aparece na hora,
+// editável → a HUMA organiza em campos mostrando andamento por etapas →
+// proposta com antes/depois por campo → Aplicar grava via PATCH /settings.
+// Backend: POST /brief/transcribe e POST /brief (routes/business.py +
+// services/voice_brief_service.py). Nada é gravado até o Aplicar.
 const VB_MAX_SECONDS = 300;
-const VB_MODE_LABEL = { adiciona: 'soma ao que já existe', substitui: 'substitui o atual' };
+const VB_MODE_LABEL = {
+  adiciona: 'soma ao que já existe', atualiza: 'atualiza o que já existe',
+  'adiciona e atualiza': 'soma e atualiza', substitui: 'substitui o atual',
+};
+const VB_STAGES = [
+  [0, 'Lendo o que você disse'], [4, 'Separando regras, preços e horários'],
+  [10, 'Comparando com o que já está cadastrado'], [18, 'Montando a proposta'],
+];
+const VB_DAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab', 'Dom'];
+const vbParseHours = (str) => {
+  const out = {}; let ok = true;
+  String(str || '').split(',').map(t => t.trim()).filter(Boolean).forEach(t => {
+    const m = t.match(/^(Seg|Ter|Qua|Qui|Sex|Sab|Dom)\s+(\d{2}:\d{2})-(\d{2}:\d{2})$/);
+    if (m) out[m[1]] = `${m[2]} às ${m[3]}`; else ok = false;
+  });
+  return ok ? out : null;
+};
+const vbIsMobile = () => /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+const vbFmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+// Andamento por relógio: barra + etapa + segundos. Nenhuma frase afirma
+// que acabou; o "pronto" vem da resposta do servidor.
+const VbProgress = ({ startedAt, label, expected }) => {
+  const [now, setNow] = useStateS(Date.now());
+  useEffectS(() => { const t = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(t); }, []);
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const pct = Math.min(94, Math.round(100 * elapsed / Math.max(1, expected)));
+  const stage = label || [...VB_STAGES].reverse().find(([from]) => elapsed >= from)[1];
+  return (
+    <div style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)' }}>
+        <span>{stage}…</span>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' }}>{elapsed}s</span>
+      </div>
+      <div style={{ height: 6, borderRadius: 99, background: 'var(--paper-edge)', marginTop: 8, overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: 'var(--ember)', borderRadius: 99, transition: 'width 500ms linear' }}/>
+      </div>
+    </div>
+  );
+};
 
 const VbChangePreview = ({ c }) => {
   const txt = { fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 };
   const mono = { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' };
+  const strike = { textDecoration: 'line-through', color: 'var(--ink-4)' };
   if (c.field === 'custom_rules') return <div style={{ ...txt, whiteSpace: 'pre-wrap' }}>{c.proposed}</div>;
   if (c.field === 'faq') return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -869,17 +910,45 @@ const VbChangePreview = ({ c }) => {
       {(c.proposed || []).map((p, i) => (
         <div key={i} style={txt}>
           <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{p.name}</span>
-          {p.price ? <span style={{ ...mono, marginLeft: 8 }}>R$ {p.price}</span> : <span style={{ ...mono, marginLeft: 8 }}>sem preço</span>}
-          {p.description ? <span style={{ color: 'var(--ink-3)' }}> · {p.description}</span> : null}
+          {p.previous_price !== undefined ? (
+            <span style={{ ...mono, marginLeft: 8 }}>
+              {p.previous_price ? <><span style={strike}>R$ {p.previous_price}</span>{' passa a '}</> : null}
+              <span style={{ color: 'var(--ink)' }}>R$ {p.price}</span>
+            </span>
+          ) : (
+            <span style={{ ...mono, marginLeft: 8 }}>{p.price ? `R$ ${p.price}` : 'sem preço'}</span>
+          )}
+          {p.description && p.previous_price === undefined ? <span style={{ color: 'var(--ink-3)' }}> · {p.description}</span> : null}
         </div>
       ))}
     </div>
   );
+  if (c.field === 'working_hours') {
+    const before = vbParseHours(c.current), after = vbParseHours(c.proposed);
+    if (before && after) return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {VB_DAYS.map(d => {
+          const a = before[d], b = after[d];
+          if (!a && !b) return null;
+          const same = a === b;
+          return (
+            <div key={d} style={{ ...txt, color: same ? 'var(--ink-3)' : 'var(--ink-2)' }}>
+              <span style={{ ...mono, display: 'inline-block', width: 34 }}>{d}</span>
+              {same ? a : <>
+                {a ? <span style={strike}>{a}</span> : <span style={strike}>fechado</span>}{' passa a '}
+                <span style={{ color: 'var(--ink)' }}>{b || 'fechado'}</span>
+              </>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
   if (Array.isArray(c.proposed)) return <div style={txt}>{c.proposed.join(', ')}</div>;
   if (c.mode === 'substitui') return (
     <div style={txt}>
       {c.current !== '' && c.current !== null && c.current !== undefined
-        ? <><span style={{ textDecoration: 'line-through', color: 'var(--ink-4)' }}>{String(c.current)}</span>{' '}</>
+        ? <><span style={strike}>{String(c.current)}</span>{' passa a '}</>
         : null}
       <span style={{ color: 'var(--ink)' }}>{String(c.proposed)}</span>
     </div>
@@ -888,18 +957,51 @@ const VbChangePreview = ({ c }) => {
 };
 
 const NegocioVoiceBrief = ({ settings, applyFields }) => {
-  const [phase, setPhase] = useStateS('idle');   // idle | recording | typing | sending | review | applied | error
+  // idle | recording | typing | transcribing | organizing | review | applied | error
+  const [phase, setPhase] = useStateS('idle');
   const [seconds, setSeconds] = useStateS(0);
-  const [typed, setTyped] = useStateS('');
-  const [result, setResult] = useStateS(null);   // { transcript, summary, changes }
+  const [live, setLive] = useStateS('');            // prévia ao vivo (Web Speech, só computador)
+  const [transcript, setTranscript] = useStateS('');  // o que a HUMA ouviu, editável
+  const [organizedText, setOrganizedText] = useStateS(''); // texto que gerou a proposta atual
+  const [startedAt, setStartedAt] = useStateS(0);
+  const [result, setResult] = useStateS(null);   // { summary, changes }
   const [picked, setPicked] = useStateS({});
   const [applied, setApplied] = useStateS([]);
   const [err, setErr] = useStateS('');
-  const [showTranscript, setShowTranscript] = useStateS(false);
   const [applying, setApplying] = useStateS(false);
   const recRef = React.useRef(null);             // { recorder, stream, timer, chunks, send, seconds }
+  const liveRef = React.useRef(null);            // SpeechRecognition em andamento
+  const reqRef = React.useRef(0);                // descarta resposta de pedido antigo
+
+  const stopLive = () => {
+    const r = liveRef.current; liveRef.current = null;
+    if (r) { try { r.onend = null; r.stop(); } catch (e) { /* já parado */ } }
+  };
+  const startLive = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR || vbIsMobile()) return;              // no celular o reconhecimento disputa o microfone com a gravação
+    try {
+      const rec = new SR();
+      rec.lang = 'pt-BR'; rec.continuous = true; rec.interimResults = true;
+      let finals = '';
+      rec.onresult = (e) => {
+        let interim = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) finals += r[0].transcript + ' '; else interim += r[0].transcript;
+        }
+        setLive((finals + interim).trim());
+      };
+      rec.onerror = () => {};
+      rec.onend = () => { if (liveRef.current === rec && recRef.current) { try { rec.start(); } catch (e) { /* já rodando */ } } };
+      rec.start();
+      liveRef.current = rec;
+      setLive('');
+    } catch (e) { liveRef.current = null; }
+  };
 
   const killRecorder = () => {
+    stopLive();
     const cur = recRef.current;
     if (!cur) return;
     clearInterval(cur.timer);
@@ -907,27 +1009,50 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
     try { cur.stream.getTracks().forEach(t => t.stop()); } catch (e) { /* já parado */ }
     recRef.current = null;
   };
-  useEffectS(() => () => killRecorder(), []);
+  useEffectS(() => () => { killRecorder(); reqRef.current += 1; }, []);
 
-  const send = async ({ blob, text }) => {
-    setPhase('sending'); setErr('');
+  const fail = (msg) => { setErr(msg || 'Não consegui processar agora. Tente de novo.'); setPhase('error'); };
+
+  // Etapa 2: texto → proposta. Chamada ao abrir a transcrição e de novo
+  // quando o dono corrige o texto.
+  const organize = async (text) => {
+    const clean = (text || '').trim();
+    if (clean.length < 8) { fail('Conte um pouco mais: o que a HUMA pode, o que não pode, preços, horários.'); return; }
+    const id = ++reqRef.current;
+    setErr(''); setResult(null); setStartedAt(Date.now()); setPhase('organizing');
     try {
-      const r = await sendBusinessBrief({ blob, text });
+      const r = await sendBusinessBrief({ text: clean });
+      if (id !== reqRef.current) return;
       const all = {};
       (r.changes || []).forEach(c => { all[c.field] = true; });
-      setResult(r); setPicked(all); setShowTranscript(false);
+      setResult(r); setPicked(all); setOrganizedText(clean);
       setPhase('review');
     } catch (e) {
-      setErr(e.message || 'Não consegui processar agora. Tente de novo.');
-      setPhase('error');
+      if (id !== reqRef.current) return;
+      fail(e.message);
+    }
+  };
+
+  // Etapa 1: áudio → texto na hora; em seguida organiza sozinho.
+  const transcribeAndOrganize = async (blob) => {
+    const id = ++reqRef.current;
+    setErr(''); setStartedAt(Date.now()); setPhase('transcribing');
+    try {
+      const r = await transcribeBusinessBrief(blob);
+      if (id !== reqRef.current) return;
+      setTranscript(r.transcript || '');
+      setLive('');
+      await organize(r.transcript || '');
+    } catch (e) {
+      if (id !== reqRef.current) return;
+      fail(e.message);
     }
   };
 
   const startRecording = async () => {
     setErr('');
     if (!navigator.mediaDevices || !window.MediaRecorder) {
-      setErr('Este navegador não grava áudio. Você pode escrever em vez de gravar.');
-      setPhase('error'); return;
+      fail('Este navegador não grava áudio. Você pode escrever em vez de gravar.'); return;
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -939,15 +1064,13 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
       recorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
         clearInterval(cur.timer);
+        stopLive();
         const blob = new Blob(cur.chunks, { type: recorder.mimeType || mime || 'audio/webm' });
         recRef.current = null;
         setSeconds(0);
         if (!cur.send) { setPhase('idle'); return; }
-        if (blob.size < 2000 || cur.seconds < 2) {
-          setErr('O áudio ficou curto demais. Grave de novo contando com calma.');
-          setPhase('error'); return;
-        }
-        send({ blob });
+        if (blob.size < 2000 || cur.seconds < 2) { fail('O áudio ficou curto demais. Grave de novo contando com calma.'); return; }
+        transcribeAndOrganize(blob);
       };
       cur.timer = setInterval(() => {
         cur.seconds += 1;
@@ -955,12 +1078,12 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
         if (cur.seconds >= VB_MAX_SECONDS) { try { recorder.stop(); } catch (e) { /* já parado */ } }
       }, 1000);
       recRef.current = cur;
-      recorder.start();
-      setSeconds(0);
+      recorder.start(1000);
+      setSeconds(0); setLive(''); setTranscript(''); setResult(null);
       setPhase('recording');
+      startLive();
     } catch (e) {
-      setErr('Não consegui acessar o microfone. Libere a permissão no navegador ou escreva em vez de gravar.');
-      setPhase('error');
+      fail('Não consegui acessar o microfone. Libere a permissão no navegador ou escreva em vez de gravar.');
     }
   };
 
@@ -971,7 +1094,7 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
     try { cur.recorder.stop(); } catch (e) { killRecorder(); setPhase('idle'); }
   };
 
-  const reset = () => { killRecorder(); setResult(null); setPicked({}); setErr(''); setTyped(''); setPhase('idle'); };
+  const reset = () => { killRecorder(); reqRef.current += 1; setResult(null); setPicked({}); setErr(''); setTranscript(''); setOrganizedText(''); setLive(''); setPhase('idle'); };
 
   const apply = async () => {
     if (!result || applying) return;
@@ -993,11 +1116,29 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
     }
   };
 
-  const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   const p = { fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 };
   const row = { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' };
   const changes = (result && result.changes) || [];
   const pickedCount = changes.filter(c => picked[c.field]).length;
+  const transcriptEdited = transcript.trim() !== organizedText.trim();
+  const showTranscriptBox = ['organizing', 'review'].includes(phase) || (phase === 'error' && transcript);
+
+  // Caixa "o que a HUMA ouviu": sempre visível depois da transcrição, editável.
+  const transcriptBox = showTranscriptBox ? (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+        <Eyebrow>o que a HUMA ouviu</Eyebrow>
+        <span style={{ ...p, fontSize: 12 }}>Errou um nome ou um número? Corrija aqui e peça pra organizar de novo.</span>
+      </div>
+      <Textarea rows={Math.min(8, Math.max(3, Math.ceil(transcript.length / 110)))} value={transcript}
+                onChange={e => setTranscript(e.target.value)} maxLength={6000}/>
+      {transcriptEdited && phase !== 'organizing' && (
+        <div style={{ ...row, marginTop: 8 }}>
+          <Button variant="dark" size="sm" icon={<Icon name="sparkle" size={13}/>} onClick={() => organize(transcript)}>Organizar de novo com o texto corrigido</Button>
+        </div>
+      )}
+    </div>
+  ) : null;
 
   return (
     <Card title="Conte pra HUMA, do seu jeito">
@@ -1005,7 +1146,7 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
         <>
           <div style={p}>
             Fale como se estivesse explicando pra uma pessoa nova na equipe: o que a HUMA pode e o que não pode fazer,
-            preços, horários, como você gosta de atender. Ela transcreve, organiza e te mostra o que muda antes de aplicar.
+            preços, horários, como você gosta de atender. Você vê o que ela ouviu, corrige se precisar, e ela mostra o que muda antes de aplicar.
           </div>
           <div style={row}>
             <Button variant="primary" size="md" icon={<Icon name="mic" size={14}/>} onClick={startRecording}>Gravar áudio</Button>
@@ -1016,10 +1157,18 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
 
       {phase === 'recording' && (
         <>
-          <div style={{ ...row, padding: '12px 14px', borderRadius: 12, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
-            <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 99, background: 'var(--ember)', flexShrink: 0 }}/>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--ink)' }}>{fmt(seconds)}</span>
-            <span style={{ ...p, flex: 1, minWidth: 160 }}>Gravando. Pode falar à vontade, até 5 minutos.</span>
+          <div style={{ padding: '12px 14px', borderRadius: 12, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
+            <div style={row}>
+              <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 99, background: 'var(--ember)', flexShrink: 0 }}/>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--ink)' }}>{vbFmt(seconds)}</span>
+              <span style={{ ...p, flex: 1, minWidth: 160 }}>Gravando. Pode falar à vontade, até 5 minutos.</span>
+            </div>
+            {liveRef.current ? (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>prévia ao vivo · a transcrição completa vem quando você parar</div>
+                <div style={{ ...p, color: 'var(--ink-2)', marginTop: 4, minHeight: 20 }}>{live || 'Ouvindo…'}</div>
+              </div>
+            ) : null}
           </div>
           <div style={row}>
             <Button variant="dark" size="md" icon={<Icon name="stop" size={14}/>} onClick={() => stopRecording(true)}>Parar e enviar</Button>
@@ -1030,26 +1179,35 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
 
       {phase === 'typing' && (
         <>
-          <Textarea rows={5} value={typed} onChange={e => setTyped(e.target.value)} maxLength={6000}
+          <Textarea rows={5} value={transcript} onChange={e => setTranscript(e.target.value)} maxLength={6000}
                     placeholder="Ex.: Nunca fale preço antes da avaliação. Pode dar até 10% no Pix. Não atendemos menores de 18. Sábado só até meio-dia."/>
           <div style={row}>
-            <Button variant="primary" size="md" onClick={() => send({ text: typed.trim() })} disabled={typed.trim().length < 8}>Enviar pra HUMA</Button>
+            <Button variant="primary" size="md" onClick={() => organize(transcript)} disabled={transcript.trim().length < 8}>Enviar pra HUMA</Button>
             <Button variant="plain" size="md" onClick={reset}>Cancelar</Button>
           </div>
         </>
       )}
 
-      {phase === 'sending' && (
-        <div style={{ ...row, padding: '14px', borderRadius: 12, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
-          <Icon name="sparkle" size={16}/>
-          <span style={{ ...p, color: 'var(--ink-2)' }}>Ouvindo e organizando o que você disse. Leva uns 20 segundos.</span>
-        </div>
+      {phase === 'transcribing' && (
+        <>
+          <VbProgress startedAt={startedAt} label="Ouvindo o áudio" expected={8}/>
+          {live ? <div style={{ ...p }}><span style={{ color: 'var(--ink-3)' }}>Prévia: </span>{live}</div> : null}
+        </>
+      )}
+
+      {phase === 'organizing' && (
+        <>
+          {transcriptBox}
+          <VbProgress startedAt={startedAt} expected={22}/>
+        </>
       )}
 
       {phase === 'error' && (
         <>
+          {transcriptBox}
           <div role="alert" style={{ ...p, color: 'var(--ember-ink)', padding: '12px 14px', borderRadius: 12, background: 'var(--ember-soft)' }}>{err}</div>
           <div style={row}>
+            {transcript.trim().length >= 8 && <Button variant="dark" size="md" onClick={() => organize(transcript)}>Tentar organizar de novo</Button>}
             <Button variant="ghost" size="md" icon={<Icon name="mic" size={14}/>} onClick={startRecording}>Gravar de novo</Button>
             <Button variant="plain" size="md" onClick={() => { setErr(''); setPhase('typing'); }}>Escrever</Button>
           </div>
@@ -1058,6 +1216,7 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
 
       {phase === 'review' && result && (
         <>
+          {transcriptBox}
           {result.summary ? (
             <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4 }}>
               {result.summary}
@@ -1090,23 +1249,13 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
             </div>
           )}
 
-          <div>
-            <button type="button" onClick={() => setShowTranscript(v => !v)} style={{
-              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-              fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', textDecoration: 'underline',
-            }}>{showTranscript ? 'Esconder o que a HUMA ouviu' : 'Ver o que a HUMA ouviu'}</button>
-            {showTranscript && (
-              <div style={{ ...p, marginTop: 8, padding: '10px 12px', borderRadius: 10, background: 'var(--paper-sunk)', whiteSpace: 'pre-wrap' }}>{result.transcript}</div>
-            )}
-          </div>
-
           <div style={row}>
             {changes.length > 0 && (
               <Button variant="primary" size="md" icon={<Icon name="check" size={14}/>} onClick={apply} disabled={applying || pickedCount === 0}>
                 {applying ? 'Aplicando…' : (pickedCount === changes.length ? 'Aplicar na HUMA' : `Aplicar ${pickedCount} de ${changes.length}`)}
               </Button>
             )}
-            <Button variant="ghost" size="md" icon={<Icon name="mic" size={14}/>} onClick={() => { setResult(null); startRecording(); }}>Gravar de novo</Button>
+            <Button variant="ghost" size="md" icon={<Icon name="mic" size={14}/>} onClick={startRecording}>Gravar de novo</Button>
             <Button variant="plain" size="md" onClick={reset}>Descartar</Button>
           </div>
         </>
