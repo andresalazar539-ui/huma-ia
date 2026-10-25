@@ -47,8 +47,28 @@ async def transcribe_audio(audio_url: str, auth: tuple | None = None, client_id:
     return await transcribe_bytes(audio_bytes, client_id=client_id, phone=phone)
 
 
+# Nome e tipo do arquivo enviados ao Whisper. A OpenAI decide o decodificador
+# pela EXTENSÃO; mandar m4a do Safari/iPhone como "audio.ogg" dá "invalid
+# file format". Vazio = "audio.ogg" (comportamento de sempre dos canais).
+_AUDIO_MIMES = {
+    "webm": "audio/webm", "ogg": "audio/ogg", "oga": "audio/ogg", "opus": "audio/ogg",
+    "m4a": "audio/mp4", "mp4": "audio/mp4", "mp3": "audio/mpeg", "mpga": "audio/mpeg",
+    "wav": "audio/wav", "flac": "audio/flac",
+}
+
+
+def _upload_name(filename: str) -> tuple[str, str]:
+    """(nome, mime) pro multipart do Whisper a partir do nome original do arquivo."""
+    name = (filename or "").strip().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext in _AUDIO_MIMES:
+        return f"audio.{ext}", _AUDIO_MIMES[ext]
+    return "audio.ogg", "audio/ogg"
+
+
 async def transcribe_bytes(
     audio_bytes: bytes, hint: str = "", client_id: str = "", phone: str = "", purpose: str = "transcription",
+    filename: str = "",
 ) -> str | None:
     """
     Transcreve bytes de áudio (Groq → OpenAI) pra texto em português.
@@ -67,13 +87,13 @@ async def transcribe_bytes(
         return None
 
     if GROQ_API_KEY:
-        text = await _transcribe_groq(audio_bytes, hint=hint)
+        text = await _transcribe_groq(audio_bytes, hint=hint, filename=filename)
         if text:
             await _log_cost(client_id, phone, len(audio_bytes), "groq", purpose)
             return text
 
     if OPENAI_API_KEY:
-        text = await _transcribe_openai(audio_bytes, hint=hint)
+        text = await _transcribe_openai(audio_bytes, hint=hint, filename=filename)
         if text:
             await _log_cost(client_id, phone, len(audio_bytes), "openai", purpose)
             return text
@@ -139,8 +159,9 @@ async def _download_audio(url: str, auth: tuple | None = None) -> bytes | None:
     return None
 
 
-async def _transcribe_groq(audio_bytes: bytes, hint: str = "") -> str | None:
+async def _transcribe_groq(audio_bytes: bytes, hint: str = "", filename: str = "") -> str | None:
     """Transcreve com Groq Whisper (whisper-large-v3-turbo)."""
+    upload_name, upload_mime = _upload_name(filename)
     try:
         async with httpx.AsyncClient(timeout=30.0) as http:
             resp = await http.post(
@@ -149,7 +170,7 @@ async def _transcribe_groq(audio_bytes: bytes, hint: str = "") -> str | None:
                     "Authorization": f"Bearer {GROQ_API_KEY}",
                 },
                 files={
-                    "file": ("audio.ogg", audio_bytes, "audio/ogg"),
+                    "file": (upload_name, audio_bytes, upload_mime),
                 },
                 data={
                     "model": "whisper-large-v3-turbo",
@@ -179,8 +200,9 @@ async def _transcribe_groq(audio_bytes: bytes, hint: str = "") -> str | None:
         return None
 
 
-async def _transcribe_openai(audio_bytes: bytes, hint: str = "") -> str | None:
+async def _transcribe_openai(audio_bytes: bytes, hint: str = "", filename: str = "") -> str | None:
     """Transcreve com OpenAI Whisper (fallback)."""
+    upload_name, upload_mime = _upload_name(filename)
     try:
         async with httpx.AsyncClient(timeout=30.0) as http:
             resp = await http.post(
@@ -189,7 +211,7 @@ async def _transcribe_openai(audio_bytes: bytes, hint: str = "") -> str | None:
                     "Authorization": f"Bearer {OPENAI_API_KEY}",
                 },
                 files={
-                    "file": ("audio.ogg", audio_bytes, "audio/ogg"),
+                    "file": (upload_name, audio_bytes, upload_mime),
                 },
                 data={
                     "model": "whisper-1",

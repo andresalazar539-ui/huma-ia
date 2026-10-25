@@ -1137,6 +1137,25 @@ async function deleteKnowledgeDoc(docId) {
   return r.json();
 }
 
+// "Conte pra HUMA" por voz (2026-10-25): áudio gravado (Blob) ou texto →
+// POST /brief devolve { transcript, summary, changes[] } SEM gravar nada.
+// Quem grava é saveSettings com os campos que o dono marcou.
+async function sendBusinessBrief({ blob, text }) {
+  const fd = new FormData();
+  if (blob) {
+    const mime = blob.type || '';
+    const ext = mime.includes('mp4') ? 'm4a' : (mime.includes('ogg') ? 'ogg' : 'webm');
+    fd.append('audio', blob, `brief.${ext}`);
+  }
+  if (text) fd.append('text', text);
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/brief`, {
+    method: 'POST', headers: { ...AUTH_HEADERS }, body: fd,
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+Object.assign(window, { sendBusinessBrief });
+
 async function fetchTeam() {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/team`, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw await _readApiError(r);

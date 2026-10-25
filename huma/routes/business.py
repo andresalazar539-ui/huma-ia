@@ -15,7 +15,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from huma.config import PUBLIC_BASE_URL
@@ -25,6 +25,7 @@ from huma.services import db_service as db
 from huma.services import email_service
 from huma.services import knowledge_gaps_service as gaps
 from huma.services import knowledge_service as ks
+from huma.services import voice_brief_service as brief
 from huma.utils.logger import get_logger
 
 log = get_logger("business")
@@ -169,6 +170,69 @@ async def knowledge_delete(client_id: str, doc_id: str, client=Depends(verify_ap
     await _persist(client_id, {"knowledge_docs": remaining})
     log.info(f"Knowledge | doc removido | client={client_id} | doc={doc_id} | total={len(remaining)}")
     return {"status": "ok", "docs": [ks.public_doc(d) for d in remaining]}
+
+
+# ────────────────────────────────────────────────────────────────
+# "Conte pra HUMA" por voz (2026-10-25)
+# ────────────────────────────────────────────────────────────────
+
+
+@router.post("/api/clients/{client_id}/brief")
+async def business_brief(
+    client_id: str,
+    audio: Optional[UploadFile] = File(default=None),
+    text: str = Form(default=""),
+    client=Depends(verify_api_key),
+) -> dict:
+    """
+    O dono conta por áudio (ou texto) como a HUMA deve atender. Transcreve,
+    organiza em campos e devolve a PROPOSTA (antes/depois por campo).
+
+    NÃO grava nada: o Cockpit aplica o que o dono marcar via PATCH /settings
+    (mesma whitelist, mesma regeneração de playbook). Áudio e texto juntos:
+    o áudio vence; sem nenhum dos dois, 400. Teto de `MAX_PER_DAY`
+    briefings por conta e por dia (429 em PT quando estoura).
+    """
+    transcript = (text or "").strip()
+    if audio is not None:
+        blob = await audio.read()
+    else:
+        blob = b""
+    if not blob and not transcript:
+        raise HTTPException(400, "Grave um áudio ou escreva o que quer contar pra HUMA.")
+
+    # Teto diário ANTES de gastar transcrição ou IA (conta a tentativa).
+    try:
+        await brief.take_quota(client_id)
+    except brief.BriefQuotaExceeded as e:
+        raise HTTPException(429, str(e))
+
+    if audio is not None:
+        if blob:
+            try:
+                transcript = await brief.transcribe(client_id, blob, filename=audio.filename or "")
+            except brief.BriefError as e:
+                raise HTTPException(422, str(e))
+    if not transcript:
+        raise HTTPException(400, "Grave um áudio ou escreva o que quer contar pra HUMA.")
+
+    try:
+        result = await brief.propose(client, transcript)
+    except brief.BriefError as e:
+        raise HTTPException(400, str(e))
+    except brief.BriefUnavailable as e:
+        raise HTTPException(502, str(e))
+
+    log.info(
+        f"VoiceBrief | ok | client={client_id} | via={'audio' if audio is not None else 'texto'} | "
+        f"changes={len(result['changes'])}"
+    )
+    return {
+        "status": "ok",
+        "transcript": transcript,
+        "summary": result["summary"],
+        "changes": result["changes"],
+    }
 
 
 # ────────────────────────────────────────────────────────────────

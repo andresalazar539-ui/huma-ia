@@ -51,7 +51,7 @@ _DEFAULT_PRICE = (3.00, 15.00, 0.30, 6.00)  # Sonnet — conservador
 # "audio" = voz clonada e transcrição; o resto é "outros".
 PURPOSE_GROUPS: dict[str, tuple[str, ...]] = {
     "conversas": ("reply", "judge", "compress", "followup"),
-    "onboarding": ("onboarding", "playbook", "knowledge", "voice_profile"),
+    "onboarding": ("onboarding", "playbook", "knowledge", "voice_profile", "voice_brief"),
     "audio": ("audio", "transcription"),
 }
 GROUP_LABELS = {"conversas": "Conversas", "onboarding": "Onboarding", "audio": "Áudio", "outros": "Outros"}

@@ -644,6 +644,28 @@ const NegocioScreen = ({ onNavMain }) => {
     setTimeout(() => setSaveLabel('Salvar'), 2200);
   };
 
+  // "Conte pra HUMA" por voz: aplica os campos propostos E salva na hora.
+  // Se o PATCH falhar, os campos ficam no rascunho (dirty) e o Salvar
+  // do topo tenta de novo; a pessoa nunca perde o que acabou de falar.
+  const applyFields = async (fields) => {
+    const keys = Object.keys(fields || {});
+    if (!keys.length) return;
+    setSettings(s => ({ ...s, ...fields }));
+    setSaveLabel('Salvando…');
+    try {
+      await saveSettings(fields);
+      setDirty(d => { const n = { ...d }; keys.forEach(k => { delete n[k]; }); return n; });
+      setSaveLabel('Salvo ✓');
+      try { window.dispatchEvent(new CustomEvent('huma:settings-saved', { detail: fields })); } catch (e) {}
+    } catch (e) {
+      setDirty(d => { const n = { ...d }; keys.forEach(k => { n[k] = true; }); return n; });
+      setSaveLabel('Erro. Tente de novo');
+      throw e;
+    } finally {
+      setTimeout(() => setSaveLabel('Salvar'), 2200);
+    }
+  };
+
   // Perguntas sem resposta: badge na aba (contagem real)
   const [gapCount, setGapCount] = useStateS(0);
   const refreshGaps = () => fetchGaps('open').then(r => setGapCount(r.open_count || 0)).catch(() => {});
@@ -670,7 +692,7 @@ const NegocioScreen = ({ onNavMain }) => {
   const loading = <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--ink-3)' }}>Carregando…</div>;
   let body;
   if (tab === 'info')       body = settings ? <NegocioInfo settings={settings} patch={patch}/> : loading;
-  else if (tab === 'knowledge') body = settings ? <NegocioKnowledge settings={settings} patch={patch}/> : loading;
+  else if (tab === 'knowledge') body = settings ? <NegocioKnowledge settings={settings} patch={patch} applyFields={applyFields}/> : loading;
   else if (tab === 'vende') body = settings ? <NegocioVende settings={settings} reloadSettings={reloadSettings}/> : loading;
   else if (tab === 'missao') body = settings ? <NegocioMissao settings={settings} patch={patch}/> : loading;
   else if (tab === 'kb')    body = <NegocioKB/>;
@@ -822,7 +844,294 @@ const NegocioInfo = ({ settings, patch }) => {
   );
 };
 
-const NegocioKnowledge = ({ settings, patch }) => {
+// ---------- "Conte pra HUMA" por voz (2026-10-25) ----------
+// O dono grava um áudio (ou escreve) dizendo o que a HUMA pode, o que não
+// pode, preços, horários. Backend: POST /api/clients/{id}/brief
+// (routes/business.py + services/voice_brief_service.py) transcreve,
+// organiza em campos e devolve o que MUDA por campo; nada é gravado até
+// a pessoa conferir e clicar em Aplicar (applyFields → PATCH /settings).
+const VB_MAX_SECONDS = 300;
+const VB_MODE_LABEL = { adiciona: 'soma ao que já existe', substitui: 'substitui o atual' };
+
+const VbChangePreview = ({ c }) => {
+  const txt = { fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.5 };
+  const mono = { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-3)' };
+  if (c.field === 'custom_rules') return <div style={{ ...txt, whiteSpace: 'pre-wrap' }}>{c.proposed}</div>;
+  if (c.field === 'faq') return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {(c.proposed || []).map((f, i) => (
+        <div key={i} style={txt}><span style={{ color: 'var(--ink)', fontWeight: 500 }}>{f.question}</span><br/>{f.answer}</div>
+      ))}
+    </div>
+  );
+  if (c.field === 'products_or_services') return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {(c.proposed || []).map((p, i) => (
+        <div key={i} style={txt}>
+          <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{p.name}</span>
+          {p.price ? <span style={{ ...mono, marginLeft: 8 }}>R$ {p.price}</span> : <span style={{ ...mono, marginLeft: 8 }}>sem preço</span>}
+          {p.description ? <span style={{ color: 'var(--ink-3)' }}> · {p.description}</span> : null}
+        </div>
+      ))}
+    </div>
+  );
+  if (Array.isArray(c.proposed)) return <div style={txt}>{c.proposed.join(', ')}</div>;
+  if (c.mode === 'substitui') return (
+    <div style={txt}>
+      {c.current !== '' && c.current !== null && c.current !== undefined
+        ? <><span style={{ textDecoration: 'line-through', color: 'var(--ink-4)' }}>{String(c.current)}</span>{' '}</>
+        : null}
+      <span style={{ color: 'var(--ink)' }}>{String(c.proposed)}</span>
+    </div>
+  );
+  return <div style={txt}>{String(c.proposed)}</div>;
+};
+
+const NegocioVoiceBrief = ({ settings, applyFields }) => {
+  const [phase, setPhase] = useStateS('idle');   // idle | recording | typing | sending | review | applied | error
+  const [seconds, setSeconds] = useStateS(0);
+  const [typed, setTyped] = useStateS('');
+  const [result, setResult] = useStateS(null);   // { transcript, summary, changes }
+  const [picked, setPicked] = useStateS({});
+  const [applied, setApplied] = useStateS([]);
+  const [err, setErr] = useStateS('');
+  const [showTranscript, setShowTranscript] = useStateS(false);
+  const [applying, setApplying] = useStateS(false);
+  const recRef = React.useRef(null);             // { recorder, stream, timer, chunks, send, seconds }
+
+  const killRecorder = () => {
+    const cur = recRef.current;
+    if (!cur) return;
+    clearInterval(cur.timer);
+    try { if (cur.recorder.state !== 'inactive') { cur.send = false; cur.recorder.stop(); } } catch (e) { /* já parado */ }
+    try { cur.stream.getTracks().forEach(t => t.stop()); } catch (e) { /* já parado */ }
+    recRef.current = null;
+  };
+  useEffectS(() => () => killRecorder(), []);
+
+  const send = async ({ blob, text }) => {
+    setPhase('sending'); setErr('');
+    try {
+      const r = await sendBusinessBrief({ blob, text });
+      const all = {};
+      (r.changes || []).forEach(c => { all[c.field] = true; });
+      setResult(r); setPicked(all); setShowTranscript(false);
+      setPhase('review');
+    } catch (e) {
+      setErr(e.message || 'Não consegui processar agora. Tente de novo.');
+      setPhase('error');
+    }
+  };
+
+  const startRecording = async () => {
+    setErr('');
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      setErr('Este navegador não grava áudio. Você pode escrever em vez de gravar.');
+      setPhase('error'); return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const candidates = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'];
+      const mime = candidates.find(m => MediaRecorder.isTypeSupported(m)) || '';
+      const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const cur = { recorder, stream, timer: null, chunks: [], send: true, seconds: 0 };
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) cur.chunks.push(e.data); };
+      recorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        clearInterval(cur.timer);
+        const blob = new Blob(cur.chunks, { type: recorder.mimeType || mime || 'audio/webm' });
+        recRef.current = null;
+        setSeconds(0);
+        if (!cur.send) { setPhase('idle'); return; }
+        if (blob.size < 2000 || cur.seconds < 2) {
+          setErr('O áudio ficou curto demais. Grave de novo contando com calma.');
+          setPhase('error'); return;
+        }
+        send({ blob });
+      };
+      cur.timer = setInterval(() => {
+        cur.seconds += 1;
+        setSeconds(cur.seconds);
+        if (cur.seconds >= VB_MAX_SECONDS) { try { recorder.stop(); } catch (e) { /* já parado */ } }
+      }, 1000);
+      recRef.current = cur;
+      recorder.start();
+      setSeconds(0);
+      setPhase('recording');
+    } catch (e) {
+      setErr('Não consegui acessar o microfone. Libere a permissão no navegador ou escreva em vez de gravar.');
+      setPhase('error');
+    }
+  };
+
+  const stopRecording = (sendIt) => {
+    const cur = recRef.current;
+    if (!cur) { setPhase('idle'); return; }
+    cur.send = !!sendIt;
+    try { cur.recorder.stop(); } catch (e) { killRecorder(); setPhase('idle'); }
+  };
+
+  const reset = () => { killRecorder(); setResult(null); setPicked({}); setErr(''); setTyped(''); setPhase('idle'); };
+
+  const apply = async () => {
+    if (!result || applying) return;
+    const chosen = (result.changes || []).filter(c => picked[c.field]);
+    if (!chosen.length) return;
+    const fields = {};
+    chosen.forEach(c => { fields[c.field] = c.merged; });
+    setApplying(true); setErr('');
+    try {
+      await applyFields(fields);
+      setApplied(chosen.map(c => c.label));
+      setPhase('applied');
+    } catch (e) {
+      setErr('Não consegui salvar agora. O que você falou já está preenchido nos campos abaixo: clique em Salvar no topo pra tentar de novo.');
+      setApplied(chosen.map(c => c.label));
+      setPhase('applied');
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const p = { fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.55 };
+  const row = { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' };
+  const changes = (result && result.changes) || [];
+  const pickedCount = changes.filter(c => picked[c.field]).length;
+
+  return (
+    <Card title="Conte pra HUMA, do seu jeito">
+      {phase === 'idle' && (
+        <>
+          <div style={p}>
+            Fale como se estivesse explicando pra uma pessoa nova na equipe: o que a HUMA pode e o que não pode fazer,
+            preços, horários, como você gosta de atender. Ela transcreve, organiza e te mostra o que muda antes de aplicar.
+          </div>
+          <div style={row}>
+            <Button variant="primary" size="md" icon={<Icon name="mic" size={14}/>} onClick={startRecording}>Gravar áudio</Button>
+            <Button variant="plain" size="md" onClick={() => { setErr(''); setPhase('typing'); }}>Prefiro escrever</Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'recording' && (
+        <>
+          <div style={{ ...row, padding: '12px 14px', borderRadius: 12, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
+            <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 99, background: 'var(--ember)', flexShrink: 0 }}/>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, color: 'var(--ink)' }}>{fmt(seconds)}</span>
+            <span style={{ ...p, flex: 1, minWidth: 160 }}>Gravando. Pode falar à vontade, até 5 minutos.</span>
+          </div>
+          <div style={row}>
+            <Button variant="dark" size="md" icon={<Icon name="stop" size={14}/>} onClick={() => stopRecording(true)}>Parar e enviar</Button>
+            <Button variant="plain" size="md" onClick={() => stopRecording(false)}>Cancelar</Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'typing' && (
+        <>
+          <Textarea rows={5} value={typed} onChange={e => setTyped(e.target.value)} maxLength={6000}
+                    placeholder="Ex.: Nunca fale preço antes da avaliação. Pode dar até 10% no Pix. Não atendemos menores de 18. Sábado só até meio-dia."/>
+          <div style={row}>
+            <Button variant="primary" size="md" onClick={() => send({ text: typed.trim() })} disabled={typed.trim().length < 8}>Enviar pra HUMA</Button>
+            <Button variant="plain" size="md" onClick={reset}>Cancelar</Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'sending' && (
+        <div style={{ ...row, padding: '14px', borderRadius: 12, border: '1px solid var(--paper-edge)', background: 'var(--paper-sunk)' }}>
+          <Icon name="sparkle" size={16}/>
+          <span style={{ ...p, color: 'var(--ink-2)' }}>Ouvindo e organizando o que você disse. Leva uns 20 segundos.</span>
+        </div>
+      )}
+
+      {phase === 'error' && (
+        <>
+          <div role="alert" style={{ ...p, color: 'var(--ember-ink)', padding: '12px 14px', borderRadius: 12, background: 'var(--ember-soft)' }}>{err}</div>
+          <div style={row}>
+            <Button variant="ghost" size="md" icon={<Icon name="mic" size={14}/>} onClick={startRecording}>Gravar de novo</Button>
+            <Button variant="plain" size="md" onClick={() => { setErr(''); setPhase('typing'); }}>Escrever</Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'review' && result && (
+        <>
+          {result.summary ? (
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4 }}>
+              {result.summary}
+            </div>
+          ) : null}
+
+          {changes.length === 0 ? (
+            <div style={p}>Tudo que você falou já está cadastrado. Nada pra mudar por aqui.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={p}>Desmarque o que não quiser aplicar. Você pode ajustar qualquer campo depois, aqui nesta tela.</div>
+              {changes.map(c => (
+                <label key={c.field} style={{
+                  display: 'flex', gap: 12, alignItems: 'flex-start', cursor: 'pointer',
+                  padding: '12px 14px', borderRadius: 12,
+                  border: '1px solid ' + (picked[c.field] ? 'var(--ink)' : 'var(--paper-edge)'),
+                  background: picked[c.field] ? 'var(--paper-raised)' : 'var(--paper-sunk)',
+                }}>
+                  <input type="checkbox" checked={!!picked[c.field]} onChange={() => setPicked(s => ({ ...s, [c.field]: !s[c.field] }))}
+                         style={{ accentColor: 'var(--ink)', marginTop: 3 }}/>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', marginBottom: 6 }}>
+                      <span style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{c.label}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{VB_MODE_LABEL[c.mode] || c.mode}</span>
+                    </div>
+                    <VbChangePreview c={c}/>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+
+          <div>
+            <button type="button" onClick={() => setShowTranscript(v => !v)} style={{
+              background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+              fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', textDecoration: 'underline',
+            }}>{showTranscript ? 'Esconder o que a HUMA ouviu' : 'Ver o que a HUMA ouviu'}</button>
+            {showTranscript && (
+              <div style={{ ...p, marginTop: 8, padding: '10px 12px', borderRadius: 10, background: 'var(--paper-sunk)', whiteSpace: 'pre-wrap' }}>{result.transcript}</div>
+            )}
+          </div>
+
+          <div style={row}>
+            {changes.length > 0 && (
+              <Button variant="primary" size="md" icon={<Icon name="check" size={14}/>} onClick={apply} disabled={applying || pickedCount === 0}>
+                {applying ? 'Aplicando…' : (pickedCount === changes.length ? 'Aplicar na HUMA' : `Aplicar ${pickedCount} de ${changes.length}`)}
+              </Button>
+            )}
+            <Button variant="ghost" size="md" icon={<Icon name="mic" size={14}/>} onClick={() => { setResult(null); startRecording(); }}>Gravar de novo</Button>
+            <Button variant="plain" size="md" onClick={reset}>Descartar</Button>
+          </div>
+        </>
+      )}
+
+      {phase === 'applied' && (
+        <>
+          {err ? (
+            <div role="alert" style={{ ...p, color: 'var(--ember-ink)', padding: '12px 14px', borderRadius: 12, background: 'var(--ember-soft)' }}>{err}</div>
+          ) : (
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4 }}>
+              Pronto. A HUMA já atende assim a partir da próxima mensagem.
+            </div>
+          )}
+          <div style={p}>Atualizado: {applied.join(', ')}. Confira nos campos abaixo e ajuste o que quiser.</div>
+          <div style={row}>
+            <Button variant="ghost" size="md" icon={<Icon name="mic" size={14}/>} onClick={reset}>Contar mais uma coisa</Button>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+};
+
+const NegocioKnowledge = ({ settings, patch, applyFields }) => {
   // tone_of_voice no backend é texto livre (vai pro prompt). Os radios
   // mapeiam pra frases canônicas; texto legado cai no mais próximo.
   const TONES = { formal: 'Formal e profissional', acolhedor: 'Acolhedor e próximo', leve: 'Descontraído e leve' };
@@ -869,6 +1178,8 @@ const NegocioKnowledge = ({ settings, patch }) => {
           HUMA aprendeu estas coisas sobre {settings.business_name || 'seu negócio'} no onboarding. Você pode ajustar a qualquer momento, quanto mais HUMA sabe, melhor ela atende.
         </div>
       </div>
+
+      <NegocioVoiceBrief settings={settings} applyFields={applyFields}/>
 
       <Card title="Tom de voz">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
