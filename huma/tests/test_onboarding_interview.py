@@ -336,7 +336,7 @@ class TestCompileMarketInBackground:
         async def site_text(_url):
             return ""
 
-        async def fake_analyze(data, source_text=""):
+        async def fake_analyze(data, source_text="", purpose="onboarding"):
             if analyze_spy is not None:
                 analyze_spy.append(dict(data))
             return analysis or {
@@ -380,7 +380,7 @@ class TestCompileMarketInBackground:
         ob, saved, store = self._setup(monkeypatch, identity)
 
         # o dono mexe nas regras ENQUANTO a IA analisa (playground / ajustes)
-        async def analyze_and_owner_edits(data, source_text=""):
+        async def analyze_and_owner_edits(data, source_text="", purpose="onboarding"):
             fresh = store["identity"].model_dump()
             fresh["custom_rules"] = "regra que o dono acabou de editar"
             store["identity"] = ClientIdentity(**fresh)

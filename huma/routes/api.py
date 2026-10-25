@@ -811,7 +811,7 @@ async def voice_preview(
         raise HTTPException(403, "Essa voz não pertence a este cliente.")
 
     text = (payload.text or "").strip() or vs.build_preview_text(client.business_name)
-    url = await audio.generate_and_upload(text, voice_id, sentiment="neutral", client_id=client_id)
+    url = await audio.generate_and_upload(text, voice_id, sentiment="neutral", client_id=client_id, purpose="audio_preview")
     if not url:
         raise HTTPException(502, "Falha ao gerar a prévia. Tenta de novo em instantes.")
 

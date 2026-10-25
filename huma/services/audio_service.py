@@ -200,13 +200,16 @@ async def generate_and_upload(
     audio_format: str = "mp3",
     client_id: str = "",
     phone: str = "",
+    purpose: str = "audio",
 ) -> Optional[str]:
     """
     Gera áudio com voz clonada e faz upload pro Supabase.
 
     audio_format: "mp3" (WhatsApp, default) | "wav" (Instagram Direct).
     client_id/phone (2026-10-10, opcionais): com client_id o custo do áudio
-    entra em ai_usage (purpose "audio"); sem ele, nada é medido.
+    entra em ai_usage; sem ele, nada é medido. purpose (2026-10-25) diz ONDE
+    o custo nasce: "audio" = resposta ao lead (conversa), "audio_report" =
+    áudio do relatório, "audio_preview" = prévia na tela Voz.
     """
     fmt = _FORMATS.get(audio_format, _FORMATS["mp3"])
     if not voice_id:
@@ -272,7 +275,7 @@ async def generate_and_upload(
 
         if client_id:
             from huma.services.usage_service import log_audio_usage
-            await log_audio_usage(client_id, phone, len(clean_text))
+            await log_audio_usage(client_id, phone, len(clean_text), purpose=purpose or "audio")
 
         if fmt["ext"] == "wav":
             audio_bytes = _wrap_pcm_as_wav(audio_bytes, rate=int(fmt.get("rate", 22050)))

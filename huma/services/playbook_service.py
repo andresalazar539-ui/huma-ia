@@ -70,7 +70,7 @@ async def regenerate(client_id: str, reason: str) -> dict:
             except Exception as e:
                 log.warning(f"Playbook regen | site ilegível | client={client_id} | {type(e).__name__}: {e}")
 
-        analysis = await analyze_market(identity.model_dump(mode="json"), source_text=source_text)
+        analysis = await analyze_market(identity.model_dump(mode="json"), source_text=source_text, purpose="playbook")
         if analysis.get("status") != "completed":
             log.error(
                 f"Playbook regen falhou | client={client_id} | reason={reason} | "

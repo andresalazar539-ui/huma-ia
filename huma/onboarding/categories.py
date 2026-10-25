@@ -502,9 +502,13 @@ MARKET_ANALYSIS_TOOL: dict = {
 }
 
 
-async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
+async def analyze_market(identity_data: dict, source_text: str = "", purpose: str = "onboarding") -> dict:
     """
     Executa análise de mercado via IA.
+
+    purpose (2026-10-25): finalidade gravada em ai_usage. "onboarding" na
+    conta nova; "playbook" quando é regeração de conta existente (o painel
+    do dono separa onboarding de configuração do negócio).
 
     Chamado APÓS onboarding, ANTES de ativar.
     O resultado é salvo no ClientIdentity e alimenta
@@ -550,7 +554,7 @@ async def analyze_market(identity_data: dict, source_text: str = "") -> dict:
             tool_choice={"type": "tool", "name": MARKET_ANALYSIS_TOOL["name"]},
         )
         from huma.services.usage_service import record_response
-        await record_response(str(identity_data.get("client_id") or ""), response, AI_MODEL_PRIMARY, "onboarding")
+        await record_response(str(identity_data.get("client_id") or ""), response, AI_MODEL_PRIMARY, purpose or "onboarding")
 
         for block in (response.content or []):
             if getattr(block, "type", "") == "tool_use" and isinstance(getattr(block, "input", None), dict):

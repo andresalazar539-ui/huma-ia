@@ -49,12 +49,25 @@ _DEFAULT_PRICE = (3.00, 15.00, 0.30, 6.00)  # Sonnet — conservador
 # "conversas" = custo de atender o lead; "onboarding" = aprender o negócio
 # (entrevista, análise de mercado/playbook, base de conhecimento, voz);
 # "audio" = voz clonada e transcrição; o resto é "outros".
+# Grupos = ONDE o custo nasce (painel do dono, revisado 2026-10-25 a pedido do
+# André: conta de teste que só fez onboarding aparecia como se fosse conversa).
+#   conversas    = atender lead: resposta, juiz de português, memória, follow-up,
+#                  áudio da resposta (ElevenLabs) e áudio do lead transcrito
+#   onboarding   = conta nova sendo montada (fonte, entrevista, compilação,
+#                  análise de mercado, áudio da entrevista)
+#   configuracao = o dono mexendo no negócio DEPOIS do onboarding: playbook
+#                  regerado, base de conhecimento, briefing por voz, perfil de voz
+#   outros       = campanhas (escudo, modelos da Meta, prospecção), prévia de
+#                  voz, áudio do relatório, playground
 PURPOSE_GROUPS: dict[str, tuple[str, ...]] = {
-    "conversas": ("reply", "judge", "compress", "followup"),
-    "onboarding": ("onboarding", "playbook", "knowledge", "voice_profile", "voice_brief"),
-    "audio": ("audio", "transcription"),
+    "conversas": ("reply", "judge", "compress", "followup", "audio", "transcription"),
+    "onboarding": ("onboarding",),
+    "configuracao": ("playbook", "knowledge", "voice_brief", "voice_profile"),
 }
-GROUP_LABELS = {"conversas": "Conversas", "onboarding": "Onboarding", "audio": "Áudio", "outros": "Outros"}
+GROUP_LABELS = {
+    "conversas": "Conversas", "onboarding": "Onboarding",
+    "configuracao": "Configuração do negócio", "outros": "Outros",
+}
 _CLAUDE_KEYS = ("haiku", "sonnet", "opus", "claude")
 
 
@@ -222,8 +235,9 @@ def transcription_cost_brl(audio_bytes_len: int, provider: str = "groq") -> floa
     return round(minutes * rate * USD_BRL_RATE, 5)
 
 
-async def log_audio_usage(client_id: str, phone: str, chars: int) -> None:
-    await log_service_usage(client_id, phone, "elevenlabs", "audio", audio_cost_brl(chars))
+async def log_audio_usage(client_id: str, phone: str, chars: int, purpose: str = "audio") -> None:
+    """Custo de voz ElevenLabs. purpose: "audio" (resposta ao lead), "audio_report", "audio_preview"."""
+    await log_service_usage(client_id, phone, "elevenlabs", purpose or "audio", audio_cost_brl(chars))
 
 
 async def log_transcription_usage(client_id: str, phone: str, audio_bytes_len: int, provider: str = "groq") -> None:
@@ -244,14 +258,26 @@ def summarize_usage_rows(rows: list[dict]) -> dict:
     by_model: dict[str, dict] = {}
     by_purpose: dict[str, dict] = {}
     by_group: dict[str, float] = {g: 0.0 for g in list(PURPOSE_GROUPS) + ["outros"]}
+    calls_by_group: dict[str, int] = {g: 0 for g in list(PURPOSE_GROUPS) + ["outros"]}
     strong_calls = 0
     claude_calls = 0
+    # Share do modelo forte SÓ nas conversas (onboarding é 100% Sonnet por
+    # desenho e distorcia o número que interessa: o custo de atender).
+    conv_strong_calls = 0
+    conv_claude_calls = 0
 
     for r in rows or []:
         if not isinstance(r, dict):
             continue
         calls += 1
-        if r.get("phone"):
+        purpose = str(r.get("purpose") or "reply")
+        group = group_for(purpose)
+        # Linha antiga de voz sem telefone (antes de 2026-10-25 prévia da tela
+        # Voz e áudio do relatório também entravam como "audio"): resposta ao
+        # lead SEMPRE tem telefone, então sem telefone não é conversa.
+        if purpose == "audio" and not r.get("phone"):
+            group = "outros"
+        if r.get("phone") and group == "conversas":
             phones.add(str(r["phone"]))
         tokens["input"] += int(r.get("input_tokens") or 0)
         tokens["output"] += int(r.get("output_tokens") or 0)
@@ -263,17 +289,22 @@ def summarize_usage_rows(rows: list[dict]) -> dict:
         bm = by_model.setdefault(model, {"calls": 0, "cost_brl": 0.0})
         bm["calls"] += 1
         bm["cost_brl"] = round(bm["cost_brl"] + c, 5)
-        purpose = str(r.get("purpose") or "reply")
         bp = by_purpose.setdefault(purpose, {"calls": 0, "cost_brl": 0.0})
         bp["calls"] += 1
         bp["cost_brl"] = round(bp["cost_brl"] + c, 5)
-        by_group[group_for(purpose)] = round(by_group[group_for(purpose)] + c, 5)
+        by_group[group] = round(by_group[group] + c, 5)
+        calls_by_group[group] += 1
         # Share do modelo forte só entre chamadas do Claude (áudio e
         # transcrição não entram na conta).
         if _is_claude(model):
             claude_calls += 1
-            if "haiku" not in model.lower():
+            strong = "haiku" not in model.lower()
+            if strong:
                 strong_calls += 1
+            if group == "conversas":
+                conv_claude_calls += 1
+                if strong:
+                    conv_strong_calls += 1
 
     conversations = len(phones)
     return {
@@ -284,6 +315,11 @@ def summarize_usage_rows(rows: list[dict]) -> dict:
         "cost_per_conversation_brl": round(cost / conversations, 4) if conversations else 0.0,
         "cost_per_call_brl": round(cost / calls, 5) if calls else 0.0,
         "strong_model_share": round(strong_calls / claude_calls, 3) if claude_calls else 0.0,
+        # Aditivos (2026-10-25): share do Sonnet SÓ nas conversas e chamadas por grupo.
+        "conversation_strong_share": round(conv_strong_calls / conv_claude_calls, 3) if conv_claude_calls else 0.0,
+        "conversation_claude_calls": conv_claude_calls,
+        "conversation_strong_calls": conv_strong_calls,
+        "calls_by_group": calls_by_group,
         "by_model": by_model,
         "by_purpose": by_purpose,
         "by_group": {g: round(v, 4) for g, v in by_group.items()},

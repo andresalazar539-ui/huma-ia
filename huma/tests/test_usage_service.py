@@ -147,9 +147,14 @@ class _Resp:
 class TestFinalidadeEGrupos:
     def test_grupo_por_finalidade(self):
         assert us.group_for("reply") == "conversas" and us.group_for("judge") == "conversas"
-        assert us.group_for("onboarding") == "onboarding" and us.group_for("knowledge") == "onboarding"
-        assert us.group_for("audio") == "audio" and us.group_for("transcription") == "audio"
+        assert us.group_for("onboarding") == "onboarding"
+        # 2026-10-25: grupo = ONDE o custo nasce. Áudio e transcrição do lead
+        # são conversa; playbook/base/briefing são configuração do negócio.
+        assert us.group_for("audio") == "conversas" and us.group_for("transcription") == "conversas"
+        assert us.group_for("knowledge") == "configuracao" and us.group_for("playbook") == "configuracao"
+        assert us.group_for("voice_brief") == "configuracao" and us.group_for("voice_profile") == "configuracao"
         assert us.group_for("shield") == "outros" and us.group_for("") == "outros"
+        assert us.group_for("audio_report") == "outros" and us.group_for("audio_preview") == "outros"
 
     def test_resumo_separa_por_finalidade_e_ignora_audio_no_share(self):
         rows = [
@@ -161,9 +166,23 @@ class TestFinalidadeEGrupos:
         ]
         s = us.summarize_usage_rows(rows)
         assert s["by_purpose"]["reply"] == {"calls": 1, "cost_brl": 0.02}
-        assert s["by_group"]["conversas"] == 0.02 and s["by_group"]["onboarding"] == 0.5
-        assert abs(s["by_group"]["audio"] - 0.101) < 1e-6 and s["by_group"]["outros"] == 0.01
+        assert abs(s["by_group"]["conversas"] - 0.121) < 1e-6 and s["by_group"]["onboarding"] == 0.5
+        assert s["by_group"]["configuracao"] == 0.0 and s["by_group"]["outros"] == 0.01
         assert abs(s["strong_model_share"] - 1 / 3) < 1e-3  # 3 chamadas Claude, 1 Sonnet
+        # nas CONVERSAS só tem o Haiku da resposta: share do forte é 0
+        assert s["conversation_strong_share"] == 0.0 and s["conversation_claude_calls"] == 1
+        assert s["calls_by_group"] == {"conversas": 3, "onboarding": 1, "configuracao": 0, "outros": 1}
+        assert s["conversations"] == 2   # telefones só das linhas de conversa
+
+    def test_voz_sem_telefone_nao_e_conversa(self):
+        # linha legada: prévia/relatório gravados como "audio" sem phone
+        s = us.summarize_usage_rows([
+            {"phone": "", "model": "elevenlabs", "purpose": "audio", "cost_brl": 0.30},
+            {"phone": "5511", "model": "elevenlabs", "purpose": "audio", "cost_brl": 0.10},
+            {"phone": "", "model": "elevenlabs", "purpose": "audio_report", "cost_brl": 0.05},
+        ])
+        assert s["by_group"]["outros"] == 0.35 and s["by_group"]["conversas"] == 0.1
+        assert s["conversations"] == 1
 
     def test_record_response_grava_com_finalidade(self, monkeypatch):
         sink: dict = {}

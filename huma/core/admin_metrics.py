@@ -244,12 +244,22 @@ def build_overview(
     conversas_total = sum(conversas_por_cliente.values())
     conversas_atendidas = sum(int((u or {}).get("conversations") or 0) for u in usage_by_client.values())
     strong_calls = 0
-    custo_por_grupo: dict[str, float] = {"conversas": 0.0, "onboarding": 0.0, "audio": 0.0, "outros": 0.0}
+    custo_por_grupo: dict[str, float] = {"conversas": 0.0, "onboarding": 0.0, "configuracao": 0.0, "outros": 0.0}
+    chamadas_por_grupo: dict[str, int] = {"conversas": 0, "onboarding": 0, "configuracao": 0, "outros": 0}
+    conv_claude_calls = 0
+    conv_strong_calls = 0
+    onboardings = 0          # contas que gastaram com onboarding no período
     for u in usage_by_client.values():
         calls = int((u or {}).get("calls") or 0)
         strong_calls += int(round(calls * float((u or {}).get("strong_model_share") or 0)))
+        conv_claude_calls += int((u or {}).get("conversation_claude_calls") or 0)
+        conv_strong_calls += int((u or {}).get("conversation_strong_calls") or 0)
         for g, v in ((u or {}).get("by_group") or {}).items():
             custo_por_grupo[g] = round(custo_por_grupo.get(g, 0.0) + float(v or 0), 2)
+        for g, n in ((u or {}).get("calls_by_group") or {}).items():
+            chamadas_por_grupo[g] = chamadas_por_grupo.get(g, 0) + int(n or 0)
+        if float(((u or {}).get("by_group") or {}).get("onboarding") or 0) > 0:
+            onboardings += 1
 
     novas = [c for c in clients if _in_window(c.get("created_at"))]
     viraram_pagantes = [cid for cid, when in first_paid_at.items() if since <= when < until]
@@ -290,7 +300,7 @@ def build_overview(
             "custo_ia_display": brl(custo),
             "custo_conversas_brl": round(float(grupos.get("conversas") or 0), 2),
             "custo_onboarding_brl": round(float(grupos.get("onboarding") or 0), 2),
-            "custo_audio_brl": round(float(grupos.get("audio") or 0), 2),
+            "custo_configuracao_brl": round(float(grupos.get("configuracao") or 0), 2),
             "custo_outros_brl": round(float(grupos.get("outros") or 0), 2),
             "conversas_atendidas": int(usage.get("conversations") or 0),
             "chamadas_ia": int(usage.get("calls") or 0),
@@ -416,6 +426,16 @@ def build_overview(
             "custo_por_conversa_brl": round(custo_por_grupo["conversas"] / conversas_atendidas, 4) if conversas_atendidas else 0.0,
             "custo_por_conversa_display": brl(custo_por_grupo["conversas"] / conversas_atendidas) if conversas_atendidas else "R$ 0,00",
             "share_modelo_forte_pct": _pct(strong_calls, chamadas_total),
+            # Separação por ORIGEM (2026-10-25): o que é atender, o que é conta
+            # nova, o que é o dono configurando, e o resto. Cada um com a sua
+            # unidade, pra conta de teste que só fez onboarding não virar
+            # "custo por conversa".
+            "share_modelo_forte_conversas_pct": _pct(conv_strong_calls, conv_claude_calls),
+            "onboardings": onboardings,
+            "custo_por_onboarding_brl": round(custo_por_grupo["onboarding"] / onboardings, 2) if onboardings else 0.0,
+            "custo_por_onboarding_display": brl(custo_por_grupo["onboarding"] / onboardings) if onboardings else "R$ 0,00",
+            "ajustes": chamadas_por_grupo["configuracao"],
+            "chamadas_por_grupo": chamadas_por_grupo,
             "por_grupo": {g: {"brl": v, "display": brl(v)} for g, v in custo_por_grupo.items()},
         },
         "margem": {

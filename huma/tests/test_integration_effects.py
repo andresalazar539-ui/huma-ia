@@ -273,7 +273,7 @@ class TestPlaybookAuto:
 
         async def _no_debounce(cid): return False
         async def _site(url): return "texto do site"
-        async def _analyze(data, source_text=""):
+        async def _analyze(data, source_text="", purpose="onboarding"):
             assert source_text == "texto do site"
             return {"status": "completed", "analysis": {"playbook": {"objecoes": [1], "lacunas": []}}}
         monkeypatch.setattr(ps, "_debounced", _no_debounce)
@@ -297,7 +297,7 @@ class TestPlaybookAuto:
         assert asyncio.run(ps.regenerate("cli_int", "t"))["status"] == "skipped"
 
         _mock_db(monkeypatch, _identity(category="clinica"), sink, ps)
-        async def _boom(data, source_text=""): raise RuntimeError("api caiu")
+        async def _boom(data, source_text="", purpose="onboarding"): raise RuntimeError("api caiu")
         monkeypatch.setattr(categories, "analyze_market", _boom)
         assert asyncio.run(ps.regenerate("cli_int", "t"))["status"] == "error"
         assert sink == []

@@ -22,7 +22,7 @@ from fastapi.concurrency import run_in_threadpool
 from huma.config import HUMA_ADMIN_EMAILS, TRIAL_DAYS
 from huma.core import admin_metrics
 from huma.services.db_service import get_supabase
-from huma.services.usage_service import summarize_usage_rows
+from huma.services.usage_service import GROUP_LABELS, summarize_usage_rows
 from huma.utils.logger import get_logger
 
 log = get_logger("admin")
@@ -383,7 +383,8 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
                 "chamadas": usage["calls"], "conversas_atendidas": usage["conversations"],
                 "custo_por_conversa_display": admin_metrics.brl(usage["cost_per_conversation_brl"]),
                 "share_modelo_forte_pct": round(100 * usage["strong_model_share"], 1),
-                "por_grupo": {g: admin_metrics.brl(v) for g, v in (usage.get("by_group") or {}).items()},
+                "por_grupo": {GROUP_LABELS.get(g, g): admin_metrics.brl(v) for g, v in (usage.get("by_group") or {}).items()},
+                "share_modelo_forte_conversas_pct": round(100 * float(usage.get("conversation_strong_share") or 0), 1),
                 "por_finalidade": usage.get("by_purpose") or {},
             },
         },

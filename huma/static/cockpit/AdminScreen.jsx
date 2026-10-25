@@ -20,6 +20,17 @@ const AD_STATUS = {
 const AD_KIND = { '': 'Sem caixa', ja_da: 'Já dá com o que existe (grátis)', integracao: 'Integração (preço de tabela)', sob_medida: 'Sob medida (setup + add-on)' };
 
 const adBrl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
+
+// Painel do dono (2026-10-25): o total de IA vem SEMPRE acompanhado de onde
+// nasceu, pra onboarding de conta de teste nunca parecer custo de conversa.
+const AD_GROUP_LABELS = { conversas: 'Conversas', onboarding: 'Onboarding', configuracao: 'Configuração', outros: 'Outros' };
+const adGroupBreakdown = (porGrupo) => {
+  const parts = ['conversas', 'onboarding', 'configuracao', 'outros']
+    .map(g => ({ g, v: ((porGrupo || {})[g] || {}) }))
+    .filter(x => (x.v.brl || 0) > 0)
+    .map(x => `${AD_GROUP_LABELS[x.g]} ${x.v.display}`);
+  return parts.length ? parts.join(' · ') : 'nada no período';
+};
 const adDate = (iso) => iso ? String(iso).slice(0, 10).split('-').reverse().join('/') : '';
 const adTh = { fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--ink-3)' };
 const adNum = { fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink)', textAlign: 'right', whiteSpace: 'nowrap' };
@@ -179,8 +190,8 @@ const AdAccountCard = ({ clientId, days, onClose }) => {
         <AdField label="Clientes que o negócio ganhou">{u.clientes_do_negocio}</AdField>
         <AdField label="Custo de IA">{u.ia.custo_display}</AdField>
         <AdField label="Por conversa atendida">{`${u.ia.custo_por_conversa_display} (${u.ia.conversas_atendidas})`}</AdField>
-        <AdField label="IA por finalidade">{Object.entries(u.ia.por_grupo || {}).filter(([, val]) => val !== 'R$ 0,00').map(([g, val]) => `${g} ${val}`).join(' · ') || 'nada no período'}</AdField>
-        <AdField label="Sonnet nas chamadas">{`${u.ia.share_modelo_forte_pct}%`}</AdField>
+        <AdField label="IA por origem">{Object.entries(u.ia.por_grupo || {}).filter(([, val]) => val !== 'R$ 0,00').map(([g, val]) => `${g} ${val}`).join(' · ') || 'nada no período'}</AdField>
+        <AdField label="Sonnet nas respostas">{`${u.ia.share_modelo_forte_conversas_pct == null ? u.ia.share_modelo_forte_pct : u.ia.share_modelo_forte_conversas_pct}%`}</AdField>
       </AdBlock>
 
       <AdBlock title="Canais e integrações" cols={4}>
@@ -279,7 +290,7 @@ const AdClientsTable = ({ rows, onOpen }) => {
             <div style={adNum}>{r.receita_brl ? r.receita_display : <span style={{ color: 'var(--ink-3)' }}>R$ 0</span>}</div>
             <div style={{ ...adNum, fontWeight: 600 }} title={`${r.cobrancas_de_sempre || 0} mensalidades de sempre`}>{r.receita_acumulada_brl ? r.receita_acumulada_display : <span style={{ color: 'var(--ink-3)', fontWeight: 400 }}>R$ 0</span>}</div>
             <div style={adNum}>{adBrl(r.custo_conversas_brl)}</div>
-            <div style={adNum} title={`onboarding ${adBrl(r.custo_onboarding_brl)} · áudio ${adBrl(r.custo_audio_brl)} · outros ${adBrl(r.custo_outros_brl)}`}>{adBrl((r.custo_onboarding_brl || 0) + (r.custo_audio_brl || 0) + (r.custo_outros_brl || 0))}</div>
+            <div style={adNum} title={`onboarding ${adBrl(r.custo_onboarding_brl)} · configuração ${adBrl(r.custo_configuracao_brl)} · outros ${adBrl(r.custo_outros_brl)}`}>{adBrl((r.custo_onboarding_brl || 0) + (r.custo_configuracao_brl || 0) + (r.custo_outros_brl || 0))}</div>
             <div style={{ ...adNum, fontWeight: 600, color: margemColor(r) }}>{r.margem_pct === null ? r.margem_display : `${r.margem_pct}%`}</div>
             <div style={adNum}>{r.share_modelo_forte_pct}%</div>
           </div>
@@ -467,14 +478,22 @@ const AdminScreen = () => {
           <Grid cols={4}>
             <StatTile label="MRR (preço de tabela)" value={(data.mrr || {}).display} sub={`${a.pagantes || 0} pagantes${a.cortesia ? ` · ${a.cortesia} cortesia` : ''}`} accent delta={dlt('mrr', ['brl'])} />
             <StatTile label={`Receita em ${periodDays} dias`} value={rec.total_display} sub={`${rec.cobrancas || 0} mensalidades · ${rec.pacotes || 0} pacotes · ${rec.excedente_conversas || 0} conversas extras`} delta={dlt('receita', ['total_brl'])} />
-            <StatTile label="Custo de IA no período" value={ia.custo_display} sub={`${ia.custo_por_conversa_display} por conversa atendida (${ia.conversas_atendidas || 0}) · Sonnet em ${ia.share_modelo_forte_pct}% das chamadas`} delta={dlt('ia', ['custo_brl'])} deltaInvert />
+            <StatTile label="Custo de IA no período" value={ia.custo_display} sub={adGroupBreakdown(ia.por_grupo)} delta={dlt('ia', ['custo_brl'])} deltaInvert />
             <StatTile label="Margem sobre a IA" value={m.pct === null || m.pct === undefined ? m.display : `${m.pct}%`} sub={m.display} accent delta={dlt('margem', ['brl'])} />
           </Grid>
           <Grid cols={4}>
-            <StatTile label="IA nas conversas" value={((ia.por_grupo || {}).conversas || {}).display || 'R$ 0,00'} sub="respostas, juiz de português, memória e follow-up" delta={dlt('ia', ['por_grupo', 'conversas', 'brl'])} deltaInvert />
-            <StatTile label="IA no onboarding" value={((ia.por_grupo || {}).onboarding || {}).display || 'R$ 0,00'} sub="leitura do site, entrevista, análise de mercado, playbook e base de conhecimento" delta={dlt('ia', ['por_grupo', 'onboarding', 'brl'])} deltaInvert />
-            <StatTile label="Áudio e transcrição" value={((ia.por_grupo || {}).audio || {}).display || 'R$ 0,00'} sub="voz clonada (ElevenLabs) e áudios transcritos, estimado pelo tamanho" delta={dlt('ia', ['por_grupo', 'audio', 'brl'])} deltaInvert />
-            <StatTile label="Outros" value={((ia.por_grupo || {}).outros || {}).display || 'R$ 0,00'} sub="escudo de campanha, modelos da Meta, prospecção, playground" delta={dlt('ia', ['por_grupo', 'outros', 'brl'])} deltaInvert />
+            <StatTile label="Atender conversas" value={((ia.por_grupo || {}).conversas || {}).display || 'R$ 0,00'}
+                      sub={`${ia.conversas_atendidas || 0} conversas · ${ia.custo_por_conversa_display} por conversa · Sonnet em ${ia.share_modelo_forte_conversas_pct == null ? 0 : ia.share_modelo_forte_conversas_pct}% das respostas · inclui juiz, memória, follow-up, áudio e transcrição do lead`}
+                      delta={dlt('ia', ['por_grupo', 'conversas', 'brl'])} deltaInvert />
+            <StatTile label="Onboarding de conta nova" value={((ia.por_grupo || {}).onboarding || {}).display || 'R$ 0,00'}
+                      sub={`${ia.onboardings || 0} ${(ia.onboardings || 0) === 1 ? 'conta' : 'contas'} · ${ia.custo_por_onboarding_display || 'R$ 0,00'} por onboarding · leitura do site, entrevista, compilação e análise de mercado`}
+                      delta={dlt('ia', ['por_grupo', 'onboarding', 'brl'])} deltaInvert />
+            <StatTile label="Configuração do negócio" value={((ia.por_grupo || {}).configuracao || {}).display || 'R$ 0,00'}
+                      sub={`${ia.ajustes || 0} ${(ia.ajustes || 0) === 1 ? 'ajuste' : 'ajustes'} depois do onboarding · playbook regerado, base de conhecimento, briefing por voz, perfil de voz`}
+                      delta={dlt('ia', ['por_grupo', 'configuracao', 'brl'])} deltaInvert />
+            <StatTile label="Outros" value={((ia.por_grupo || {}).outros || {}).display || 'R$ 0,00'}
+                      sub="prévia de voz, áudio do relatório, escudo de campanha, modelos da Meta, prospecção, playground"
+                      delta={dlt('ia', ['por_grupo', 'outros', 'brl'])} deltaInvert />
           </Grid>
 
           <SectionTitle>Growth</SectionTitle>

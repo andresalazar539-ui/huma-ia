@@ -66,8 +66,10 @@ _PAYING = [
     {"client_id": "e", "created_at": _iso(20), "source": "mp_renovacao", "amount": 150, "type": "credit", "description": "payid=4"},
 ]
 _USAGE = {
-    "a": {"calls": 40, "cost_brl": 12.5, "strong_model_share": 0.25, "conversations": 2, "by_group": {"conversas": 10.0, "onboarding": 2.5}},
-    "b": {"calls": 10, "cost_brl": 3.0, "strong_model_share": 0.0, "conversations": 1, "by_group": {"conversas": 3.0}},
+    "a": {"calls": 40, "cost_brl": 12.5, "strong_model_share": 0.25, "conversations": 2, "by_group": {"conversas": 10.0, "onboarding": 2.5},
+          "calls_by_group": {"conversas": 36, "onboarding": 4}, "conversation_claude_calls": 36, "conversation_strong_calls": 6},
+    "b": {"calls": 10, "cost_brl": 3.0, "strong_model_share": 0.0, "conversations": 1, "by_group": {"conversas": 2.0, "configuracao": 1.0},
+          "calls_by_group": {"conversas": 8, "configuracao": 2}, "conversation_claude_calls": 8, "conversation_strong_calls": 0},
 }
 
 
@@ -106,6 +108,15 @@ class TestMetricasPuras:
         assert o["receita"]["total_brl"] == 1146.98 and o["receita"]["ticket_medio_brl"] == 573.49
         assert o["ia"]["custo_brl"] == 15.5 and o["ia"]["conversas_engajadas"] == 3 and o["ia"]["chamadas"] == 50
         assert o["ia"]["share_modelo_forte_pct"] == 20.0
+        # Separação por origem (2026-10-25)
+        assert o["ia"]["por_grupo"]["conversas"]["brl"] == 12.0 and o["ia"]["por_grupo"]["onboarding"]["brl"] == 2.5
+        assert o["ia"]["por_grupo"]["configuracao"]["brl"] == 1.0 and o["ia"]["por_grupo"]["outros"]["brl"] == 0.0
+        assert o["ia"]["custo_por_conversa_brl"] == 4.0            # 12,0 / 3 conversas, onboarding fora da conta
+        assert o["ia"]["onboardings"] == 1 and o["ia"]["custo_por_onboarding_brl"] == 2.5
+        assert o["ia"]["ajustes"] == 2
+        assert o["ia"]["share_modelo_forte_conversas_pct"] == 13.6   # 6 de 44 chamadas Claude nas conversas
+        linha_b = next(r for r in o["clientes"] if r["client_id"] == "b")
+        assert linha_b["custo_configuracao_brl"] == 1.0 and "custo_audio_brl" not in linha_b
         assert o["margem"]["brl"] == 1131.48
         assert o["indicacoes"] == {"indicados": 2, "convertidos": 1}
         assert o["receita_acumulada"]["brl"] == 1540.0 and o["receita_acumulada"]["clientes_que_pagaram"] == 2
