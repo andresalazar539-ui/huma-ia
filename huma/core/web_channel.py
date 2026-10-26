@@ -34,7 +34,7 @@ import asyncio
 import re
 from datetime import datetime
 
-from huma.config import HISTORY_MAX_BEFORE_COMPRESS
+from huma.config import HISTORY_MAX_BEFORE_COMPRESS, REPLY_SINGLE_MODEL
 from huma.models.schemas import ClientIdentity, Conversation, OnboardingStatus
 from huma.services import ai_service as ai
 from huma.services import billing_service as billing
@@ -624,6 +624,12 @@ async def _process_web_message_locked(
             log.error(f"Stock preflight falhou (web, segue sem) | {phone} | {type(e).__name__}: {e}")
 
         tier, use_sonnet = _select_tier(classification, conv, text, None, web_identity)
+        # Modelo único (2026-10-26): mesma regra do WhatsApp. Visto nos
+        # números da primeira conversa real: 4 de 10 respostas do site
+        # saíram no Haiku porque só o orchestrator aplicava a regra.
+        if REPLY_SINGLE_MODEL and not use_sonnet:
+            log.info(f"TierPolicy | {phone} | modelo_unico (web) | tier {tier}->3")
+            tier, use_sonnet = 3, True
         # Site do negócio como memória (2026-10-26): mesmo bloco de fontes do WhatsApp.
         try:
             from huma.services import site_index
