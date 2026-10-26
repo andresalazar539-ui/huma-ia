@@ -39,6 +39,7 @@ from huma.models.schemas import ClientIdentity, Conversation, OnboardingStatus
 from huma.services import ai_service as ai
 from huma.services import billing_service as billing
 from huma.services import db_service as db
+from huma.services import lead_media
 from huma.services import redis_service as cache
 from huma.services import whatsapp_service as wa
 from huma.utils.logger import get_logger
@@ -379,6 +380,91 @@ async def process_web_message(
         await cache.release_lock(phone)
 
 
+# ── Áudio do visitante (2026-10-25) ──
+# O lead fala, a HUMA responde em texto. Transcrição "best" (mesma do
+# "Conte pra HUMA": OpenAI gpt-4o-transcribe, senão Groq whisper-large-v3)
+# com o vocabulário do negócio como dica, pra acertar nome de produto e
+# termo técnico. Custo: centavos por áudio, gravado em ai_usage do cliente
+# (purpose "transcription"). Teto diário por sessão protege a margem.
+WEB_AUDIO_MAX_BYTES = 6_000_000           # ~4 min de webm/opus
+WEB_AUDIO_PER_SESSION_PER_DAY = 40
+WEB_AUDIO_TYPES = {
+    "audio/webm", "video/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/mp3",
+    "audio/wav", "audio/x-wav", "audio/wave", "audio/x-m4a", "audio/m4a", "audio/aac", "audio/flac",
+}
+_NO_SPEECH_REPLY = "Não consegui entender o áudio. Pode escrever ou gravar de novo?"
+
+
+async def process_web_audio(
+    client_id: str,
+    session_id: str,
+    raw: bytes,
+    content_type: str = "",
+    filename: str = "",
+    client_ip: str = "",
+) -> dict:
+    """
+    Áudio do visitante do site → transcrição → mesmo pipeline da mensagem
+    de texto. Devolve o dict de process_web_message mais `transcript`.
+
+    Ordem importa: transcreve ANTES de guardar o arquivo; se não houver
+    fala, nada é gravado nem debitado e o visitante recebe um pedido pra
+    escrever. Só com transcrição boa o áudio sobe pro Storage e fica
+    pendente pra entrar no histórico junto da mensagem (Cockpit idêntico).
+
+    Returns:
+        status: "ok" | "no_speech" | "rate_limited" | "unavailable" | "invalid"
+    """
+    session_id = (session_id or "").strip().lower()
+    if not is_valid_session_id(session_id):
+        return {"status": "invalid", "reply_parts": [], "history_len": 0, "transcript": ""}
+    if not raw or len(raw) < 500:
+        return {"status": "no_speech", "reply_parts": [_NO_SPEECH_REPLY], "history_len": 0, "transcript": ""}
+    if len(raw) > WEB_AUDIO_MAX_BYTES:
+        return {"status": "invalid", "reply_parts": [], "history_len": 0, "transcript": ""}
+
+    phone = web_phone(session_id)
+    try:
+        n = await cache.incr_with_ttl(f"web_audio_day:{client_id}:{phone}", ttl=86400)
+    except Exception as e:
+        log.warning(f"Web áudio | contador falhou | {phone} | {type(e).__name__}: {e}")
+        n = 0
+    if n and n > WEB_AUDIO_PER_SESSION_PER_DAY:
+        log.warning(f"Web áudio | teto diário por sessão | client={client_id} | {phone} | n={n}")
+        return {"status": "rate_limited", "reply_parts": [], "history_len": 0, "transcript": ""}
+
+    from huma.core.orchestrator import _get_client_cached
+    client_data = await _get_client_cached(client_id)
+    if not client_data or client_data.onboarding_status not in (OnboardingStatus.ACTIVE, OnboardingStatus.SANDBOX):
+        return {"status": "unavailable", "reply_parts": [], "history_len": 0, "transcript": ""}
+
+    try:
+        from huma.services.voice_brief_service import vocabulary
+        hint = ", ".join(vocabulary(client_data))
+    except Exception as e:
+        log.debug(f"Web áudio | vocabulário indisponível | {type(e).__name__}: {e}")
+        hint = ""
+
+    from huma.services.transcription_service import transcribe_bytes
+    text = await transcribe_bytes(
+        raw, hint=hint, client_id=client_id, phone=phone,
+        filename=filename or "audio.webm", quality="best",
+    )
+    text = (text or "").strip()
+    if not text:
+        log.info(f"Web áudio | sem fala | client={client_id} | {phone} | size={len(raw)}")
+        return {"status": "no_speech", "reply_parts": [_NO_SPEECH_REPLY], "history_len": 0, "transcript": ""}
+
+    url = await lead_media.upload(client_id, phone, "audio", raw, content_type)
+    if url:
+        await lead_media.push_pending(client_id, phone, "audio", url)
+
+    log.info(f"Web áudio | transcrito | client={client_id} | {phone} | size={len(raw)} | chars={len(text)}")
+    result = await process_web_message(client_id, session_id, text[:800], client_ip=client_ip)
+    result["transcript"] = text
+    return result
+
+
 async def _process_web_message_locked(
     client_id: str, phone: str, text: str, client_ip: str
 ) -> dict:
@@ -441,7 +527,7 @@ async def _process_web_message_locked(
     # depois o visitante conversa com o humano via poll, sem robô
     # repetindo a mesma frase (anti-loop, caso real May/2026).
     if conv.handoff_status == "handed_off":
-        conv.history.append({"role": "user", "content": text})
+        conv.history.append(await lead_media.user_entry(client_id, phone, text))
         conv.last_message_at = datetime.utcnow()
         await db.save_conversation(conv)
         # O visitante nunca fica no vácuo: quem está com a conversa é avisado.
@@ -490,7 +576,7 @@ async def _process_web_message_locked(
         # registra a msg em silêncio (dono já sabe).
         today_key = datetime.utcnow().strftime("%Y-%m-%d")
         notified_key = f"ia_limit_notified:{phone}:{today_key}"
-        conv.history.append({"role": "user", "content": text})
+        conv.history.append(await lead_media.user_entry(client_id, phone, text))
         conv.last_message_at = datetime.utcnow()
         await db.save_conversation(conv)
 
@@ -588,7 +674,10 @@ async def _process_web_message_locked(
             asyncio.create_task(_notify_owner_lead_whatsapp(client_data, conv, lead_phone))
         log.info(f"Deflection | {phone} | client={client_id} | lead_whatsapp=+{lead_phone}")
 
-    conv.history.append({"role": "user", "content": text})
+    # Áudio do visitante (2026-10-25): se veio por voz, a entrada leva
+    # audio_url + audio_text (mesmo contrato do WhatsApp; Cockpit mostra o
+    # player e a transcrição). Sem mídia pendente é a entrada de sempre.
+    conv.history.append(await lead_media.user_entry(client_id, phone, text))
     _entry: dict = {"role": "assistant", "content": reply}
     if len(reply_parts) > 1:
         _entry["parts"] = list(reply_parts)  # balões iguais aos que o visitante viu

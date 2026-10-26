@@ -15,7 +15,7 @@
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -134,6 +134,59 @@ async def web_message(client_id: str, body: WebMessageBody, request: Request) ->
         "reply_parts": result.get("reply_parts", []),
         "history_len": result.get("history_len", 0),
         # Cards de produto (2026-09-07): o widget desenha foto, preço e botões.
+        "cards": result.get("cards") or [],
+    }
+
+
+@router.post("/api/web/{client_id}/audio", tags=["Balcão"])
+async def web_audio(
+    client_id: str,
+    request: Request,
+    session_id: str = Form(..., min_length=16, max_length=64),
+    file: UploadFile = File(...),
+) -> dict:
+    """
+    Áudio do visitante (2026-10-25): o lead fala, a HUMA responde em texto.
+
+    multipart: session_id + file (webm/ogg/mp4/wav...). Mesmas proteções
+    do /message (IP, sessão, tetos) mais tamanho, tipo e teto diário de
+    áudios por sessão. Devolve o mesmo formato do /message + `transcript`.
+    """
+    ip = request.client.host if request.client else "unknown"
+    if not _check_ip_rate(ip):
+        raise HTTPException(429, "Muitas mensagens. Aguarde um instante.")
+
+    if not web_channel.is_valid_session_id(session_id):
+        raise HTTPException(400, "session_id inválido")
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type and content_type not in web_channel.WEB_AUDIO_TYPES:
+        raise HTTPException(415, "Formato de áudio não aceito")
+
+    raw = await file.read(web_channel.WEB_AUDIO_MAX_BYTES + 1)
+    if len(raw) > web_channel.WEB_AUDIO_MAX_BYTES:
+        raise HTTPException(413, "Áudio grande demais. Grave até uns 3 minutos.")
+
+    await _get_public_client(client_id)
+
+    result = await web_channel.process_web_audio(
+        client_id, session_id, raw, content_type=content_type,
+        filename=file.filename or "", client_ip=ip,
+    )
+
+    status = result.get("status", "ok")
+    if status == "rate_limited":
+        raise HTTPException(429, "Muitos áudios hoje. Escreva a mensagem, por favor.")
+    if status == "invalid":
+        raise HTTPException(400, "Áudio inválido")
+    if status == "unavailable":
+        raise HTTPException(404, "Negócio não encontrado")
+
+    return {
+        "status": status,  # "ok" | "no_speech"
+        "transcript": result.get("transcript", ""),
+        "reply_parts": result.get("reply_parts", []),
+        "history_len": result.get("history_len", 0),
         "cards": result.get("cards") or [],
     }
 
