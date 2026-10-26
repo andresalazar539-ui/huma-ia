@@ -92,13 +92,7 @@ def build_dynamic_discovery(identity: ClientIdentity) -> FunnelStageConfig:
     - A ordem importa: primeiro NOME, depois interesse, depois dados extras.
     - Se o lead já chegou dizendo o que quer: não pergunte o óbvio. Avance.
 
-  VERIFICAÇÃO DE AGENDA (independente de stage):
-    Se o lead pedir disponibilidade ('tem horário amanhã?', 'quando tem?', 'o quanto antes'),
-    ou demonstrar urgência ('tô com dor', 'emergência', 'hoje ainda'),
-    EMITA action check_availability IMEDIATAMENTE — NÃO precisa coletar nome/email antes.
-    check_availability é read-only na agenda do dono, não registra nada do lead.
-    Com urgência: urgency='urgent'. Sem: urgency='normal' (ou omita).
-    NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."""
+  AGENDA: lead pediu disponibilidade ou mostrou urgência? EMITA check_availability já, sem esperar nome/email. NUNCA diga "vou verificar e te retorno" sem emitir a action (regra completa em VERIFICAÇÃO DE AGENDA)."""
 
     if identity.collect_before_offer:
         instructions += "\n  SÓ avance quando tiver TUDO acima coletado."
@@ -144,15 +138,9 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Use prova social: 'é o mais pedido', 'nossos clientes adoram'.\n"
         "    - Se tem promoção/condição: mencione como escassez natural, não como desconto desesperado.\n"
         "\n"
-        "  VERIFICAÇÃO DE AGENDA:\n"
-        "    Se o lead pedir disponibilidade ('tem vaga amanhã?', 'quando tem?', 'o quanto antes',\n"
-        "    'qualquer horário', 'o mais cedo possível'), ou demonstrar urgência ('tô com dor',\n"
-        "    'emergência', 'hoje ainda'), EMITA action check_availability.\n"
-        "      - Com urgência: inclua urgency='urgent' na action.\n"
-        "      - Sem urgência específica: urgency='normal' (ou omita).\n"
-        "      - NUNCA diga \"vou verificar e te retorno\" sem emitir a action. O sistema consulta\n"
-        "        o Calendar e injeta os horários reais pra você oferecer na próxima mensagem.\n"
-        "      - NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."
+        "  AGENDA: lead pediu disponibilidade ou mostrou urgência? EMITA check_availability. "
+        "NUNCA diga \"vou verificar e te retorno\" sem emitir a action "
+        "(regra completa em VERIFICAÇÃO DE AGENDA)."
     )
 
     # ── Closing: facilitar, não pressionar ──
@@ -217,15 +205,9 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
         "    - Se o lead hesitar: não pressione. Pergunte o que falta.\n"
         "    - Silêncio depois do preço é NORMAL. Não quebre com mais argumentos.\n"
         "\n"
-        "  VERIFICAÇÃO DE AGENDA:\n"
-        "    Se o lead pedir disponibilidade ('tem vaga amanhã?', 'quando tem?', 'o quanto antes',\n"
-        "    'qualquer horário', 'o mais cedo possível'), ou demonstrar urgência ('tô com dor',\n"
-        "    'emergência', 'hoje ainda'), EMITA action check_availability.\n"
-        "      - Com urgência: inclua urgency='urgent' na action.\n"
-        "      - Sem urgência específica: urgency='normal' (ou omita).\n"
-        "      - NUNCA diga \"vou verificar e te retorno\" sem emitir a action. O sistema consulta\n"
-        "        o Calendar e injeta os horários reais pra você oferecer na próxima mensagem.\n"
-        "      - NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."
+        "  AGENDA: lead pediu disponibilidade ou mostrou urgência? EMITA check_availability. "
+        "NUNCA diga \"vou verificar e te retorno\" sem emitir a action "
+        "(regra completa em VERIFICAÇÃO DE AGENDA)."
     )
 
     committed_instructions = (
@@ -323,6 +305,25 @@ def get_stages(identity: ClientIdentity) -> list[FunnelStageConfig]:
     ]
 
 
+# Regra completa de verificação de agenda. Até 2026-10-25 ela estava copiada
+# dentro de discovery, offer e closing (3x o mesmo texto em todo turno, e
+# aparecia até pra negócio SEM agenda, mandando emitir uma action que não
+# existia na tool). Agora cada etapa tem uma linha curta apontando pra cá e o
+# bloco entra UMA vez, só quando o cliente agenda. O conteúdo é o mesmo.
+AGENDA_CHECK_BLOCK = (
+    "\n\n  VERIFICAÇÃO DE AGENDA (vale em qualquer etapa):"
+    "\n    Se o lead pedir disponibilidade ('tem vaga amanhã?', 'quando tem?', 'o quanto antes',"
+    "\n    'qualquer horário', 'o mais cedo possível'), ou demonstrar urgência ('tô com dor',"
+    "\n    'emergência', 'hoje ainda'), EMITA action check_availability IMEDIATAMENTE."
+    "\n      - NÃO precisa coletar nome/email antes: check_availability é read-only na agenda"
+    "\n        do dono, não registra nada do lead."
+    "\n      - Com urgência: urgency='urgent'. Sem urgência específica: urgency='normal' (ou omita)."
+    "\n      - NUNCA diga \"vou verificar e te retorno\" sem emitir a action. O sistema consulta"
+    "\n        o Calendar e injeta os horários reais pra você oferecer na próxima mensagem."
+    "\n      - NUNCA invente horários. Use APENAS os que aparecerem no marker [AGENDA CONSULTADA]."
+)
+
+
 def build_funnel_prompt(identity: ClientIdentity, current_stage: str) -> str:
     """
     Gera o trecho do system prompt com o funil.
@@ -333,6 +334,9 @@ def build_funnel_prompt(identity: ClientIdentity, current_stage: str) -> str:
 
     O marcador VOCE ESTA AQUI é crítico — diz ao Claude
     onde ele está e o que fazer agora.
+
+    2026-10-25: a VERIFICAÇÃO DE AGENDA sai UMA vez no fim (AGENDA_CHECK_BLOCK),
+    só pra cliente com a capability SCHEDULE; antes repetia por etapa.
     """
     stages = get_stages(identity)
     stage_names = [s.name for s in stages]
@@ -365,6 +369,12 @@ def build_funnel_prompt(identity: ClientIdentity, current_stage: str) -> str:
             prompt += f"\n     Avançar: {stage.triggers_to_advance}"
         if stage.forbidden_actions:
             prompt += f"\n     PROIBIDO: {stage.forbidden_actions}"
+
+    try:
+        if Capability.SCHEDULE in identity.capabilities_resolved:
+            prompt += AGENDA_CHECK_BLOCK
+    except Exception as e:  # identity sem capabilities (mock/legado): sem bloco
+        log.debug(f"Funil | agenda block skip | {type(e).__name__}: {e}")
 
     prompt += (
         '\n\n  stage_action: "advance" | "hold" | "stop"'

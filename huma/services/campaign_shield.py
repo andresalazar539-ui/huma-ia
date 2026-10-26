@@ -34,6 +34,7 @@ from datetime import datetime
 import anthropic
 import httpx
 
+from huma.services.model_params import fast_kwargs as _fast_kwargs
 from huma.config import (
     ANTHROPIC_API_KEY, AI_MODEL_FAST,
     META_GRAPH_BASE_URL, META_GRAPH_VERSION,
@@ -161,6 +162,7 @@ async def review_campaign(
                 max_tokens=700,
                 system=_SHIELD_SYSTEM,
                 messages=[{"role": "user", "content": f"Mensagem da campanha:\n\n{message}"}],
+                **_fast_kwargs(AI_MODEL_FAST),
             ),
             timeout=timeout_sec,
         )
@@ -175,7 +177,8 @@ async def review_campaign(
     await record_response(client_id, response, AI_MODEL_FAST, "shield")
 
     try:
-        text = response.content[0].text.strip()
+        from huma.services.model_params import first_text
+        text = first_text(response)
         if text.startswith("```"):
             lines = text.split("\n")
             text = "\n".join(lines[1:-1]) if len(lines) > 2 else text

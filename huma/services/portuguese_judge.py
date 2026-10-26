@@ -38,6 +38,7 @@ import json
 import anthropic
 
 from huma.config import ANTHROPIC_API_KEY, AI_MODEL_FAST
+from huma.services.model_params import fast_kwargs, first_text
 from huma.utils.logger import get_logger
 
 log = get_logger("pt_judge")
@@ -147,6 +148,9 @@ async def judge_response(
                 max_tokens=80,
                 system=_JUDGE_SYSTEM,
                 messages=[{"role": "user", "content": user_prompt}],
+                # Sem pensamento nos 5.x: com 80 tokens de teto, o pensamento
+                # consumiria tudo e o veredito voltaria vazio.
+                **fast_kwargs(AI_MODEL_FAST),
             ),
             timeout=timeout_sec,
         )
@@ -163,7 +167,7 @@ async def judge_response(
 
     # Parse do JSON da resposta
     try:
-        text = response.content[0].text.strip()
+        text = first_text(response)
         # Remove possíveis cercas ```json ... ```
         if text.startswith("```"):
             lines = text.split("\n")

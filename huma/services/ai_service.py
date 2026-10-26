@@ -36,9 +36,10 @@ import re
 import anthropic
 
 from huma.config import (
-    ANTHROPIC_API_KEY, AI_MODEL_PRIMARY, AI_MODEL_FAST,
+    ANTHROPIC_API_KEY, AI_MODEL_PRIMARY, AI_MODEL_FAST, AI_EFFORT_REPLY,
     HISTORY_WINDOW, HISTORY_MAX_BEFORE_COMPRESS,
 )
+from huma.services import model_params as mp
 from huma.models.schemas import (
     ClientIdentity, Conversation, Intent, MessagingStyle, Sentiment,
 )
@@ -374,7 +375,7 @@ def _build_temporal_context(conv: "Conversation") -> str:
             "e pergunte se ainda tem interesse no próximo passo. Não finja conversa "
             "contínua. Não repita info que já está no histórico."
         )
-    else:
+    elif hours < 24 * 7:
         days = int(hours / 24)
         marker = (
             f"CONTEXTO TEMPORAL: lead sumiu por {days}d — REATIVAÇÃO FRIA "
@@ -383,6 +384,32 @@ def _build_temporal_context(conv: "Conversation") -> str:
         guidance = (
             "Tom leve, sem cobrança. Resuma onde estavam, ofereça retomar. "
             "Nunca cobre decisão nem use urgência forçada."
+        )
+    else:
+        # Memória de longo prazo (2026-10-25): semanas ou meses depois, a
+        # MEMÓRIA DO LEAD abaixo é o dossiê. Reconhecer o tempo é o que
+        # separa "lembra de mim" de "fingiu que a conversa nunca parou".
+        days = int(hours / 24)
+        if days < 30:
+            weeks = max(1, days // 7)
+            span = f"{weeks} semana" + ("s" if weeks > 1 else "")
+        elif days < 365:
+            months = max(1, days // 30)
+            span = f"{months} mês" if months == 1 else f"{months} meses"
+        else:
+            span = "mais de 1 ano"
+        marker = (
+            f"CONTEXTO TEMPORAL: lead sumiu por {days}d ({span}) — "
+            f"REATIVAÇÃO FRIA DE LONGO PRAZO (agora é {period})."
+        )
+        guidance = (
+            "Você LEMBRA desse lead: a MEMÓRIA DO LEAD abaixo é o seu dossiê (nome, o que "
+            "ele queria, o que foi oferecido, objeções, o que ficou pendente). Use isso com "
+            "naturalidade, sem recitar a lista nem reperguntar nome e dados que já estão lá. "
+            "Reconheça o tempo em uma frase leve e CONFIRME se a situação dele mudou antes de "
+            "retomar de onde parou: o que ele queria pode ter mudado, preço e condições de "
+            "antes podem não valer mais (não reafirme valor antigo como atual; use o cadastro). "
+            "Sem cobrança, sem culpa pelo sumiço, sem urgência forçada."
         )
 
     # STATUS REAL (verdade do sistema, anti-alucinação cross-day)
@@ -1867,6 +1894,17 @@ def _build_reply_tool_compact(
     action_lines.extend(UNIVERSAL_LINES)
     actions_description = "\n".join(action_lines)
 
+    # Saída enxuta (Fase 3, 2026-10-25): saída custa 5x a entrada, então a
+    # tool só pede o que o motor consome. `emotional_reading` saiu (ninguém
+    # lia); `audio_text` só existe pra cliente com voz clonada ativa (o
+    # orchestrator descarta nos outros); `lead_read` pede só o que MUDOU
+    # (merge_lead_state mantém o anterior). O dict de retorno de
+    # generate_response continua com TODAS as chaves (contrato §1).
+    include_audio = True
+    if identity is not None:
+        include_audio = bool(getattr(identity, "enable_audio", True)) and bool(getattr(identity, "voice_id", ""))
+    audio_property = {"audio_text": {"type": "string"}} if include_audio else {}
+
     return {
         "name": "send_reply",
         "description": "Envia resposta pro lead no WhatsApp.",
@@ -1874,7 +1912,7 @@ def _build_reply_tool_compact(
             "type": "object",
             "properties": {
                 **reply_property,
-                "audio_text": {"type": "string"},
+                **audio_property,
                 "intent": {
                     "type": "string",
                     "enum": ["price", "buy", "objection", "schedule", "support", "neutral"],
@@ -1889,7 +1927,6 @@ def _build_reply_tool_compact(
                 },
                 "confidence": {"type": "number"},
                 "micro_objective": {"type": "string"},
-                "emotional_reading": {"type": "string"},
                 # F4 — leitura viva do lead. Description é ESTRUTURAL (o shape
                 # não se infere do nome): vira Conversation.lead_state e volta
                 # pro prompt no turno seguinte.
@@ -1897,6 +1934,8 @@ def _build_reply_tool_compact(
                     "type": "object",
                     "description": (
                         "Sua leitura do lead NESTE turno (vira contexto pra você no próximo). "
+                        "Preencha SÓ os campos que MUDARAM em relação à LEITURA DO LEAD do prompt; "
+                        "omita os iguais (o sistema mantém o anterior). "
                         "modo: direto|consultivo|explorando. pressa: alta|normal|baixa. "
                         "humor: 1-3 palavras. confianca: subindo|estavel|caindo. "
                         "perfil: perfil da vertical detectado ou ''. "
@@ -1986,6 +2025,15 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         except Exception:
             pass
 
+    # Modelos que rejeitam tool_choice forçado (Sonnet 5.5+): quem garante a
+    # tool é o prompt. Entra no bloco dinâmico pra não mexer no cache do
+    # estático dos modelos antigos.
+    if mp.rejects_forced_tool(model):
+        dynamic += (
+            "\n\nFORMATO DA RESPOSTA: responda SEMPRE chamando a ferramenta send_reply. "
+            "Nunca responda em texto solto fora da ferramenta."
+        )
+
     log.info(f"Prompt | tier={tier} | static_chars={len(static)} | dynamic_chars={len(dynamic)} | est_static_tokens={len(static)//4} | est_dynamic_tokens={len(dynamic)//4}")
 
     # Monta mensagens
@@ -2028,7 +2076,9 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         # Haiku 4.5 exige mínimo 4096 TOKENS (~9500 chars em PT-BR, ratio ~2.33 chars/token).
         # Sonnet exige mínimo 1024 tokens (~2400 chars).
         # Valores conservadores com margem de segurança.
-        min_chars_for_cache = 9000 if "haiku" in model.lower() else 2400
+        # Mínimo por modelo (512 tokens nos 5.5, 4096 no Haiku 4.5) — ver
+        # model_params.min_chars_for_cache. Abaixo dele a API não cria cache.
+        min_chars_for_cache = mp.min_chars_for_cache(model)
         static_is_cacheable = len(static) >= min_chars_for_cache
 
         static_block = {"type": "text", "text": static}
@@ -2042,8 +2092,41 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             log.warning(f"Cache | tier={tier} | static TOO SMALL | chars={len(static)} | min={min_chars_for_cache}")
 
         system_blocks = [static_block]
-        if dynamic:
-            system_blocks.append({"type": "text", "text": dynamic})
+
+    # ── Layout do pedido (Fase 2, 2026-10-25) ──
+    # "trailing_system": o bloco dinâmico vai como {"role": "system"} no FIM de
+    # `messages` e a última mensagem do lead ganha um breakpoint de cache.
+    # Prefixo cacheável = tools + estático + histórico inteiro; só a instrução
+    # deste turno e a mensagem nova pagam token cheio. No layout antigo
+    # ("legacy") o dinâmico é o 2º bloco do `system`: muda a cada turno e, por
+    # vir ANTES das mensagens, derruba o cache do histórico todo turno.
+    # Só nos modelos que aceitam system em messages (model_params); num 400
+    # "role 'system'" o retry refaz no layout antigo.
+    _base_messages = messages
+
+    def _assemble(layout: str) -> tuple:
+        if tier == 1 or not dynamic:
+            return system_blocks, list(_base_messages)
+        if layout == "trailing_system":
+            msgs = [dict(m) for m in _base_messages]
+            last = msgs[-1]
+            marker = {"type": "ephemeral", "ttl": "1h"}
+            if isinstance(last.get("content"), str):
+                last["content"] = [{"type": "text", "text": last["content"], "cache_control": marker}]
+            elif isinstance(last.get("content"), list) and last["content"]:
+                blocks = [dict(b) for b in last["content"]]
+                blocks[-1] = {**blocks[-1], "cache_control": marker}
+                last["content"] = blocks
+            msgs.append({"role": "system", "content": dynamic})
+            return [static_block], msgs
+        return [static_block, {"type": "text", "text": dynamic}], list(_base_messages)
+
+    def _layout_for(m: str) -> str:
+        return "trailing_system" if mp.supports_system_in_messages(m) else "legacy"
+
+    layout = _layout_for(model)
+    system_blocks, messages = _assemble(layout)
+    log.info(f"Layout | tier={tier} | model={model} | layout={layout} | history_msgs={len(_base_messages) - 1}")
 
     # Diagnóstico de cache v11.2 — loga hash do static pra verificar se muda entre chamadas
     import hashlib
@@ -2062,16 +2145,28 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         try:
             response = await _get_ai_client().messages.create(
                 model=model,
-                max_tokens=800,
+                # Nos 5.x o pensamento conta no max_tokens: teto dobrado lá.
+                max_tokens=mp.reply_max_tokens(model),
                 system=system_blocks,
                 tools=[reply_tool],
-                tool_choice={"type": "tool", "name": "send_reply"},
+                # Forçado onde a API aceita; "auto" no Sonnet 5.5+ (400 se forçar).
+                tool_choice=mp.tool_choice_for(model, "send_reply"),
                 messages=messages,
+                # effort fixo por rota (mudar entre chamadas invalida o cache).
+                **mp.reply_kwargs(model, AI_EFFORT_REPLY),
             )
             break
         except Exception as e:
             last_error = e
             error_str = str(e)
+            # Modelo não aceitou system dentro de messages: refaz no layout
+            # antigo (mesmo prompt, só a posição muda). Não conta como falha
+            # transitória; o retry é imediato.
+            if layout == "trailing_system" and "role 'system'" in error_str and attempt < max_retries:
+                log.warning(f"Layout | model={model} | system em messages recusado, voltando pro legacy | {type(e).__name__}")
+                layout = "legacy"
+                system_blocks, messages = _assemble(layout)
+                continue
             transient = ("529" in error_str or "overloaded" in error_str.lower() or "timeout" in error_str.lower() or "500" in error_str or "429" in error_str or "rate_limit" in error_str.lower())
             if attempt < max_retries and transient:
                 wait = (attempt + 1) * 2
@@ -2086,13 +2181,17 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             if transient and model != AI_MODEL_FAST:
                 try:
                     log.warning(f"IA instável no modelo {model}: tentando {AI_MODEL_FAST} | {type(e).__name__}")
+                    # O modelo rápido pode não aceitar o mesmo layout.
+                    layout = _layout_for(AI_MODEL_FAST)
+                    system_blocks, messages = _assemble(layout)
                     response = await _get_ai_client().messages.create(
                         model=AI_MODEL_FAST,
-                        max_tokens=800,
+                        max_tokens=mp.reply_max_tokens(AI_MODEL_FAST),
                         system=system_blocks,
                         tools=[reply_tool],
-                        tool_choice={"type": "tool", "name": "send_reply"},
+                        tool_choice=mp.tool_choice_for(AI_MODEL_FAST, "send_reply"),
                         messages=messages,
+                        **mp.reply_kwargs(AI_MODEL_FAST, AI_EFFORT_REPLY),
                     )
                     model = AI_MODEL_FAST
                     break
@@ -2112,7 +2211,7 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
             cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
             log.info(
-                f"CACHE | tier={tier} | model={model} | "
+                f"CACHE | tier={tier} | model={model} | layout={layout} | "
                 f"input={usage.input_tokens} | output={usage.output_tokens} | "
                 f"cache_read={cache_read} | cache_creation={cache_creation}"
             )
@@ -2133,7 +2232,17 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
     except Exception:
         pass  # log de métrica não pode quebrar a resposta
 
-    # Extrai o tool_use block
+    # Recusa do modelo (stop_reason "refusal", novo nos 5.x): HTTP 200 sem
+    # resposta útil. O lead recebe a fallback_message, nunca conteúdo vazio.
+    if mp.is_refusal(response):
+        log.warning(
+            f"IA recusou | model={model} | phone={conv.phone} | "
+            f"stop_details={getattr(response, 'stop_details', None)}"
+        )
+        return _fallback_result(identity.fallback_message)
+
+    # Extrai o tool_use block (por TIPO: nos 5.x pode vir um bloco
+    # `thinking` antes, então nunca ler content[0] direto).
     parsed = None
     for block in response.content:
         if block.type == "tool_use" and block.name == "send_reply":
@@ -2141,8 +2250,16 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
             break
 
     if not parsed:
-        log.warning("Tool use não retornou dados")
-        return _fallback_result(identity.fallback_message)
+        # Com tool_choice "auto" (Sonnet 5.5+) o modelo pode, raramente,
+        # responder em texto solto. Melhor entregar esse texto do que a
+        # mensagem de desculpa: intent/sentiment ficam neutros, sem actions.
+        loose = mp.first_text(response)
+        if loose:
+            log.warning(f"Tool use ausente | model={model} | usando texto solto | chars={len(loose)}")
+            parsed = {"reply": loose}
+        else:
+            log.warning(f"Tool use não retornou dados | model={model} | stop_reason={getattr(response, 'stop_reason', '')}")
+            return _fallback_result(identity.fallback_message)
 
     try:
         intent = Intent(parsed.get("intent", "neutral").lower())
@@ -2335,10 +2452,11 @@ async def generate_followup_message(
             model=AI_MODEL_FAST,
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
+            **mp.fast_kwargs(AI_MODEL_FAST),
         )
         from huma.services.usage_service import record_response
         await record_response(identity.client_id, response, AI_MODEL_FAST, "followup")
-        text = response.content[0].text.strip().strip('"').strip()
+        text = mp.first_text(response).strip('"').strip()
         text = _sanitize_text(text)
         if not text or len(text) > 500:
             log.warning(f"Followup IA descartado | client={identity.client_id} | len={len(text)} | usando template fixo")
@@ -2364,17 +2482,31 @@ async def generate_outbound_message(identity, lead, template=""):
             model=AI_MODEL_PRIMARY,
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
+            **mp.fast_kwargs(AI_MODEL_PRIMARY),
         )
         from huma.services.usage_service import record_response
         await record_response(getattr(identity, "client_id", ""), response, AI_MODEL_PRIMARY, "outbound")
-        return response.content[0].text.strip()
+        return mp.first_text(response)
     except Exception:
         return ""
 
 
-async def compress_history(history, summary, facts, client_id: str = "", phone: str = ""):
+async def compress_history(
+    history,
+    summary,
+    facts,
+    client_id: str = "",
+    phone: str = "",
+    force: bool = False,
+    keep_history: bool = False,
+):
     """
     Comprime histórico preservando memória do lead — versão acumulativa.
+
+    force=True (dossiê do lead, 2026-10-25): consolida mesmo abaixo de
+    HISTORY_MAX_BEFORE_COMPRESS. keep_history=True: lê a conversa INTEIRA pra
+    resumo/fatos mas devolve o histórico intacto (o Cockpit continua
+    mostrando tudo; só a memória é escrita). Defaults = comportamento de antes.
 
     v8.2 (memória pré-GA) — Refeita pra resolver "IA esquecendo após 10-12 msgs":
       1. Passa SUMMARY ANTERIOR pro Haiku como contexto. Sem isso, cada
@@ -2387,11 +2519,17 @@ async def compress_history(history, summary, facts, client_id: str = "", phone: 
       4. Summary cresceu de 3-5 → 6-12 linhas (mais espaço pra venda).
       5. max_tokens: 800 → 1200 (acomoda summary mais rico + facts maiores).
     """
-    if len(history) <= HISTORY_MAX_BEFORE_COMPRESS:
+    if len(history) <= HISTORY_MAX_BEFORE_COMPRESS and not force:
         return history, summary, facts
 
-    to_compress = history[:-HISTORY_WINDOW]
-    recent = history[-HISTORY_WINDOW:]
+    if keep_history:
+        to_compress = list(history)
+        recent = list(history)
+    else:
+        to_compress = history[:-HISTORY_WINDOW]
+        recent = history[-HISTORY_WINDOW:]
+    if not to_compress:
+        return history, summary, facts
 
     messages_text = "\n".join(
         f"{m['role'].upper()}: {m['content']}"
@@ -2440,10 +2578,11 @@ async def compress_history(history, summary, facts, client_id: str = "", phone: 
             model=AI_MODEL_FAST,
             max_tokens=1200,  # antes 800 — espaço pra summary acumulativo + facts ricos
             messages=[{"role": "user", "content": prompt}],
+            **mp.fast_kwargs(AI_MODEL_FAST),
         )
         from huma.services.usage_service import record_response
         await record_response(client_id, response, AI_MODEL_FAST, "compress", phone=phone)
-        raw = response.content[0].text.strip()
+        raw = mp.first_text(response)
 
         raw = raw.replace("```json", "").replace("```", "").strip()
         brace_start = raw.find("{")
@@ -2489,11 +2628,12 @@ async def analyze_speech_patterns(chat_text, client_id: str = ""):
             model=AI_MODEL_PRIMARY,
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
+            **mp.fast_kwargs(AI_MODEL_PRIMARY),
         )
         from huma.services.usage_service import record_response
         await record_response(client_id, response, AI_MODEL_PRIMARY, "voice_profile")
         parsed = json.loads(
-            response.content[0].text.strip().replace("```json", "").replace("```", "")
+            mp.first_text(response).replace("```json", "").replace("```", "")
         )
         return (
             f"Saudação: {parsed.get('greeting_style', '')}\n"

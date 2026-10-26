@@ -15,7 +15,11 @@ class TestPrecos:
     def test_tabela_por_substring(self):
         assert us.price_for("claude-haiku-4-5-20251001") == (1.0, 5.0, 0.10, 2.0)
         assert us.price_for("claude-sonnet-4-5-20250929") == (3.0, 15.0, 0.30, 6.0)
-        assert us.price_for("claude-sonnet-5") == (3.0, 15.0, 0.30, 6.0)
+        # Geração 5.x (2026-10-25): preço real da tabela, não o fallback.
+        assert us.price_for("claude-sonnet-5") == (2.0, 10.0, 0.20, 4.0)
+        assert us.price_for("claude-sonnet-5-5") == (2.0, 10.0, 0.20, 4.0)
+        assert us.price_for("claude-haiku-5-5") == (0.10, 0.50, 0.01, 0.20)
+        assert us.price_for("claude-opus-5-5")[0] == 4.0
         assert us.price_for("claude-opus-5")[0] == 5.0
 
     def test_modelo_desconhecido_cai_no_sonnet(self):

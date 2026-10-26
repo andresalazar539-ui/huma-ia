@@ -310,12 +310,13 @@ async def _ask_writer(prompt: str, client_id: str = "") -> list[str]:
             client.messages.create(
                 model=AI_MODEL_PRIMARY, max_tokens=900, system=_WRITER_SYSTEM,
                 messages=[{"role": "user", "content": prompt}],
+                **ai.mp.fast_kwargs(AI_MODEL_PRIMARY),
             ),
             timeout=DRAFT_TIMEOUT_SECONDS,
         )
         from huma.services.usage_service import record_response
         await record_response(client_id, response, AI_MODEL_PRIMARY, "templates")
-        return _parse_bodies(response.content[0].text)
+        return _parse_bodies(ai.mp.first_text(response))
     except Exception as e:
         log.warning(f"Modelo | escrita pela IA falhou | {type(e).__name__}: {e}")
         return []

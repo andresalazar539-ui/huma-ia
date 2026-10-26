@@ -452,7 +452,9 @@ async def fake_audio(text, voice_id, *a, **k):
     return "https://stress.local/audios/x.mp3"
 
 
-async def fake_groq(audio_bytes, hint=""):
+async def fake_groq(audio_bytes, hint="", **kwargs):
+    # kwargs: filename/model/timeout/quality que a cascata de transcrição
+    # passa desde o "Conte pra HUMA" (2026-10-25); o fake ignora.
     await asyncio.sleep(0.2)
     return "oi quero marcar uma limpeza de pele"
 

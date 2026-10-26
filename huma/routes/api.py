@@ -3224,10 +3224,11 @@ async def playground_chat(request: Request):
             max_tokens=600,
             system=system_prompt,
             messages=clean_msgs,
+            **ai.mp.fast_kwargs(AI_MODEL_FAST),
         )
         from huma.services.usage_service import record_response
         await record_response("_playground", response, AI_MODEL_FAST, "playground")
-        reply = response.content[0].text.strip()
+        reply = ai.mp.first_text(response)
         parts = [p.strip() for p in reply.split("\n\n") if p.strip()]
         if not parts:
             parts = [reply]

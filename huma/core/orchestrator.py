@@ -22,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 
 from fastapi import BackgroundTasks
 
-from huma.config import SAFE_MODE, HISTORY_MAX_BEFORE_COMPRESS
+from huma.config import SAFE_MODE, HISTORY_MAX_BEFORE_COMPRESS, REPLY_SINGLE_MODEL
 from huma.core.ai_schedule import resolve_effective_mode
 from huma.core.funnel import get_stages
 from huma.core import lead_routing
@@ -451,6 +451,15 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         else:
             # Roteamento Tiered Intelligence v11.0
             tier, use_sonnet = _select_tier(classification, conv, unified_text, unified_image, client_data)
+
+            # Modelo único (2026-10-25): toda resposta ao lead sai do modelo
+            # forte com o prompt completo. Motivos: qualidade (o Haiku 4.5
+            # soava tosco), cache por modelo (alternar reescrevia o cache
+            # nos dois) e o juiz de português deixa de ser necessário.
+            # REPLY_SINGLE_MODEL=false devolve a política de tiers de antes.
+            if REPLY_SINGLE_MODEL and not use_sonnet:
+                log.info(f"TierPolicy | {phone} | modelo_unico | tier {tier}->3")
+                tier, use_sonnet = 3, True
 
             # ============================================================
             # ANTI-CHURN POLICY v12 (6.B) — pré-processamento

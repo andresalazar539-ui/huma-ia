@@ -1205,6 +1205,48 @@ async def list_hot_stuck_conversations(
     return resp.data or []
 
 
+async def list_cooling_conversations(
+    hours_silent_min: float = 24.0,
+    hours_silent_max: float = 72.0,
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Dossiê do lead (2026-10-25) — conversas que ESFRIARAM: última mensagem
+    entre [hours_silent_max, hours_silent_min] horas atrás, em qualquer
+    canal e etapa. O job consolida resumo + fatos uma vez por "esfriada"
+    (marca em lead_state["_dossie_msgs"]); quem filtra o que já foi feito é
+    o chamador, porque a marca mora dentro do JSONB.
+
+    Returns:
+        Lista de dicts com client_id, phone, last_message_at, history,
+        history_summary, lead_facts, lead_state.
+    """
+    from datetime import timedelta
+    now = datetime.utcnow()
+    cutoff_min = (now - timedelta(hours=hours_silent_min)).isoformat()
+    cutoff_max = (now - timedelta(hours=hours_silent_max)).isoformat()
+
+    def query():
+        return (
+            get_supabase()
+            .table("conversations")
+            .select("client_id,phone,last_message_at,history,history_summary,lead_facts,lead_state")
+            .lte("last_message_at", cutoff_min)
+            .gte("last_message_at", cutoff_max)
+            .limit(limit)
+            .execute()
+        )
+
+    try:
+        resp = await run_in_threadpool(query)
+    except Exception as e:
+        # Banco sem a coluna lead_state (migration_lead_state.sql) ou fora
+        # do ar: o dossiê espera a próxima rodada, nada quebra.
+        log.warning(f"list_cooling_conversations | {type(e).__name__}: {e}")
+        return []
+    return resp.data or []
+
+
 async def list_unanswered_conversations(
     hours_silent_min: float = 2.0,
     hours_silent_max: float = 12.0,

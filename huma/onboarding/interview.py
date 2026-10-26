@@ -31,6 +31,7 @@ import anthropic
 import httpx
 
 from huma.config import AI_MODEL_FAST, AI_MODEL_PRIMARY, ANTHROPIC_API_KEY, SOURCE_READER_URL
+from huma.services.model_params import fast_kwargs, first_text, tool_choice_for
 from huma.models.schemas import BusinessCategory, ClientIdentity
 from huma.onboarding.categories import (
     AUTONOMY_QUESTIONS,
@@ -618,7 +619,8 @@ async def analyze_source(url: str, instagram: str = "", client_id: str = "") -> 
             max_tokens=_SOURCE_MAX_TOKENS,
             messages=[{"role": "user", "content": _build_source_prompt(url, source_text)}],
             tools=[SOURCE_ANALYSIS_TOOL],
-            tool_choice={"type": "tool", "name": SOURCE_ANALYSIS_TOOL["name"]},
+            # Forçado onde a API aceita; "auto" no Sonnet 5.5+ (400 se forçar).
+            tool_choice=tool_choice_for(AI_MODEL_PRIMARY, SOURCE_ANALYSIS_TOOL["name"]),
         )
         from huma.services.usage_service import record_response
         await record_response(client_id, response, AI_MODEL_PRIMARY, "onboarding")
@@ -855,6 +857,8 @@ async def generate_reaction(question: str, answer: str, identity: ClientIdentity
         response = await client.messages.create(
             model=AI_MODEL_FAST,
             max_tokens=80,
+            # Sem pensamento nos 5.x: 80 tokens de teto não cabem pensamento + frase.
+            **fast_kwargs(AI_MODEL_FAST),
             system=(
                 "Você é a HUMA, IA de vendas brasileira, entrevistando seu novo "
                 "sócio (dono do negócio) durante o cadastro. Reaja à resposta dele "
@@ -869,7 +873,7 @@ async def generate_reaction(question: str, answer: str, identity: ClientIdentity
         )
         from huma.services.usage_service import record_response
         await record_response(identity.client_id, response, AI_MODEL_FAST, "onboarding")
-        return response.content[0].text.strip()
+        return first_text(response)
     except anthropic.APIError as e:
         log.warning(f"Reação indisponível | client={identity.client_id} | {type(e).__name__}: {e}")
         return ""
@@ -1034,7 +1038,7 @@ async def compile_identity_updates(identity: ClientIdentity) -> dict:
         )
         from huma.services.usage_service import record_response
         await record_response(identity.client_id, response, AI_MODEL_PRIMARY, "onboarding")
-        raw = response.content[0].text.strip()
+        raw = first_text(response)
         parsed = json.loads(raw.replace("```json", "").replace("```", "").strip())
     except json.JSONDecodeError:
         log.error(f"Compilação JSON inválido | client={identity.client_id}")

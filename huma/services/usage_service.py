@@ -38,6 +38,17 @@ log = get_logger("usage")
 
 # (substring do model id) → (input, output, cache_read, cache_write_1h) em USD/MTok
 MODEL_PRICES_USD: list[tuple[str, tuple[float, float, float, float]]] = [
+    # Geração 5.x (tabela Anthropic, 2026-10-25). Chaves específicas ANTES
+    # das genéricas: "haiku-5" não casa com "claude-haiku-4-5-...", mas
+    # "haiku" casaria com os dois. Haiku 5.5 tem 2ª faixa acima de 100K
+    # tokens de prompt ($0,50/$2,50) que a HUMA não alcança (prompt ~10K).
+    ("haiku-5", (0.10, 0.50, 0.01, 0.20)),
+    ("sonnet-5", (2.00, 10.00, 0.20, 4.00)),
+    ("opus-5-5", (4.00, 20.00, 0.20, 8.00)),
+    ("opus-5", (5.00, 25.00, 0.50, 10.00)),
+    ("fable", (10.00, 50.00, 0.25, 20.00)),
+    ("sonnet-4-6", (3.00, 15.00, 0.30, 6.00)),
+    # Geração 4.x e anteriores.
     ("haiku", (1.00, 5.00, 0.10, 2.00)),
     ("sonnet", (3.00, 15.00, 0.30, 6.00)),
     ("opus", (5.00, 25.00, 0.50, 10.00)),

@@ -1077,6 +1077,15 @@ async def _run_catalog_refresh_job() -> None:
         log.error(f"sched | catalog_refresh | {type(e).__name__}: {e}")
 
 
+async def _run_lead_dossier_job() -> None:
+    """Dossiê do lead (2026-10-25): consolida memória das conversas que esfriaram. Nunca levanta."""
+    try:
+        from huma.services import lead_dossier
+        await lead_dossier.consolidate_all()
+    except Exception as e:
+        log.error(f"sched | lead_dossier | {type(e).__name__}: {e}")
+
+
 async def _run_onboarding_nudge_job() -> None:
     """
     Roda a cada 30 min. Lembra por e-mail quem se cadastrou e não terminou
@@ -1263,6 +1272,9 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     # Loja/ERP conectado — catálogo (produto novo, preço, descrição, foto) vira
     # conhecimento sem reconectar: a cada 30min, lock 15min. Zero IA.
     ("catalog_refresh", _run_catalog_refresh_job, 1800, 900),
+    # Dossiê do lead — resumo + fatos de toda conversa que esfriou há 24h
+    # (memória pra quando o lead volta semanas/meses depois): 1h, lock 30min.
+    ("lead_dossier", _run_lead_dossier_job, 3600, 1800),
 ]
 
 

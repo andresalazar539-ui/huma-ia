@@ -333,6 +333,16 @@ AI_MODEL_FAST = os.getenv("AI_MODEL_FAST", "claude-haiku-4-5-20251001")        #
 # Vazio = AI_MODEL_PRIMARY. Pouco volume (teto 10/dia por conta) e alto valor:
 # dá pra apontar pro modelo mais forte que existir sem mexer em código.
 AI_MODEL_BRIEF = os.getenv("AI_MODEL_BRIEF", "")
+# Modelo único na conversa (2026-10-25, decisão do André: qualidade > custo,
+# cache por modelo): toda resposta ao lead sai do AI_MODEL_PRIMARY com o
+# prompt completo (Tier 3). O Tier 2/Haiku continua existindo no código e
+# volta com REPLY_SINGLE_MODEL=false. O juiz de português só rodava em
+# resposta do Haiku, então com isso ligado ele fica em silêncio.
+REPLY_SINGLE_MODEL = os.getenv("REPLY_SINGLE_MODEL", "true").lower() == "true"
+# Esforço (quanto o modelo pensa) na resposta ao lead, nos modelos que
+# aceitam `effort` (5.x, 4.6+). "low" é o recomendado pra chat; fixo por
+# rota porque mudar entre chamadas invalida o cache das mensagens.
+AI_EFFORT_REPLY = os.getenv("AI_EFFORT_REPLY", "low").strip().lower()
 
 # Medição de custos fora do Claude (2026-10-10): áudio clonado e transcrição
 # entram na mesma tabela ai_usage (model = "elevenlabs" | "whisper-groq" |

@@ -142,10 +142,12 @@ async def summarize(client_id: str, business_name: str, filename: str, text: str
     prompt = _summary_prompt(business_name, filename, text)
     try:
         client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        from huma.services.model_params import fast_kwargs
         response = await client.messages.create(
             model=AI_MODEL_FAST,
             max_tokens=900,
             messages=[{"role": "user", "content": prompt}],
+            **fast_kwargs(AI_MODEL_FAST),
         )
     except anthropic.APIStatusError as e:
         log.error(f"Knowledge | HTTP {e.status_code} | service=anthropic | client={client_id}")

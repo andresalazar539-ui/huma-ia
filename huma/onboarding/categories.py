@@ -15,6 +15,7 @@
 # ================================================================
 
 from huma.models.schemas import BusinessCategory
+from huma.services.model_params import first_text, tool_choice_for
 
 
 # ================================================================
@@ -551,7 +552,9 @@ async def analyze_market(identity_data: dict, source_text: str = "", purpose: st
             max_tokens=6000,  # F3: JSON cresceu com o playbook (objeções + gatilhos + lacunas); 3500 truncava com site grande
             messages=[{"role": "user", "content": prompt}],
             tools=[MARKET_ANALYSIS_TOOL],
-            tool_choice={"type": "tool", "name": MARKET_ANALYSIS_TOOL["name"]},
+            # Forçado onde a API aceita; "auto" no Sonnet 5.5+ (400 se forçar).
+            # O parse abaixo já cobre resposta em texto quando a tool não vem.
+            tool_choice=tool_choice_for(AI_MODEL_PRIMARY, MARKET_ANALYSIS_TOOL["name"]),
         )
         from huma.services.usage_service import record_response
         await record_response(str(identity_data.get("client_id") or ""), response, AI_MODEL_PRIMARY, purpose or "onboarding")
@@ -561,7 +564,7 @@ async def analyze_market(identity_data: dict, source_text: str = "", purpose: st
                 log.info(f"Análise de mercado OK (tool) | {identity_data.get('business_name', '')}")
                 return {"status": "completed", "analysis": block.input}
 
-        raw = response.content[0].text.strip()
+        raw = first_text(response)
         cleaned = raw.replace("```json", "").replace("```", "").strip()
         # O modelo às vezes abre com uma frase antes do JSON ("Aqui está a
         # análise:") ou fecha com comentário — recorta do primeiro "{" ao
