@@ -1280,6 +1280,66 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
   );
 };
 
+// Site do negócio como memória (2026-10-26): a HUMA lê o site inteiro e, a
+// cada pergunta, busca o trecho certo. O card mostra o estado e tem o
+// botão "Reler meu site agora". Estado vem do servidor (GET site-index).
+const NegocioSite = ({ settings }) => {
+  const [st, setSt] = useStateS(null);
+  const [err, setErr] = useStateS('');
+  const [msg, setMsg] = useStateS('');
+  const [busy, setBusy] = useStateS(false);
+  const website = (settings && settings.website) || '';
+
+  const load = async () => {
+    try { const r = await fetchSiteIndex(); setSt(r); setErr(''); return r; }
+    catch (e) { setErr(e.message); return null; }
+  };
+  useEffectS(() => { load(); }, []);
+  // Enquanto lê, consulta a cada 5s até terminar.
+  useEffectS(() => {
+    if (!st || !st.running) return;
+    const t = setInterval(async () => { const r = await load(); if (r && !r.running) { setMsg('Leitura concluída.'); clearInterval(t); } }, 5000);
+    return () => clearInterval(t);
+  }, [st && st.running]);
+
+  const reread = async () => {
+    setBusy(true); setMsg(''); setErr('');
+    try { const r = await reindexSite(); setMsg(r.detail || ''); await load(); }
+    catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const fmt = (iso) => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' }) + ' às ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); };
+  let body;
+  if (!website) {
+    body = 'Cadastre o endereço do site na aba Negócio. A HUMA lê todas as páginas sozinha e passa a responder com o que está lá.';
+  } else if (st && st.available === false) {
+    body = 'A leitura do site ainda não foi ativada no servidor.';
+  } else if (st && st.running) {
+    body = `Lendo ${st.website || website} agora. Leva 1 a 2 minutos.`;
+  } else if (st && st.chunks > 0) {
+    body = `A HUMA leu ${st.pages} página${st.pages === 1 ? '' : 's'} de ${st.website || website}${st.last_fetched_at ? ' em ' + fmt(st.last_fetched_at) : ''}. A cada pergunta do lead ela busca o trecho certo e responde a partir dele, citando a página quando ajuda. Relê sozinha toda semana.`;
+  } else if (st) {
+    body = `A HUMA ainda não leu ${st.website || website}. Toque em "Ler meu site agora".`;
+  } else {
+    body = 'Carregando…';
+  }
+  const canRead = !!website && st && st.available !== false && !st.running && !busy;
+
+  return (
+    <Card title="Site do negócio" action={
+      canRead ? <Button variant="outline" size="sm" onClick={reread}>{st && st.chunks > 0 ? 'Reler meu site agora' : 'Ler meu site agora'}</Button> : null
+    }>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--ink-2)', lineHeight: 1.55 }}>{body}</div>
+      {msg && <VoiceMsg kind="ok">{msg}</VoiceMsg>}
+      {err && <VoiceMsg kind="err">{err}</VoiceMsg>}
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+        Até 60 páginas por leitura, sem custo de IA. O que não estiver no site nem no cadastro, a HUMA diz que vai confirmar em vez de inventar.
+      </div>
+    </Card>
+  );
+};
+
 const NegocioKnowledge = ({ settings, patch, applyFields }) => {
   // tone_of_voice no backend é texto livre (vai pro prompt). Os radios
   // mapeiam pra frases canônicas; texto legado cai no mais próximo.
@@ -1329,6 +1389,8 @@ const NegocioKnowledge = ({ settings, patch, applyFields }) => {
       </div>
 
       <NegocioVoiceBrief settings={settings} applyFields={applyFields}/>
+
+      <NegocioSite settings={settings}/>
 
       <Card title="Tom de voz">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

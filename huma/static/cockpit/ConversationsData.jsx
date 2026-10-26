@@ -1113,6 +1113,19 @@ async function _readApiError(r) {
   return new Error(detail || `Erro ${r.status}`);
 }
 
+// Site do negócio como memória (2026-10-26)
+async function fetchSiteIndex() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/site-index`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
+async function reindexSite() {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/site-index`, { method: 'POST', headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
 async function fetchKnowledge() {
   const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/knowledge`, { headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw await _readApiError(r);

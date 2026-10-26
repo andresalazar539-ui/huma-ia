@@ -1077,6 +1077,15 @@ async def _run_catalog_refresh_job() -> None:
         log.error(f"sched | catalog_refresh | {type(e).__name__}: {e}")
 
 
+async def _run_site_reindex_job() -> None:
+    """Site do negócio (2026-10-26): relê o site de quem tem site, a cada 7 dias. Nunca levanta."""
+    try:
+        from huma.services import site_index
+        await site_index.reindex_stale()
+    except Exception as e:
+        log.error(f"sched | site_reindex | {type(e).__name__}: {e}")
+
+
 async def _run_lead_dossier_job() -> None:
     """Dossiê do lead (2026-10-25): consolida memória das conversas que esfriaram. Nunca levanta."""
     try:
@@ -1275,6 +1284,8 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     # Dossiê do lead — resumo + fatos de toda conversa que esfriou há 24h
     # (memória pra quando o lead volta semanas/meses depois): 1h, lock 30min.
     ("lead_dossier", _run_lead_dossier_job, 3600, 1800),
+    # Site do negócio como memória — relê quem passou de 7 dias: 1x/dia, lock 1h. Zero IA.
+    ("site_reindex", _run_site_reindex_job, 86400, 3600),
 ]
 
 

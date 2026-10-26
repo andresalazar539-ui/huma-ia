@@ -635,6 +635,36 @@ def _playbook_payload(client) -> dict:
     }
 
 
+# ── Site do negócio como memória (2026-10-26) ──
+
+@router.get("/api/clients/{client_id}/site-index")
+async def site_index_get(client_id: str, client=Depends(verify_api_key)) -> dict:
+    """Estado da leitura do site: páginas, trechos, última leitura, em andamento."""
+    from huma.services import site_index
+    st = await site_index.status(client_id, getattr(client, "website", "") or "")
+    return {"status": "ok", **st}
+
+
+@router.post("/api/clients/{client_id}/site-index")
+async def site_index_post(client_id: str, client=Depends(verify_api_key)) -> dict:
+    """
+    "Reler meu site agora": lê o site inteiro em background e troca os
+    trechos. Devolve na hora; a tela consulta o GET até terminar.
+    """
+    from huma.services import site_index
+    website = getattr(client, "website", "") or ""
+    if not site_index.normalize_site(website):
+        raise HTTPException(400, "Cadastre o site do negócio na aba Negócio antes de pedir a leitura.")
+    st = await db.site_index_status(client_id)
+    if not st.get("available"):
+        raise HTTPException(503, "A leitura do site ainda não está ativada no servidor (migration_site_index.sql).")
+    if await site_index.is_running(client_id):
+        return {"status": "running", "detail": "Já estou lendo o site. Aguarde um instante."}
+    site_index.schedule(client_id, website, "cockpit")
+    log.info(f"Site | releitura pedida pelo dono | client={client_id}")
+    return {"status": "running", "detail": "Lendo o site agora."}
+
+
 @router.get("/api/clients/{client_id}/playbook")
 async def playbook_get(client_id: str, client=Depends(verify_api_key)) -> dict:
     """Playbook do negócio (o que a IA usa pra vender) + lacunas pro dono."""

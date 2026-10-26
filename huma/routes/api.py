@@ -682,6 +682,10 @@ async def update_settings(client_id: str, updates: dict, _=Depends(verify_api_ke
         from huma.services import playbook_service
         playbook_service.schedule_regenerate(client_id, "settings:" + ",".join(changed))
         log.info(f"Playbook regen agendado | client={client_id} | changed={changed}")
+        # Site novo = a HUMA lê o site inteiro de novo (2026-10-26).
+        if "website" in changed:
+            from huma.services import site_index
+            site_index.schedule(client_id, str(persisted.get("website") or ""), "settings:website")
     return {"status": "ok", "updated": sorted(accepted.keys()), "ignored": ignored, "playbook_refresh": changed}
 
 

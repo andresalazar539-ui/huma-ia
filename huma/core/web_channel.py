@@ -624,10 +624,18 @@ async def _process_web_message_locked(
             log.error(f"Stock preflight falhou (web, segue sem) | {phone} | {type(e).__name__}: {e}")
 
         tier, use_sonnet = _select_tier(classification, conv, text, None, web_identity)
+        # Site do negócio como memória (2026-10-26): mesmo bloco de fontes do WhatsApp.
+        try:
+            from huma.services import site_index
+            site_ctx = await site_index.context_for(client_id, text)
+        except Exception as e:
+            log.warning(f"Site | fontes indisponíveis (web) | {phone} | {type(e).__name__}: {e}")
+            site_ctx = ""
         ai_result = await ai.generate_response(
             web_identity, conv, text,
             use_fast_model=not use_sonnet,
             tier=tier,
+            extra_context=site_ctx,
         )
         await billing.increment_ia_calls(phone)
         model_type = (

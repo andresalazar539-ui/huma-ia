@@ -263,6 +263,65 @@ async def list_store_clients() -> list[ClientIdentity]:
     return list(out.values())
 
 
+# ── Site do negócio como memória (2026-10-26, scripts/migration_site_index.sql) ──
+# Sem a tabela: replace levanta (a rota devolve 503 amigável), busca e status
+# devolvem vazio com WARNING e a IA segue como antes.
+
+async def replace_site_chunks(client_id: str, rows: list[dict]) -> int:
+    """Troca TODOS os trechos do site do cliente pelos novos (em lotes). Levanta se o banco recusar."""
+    supa = get_supabase()
+    await run_in_threadpool(lambda: supa.table("site_chunks").delete().eq("client_id", client_id).execute())
+    for i in range(0, len(rows), 200):
+        batch = rows[i:i + 200]
+        await run_in_threadpool(lambda b=batch: supa.table("site_chunks").insert(b).execute())
+    return len(rows)
+
+
+async def search_site_chunks(client_id: str, query: str, limit: int = 4) -> list[dict]:
+    """Trechos do site mais parecidos com a pergunta (função SQL search_site_chunks). Vazio em falha."""
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().rpc(
+                "search_site_chunks", {"p_client_id": client_id, "p_query": query, "p_limit": int(limit)},
+            ).execute()
+        )
+        return list(resp.data or [])
+    except Exception as e:
+        log.warning(f"search_site_chunks | client={client_id} | {type(e).__name__}: {e}")
+        return []
+
+
+async def site_index_status(client_id: str) -> dict:
+    """{chunks, pages, last_fetched_at, available}. available=False quando a tabela não existe."""
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("site_chunks").select("url,fetched_at").eq("client_id", client_id).limit(5000).execute()
+        )
+        rows = resp.data or []
+        last = max((str(r.get("fetched_at") or "") for r in rows), default="")
+        return {
+            "chunks": len(rows),
+            "pages": len({r.get("url") for r in rows if r.get("url")}),
+            "last_fetched_at": last or None,
+            "available": True,
+        }
+    except Exception as e:
+        log.warning(f"site_index_status | client={client_id} | {type(e).__name__}: {e}")
+        return {"chunks": 0, "pages": 0, "last_fetched_at": None, "available": False}
+
+
+async def list_clients_with_website() -> list[tuple[str, str]]:
+    """(client_id, website) das contas ativas/sandbox com site cadastrado — pro job de releitura."""
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("client_id,website,onboarding_status")
+        .neq("website", "").in_("onboarding_status", ["active", "sandbox"]).execute()
+    )
+    return [
+        (str(r.get("client_id") or ""), str(r.get("website") or ""))
+        for r in (resp.data or []) if (r.get("client_id") and (r.get("website") or "").strip())
+    ]
+
+
 async def get_client_by_evolution_instance(instance: str) -> ClientIdentity | None:
     """
     Roteamento de ENTRADA do canal Evolution: descobre o cliente HUMA a

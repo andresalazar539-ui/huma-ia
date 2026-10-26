@@ -579,6 +579,12 @@ async def _run_market_analysis(client_id: str) -> dict:
         # F3: passa o texto do site (se houver) pra instanciar o playbook com
         # fatos reais do negócio. Falha de leitura não bloqueia: segue sem site.
         source_text = await _fetch_site_text(identity.website)
+        # Site inteiro vira memória da IA (2026-10-26), em paralelo com a análise.
+        try:
+            from huma.services import site_index
+            site_index.schedule(client_id, identity.website or "", "onboarding")
+        except Exception as e:
+            log.warning(f"Site | agendamento no onboarding falhou | client={client_id} | {type(e).__name__}: {e}")
         analysis = await analyze_market(identity.model_dump(mode="json"), source_text=source_text)
         market_status = analysis.get("status", "error")
         if market_status != "completed":

@@ -549,11 +549,22 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
             except Exception as e:
                 log.error(f"Stock preflight falhou (segue sem) | {phone} | {type(e).__name__}: {e}")
 
+            # Site do negócio como memória (2026-10-26): trechos do site que
+            # casam com a pergunta entram no prompt deste turno. Cliente sem
+            # site = "" com uma leitura no Redis. Nunca segura a resposta.
+            try:
+                from huma.services import site_index
+                _site_ctx = await site_index.context_for(client_id, unified_text)
+            except Exception as e:
+                log.warning(f"Site | fontes indisponíveis | {phone} | {type(e).__name__}: {e}")
+                _site_ctx = ""
+
             ai_result = await ai.generate_response(
                 client_data, conv, unified_text,
                 image_url=unified_image,
                 use_fast_model=not use_sonnet,
                 tier=tier,
+                extra_context=_site_ctx,
             )
 
             # ── PT-BR JUDGE (v12.x) ──

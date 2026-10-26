@@ -1971,7 +1971,7 @@ def _build_reply_tool_compact(
 # GERAÇÃO DE RESPOSTA
 # ================================================================
 
-async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False, tier: int = 3, followup_hint: str = ""):
+async def generate_response(identity, conv, user_text, image_url=None, use_fast_model=False, tier: int = 3, followup_hint: str = "", extra_context: str = ""):
     """
     Gera resposta da IA usando tool_use para garantir JSON válido.
 
@@ -2024,6 +2024,12 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
                 dynamic += profile_prompt
         except Exception:
             pass
+
+    # Contexto do turno vindo de fora (2026-10-26: FONTES DO SITE, trechos do
+    # site do negócio que casam com a pergunta). Entra no bloco dinâmico,
+    # depois do cache; vazio = nada muda.
+    if extra_context and extra_context.strip():
+        dynamic += "\n\n" + extra_context.strip()
 
     # Modelos que rejeitam tool_choice forçado (Sonnet 5.5+): quem garante a
     # tool é o prompt. Entra no bloco dinâmico pra não mexer no cache do
