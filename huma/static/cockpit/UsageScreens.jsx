@@ -510,7 +510,7 @@ const ParaVoceResultado = ({ report, onGoto }) => {
   let subtitle = 'Carregando os números…';
   if (vendas && vendas.receita_cents > 0) {
     title = (<>
-      HUMA gerou <span style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>{vendas.receita_display}</span> em receita
+      HUMA gerou <span style={{ fontFamily: 'var(--font-serif)' }}>{vendas.receita_display}</span> em receita
     </>);
     subtitle = [
       `${vendas.pagamentos} ${vendas.pagamentos === 1 ? 'pagamento' : 'pagamentos'} em 30 dias`,
@@ -519,7 +519,7 @@ const ParaVoceResultado = ({ report, onGoto }) => {
     ].filter(Boolean).join(' · ');
   } else if (agenda && agenda.agendamentos > 0) {
     title = (<>
-      <span style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>{agenda.agendamentos}</span> agendamentos em 30 dias
+      <span style={{ fontFamily: 'var(--font-serif)' }}>{agenda.agendamentos}</span> agendamentos em 30 dias
     </>);
     subtitle = [
       agenda.proximos ? `${agenda.proximos} ainda por vir` : null,
@@ -527,7 +527,7 @@ const ParaVoceResultado = ({ report, onGoto }) => {
     ].filter(Boolean).join(' · ') || 'A HUMA cuidando da sua agenda.';
   } else if (atend) {
     title = (<>
-      <span style={{ fontFamily: 'var(--font-serif)', fontStyle: 'italic' }}>{atend.conversas_ativas}</span> conversas nos últimos 30 dias
+      <span style={{ fontFamily: 'var(--font-serif)' }}>{atend.conversas_ativas}</span> conversas nos últimos 30 dias
     </>);
     subtitle = atend.conversas_novas
       ? `${atend.conversas_novas} leads novos chegaram nesse período.`
@@ -902,7 +902,7 @@ const IndicacaoScreen = ({ onBack, onGoto, billing: shellBilling = null }) => {
             <div style={{ flex: 1 }}>
               <Eyebrow>seu nível</Eyebrow>
               <div style={{
-                fontFamily: 'var(--font-serif)', fontStyle: 'italic',
+                fontFamily: 'var(--font-serif)',
                 fontSize: 40, lineHeight: 1, color: 'var(--ink)', marginTop: 4,
                 letterSpacing: '-0.01em',
               }}>

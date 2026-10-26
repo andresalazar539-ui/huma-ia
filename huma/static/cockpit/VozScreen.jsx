@@ -221,7 +221,7 @@ const ClonarModal = ({ onClose, onDone }) => {
               <style>{'@keyframes vozPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }'}</style>
               <div style={{
                 padding: '14px 18px', borderRadius: 12, background: 'var(--paper-sunk)', border: '1px solid var(--paper-edge)',
-                fontFamily: 'var(--font-serif)', fontStyle: 'italic', fontSize: 16, color: 'var(--ink-2)', lineHeight: 1.5,
+                fontFamily: 'var(--font-serif)', fontSize: 16, color: 'var(--ink-2)', lineHeight: 1.5,
               }}>
                 {VOZ_SCRIPT}
               </div>
@@ -455,7 +455,7 @@ const VozScreen = () => {
                   onToggle={() => play(vozAtual.voice_id)}
                   hint="prévia em português"
                 ></VozPlayer>
-                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', marginTop: 10, fontStyle: 'italic', lineHeight: 1.5 }}>
+                <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', marginTop: 10, lineHeight: 1.5 }}>
                   aperte o play pra ouvir como os seus clientes vão te ouvir
                 </div>
               </div>

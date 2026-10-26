@@ -1267,7 +1267,7 @@ const WhatsAppManualModal = ({ onClose, onConnected }) => {
         <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 19, color: 'var(--ink)', letterSpacing: '-0.01em' }}>Conectar um número que já está na API oficial</div>
         <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.6 }}>
           No <b>Meta Business</b> → WhatsApp → <b>Configuração da API</b>: copie o <b>ID da conta do WhatsApp Business</b> e o <b>ID do número de telefone</b>.
-          Em <b>Usuários do sistema</b>, gere um token <b>permanente</b> com as permissões <i>whatsapp_business_messaging</i> e <i>whatsapp_business_management</i>.
+          Em <b>Usuários do sistema</b>, gere um token <b>permanente</b> com as permissões <b>whatsapp_business_messaging</b> e <b>whatsapp_business_management</b>.
         </div>
         <div>{label('ID da conta do WhatsApp Business (WABA)')}<input value={form.waba_id} onChange={set('waba_id')} placeholder="1234567890123456" style={inputStyle}/></div>
         <div>{label('ID do número de telefone')}<input value={form.phone_number_id} onChange={set('phone_number_id')} placeholder="1234567890123456" style={inputStyle}/></div>

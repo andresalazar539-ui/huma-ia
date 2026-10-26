@@ -24,7 +24,7 @@ const useRefI = React.useRef;
 const iniCard = { border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', boxShadow: '0 1px 2px rgba(28,23,20,0.05)' };
 const iniHeroStyle = { fontFamily: 'var(--font-serif)', fontSize: 31, lineHeight: 1.28, letterSpacing: '-0.005em', color: 'var(--ink)', maxWidth: 660, textWrap: 'pretty' };
 
-const IniNum = ({ children }) => <span style={{ color: 'var(--terracotta)', fontStyle: 'italic' }}>{children}</span>;
+const IniNum = ({ children }) => <span style={{ color: 'var(--terracotta)' }}>{children}</span>;
 
 // Ícone de lua (o Atoms.jsx do repo não tem "moon" — inline local pra não tocar no Atoms)
 const IniMoon = ({ size = 14 }) => (

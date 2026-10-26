@@ -1218,7 +1218,7 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
         <>
           {transcriptBox}
           {result.summary ? (
-            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4 }}>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, color: 'var(--ink)', lineHeight: 1.4 }}>
               {result.summary}
             </div>
           ) : null}
@@ -1266,7 +1266,7 @@ const NegocioVoiceBrief = ({ settings, applyFields }) => {
           {err ? (
             <div role="alert" style={{ ...p, color: 'var(--ember-ink)', padding: '12px 14px', borderRadius: 12, background: 'var(--ember-soft)' }}>{err}</div>
           ) : (
-            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4 }}>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 18, color: 'var(--ink)', lineHeight: 1.4 }}>
               Pronto. A HUMA já atende assim a partir da próxima mensagem.
             </div>
           )}
@@ -1321,7 +1321,7 @@ const NegocioKnowledge = ({ settings, patch, applyFields }) => {
         background: 'var(--paper-raised)',
       }}>
         <div style={{
-          fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
+          fontFamily: 'var(--font-serif)', fontSize: 22,
           color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance',
         }}>
           HUMA aprendeu estas coisas sobre {settings.business_name || 'seu negócio'} no onboarding. Você pode ajustar a qualquer momento, quanto mais HUMA sabe, melhor ela atende.
@@ -1509,7 +1509,7 @@ const NegocioMissao = ({ settings, patch }) => {
   return (
     <>
       <div style={{ padding: 20, border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)' }}>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
           O que a HUMA faz por {settings.business_name || 'seu negócio'}. Cada item ligado muda o funil, as ferramentas e as regras que ela segue na conversa.
         </div>
       </div>
@@ -1703,7 +1703,7 @@ const NegocioVende = ({ settings, reloadSettings }) => {
   return (
     <>
       <div style={{ padding: 20, border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
           {pb.has_playbook
             ? <>É assim que a HUMA vende pra {settings.business_name || 'seu negócio'}: montado a partir do cadastro{pb.website ? ' e do site' : ''}. Tudo aqui é seu, edite à vontade.</>
             : <>A HUMA ainda não tem um playbook pra {settings.business_name || 'seu negócio'}. Preencha o tipo de negócio e a descrição em Informações e clique em Gerar.</>}
@@ -1841,7 +1841,7 @@ const NegocioGaps = ({ onChanged }) => {
   return (
     <>
       <div style={{ padding: 20, border: '1px solid var(--paper-edge)', borderRadius: 16, background: 'var(--paper-raised)' }}>
-        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic', color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640, textWrap: 'balance' }}>
           Toda vez que a HUMA diz "vou confirmar e te retorno", a dúvida do lead cai aqui. Responda uma vez: vira FAQ e, da próxima, ela responde na hora.
         </div>
       </div>
@@ -2276,7 +2276,7 @@ const PerfilYou = ({ settings, patch }) => {
         background: 'var(--paper-raised)',
       }}>
         <div style={{
-          fontFamily: 'var(--font-serif)', fontSize: 22, fontStyle: 'italic',
+          fontFamily: 'var(--font-serif)', fontSize: 22,
           color: 'var(--ink)', lineHeight: 1.4, maxWidth: 640,
         }}>
           Olá{first ? `, ${first}` : ''}. É em seu nome que a HUMA responde.
