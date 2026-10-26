@@ -402,10 +402,15 @@ async def process_web_audio(
     content_type: str = "",
     filename: str = "",
     client_ip: str = "",
+    respond: bool = True,
 ) -> dict:
     """
     Áudio do visitante do site → transcrição → mesmo pipeline da mensagem
     de texto. Devolve o dict de process_web_message mais `transcript`.
+
+    respond=False (ditado, estilo Fin): só transcreve e devolve o texto;
+    o áudio NÃO é guardado nem vira mensagem. O visitante revisa o texto
+    no campo e envia como mensagem comum pelo /message.
 
     Ordem importa: transcreve ANTES de guardar o arquivo; se não houver
     fala, nada é gravado nem debitado e o visitante recebe um pedido pra
@@ -455,11 +460,13 @@ async def process_web_audio(
         log.info(f"Web áudio | sem fala | client={client_id} | {phone} | size={len(raw)}")
         return {"status": "no_speech", "reply_parts": [_NO_SPEECH_REPLY], "history_len": 0, "transcript": ""}
 
+    log.info(f"Web áudio | transcrito | client={client_id} | {phone} | size={len(raw)} | chars={len(text)} | respond={respond}")
+    if not respond:
+        return {"status": "ok", "reply_parts": [], "history_len": 0, "transcript": text}
+
     url = await lead_media.upload(client_id, phone, "audio", raw, content_type)
     if url:
         await lead_media.push_pending(client_id, phone, "audio", url)
-
-    log.info(f"Web áudio | transcrito | client={client_id} | {phone} | size={len(raw)} | chars={len(text)}")
     result = await process_web_message(client_id, session_id, text[:800], client_ip=client_ip)
     result["transcript"] = text
     return result

@@ -74,6 +74,14 @@ class TestProcessWebAudio:
         assert calls["pending"][0][3] == "https://storage/lead/x.webm"
         assert calls["process"] == ["quero marcar um clareamento"]
 
+    def test_ditado_so_transcreve_sem_guardar_nem_responder(self, monkeypatch):
+        calls = _wire(monkeypatch)
+        out = asyncio.run(wc.process_web_audio("cli_web", SID, b"x" * 5000, "audio/webm", respond=False))
+        assert out == {"status": "ok", "reply_parts": [], "history_len": 0, "transcript": "quero marcar um clareamento"}
+        assert calls["transcribe"][0]["quality"] == "best"
+        # O áudio não vira mensagem: nada no Storage, nada pendente, nada processado.
+        assert calls["upload"] == [] and calls["pending"] == [] and calls["process"] == []
+
     def test_sem_fala_nao_grava_nem_processa(self, monkeypatch):
         calls = _wire(monkeypatch, transcript=None)
         out = asyncio.run(wc.process_web_audio("cli_web", SID, b"x" * 5000, "audio/webm"))
@@ -123,25 +131,40 @@ class TestRota:
         monkeypatch.setattr(routes, "_get_public_client", _pub)
         return TestClient(app)
 
-    def _post(self, api, data=b"x" * 5000, ctype="audio/webm", sid=SID):
+    def _post(self, api, data=b"x" * 5000, ctype="audio/webm", sid=SID, step=None):
+        form = {"session_id": sid}
+        if step:
+            form["step"] = step
         return api.post(
             f"/api/web/cli_web/audio",
-            data={"session_id": sid},
+            data=form,
             files={"file": ("audio.webm", io.BytesIO(data), ctype)},
         )
 
     def test_feliz(self, api, monkeypatch):
         seen = {}
 
-        async def _proc(client_id, session_id, raw, content_type="", filename="", client_ip=""):
-            seen.update(client_id=client_id, session_id=session_id, size=len(raw), content_type=content_type, filename=filename)
+        async def _proc(client_id, session_id, raw, content_type="", filename="", client_ip="", respond=True):
+            seen.update(client_id=client_id, session_id=session_id, size=len(raw), content_type=content_type, filename=filename, respond=respond)
             return {"status": "ok", "transcript": "oi", "reply_parts": ["Oi!"], "history_len": 2, "cards": []}
 
         monkeypatch.setattr(wc, "process_web_audio", _proc)
         r = self._post(api)
         assert r.status_code == 200, r.text
         assert r.json() == {"status": "ok", "transcript": "oi", "reply_parts": ["Oi!"], "history_len": 2, "cards": []}
-        assert seen == {"client_id": "cli_web", "session_id": SID, "size": 5000, "content_type": "audio/webm", "filename": "audio.webm"}
+        assert seen == {"client_id": "cli_web", "session_id": SID, "size": 5000, "content_type": "audio/webm", "filename": "audio.webm", "respond": True}
+
+    def test_step_transcribe_nao_responde(self, api, monkeypatch):
+        seen = {}
+
+        async def _proc(client_id, session_id, raw, content_type="", filename="", client_ip="", respond=True):
+            seen["respond"] = respond
+            return {"status": "ok", "transcript": "oi", "reply_parts": [], "history_len": 0}
+
+        monkeypatch.setattr(wc, "process_web_audio", _proc)
+        r = self._post(api, step="transcribe")
+        assert r.status_code == 200 and r.json()["transcript"] == "oi"
+        assert seen["respond"] is False
 
     def test_tipo_recusado(self, api):
         assert self._post(api, ctype="application/pdf").status_code == 415

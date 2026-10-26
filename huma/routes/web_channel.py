@@ -144,13 +144,16 @@ async def web_audio(
     request: Request,
     session_id: str = Form(..., min_length=16, max_length=64),
     file: UploadFile = File(...),
+    step: str = Form("full"),
 ) -> dict:
     """
     Áudio do visitante (2026-10-25): o lead fala, a HUMA responde em texto.
 
-    multipart: session_id + file (webm/ogg/mp4/wav...). Mesmas proteções
-    do /message (IP, sessão, tetos) mais tamanho, tipo e teto diário de
-    áudios por sessão. Devolve o mesmo formato do /message + `transcript`.
+    multipart: session_id + file (webm/ogg/mp4/wav...) + step. Mesmas
+    proteções do /message (IP, sessão, tetos) mais tamanho, tipo e teto
+    diário de áudios por sessão. Devolve o mesmo formato do /message +
+    `transcript`. step="transcribe": só transcreve e devolve o texto na
+    hora (o widget manda o texto pelo /message em seguida).
     """
     ip = request.client.host if request.client else "unknown"
     if not _check_ip_rate(ip):
@@ -172,6 +175,7 @@ async def web_audio(
     result = await web_channel.process_web_audio(
         client_id, session_id, raw, content_type=content_type,
         filename=file.filename or "", client_ip=ip,
+        respond=(step or "full").strip().lower() != "transcribe",
     )
 
     status = result.get("status", "ok")
