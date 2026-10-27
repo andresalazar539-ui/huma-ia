@@ -142,9 +142,15 @@ def build_overview(
     pack_prices: dict,
     overage_price: float,
     until: datetime | None = None,
+    fixed_costs: dict | None = None,
 ) -> dict:
     """
     Monta o painel do dono da HUMA.
+
+    `fixed_costs` (2026-10-27, opcional): saída de cost_ledger.prorate
+    ({total_brl, itens, por_categoria}) com os custos fixos rateados no
+    período. Com ele o painel ganha a seção `custos` e a margem ALL-IN
+    (receita menos IA menos dados menos fixos). Sem ele, tudo igual.
 
     Args:
         clients: linhas de `clients` (todas as contas).
@@ -244,8 +250,8 @@ def build_overview(
     conversas_total = sum(conversas_por_cliente.values())
     conversas_atendidas = sum(int((u or {}).get("conversations") or 0) for u in usage_by_client.values())
     strong_calls = 0
-    custo_por_grupo: dict[str, float] = {"conversas": 0.0, "onboarding": 0.0, "configuracao": 0.0, "outros": 0.0}
-    chamadas_por_grupo: dict[str, int] = {"conversas": 0, "onboarding": 0, "configuracao": 0, "outros": 0}
+    custo_por_grupo: dict[str, float] = {"conversas": 0.0, "onboarding": 0.0, "configuracao": 0.0, "inteligencia": 0.0, "outros": 0.0}
+    chamadas_por_grupo: dict[str, int] = {"conversas": 0, "onboarding": 0, "configuracao": 0, "inteligencia": 0, "outros": 0}
     conv_claude_calls = 0
     conv_strong_calls = 0
     onboardings = 0          # contas que gastaram com onboarding no período
@@ -266,6 +272,13 @@ def build_overview(
     indicados = [c for c in clients if str(c.get("referred_by") or "").strip()]
     convertidos = [c for c in indicados if c.get("referral_credited_at")]
 
+    # Custos fixos (2026-10-27): rateados por conta ATIVA (pagante, com ou
+    # sem cortesia: toda conta ligada usa a infra). Sem fixos = 0.
+    fixos = fixed_costs if isinstance(fixed_costs, dict) else {}
+    fixos_total = round(float(fixos.get("total_brl") or 0), 2)
+    contas_ativas = len(pagantes)
+    rateio_fixo = round(fixos_total / contas_ativas, 2) if contas_ativas else 0.0
+
     rows: list[dict] = []
     for c in clients:
         cid = str(c.get("client_id") or "")
@@ -276,7 +289,12 @@ def build_overview(
         custo = round(float(usage.get("cost_brl") or 0), 2)
         grupos = usage.get("by_group") or {}
         margem = round(rec["total_brl"] - custo, 2)
+        infra = rateio_fixo if cid in pagantes else 0.0
+        margem_all_in = round(rec["total_brl"] - custo - infra, 2)
         rows.append({
+            "infra_rateada_brl": infra,
+            "margem_all_in_brl": margem_all_in,
+            "margem_all_in_pct": _pct(margem_all_in, rec["total_brl"]) if rec["total_brl"] else None,
             "client_id": cid,
             "nome": str(c.get("business_name") or cid),
             "email": str(c.get("owner_email") or ""),
@@ -443,6 +461,62 @@ def build_overview(
             "display": brl(receita_total["total_brl"] - custo_total),
             "pct": _pct(receita_total["total_brl"] - custo_total, receita_total["total_brl"]) if receita_total["total_brl"] else None,
         },
+        # Custos separados por origem + margem ALL-IN (2026-10-27, pedido do
+        # André: "margem na ponta do lápis"). `ia` = tudo que ai_usage mediu
+        # (Claude, voz, transcrição) MENOS o grupo inteligência; `dados` =
+        # grupo inteligência (armazenamento da trilha, agregados, previsão);
+        # `fixos` = tabela fixed_costs rateada por dia no período.
+        "custos": _custos_section(receita_total, custo_total, custo_por_grupo, fixos, fixos_total, contas_ativas,
+                                  conversas_atendidas, onboardings),
         "indicacoes": {"indicados": len(indicados), "convertidos": len(convertidos)},
         "clientes": rows,
+    }
+
+
+def _custos_section(
+    receita_total: dict,
+    custo_total: float,
+    custo_por_grupo: dict[str, float],
+    fixos: dict,
+    fixos_total: float,
+    contas_ativas: int,
+    conversas_atendidas: int,
+    onboardings: int,
+) -> dict:
+    """Seção `custos` do painel: tudo separado por origem e a margem all-in. Puro."""
+    receita = float(receita_total.get("total_brl") or 0)
+    dados = round(float(custo_por_grupo.get("inteligencia") or 0), 2)
+    ia = round(custo_total - dados, 2)
+    conversas = round(float(custo_por_grupo.get("conversas") or 0), 2)
+    onboarding = round(float(custo_por_grupo.get("onboarding") or 0), 2)
+    configuracao = round(float(custo_por_grupo.get("configuracao") or 0), 2)
+    outros = round(float(custo_por_grupo.get("outros") or 0), 2)
+    total = round(ia + dados + fixos_total, 2)
+    margem = round(receita - total, 2)
+    fixo_por_conversa = round(fixos_total / conversas_atendidas, 4) if conversas_atendidas else 0.0
+    por_conversa_all_in = round(conversas / conversas_atendidas + fixo_por_conversa, 4) if conversas_atendidas else 0.0
+    return {
+        "receita_brl": round(receita, 2),
+        "ia_brl": ia, "ia_display": brl(ia),
+        "conversas_brl": conversas, "conversas_display": brl(conversas),
+        "onboarding_brl": onboarding, "onboarding_display": brl(onboarding),
+        "configuracao_brl": configuracao, "configuracao_display": brl(configuracao),
+        "outros_brl": outros, "outros_display": brl(outros),
+        "dados_brl": dados, "dados_display": brl(dados),
+        "fixos_brl": fixos_total, "fixos_display": brl(fixos_total),
+        "fixos_mensal_brl": round(float(fixos.get("mensal_em_vigor_brl") or 0), 2),
+        "fixos_itens": list(fixos.get("itens") or []),
+        "fixos_por_categoria": dict(fixos.get("por_categoria") or {}),
+        "fixos_por_conta_brl": round(fixos_total / contas_ativas, 2) if contas_ativas else 0.0,
+        "contas_ativas": contas_ativas,
+        "total_brl": total, "total_display": brl(total),
+        "total_sobre_receita_pct": _pct(total, receita) if receita else None,
+        "margem_all_in_brl": margem, "margem_all_in_display": brl(margem),
+        "margem_all_in_pct": _pct(margem, receita) if receita else None,
+        "por_conversa_ia_brl": round(conversas / conversas_atendidas, 4) if conversas_atendidas else 0.0,
+        "por_conversa_fixo_brl": fixo_por_conversa,
+        "por_conversa_all_in_brl": por_conversa_all_in,
+        "por_conversa_all_in_display": brl(por_conversa_all_in),
+        "por_onboarding_brl": round(onboarding / onboardings, 2) if onboardings else 0.0,
+        "por_onboarding_display": brl(onboarding / onboardings) if onboardings else "R$ 0,00",
     }

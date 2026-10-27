@@ -680,7 +680,19 @@ async def _process_web_message_locked(
             conv.lead_state, _lead_read, ai_result.get("micro_objective", "")
         )
 
+    _prev_stage = conv.stage
     conv.stage = _apply_stage_action(client_data, conv.stage, ai_result.get("stage_action", "hold"))
+
+    # Memória de inteligência (2026-10-27): espelho do orchestrator.
+    try:
+        from huma.services import intel as _intel
+        _intel.snapshot_turn(
+            client_data, conv, ai_result, _prev_stage,
+            model="sonnet" if locals().get("use_sonnet", True) else "haiku",
+            tier=int(locals().get("tier", 0) or 0),
+        )
+    except Exception as e:
+        log.warning(f"Intel | snapshot ignorado (web) | {phone} | {type(e).__name__}: {e}")
 
     # ── Deflection: lead deixou WhatsApp no texto ──
     lead_phone = extract_br_phone(text)

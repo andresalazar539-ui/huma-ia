@@ -343,6 +343,37 @@ REPLY_SINGLE_MODEL = os.getenv("REPLY_SINGLE_MODEL", "true").lower() == "true"
 # aceitam `effort` (5.x, 4.6+). "low" é o recomendado pra chat; fixo por
 # rota porque mudar entre chamadas invalida o cache das mensagens.
 AI_EFFORT_REPLY = os.getenv("AI_EFFORT_REPLY", "low").strip().lower()
+# Memória de inteligência (2026-10-27): foto de cada turno da IA em
+# turn_snapshots e diário de eventos em lead_events (scripts/
+# migration_intel.sql). Fire-and-forget, nunca atrasa o lead; sem a
+# migration só loga WARNING. false = não grava nada.
+INTEL_EVENTS_ENABLED = os.getenv("INTEL_EVENTS_ENABLED", "true").lower() == "true"
+
+# Trilha de eventos "tudo é evento" (2026-10-27): tabela única `events`
+# (scripts/migration_events.sql) alimentada por 5 camadas: gatilho no banco
+# (db), middleware de requisição (http), payload cru de webhook (webhook),
+# chamadas externas via httpx (ext) e eventos semânticos do app (app).
+# Fire-and-forget em lote; sem a migration só WARNING. ENABLED=false
+# desliga tudo; HTTP/EXT desligam só aquela camada.
+EVENT_TRAIL_ENABLED = os.getenv("EVENT_TRAIL_ENABLED", "true").lower() == "true"
+EVENT_TRAIL_HTTP = os.getenv("EVENT_TRAIL_HTTP", "true").lower() == "true"
+EVENT_TRAIL_EXT = os.getenv("EVENT_TRAIL_EXT", "true").lower() == "true"
+# Retenção (dias): payload cru de webhook e linhas http/ext. db/app ficam.
+try:
+    EVENTS_WEBHOOK_RETENTION_DAYS = int(os.getenv("EVENTS_WEBHOOK_RETENTION_DAYS", "30"))
+except ValueError:
+    EVENTS_WEBHOOK_RETENTION_DAYS = 30
+try:
+    EVENTS_HTTP_RETENTION_DAYS = int(os.getenv("EVENTS_HTTP_RETENTION_DAYS", "400"))
+except ValueError:
+    EVENTS_HTTP_RETENTION_DAYS = 400
+# Custo do grupo "inteligência de dados": espaço das tabelas da camada de
+# dados × preço de disco do Supabase (USD por GB-mês; Pro = 0,125). O job
+# diário grava a fatia do dia em ai_usage (purpose events_storage).
+try:
+    SUPABASE_USD_PER_GB_MONTH = float(os.getenv("SUPABASE_USD_PER_GB_MONTH", "0.125"))
+except ValueError:
+    SUPABASE_USD_PER_GB_MONTH = 0.125
 
 # Medição de custos fora do Claude (2026-10-10): áudio clonado e transcrição
 # entram na mesma tabela ai_usage (model = "elevenlabs" | "whisper-groq" |

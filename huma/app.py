@@ -108,13 +108,25 @@ def create_app() -> FastAPI:
         ],
     )
 
-    # Request ID middleware
+    # Request ID middleware (reaproveita o id da trilha de eventos quando ela
+    # está ligada, pra o cabeçalho e a tabela `events` falarem do mesmo id).
     @app.middleware("http")
     async def add_request_id(request: Request, call_next):
-        request.state.request_id = str(uuid.uuid4())[:8]
+        request.state.request_id = request.scope.get("huma_request_id") or str(uuid.uuid4())[:8]
         response = await call_next(request)
         response.headers["X-Request-ID"] = request.state.request_id
         return response
+
+    # Trilha de eventos "tudo é evento" (2026-10-27): camada http + webhook
+    # cru. É o middleware mais externo (adicionado por último), então vê a
+    # requisição inteira, inclusive o que os outros middlewares negam.
+    try:
+        from huma.services.event_trail import TrailMiddleware, install_httpx_trail
+
+        app.add_middleware(TrailMiddleware, router=app.router)
+        install_httpx_trail()
+    except Exception as e:
+        log.error(f"EventTrail não ligou | {type(e).__name__}: {e}")
 
     # Permissões por papel (equipe do Cockpit, 2026-09-10).
     # Só age em sessão por cookie cujo token carrega o e-mail de um membro
@@ -263,6 +275,12 @@ def create_app() -> FastAPI:
             await asyncio.sleep(5)
         except asyncio.CancelledError:
             log.warning("Shutdown grace period cancelado")
+        # Trilha de eventos: grava o que ainda está na fila antes de cair.
+        try:
+            from huma.services import event_trail
+            await event_trail.flush()
+        except Exception as e:
+            log.warning(f"EventTrail flush no shutdown falhou | {type(e).__name__}: {e}")
         await cache.close()
         log.info("Shutdown concluído")
 

@@ -23,9 +23,15 @@ const adBrl = (v) => `R$ ${Number(v || 0).toFixed(2).replace('.', ',').replace(/
 
 // Painel do dono (2026-10-25): o total de IA vem SEMPRE acompanhado de onde
 // nasceu, pra onboarding de conta de teste nunca parecer custo de conversa.
-const AD_GROUP_LABELS = { conversas: 'Conversas', onboarding: 'Onboarding', configuracao: 'Configuração', outros: 'Outros' };
+const AD_GROUP_LABELS = { conversas: 'Conversas', onboarding: 'Onboarding', configuracao: 'Configuração', inteligencia: 'Inteligência de dados', outros: 'Outros' };
+const AD_LAYER_LABELS = { db: 'Banco', app: 'Produto', http: 'Requisição', ext: 'Serviço externo', webhook: 'Webhook' };
+const AD_COST_CATEGORIES = { infra: 'Infraestrutura', dados: 'Dados e inteligência', ferramenta: 'Ferramentas', pessoas: 'Pessoas', outro: 'Outro' };
+const AD_COST_PRESETS = [
+  { name: 'Railway', category: 'infra' }, { name: 'Supabase Pro', category: 'infra' }, { name: 'Redis', category: 'infra' },
+  { name: 'Sentry', category: 'ferramenta' }, { name: 'Resend (e-mail)', category: 'ferramenta' }, { name: 'Domínio', category: 'outro' },
+];
 const adGroupBreakdown = (porGrupo) => {
-  const parts = ['conversas', 'onboarding', 'configuracao', 'outros']
+  const parts = ['conversas', 'onboarding', 'configuracao', 'inteligencia', 'outros']
     .map(g => ({ g, v: ((porGrupo || {})[g] || {}) }))
     .filter(x => (x.v.brl || 0) > 0)
     .map(x => `${AD_GROUP_LABELS[x.g]} ${x.v.display}`);
@@ -70,6 +76,34 @@ async function patchAdminRequest(id, body) {
   const r = await fetch(`/api/admin/custom-requests/${encodeURIComponent(id)}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify(body),
   });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+// Trilha de eventos e custos fixos (2026-10-27)
+async function fetchAdminEvents({ clientId, layer, phone, limit }) {
+  const p = new URLSearchParams();
+  if (clientId) p.set('client_id', clientId);
+  if (layer) p.set('layer', layer);
+  if (phone) p.set('phone', phone);
+  p.set('limit', limit || 100);
+  const r = await fetch(`/api/admin/events?${p.toString()}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+async function fetchFixedCosts() {
+  const r = await fetch('/api/admin/fixed-costs', { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+async function saveFixedCost(id, body) {
+  const r = await fetch(id ? `/api/admin/fixed-costs/${encodeURIComponent(id)}` : '/api/admin/fixed-costs', {
+    method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS }, body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+async function deleteFixedCost(id) {
+  const r = await fetch(`/api/admin/fixed-costs/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { ...AUTH_HEADERS } });
   if (!r.ok) throw new Error(await _readApiError(r));
   return r.json();
 }
@@ -218,6 +252,8 @@ const AdAccountCard = ({ clientId, days, onClose }) => {
         ))}
       </div>
 
+      <AdTimeline clientId={clientId} initial={d.trilha || []} />
+
       <div style={{ ...adCard, padding: '16px 18px', overflowX: 'auto' }}>
         <div style={{ ...adTh, marginBottom: 10 }}>Razão de conversas (últimas 40 linhas)</div>
         <div style={{ minWidth: 640 }}>
@@ -237,12 +273,176 @@ const AdAccountCard = ({ clientId, days, onClose }) => {
   );
 };
 
+/* ---------------- Trilha de eventos (2026-10-27) ---------------- */
+const adLayerColor = (layer) => ({ db: 'var(--ink-2)', app: 'var(--success)', http: 'var(--ink-3)', ext: 'var(--warning)', webhook: 'var(--terracotta-ink)' }[layer] || 'var(--ink-3)');
+const adStatusColor = (status) => (!status ? 'var(--ink-3)' : (/^[45]/.test(status) || /^erro/.test(status) ? 'var(--danger)' : 'var(--success)'));
+
+const AdEventRow = ({ ev }) => {
+  const [open, setOpen] = useStateAd(false);
+  return (
+    <div style={{ borderTop: '1px solid var(--paper-edge)', padding: '7px 0', fontFamily: 'var(--font-sans)', fontSize: 12.5 }}>
+      <div onClick={() => setOpen(o => !o)} style={{ display: 'grid', gridTemplateColumns: '128px 96px minmax(180px, 1.4fr) minmax(120px, 1fr) 70px 60px', gap: 10, alignItems: 'center', cursor: 'pointer' }}>
+        <span style={{ color: 'var(--ink-3)', whiteSpace: 'nowrap' }}>{ev.quando}</span>
+        <span style={{ color: adLayerColor(ev.camada), fontSize: 11.5, fontWeight: 500 }}>{ev.camada_label}</span>
+        <span style={{ color: 'var(--ink)', fontFamily: ev.camada === 'http' || ev.camada === 'ext' ? 'var(--font-mono)' : 'var(--font-sans)', fontSize: ev.camada === 'http' || ev.camada === 'ext' ? 11.5 : 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ev.tipo}>{ev.tipo}</span>
+        <span style={{ color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={ev.resumo}>{ev.resumo || ev.ator}</span>
+        <span style={{ color: adStatusColor(ev.status), textAlign: 'right' }}>{ev.status || ''}</span>
+        <span style={{ color: 'var(--ink-3)', textAlign: 'right' }}>{ev.ms === null || ev.ms === undefined ? '' : `${ev.ms} ms`}</span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 6, background: 'var(--paper)', border: '1px solid var(--paper-edge)', borderRadius: 8, padding: '8px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--ink-2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 260, overflowY: 'auto' }}>
+          {`quem: ${ev.ator || '?'}   lead: ${ev.phone || '-'}   request: ${ev.request_id || '-'}\n`}{JSON.stringify(ev.data || {}, null, 2)}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AdTimeline = ({ clientId, initial }) => {
+  const [layer, setLayer] = useStateAd('');
+  const [items, setItems] = useStateAd(initial || []);
+  const [busy, setBusy] = useStateAd(false);
+  const [err, setErr] = useStateAd('');
+  const load = (lyr) => {
+    setBusy(true); setErr('');
+    fetchAdminEvents({ clientId, layer: lyr, limit: 120 }).then(d => setItems(d.items || [])).catch(e => setErr(e.message || 'Não carregou.')).finally(() => setBusy(false));
+  };
+  const pick = (lyr) => { setLayer(lyr); load(lyr); };
+  const chip = (id, label) => <button key={id} onClick={() => pick(id)} style={adChip(layer === id)}>{label}</button>;
+  return (
+    <div style={{ ...adCard, padding: '16px 18px', overflowX: 'auto' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={adTh}>Linha do tempo (trilha de eventos)</div>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {chip('', 'Tudo')}{chip('db', 'Banco')}{chip('app', 'Produto')}{chip('http', 'Requisições')}{chip('ext', 'Serviços externos')}{chip('webhook', 'Webhooks')}
+          <Button variant="ghost" size="sm" onClick={() => load(layer)} disabled={busy}>{busy ? 'Lendo…' : 'Atualizar'}</Button>
+        </div>
+      </div>
+      {err && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--danger)' }}>{err}</div>}
+      <div style={{ minWidth: 760 }}>
+        {items.map(ev => <AdEventRow key={ev.id} ev={ev} />)}
+        {items.length === 0 && !busy && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Nenhum evento registrado ainda. A trilha começa a gravar depois da migration de eventos; cada mudança no banco, requisição, chamada externa e webhook desta conta aparece aqui.</div>}
+      </div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 10, lineHeight: 1.5 }}>Clique numa linha pra ver o detalhe. Banco = o que mudou (antes e depois, sem segredos). Produto = o porquê (quem assumiu, o que conectou). Requisição e serviço externo = quem fez, quanto demorou, deu erro?</div>
+    </div>
+  );
+};
+
+const AdTrailSummary = ({ trilha }) => {
+  const cams = Object.entries((trilha || {}).por_camada || {});
+  if (!cams.length) {
+    return <div style={{ ...adCard, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>A trilha ainda não tem eventos neste período. Depois da migration de eventos, tudo que acontece na HUMA (banco, produto, requisições, serviços externos e webhooks) passa a contar aqui.</div>;
+  }
+  const order = ['http', 'ext', 'db', 'app', 'webhook'];
+  cams.sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]));
+  return (
+    <Grid cols={cams.length >= 4 ? 4 : cams.length}>
+      {cams.map(([layer, c]) => (
+        <div key={layer} style={{ ...adCard, padding: '14px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <div style={{ fontFamily: 'var(--font-serif)', fontSize: 22, color: 'var(--ink)' }}>{(c.eventos || 0).toLocaleString('pt-BR')}</div>
+            <div style={{ ...adTh, color: adLayerColor(layer) }}>{AD_LAYER_LABELS[layer] || layer}</div>
+            {c.erros > 0 && <div style={{ marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--danger)' }}>{c.erros} com erro</div>}
+          </div>
+          <div style={{ marginTop: 8 }}>
+            {(c.tipos || []).slice(0, 6).map(t => (
+              <div key={t.kind} style={{ display: 'flex', gap: 8, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-2)', padding: '2px 0' }}>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: layer === 'http' || layer === 'ext' ? 'var(--font-mono)' : 'var(--font-sans)', fontSize: 11.5 }} title={t.kind}>{t.kind}</span>
+                <span style={{ color: t.erros ? 'var(--danger)' : 'var(--ink-3)' }}>{t.n}{t.erros ? ` (${t.erros} erro)` : ''}</span>
+                {t.p50_ms !== null && t.p50_ms !== undefined && <span style={{ color: 'var(--ink-3)', minWidth: 52, textAlign: 'right' }}>{t.p50_ms} ms</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </Grid>
+  );
+};
+
+/* ---------------- Custos fixos (2026-10-27) ---------------- */
+const AdFixedCosts = ({ custos, onChanged }) => {
+  const [list, setList] = useStateAd(null);
+  const [form, setForm] = useStateAd({ name: '', category: 'infra', monthly_brl: '', starts_on: _hojeIso(), ends_on: '', note: '' });
+  const [busy, setBusy] = useStateAd(false);
+  const [msg, setMsg] = useStateAd('');
+  const [editing, setEditing] = useStateAd(null);
+  const load = () => fetchFixedCosts().then(setList).catch(e => setMsg(e.message || 'Não carregou.'));
+  useEffectAd(() => { load(); }, []);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const startEdit = (it) => { setEditing(it.id); setForm({ name: it.name, category: it.category, monthly_brl: it.monthly_brl, starts_on: it.starts_on, ends_on: it.ends_on || '', note: it.note || '' }); };
+  const reset = () => { setEditing(null); setForm({ name: '', category: 'infra', monthly_brl: '', starts_on: _hojeIso(), ends_on: '', note: '' }); };
+  const save = async () => {
+    if (busy) return;
+    setBusy(true); setMsg('');
+    try {
+      await saveFixedCost(editing, { ...form, monthly_brl: Number(form.monthly_brl || 0), ends_on: form.ends_on || null });
+      setMsg('Salvo.'); reset(); await load(); if (onChanged) onChanged();
+    } catch (e) { setMsg(e.message || 'Não salvou.'); }
+    setBusy(false);
+  };
+  const remove = async (it) => {
+    if (!window.confirm(`Apagar "${it.name}"? Se o custo só acabou, prefira dar uma data de fim.`)) return;
+    try { await deleteFixedCost(it.id); await load(); if (onChanged) onChanged(); } catch (e) { setMsg(e.message || 'Não apagou.'); }
+  };
+  const items = (list || {}).items || [];
+  const inp = { ...adInput, width: '100%' };
+  const c = custos || {};
+  return (
+    <div style={{ ...adCard, padding: '16px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={adTh}>Custos fixos da HUMA</div>
+        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)' }}>
+          {items.length ? `${adBrl((list || {}).mensal_em_vigor_brl)} por mês em vigor · ${c.fixos_display || 'R$ 0,00'} caem neste período · ${adBrl(c.fixos_por_conta_brl)} por conta ativa` : 'Nenhum custo cadastrado: a margem all-in ainda é só receita menos IA.'}
+        </span>
+      </div>
+      {items.map(it => (
+        <div key={it.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1.4fr) 120px 110px 170px auto', gap: 10, alignItems: 'center', padding: '7px 0', borderTop: '1px solid var(--paper-edge)', fontFamily: 'var(--font-sans)', fontSize: 13 }}>
+          <span style={{ color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.note}>{it.name}</span>
+          <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>{AD_COST_CATEGORIES[it.category] || it.category}</span>
+          <span style={{ ...adNum, textAlign: 'left' }}>{adBrl(it.monthly_brl)}/mês</span>
+          <span style={{ color: 'var(--ink-3)', fontSize: 12 }}>{adDate(it.starts_on)}{it.ends_on ? ` até ${adDate(it.ends_on)}` : ' em diante'}</span>
+          <span style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+            <Button variant="ghost" size="sm" onClick={() => startEdit(it)}>Editar</Button>
+            <Button variant="ghost" size="sm" onClick={() => remove(it)}>Apagar</Button>
+          </span>
+        </div>
+      ))}
+      <div style={{ marginTop: 12, borderTop: '1px solid var(--paper-edge)', paddingTop: 12 }}>
+        <div style={{ ...adTh, marginBottom: 8 }}>{editing ? 'Editar custo' : 'Adicionar custo'}</div>
+        {!editing && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            {AD_COST_PRESETS.filter(p => !items.some(i => i.name.toLowerCase() === p.name.toLowerCase())).map(p => (
+              <button key={p.name} onClick={() => setForm(f => ({ ...f, name: p.name, category: p.category }))} style={adChip(form.name === p.name)}>{p.name}</button>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr 1fr 1fr', gap: 10 }}>
+          <div><div style={adTh}>Nome</div><input value={form.name} onChange={e => set('name', e.target.value)} style={inp} placeholder="Railway, Supabase Pro, Redis…"/></div>
+          <div><div style={adTh}>Categoria</div><select value={form.category} onChange={e => set('category', e.target.value)} style={inp}>{Object.keys(AD_COST_CATEGORIES).map(k => <option key={k} value={k}>{AD_COST_CATEGORIES[k]}</option>)}</select></div>
+          <div><div style={adTh}>R$ por mês</div><input type="number" step="0.01" value={form.monthly_brl} onChange={e => set('monthly_brl', e.target.value)} style={inp}/></div>
+          <div><div style={adTh}>Desde</div><input type="date" value={form.starts_on} onChange={e => set('starts_on', e.target.value)} style={inp}/></div>
+          <div><div style={adTh}>Até (vazio = em vigor)</div><input type="date" value={form.ends_on} onChange={e => set('ends_on', e.target.value)} style={inp}/></div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+          <input value={form.note} onChange={e => set('note', e.target.value)} style={{ ...adInput, flex: 1, minWidth: 200 }} placeholder="Nota (opcional): plano, moeda, quem paga"/>
+          <Button variant="primary" size="sm" onClick={save} disabled={busy}>{busy ? 'Salvando…' : (editing ? 'Salvar alteração' : 'Adicionar')}</Button>
+          {editing && <Button variant="ghost" size="sm" onClick={reset}>Cancelar</Button>}
+          {msg && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: msg === 'Salvo.' ? 'var(--success)' : 'var(--danger)' }}>{msg}</span>}
+        </div>
+      </div>
+      <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 10, lineHeight: 1.5 }}>
+        Cada custo entra no período pelos dias em vigor (mensal ÷ 30,44 × dias) e é rateado por conta ativa (pagante ou cortesia). Lance em reais; se a fatura é em dólar, converta na data do lançamento.
+      </div>
+    </div>
+  );
+};
+
 /* ---------------- Tabela por conta ---------------- */
 const AdClientsTable = ({ rows, onOpen }) => {
   const [filter, setFilter] = useStateAd('todos');
   const [q, setQ] = useStateAd('');
   if (!rows || rows.length === 0) return null;
-  const cols = 'minmax(190px, 1.6fr) 110px 80px 100px 110px 100px 110px 90px 70px';
+  const cols = 'minmax(190px, 1.6fr) 110px 80px 100px 110px 100px 110px 90px 90px 70px';
   const norm = (s) => String(s || '').toLowerCase();
   const visible = rows.filter(r => {
     if (filter === 'pagantes' && !r.pagante) return false;
@@ -272,6 +472,7 @@ const AdClientsTable = ({ rows, onOpen }) => {
           <div style={{ ...adTh, textAlign: 'right' }}>IA conversas</div>
           <div style={{ ...adTh, textAlign: 'right' }}>IA onboarding e outros</div>
           <div style={{ ...adTh, textAlign: 'right' }}>Margem</div>
+          <div style={{ ...adTh, textAlign: 'right' }}>All-in</div>
           <div style={{ ...adTh, textAlign: 'right' }}>Sonnet</div>
         </div>
         {visible.map(r => (
@@ -292,13 +493,14 @@ const AdClientsTable = ({ rows, onOpen }) => {
             <div style={adNum}>{adBrl(r.custo_conversas_brl)}</div>
             <div style={adNum} title={`onboarding ${adBrl(r.custo_onboarding_brl)} · configuração ${adBrl(r.custo_configuracao_brl)} · outros ${adBrl(r.custo_outros_brl)}`}>{adBrl((r.custo_onboarding_brl || 0) + (r.custo_configuracao_brl || 0) + (r.custo_outros_brl || 0))}</div>
             <div style={{ ...adNum, fontWeight: 600, color: margemColor(r) }}>{r.margem_pct === null ? r.margem_display : `${r.margem_pct}%`}</div>
+            <div style={{ ...adNum, color: r.margem_all_in_pct === null || r.margem_all_in_pct === undefined ? 'var(--ink-3)' : (r.margem_all_in_pct >= 80 ? 'var(--success)' : (r.margem_all_in_pct >= 50 ? 'var(--warning)' : 'var(--danger)')) }} title={`infra rateada ${adBrl(r.infra_rateada_brl)}`}>{r.margem_all_in_pct === null || r.margem_all_in_pct === undefined ? '' : `${r.margem_all_in_pct}%`}</div>
             <div style={adNum}>{r.share_modelo_forte_pct}%</div>
           </div>
         ))}
         {visible.length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', padding: '14px 0' }}>Nenhuma conta nesse filtro.</div>}
       </div>
       <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
-        Clique numa linha pra abrir a ficha. Receita é o que o razão registrou no período (mensalidades a preço de tabela, pacotes e excedente). Margem = receita menos custo de IA.
+        Clique numa linha pra abrir a ficha. Receita é o que o razão registrou no período (mensalidades a preço de tabela, pacotes e excedente). Margem = receita menos custo de IA. All-in = também menos os custos fixos rateados por conta ativa.
       </div>
     </div>
   );
@@ -437,7 +639,13 @@ const AdminScreen = () => {
     const prev = prevRoot ? path.reduce((o, key) => (o || {})[key], prevRoot) : null;
     return prev === null || prev === undefined ? null : _pct(cur, prev);
   };
-  const a = s('assinaturas'), rec = s('receita'), ia = s('ia'), m = s('margem'), churn = s('churn'), funil = s('funil'), contas = s('contas'), ind = s('indicacoes'), g = s('growth');
+  const a = s('assinaturas'), rec = s('receita'), ia = s('ia'), m = s('margem'), churn = s('churn'), funil = s('funil'), contas = s('contas'), ind = s('indicacoes'), g = s('growth'), cu = s('custos');
+  const [reloadTick, setReloadTick] = useStateAd(0);
+  useEffectAd(() => {
+    if (!reloadTick) return;
+    const args = period === 'custom' ? { from, to, compare } : { days, compare };
+    fetchAdminOverview(args).then(setData).catch(() => {});
+  }, [reloadTick]);
   const periodDays = data ? (data.periodo || {}).dias : days;
   const periodLabel = data ? `${adDate(data.periodo.de)} a ${adDate(data.periodo.ate)}` : '';
   const iaPct = g.custo_ia_sobre_receita_pct;
@@ -496,6 +704,20 @@ const AdminScreen = () => {
                       delta={dlt('ia', ['por_grupo', 'outros', 'brl'])} deltaInvert />
           </Grid>
 
+          <SectionTitle>Custos e margem (tudo na ponta do lápis)</SectionTitle>
+          <Grid cols={4}>
+            <StatTile label="Custo total no período" value={cu.total_display || 'R$ 0,00'}
+                      sub={`IA ${cu.ia_display || 'R$ 0,00'} · dados ${cu.dados_display || 'R$ 0,00'} · fixos ${cu.fixos_display || 'R$ 0,00'}${cu.total_sobre_receita_pct === null || cu.total_sobre_receita_pct === undefined ? '' : ` · ${cu.total_sobre_receita_pct}% da receita`}`}
+                      delta={dlt('custos', ['total_brl'])} deltaInvert />
+            <StatTile label="Margem all-in" value={cu.margem_all_in_pct === null || cu.margem_all_in_pct === undefined ? (cu.margem_all_in_display || 'sem receita') : `${cu.margem_all_in_pct}%`}
+                      sub={`${cu.margem_all_in_display || 'R$ 0,00'} = receita menos IA, dados e custos fixos · meta 80%`} accent delta={dlt('custos', ['margem_all_in_brl'])} />
+            <StatTile label="Custo por conversa all-in" value={cu.por_conversa_all_in_display || 'R$ 0,00'}
+                      sub={`IA ${adBrl(cu.por_conversa_ia_brl)} + infra rateada ${adBrl(cu.por_conversa_fixo_brl)} por conversa atendida`} delta={dlt('custos', ['por_conversa_all_in_brl'])} deltaInvert />
+            <StatTile label="Inteligência de dados" value={cu.dados_display || 'R$ 0,00'}
+                      sub="armazenamento da trilha de eventos e das tabelas de inteligência; agregados e previsão entram aqui quando existirem" delta={dlt('custos', ['dados_brl'])} deltaInvert />
+          </Grid>
+          <AdFixedCosts custos={cu} onChanged={() => setReloadTick(t => t + 1)} />
+
           <SectionTitle>Growth</SectionTitle>
           <Grid cols={4}>
             <StatTile label="ARPU" value={g.arpu_display} sub="receita média mensal por pagante (sem cortesia)" delta={dlt('growth', ['arpu_brl'])} />
@@ -549,6 +771,9 @@ const AdminScreen = () => {
             )} />
           </Grid>
 
+          <SectionTitle>Trilha de eventos (tudo que aconteceu na HUMA no período)</SectionTitle>
+          <AdTrailSummary trilha={data.trilha} />
+
           <SectionTitle>Pedidos sob medida</SectionTitle>
           <AdRequestsPanel />
 
@@ -559,7 +784,7 @@ const AdminScreen = () => {
             <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--warning)' }}>Uma das leituras bateu no teto de linhas; os números deste período podem estar incompletos. Reduza o período.</div>
           )}
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, flexShrink: 0 }}>
-            MRR usa o preço de tabela (cupom parcial fica só no Mercado Pago). Churn aproximado: cancelamentos do período sobre pagantes atuais mais cancelados. Custo de IA é estimado por tokens × tabela de preço × câmbio, não lido da fatura. Setas comparam com o período imediatamente anterior, do mesmo tamanho.
+            MRR usa o preço de tabela (cupom parcial fica só no Mercado Pago). Churn aproximado: cancelamentos do período sobre pagantes atuais mais cancelados. Custo de IA é estimado por tokens × tabela de preço × câmbio, não lido da fatura. Custo de dados = espaço das tabelas de inteligência × preço de disco do Supabase, medido 1x por dia. Setas comparam com o período imediatamente anterior, do mesmo tamanho.
           </div>
         </>
       )}
@@ -567,4 +792,4 @@ const AdminScreen = () => {
   );
 };
 
-Object.assign(window, { AdminScreen, fetchAdminOverview, fetchAdminRequests, patchAdminRequest, searchAdminAccounts, fetchAdminAccount });
+Object.assign(window, { AdminScreen, fetchAdminOverview, fetchAdminRequests, patchAdminRequest, searchAdminAccounts, fetchAdminAccount, fetchAdminEvents, fetchFixedCosts, saveFixedCost, deleteFixedCost });

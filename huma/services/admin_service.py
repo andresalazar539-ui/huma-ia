@@ -148,9 +148,16 @@ async def _overview_for(since: datetime, until: datetime) -> dict:
     for r in usage_rows:
         by_client.setdefault(str(r.get("client_id") or ""), []).append(r)
     usage_by_client = {cid: summarize_usage_rows(rows) for cid, rows in by_client.items()}
+    # Custos fixos e trilha de eventos (2026-10-27): leituras em sequência,
+    # cada uma degrada sozinha (sem a migration = vazio com WARNING).
+    from huma.services import cost_ledger, event_trail
+
+    fixed, trail_rows = await _seq(cost_ledger.fixed_costs_for(since, until), event_trail.summary(since, until))
     overview = admin_metrics.build_overview(
-        clients=clients, subs=subs, ledger=ledger, paying_rows=paying_rows, usage_by_client=usage_by_client, **kwargs,
+        clients=clients, subs=subs, ledger=ledger, paying_rows=paying_rows, usage_by_client=usage_by_client,
+        fixed_costs=fixed, **kwargs,
     )
+    overview["trilha"] = event_trail.summarize(trail_rows)
     overview["fontes"] = {
         "clients": len(clients), "subscriptions": len(subs), "razao_periodo": len(ledger),
         "cobrancas_de_sempre": len(paying_rows), "ai_usage": len(usage_rows),
@@ -179,9 +186,47 @@ async def build_overview(days: int = 30, date_from: str = "", date_to: str = "",
     log.info(
         f"Admin | painel | de={since.date()} | ate={until.date()} | compare={compare} | "
         f"contas={overview['contas']['total']} | pagantes={overview['assinaturas']['pagantes']} | "
-        f"receita={overview['receita']['total_brl']} | custo_ia={overview['ia']['custo_brl']}"
+        f"receita={overview['receita']['total_brl']} | custo_ia={overview['ia']['custo_brl']} | "
+        f"custo_total={overview.get('custos', {}).get('total_brl')} | margem_all_in={overview.get('custos', {}).get('margem_all_in_pct')}"
     )
     return overview
+
+
+# ── trilha de eventos (painel) ─────────────────────────────────
+
+LAYER_LABELS = {"db": "Banco", "app": "Produto", "http": "Requisição", "ext": "Serviço externo", "webhook": "Webhook"}
+
+
+def event_view(e: dict) -> dict:
+    """Linha da trilha pronta pra tela (camada em PT, horário curto, dado resumido). Puro."""
+    data = e.get("data") if isinstance(e.get("data"), dict) else {}
+    layer = str(e.get("layer") or "")
+    resumo = ""
+    if layer == "db":
+        depois = data.get("depois") if isinstance(data.get("depois"), dict) else {}
+        campos = [k for k in depois.keys()][:6]
+        resumo = ", ".join(campos) + (" …" if int(data.get("campos") or 0) > 6 else "")
+    elif layer == "ext":
+        resumo = f"{data.get('servico') or ''} {data.get('metodo') or ''} {data.get('caminho') or ''}".strip()
+    elif layer == "http":
+        resumo = str(data.get("ip") or "")
+    elif layer == "webhook":
+        resumo = f"{data.get('bytes') or 0} bytes"
+    else:
+        resumo = ", ".join(f"{k}={v}" for k, v in list(data.items())[:5])
+    return {
+        "id": e.get("id"),
+        "quando": str(e.get("created_at") or "")[:19].replace("T", " "),
+        "camada": layer, "camada_label": LAYER_LABELS.get(layer, layer),
+        "tipo": str(e.get("kind") or ""),
+        "ator": str(e.get("actor") or ""),
+        "status": str(e.get("status") or ""),
+        "ms": e.get("duration_ms"),
+        "phone": str(e.get("phone") or ""),
+        "request_id": str(e.get("request_id") or ""),
+        "resumo": resumo[:200],
+        "data": data,
+    }
 
 
 # ── busca e ficha da conta ───────────────────────────────────────
@@ -273,7 +318,9 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
                 return 0
         return 0
 
-    sub_rows, billing_status, ledger, paying, usage_rows, payments, conv_total, conv_periodo, clientes_do_cliente, pedidos = await _seq(
+    from huma.services import event_trail
+
+    sub_rows, billing_status, ledger, paying, usage_rows, payments, conv_total, conv_periodo, clientes_do_cliente, pedidos, trilha = await _seq(
         _rows("subscriptions(ficha)", lambda: supa.table("subscriptions").select(SUB_COLS + ",included_conversations,overage_pending_brl")
               .eq("client_id", client_id).order("updated_at", desc=True).limit(1)),
         _billing(),
@@ -295,6 +342,7 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
         _count("conversations(clientes)", lambda: supa.table("conversations").select("phone", count="exact")
                .eq("client_id", client_id).eq("is_customer", True).limit(1)),
         custom.list_for_client(client_id, limit=20),
+        event_trail.recent(client_id, layers=("db", "app", "http", "ext"), limit=60),
     )
 
     sub = sub_rows[0] if sub_rows else {}
@@ -400,6 +448,9 @@ async def account_detail(client_id: str, days: int = 30) -> dict | None:
             "pct": admin_metrics._pct(preco - usage["cost_brl"], preco) if (preco and pagante) else None,
         },
         "pedidos_sob_medida": [custom.admin_view(p) for p in pedidos],
+        # Trilha de eventos (2026-10-27): os últimos 60 eventos desta conta,
+        # de todas as camadas menos o payload cru de webhook.
+        "trilha": [event_view(e) for e in trilha],
         "razao": [{
             "quando": str(r.get("created_at") or "")[:16].replace("T", " "),
             "tipo": r.get("type"), "quantidade": r.get("amount"), "saldo_depois": r.get("balance_after"),

@@ -175,7 +175,7 @@ class TestFinalidadeEGrupos:
         assert abs(s["strong_model_share"] - 1 / 3) < 1e-3  # 3 chamadas Claude, 1 Sonnet
         # nas CONVERSAS só tem o Haiku da resposta: share do forte é 0
         assert s["conversation_strong_share"] == 0.0 and s["conversation_claude_calls"] == 1
-        assert s["calls_by_group"] == {"conversas": 3, "onboarding": 1, "configuracao": 0, "outros": 1}
+        assert s["calls_by_group"] == {"conversas": 3, "onboarding": 1, "configuracao": 0, "inteligencia": 0, "outros": 1}
         assert s["conversations"] == 2   # telefones só das linhas de conversa
 
     def test_voz_sem_telefone_nao_e_conversa(self):

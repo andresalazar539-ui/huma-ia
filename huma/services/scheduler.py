@@ -1086,6 +1086,22 @@ async def _run_site_reindex_job() -> None:
         log.error(f"sched | site_reindex | {type(e).__name__}: {e}")
 
 
+async def _run_events_maintenance_job() -> None:
+    """
+    Trilha de eventos (2026-10-27): garante as partições de `events` (mês
+    atual + 3), aplica a retenção (webhook cru 30d, http/ext 400d) e mede o
+    custo de armazenamento da camada de dados (grupo "inteligência" no
+    painel do dono). 1x/dia. Nunca levanta.
+    """
+    try:
+        from huma.config import EVENTS_HTTP_RETENTION_DAYS, EVENTS_WEBHOOK_RETENTION_DAYS
+        from huma.services import cost_ledger, event_trail
+        await event_trail.maintenance(EVENTS_WEBHOOK_RETENTION_DAYS, EVENTS_HTTP_RETENTION_DAYS)
+        await cost_ledger.record_storage_cost()
+    except Exception as e:
+        log.error(f"sched | events_maintenance | {type(e).__name__}: {e}")
+
+
 async def _run_lead_dossier_job() -> None:
     """Dossiê do lead (2026-10-25): consolida memória das conversas que esfriaram. Nunca levanta."""
     try:
@@ -1286,6 +1302,8 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("lead_dossier", _run_lead_dossier_job, 3600, 1800),
     # Site do negócio como memória — relê quem passou de 7 dias: 1x/dia, lock 1h. Zero IA.
     ("site_reindex", _run_site_reindex_job, 86400, 3600),
+    # Trilha de eventos — partições, retenção e custo de armazenamento: 1x/dia, lock 1h. Zero IA.
+    ("events_maintenance", _run_events_maintenance_job, 86400, 3600),
 ]
 
 

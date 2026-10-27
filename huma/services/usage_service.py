@@ -70,14 +70,19 @@ _DEFAULT_PRICE = (3.00, 15.00, 0.30, 6.00)  # Sonnet — conservador
 #                  regerado, base de conhecimento, briefing por voz, perfil de voz
 #   outros       = campanhas (escudo, modelos da Meta, prospecção), prévia de
 #                  voz, áudio do relatório, playground
+#   inteligencia = a camada de dados da HUMA (2026-10-27): espaço da trilha de
+#                  eventos e das tabelas de inteligência (events_storage),
+#                  agregados, embeddings e modelos de previsão quando vierem.
+#                  Custo da HUMA (client_id "_huma"), nunca de um cliente.
 PURPOSE_GROUPS: dict[str, tuple[str, ...]] = {
     "conversas": ("reply", "judge", "compress", "followup", "audio", "transcription"),
     "onboarding": ("onboarding",),
     "configuracao": ("playbook", "knowledge", "voice_brief", "voice_profile"),
+    "inteligencia": ("events_storage", "intel", "embeddings", "prediction", "aggregates"),
 }
 GROUP_LABELS = {
     "conversas": "Conversas", "onboarding": "Onboarding",
-    "configuracao": "Configuração do negócio", "outros": "Outros",
+    "configuracao": "Configuração do negócio", "inteligencia": "Inteligência de dados", "outros": "Outros",
 }
 _CLAUDE_KEYS = ("haiku", "sonnet", "opus", "claude")
 

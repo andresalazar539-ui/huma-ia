@@ -202,6 +202,13 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
     """Processa mensagem unificada (após buffer juntar tudo)."""
     # Aviso interno disparado daqui pra frente nunca vai pro número deste lead.
     wa.set_current_lead(phone)
+    # Trilha de eventos: chamadas externas deste turno (Anthropic, WhatsApp)
+    # saem amarradas a esta conta e a este lead.
+    try:
+        from huma.services import event_trail as _trail
+        _trail.bind(client_id=client_id, phone=phone, actor="huma")
+    except Exception as e:
+        log.debug(f"EventTrail bind ignorado | {phone} | {type(e).__name__}: {e}")
     if not await cache.acquire_lock(phone):
         return
 
@@ -814,6 +821,21 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         # Atualiza estágio
         prev_stage = conv.stage
         conv.stage = _apply_stage_action(client_data, conv.stage, ai_result["stage_action"])
+
+        # Memória de inteligência (2026-10-27): foto deste turno (leitura do
+        # lead + decisão + modelo) e stage.changed quando a etapa mudou.
+        # Fire-and-forget; `use_sonnet`/`tier` só existem no caminho da IA,
+        # por isso a leitura defensiva via locals().
+        try:
+            from huma.services import intel as _intel
+            _snap_sonnet = locals().get("_used_sonnet_for_reply", locals().get("use_sonnet", True))
+            _intel.snapshot_turn(
+                client_data, conv, ai_result, prev_stage,
+                model="sonnet" if _snap_sonnet else "haiku",
+                tier=int(locals().get("tier", 0) or 0),
+            )
+        except Exception as e:
+            log.warning(f"Intel | snapshot ignorado | {phone} | {type(e).__name__}: {e}")
 
         # Motor de aprendizado
         if conv.stage in ("won", "lost") and prev_stage != conv.stage:

@@ -67,6 +67,14 @@ def fire(client_data: Any, conv: Any, event: str, **data: Any) -> None:
     Seguro pra chamar de qualquer lugar do orchestrator: se não há loop
     rodando ou nada está conectado, vira no-op silencioso.
     """
+    # Memória de inteligência (2026-10-27): todo evento vira linha em
+    # lead_events, tenha o dono conectado destino ou não. Falha aqui
+    # nunca impede a entrega aos destinos.
+    try:
+        from huma.services import intel
+        intel.record_event(client_data, conv, event, **data)
+    except Exception as e:
+        log.warning(f"LeadEvents | persistência falhou | event={event} | {type(e).__name__}: {e}")
     try:
         if not has_any_sink(client_data):
             return
