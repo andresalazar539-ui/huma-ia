@@ -155,6 +155,35 @@ async def admin_search_accounts(q: str = "", admin: str = Depends(require_admin)
     return {"items": await admin_service.search_accounts(q)}
 
 
+@router.get("/api/admin/accounts/lifecycle")
+async def admin_accounts_lifecycle(
+    days: int = 30,
+    date_from: str = "",
+    date_to: str = "",
+    ref: str = "",
+    compare: bool = False,
+    format: str = "",
+    admin: str = Depends(require_admin),
+):
+    """
+    Ciclo de vida das contas: estágio e há quantos dias, datas-chave, uso,
+    segmentos e marcos pra agir. `ref` recorta pela data de referência no
+    período; `format=csv` baixa o recorte.
+    """
+    from huma.core import admin_lifecycle
+
+    out = await admin_service.build_accounts(days, date_from, date_to, ref, compare)
+    if format == "csv":
+        from fastapi.responses import PlainTextResponse
+
+        csv_text = admin_lifecycle.to_csv(out.get("contas") or [])
+        return PlainTextResponse(
+            "﻿" + csv_text, media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename=contas_huma_{out['periodo']['de']}_{out['periodo']['ate']}.csv"},
+        )
+    return out
+
+
 @router.get("/api/admin/accounts/{client_id}")
 async def admin_account_detail(client_id: str, days: int = 30, admin: str = Depends(require_admin)) -> dict:
     """Ficha completa de uma conta."""

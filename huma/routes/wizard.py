@@ -252,9 +252,16 @@ async def activate(client_id: str, _=Depends(verify_api_key)):
     if not ok:
         raise HTTPException(400, error_msg)
 
-    await db.update_client(client_id, {
-        "onboarding_status": OnboardingStatus.ACTIVE.value,
-    })
+    updates: dict = {"onboarding_status": OnboardingStatus.ACTIVE.value}
+    # Data de ativação (2026-10-27): metadado _activated_at em onboarding_answers
+    # (zero migration), gravado só na PRIMEIRA ativação. O painel /admin usa
+    # pra "ativa há N dias" e pros marcos de 1 mês / 3 meses / 1 ano.
+    meta = dict(identity.onboarding_answers or {})
+    if not meta.get("_activated_at"):
+        from datetime import datetime, timezone
+        meta["_activated_at"] = datetime.now(timezone.utc).isoformat()
+        updates["onboarding_answers"] = meta
+    await db.update_client(client_id, updates)
     log.info(f"Wizard activate | client={client_id} | clone ativo")
 
     # Sprint Billing: trial de conta nova nasce aqui (se TRIAL_TRIGGER

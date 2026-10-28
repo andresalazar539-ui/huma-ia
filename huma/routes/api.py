@@ -130,7 +130,17 @@ async def get_questions(client_id: str, category: BusinessCategory, _=Depends(ve
 @router.post("/api/onboarding/{client_id}/activate", tags=["Onboarding"])
 async def activate_client(client_id: str, _=Depends(verify_api_key)):
     """Ativa cliente pra produção."""
-    await db.update_client(client_id, {"onboarding_status": OnboardingStatus.ACTIVE.value})
+    updates: dict = {"onboarding_status": OnboardingStatus.ACTIVE.value}
+    try:  # data de ativação (painel /admin), só na primeira vez
+        current = await db.get_client(client_id)
+        meta = dict(getattr(current, "onboarding_answers", None) or {})
+        if not meta.get("_activated_at"):
+            from datetime import datetime as _dtm, timezone as _tz
+            meta["_activated_at"] = _dtm.now(_tz.utc).isoformat()
+            updates["onboarding_answers"] = meta
+    except Exception as e:
+        log.warning(f"Ativação | data de ativação não gravada | client={client_id} | {type(e).__name__}: {e}")
+    await db.update_client(client_id, updates)
     # Sprint Billing: 2º ponto de ativação — mesmo trial idempotente do wizard
     from huma.services import subscription_service as subs
     await subs.start_trial_if_eligible(client_id, trigger="activation")

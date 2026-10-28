@@ -759,6 +759,143 @@ const AdSystemPanel = () => {
   );
 };
 
+/* ---------------- Ciclo de vida das contas (2026-10-27) ---------------- */
+async function fetchAdminLifecycle({ days, from, to, compare, ref }) {
+  const p = new URLSearchParams();
+  if (from && to) { p.set('date_from', from); p.set('date_to', to); } else p.set('days', days || 30);
+  if (compare) p.set('compare', 'true');
+  if (ref) p.set('ref', ref);
+  const r = await fetch(`/api/admin/accounts/lifecycle?${p.toString()}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw new Error(await _readApiError(r));
+  return r.json();
+}
+const adLifecycleCsvUrl = ({ days, from, to, ref }) => {
+  const p = new URLSearchParams();
+  if (from && to) { p.set('date_from', from); p.set('date_to', to); } else p.set('days', days || 30);
+  if (ref) p.set('ref', ref);
+  p.set('format', 'csv');
+  return `/api/admin/accounts/lifecycle?${p.toString()}`;
+};
+const AD_STAGE_COLOR = { active: 'var(--success)', courtesy: 'var(--success)', trial: 'var(--ink-2)', pending: 'var(--warning)', onboarding: 'var(--ink-3)', trial_expired: 'var(--danger)', paused: 'var(--danger)', cancelled: 'var(--danger)', sem_assinatura: 'var(--ink-3)' };
+const adDias = (n) => (n === null || n === undefined ? '' : (n === 0 ? 'hoje' : (n === 1 ? 'há 1 dia' : `há ${n} dias`)));
+
+const AdMilestoneCard = ({ m, onOpen }) => {
+  const [open, setOpen] = useStateAd(false);
+  const [copied, setCopied] = useStateAd('');
+  const copy = (kind) => {
+    const list = (m.contas || []).map(c => kind === 'email' ? c.email : String(c.telefone || '').replace(/\D/g, '')).filter(Boolean);
+    adCopy(list.join(kind === 'email' ? ', ' : '\n')); setCopied(kind); setTimeout(() => setCopied(''), 1500);
+  };
+  return (
+    <div style={{ ...adCard, padding: '14px 16px', opacity: m.total ? 1 : .6 }}>
+      <div onClick={() => m.total && setOpen(o => !o)} style={{ display: 'flex', alignItems: 'baseline', gap: 10, cursor: m.total ? 'pointer' : 'default' }}>
+        <div style={{ fontFamily: 'var(--font-serif)', fontSize: 24, color: m.total ? 'var(--ink)' : 'var(--ink-4)', minWidth: 34 }}>{m.total}</div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>{m.label}</div>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.4 }}>{m.acao}</div>
+        </div>
+      </div>
+      {open && m.total > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+            <Button variant="ghost" size="sm" onClick={() => copy('email')}>{copied === 'email' ? 'E-mails copiados' : 'Copiar e-mails'}</Button>
+            <Button variant="ghost" size="sm" onClick={() => copy('phone')}>{copied === 'phone' ? 'Números copiados' : 'Copiar WhatsApps'}</Button>
+          </div>
+          {(m.contas || []).map(c => (
+            <div key={c.client_id} onClick={() => onOpen && onOpen(c.client_id)} style={{ display: 'flex', gap: 8, padding: '5px 0', borderTop: '1px solid var(--paper-edge)', fontFamily: 'var(--font-sans)', fontSize: 12.5, cursor: 'pointer' }}>
+              <span style={{ color: 'var(--ink)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.nome}</span>
+              <span style={{ color: 'var(--ink-3)' }}>{c.detalhe}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AdAccountsLifecycle = ({ args, onOpen }) => {
+  const [ref, setRef] = useStateAd('');
+  const [seg, setSeg] = useStateAd('todas');
+  const [q, setQ] = useStateAd('');
+  const [data, setData] = useStateAd(null);
+  const [err, setErr] = useStateAd('');
+  const [busy, setBusy] = useStateAd(false);
+  useEffectAd(() => {
+    let alive = true;
+    setBusy(true); setErr('');
+    fetchAdminLifecycle({ ...args, ref }).then(d => { if (alive) { setData(d); setBusy(false); } }).catch(e => { if (alive) { setErr(e.message || 'Não carregou.'); setBusy(false); } });
+    return () => { alive = false; };
+  }, [args.days, args.from, args.to, args.compare, ref]);
+  const segs = (data || {}).segmentos || [];
+  const prev = (data || {}).anterior;
+  const contas = (data || {}).contas || [];
+  const norm = (s) => String(s || '').toLowerCase();
+  const inSeg = (r) => seg === 'todas' || (seg === 'sem_uso' ? r.sem_uso : (seg === 'sem_whatsapp' ? !r.whatsapp : r.estagio === seg));
+  const visible = contas.filter(r => inSeg(r) && (!q || norm(r.nome).includes(norm(q)) || norm(r.email).includes(norm(q)) || norm(r.client_id).includes(norm(q))));
+  const cols = 'minmax(190px, 1.5fr) 150px 95px 95px 95px 95px 90px 95px 90px';
+  const refs = (data || {}).referencias || [];
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <SectionTitle>Marcos pra agir (todas as contas, janela de 7 dias)</SectionTitle>
+      <Grid cols={4}>
+        {((data || {}).marcos || []).map(m => <AdMilestoneCard key={m.id} m={m} onOpen={onOpen} />)}
+      </Grid>
+
+      <SectionTitle>Contas por estágio</SectionTitle>
+      <div style={{ ...adCard, overflowX: 'auto' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)' }}>Recortar o período por</span>
+          <select value={ref} onChange={e => setRef(e.target.value)} style={adInput}>
+            <option value="">sem recorte (todas as contas)</option>
+            {refs.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+          </select>
+          {ref && data && <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-3)' }}>{contas.length} conta(s) com {refs.find(r => r.id === ref) ? refs.find(r => r.id === ref).label.toLowerCase() : ref} no período{prev ? ` · ${prev.total} no período anterior` : ''}</span>}
+          <a href={adLifecycleCsvUrl({ ...args, ref })} style={{ marginLeft: 'auto', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', textDecoration: 'none', padding: '6px 10px', borderRadius: 9, border: '1px solid var(--paper-edge)' }}>Baixar CSV</a>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
+          {segs.map(s => (
+            <button key={s.id} onClick={() => setSeg(s.id)} style={adChip(seg === s.id)} title={s.desc}>
+              {s.label} {s.total}{prev && prev.segmentos && prev.segmentos[s.id] !== undefined && ref ? <span style={{ opacity: .7 }}> ({prev.segmentos[s.id]} antes)</span> : null}
+            </button>
+          ))}
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Filtrar esta lista" style={{ ...adInput, marginLeft: 'auto', minWidth: 180 }}/>
+        </div>
+        {err && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--danger)' }}>{err}</div>}
+        {busy && !data && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)' }}>Lendo as contas…</div>}
+        {data && !data.uso_disponivel && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--warning)', marginBottom: 8 }}>Sem a função admin_client_activity no banco (migration_admin_lifecycle.sql) o uso por conta fica vazio.</div>}
+        <div style={{ minWidth: 1080 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 10, padding: '0 0 10px' }}>
+            <div style={adTh}>Conta</div><div style={adTh}>Estágio</div><div style={adTh}>Cadastro</div><div style={adTh}>Ativação</div>
+            <div style={adTh}>1ª cobrança</div><div style={adTh}>Último uso</div><div style={{ ...adTh, textAlign: 'right' }}>Conversas 30d</div>
+            <div style={{ ...adTh, textAlign: 'right' }}>Acumulado</div><div style={adTh}>WhatsApp</div>
+          </div>
+          {visible.map(r => (
+            <div key={r.client_id} onClick={() => onOpen && onOpen(r.client_id)} style={{ display: 'grid', gridTemplateColumns: cols, gap: 10, alignItems: 'center', padding: '9px 0', borderTop: '1px solid var(--paper-edge)', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)' }}
+                 onMouseEnter={e => e.currentTarget.style.background = 'var(--paper-sunk)'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.nome}</div>
+                <div style={{ fontSize: 11.5, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.email}</div>
+              </div>
+              <div><div style={{ color: AD_STAGE_COLOR[r.estagio] || 'var(--ink-2)', fontWeight: 500 }}>{r.estagio_label}</div><div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{adDias(r.dias_no_estagio)}{r.trial_dias_restantes !== null && r.trial_dias_restantes !== undefined ? ` · acaba em ${r.trial_dias_restantes} d` : ''}</div></div>
+              <div><div>{adDate(r.cadastro)}</div><div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{adDias(r.dias_desde_cadastro)}</div></div>
+              <div><div>{r.ativacao ? adDate(r.ativacao) + (r.ativacao_aprox ? '*' : '') : <span style={{ color: 'var(--ink-4)' }}>não ativou</span>}</div><div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{adDias(r.dias_desde_ativacao)}</div></div>
+              <div><div>{r.primeira_cobranca ? adDate(r.primeira_cobranca) : <span style={{ color: 'var(--ink-4)' }}>nunca</span>}</div><div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{r.ultima_cobranca ? `última ${adDate(r.ultima_cobranca)}` : ''}</div></div>
+              <div><div style={{ color: r.sem_uso ? 'var(--danger)' : 'var(--ink-2)' }}>{r.ultimo_uso ? adDate(r.ultimo_uso) : <span style={{ color: 'var(--ink-4)' }}>nunca</span>}</div><div style={{ fontSize: 11.5, color: 'var(--ink-3)' }}>{adDias(r.dias_sem_uso)}</div></div>
+              <div style={adNum}>{r.conversas_30d}<span style={{ color: 'var(--ink-3)', fontSize: 11 }}> / {r.conversas_total}</span></div>
+              <div style={adNum}>{r.receita_acumulada_brl ? r.receita_acumulada_display : <span style={{ color: 'var(--ink-3)' }}>R$ 0</span>}</div>
+              <div style={{ color: r.whatsapp ? 'var(--success)' : 'var(--danger)' }}>{r.whatsapp ? 'conectado' : 'não'}</div>
+            </div>
+          ))}
+          {data && visible.length === 0 && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-3)', padding: '12px 0' }}>Nenhuma conta nesse recorte.</div>}
+        </div>
+        <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 12, lineHeight: 1.5 }}>
+          Clique numa linha pra abrir a ficha. Estágio = onde a conta está hoje e há quantos dias. Ativação com * é aproximada (conta de antes de 27/10/2026: usa a data do teste grátis). "Sem uso" = ativa ou em teste sem conversa há 14 dias ou mais. O recorte por data responde perguntas como "quem ativou em maio" ou "quem cancelou neste mês"; a comparação mostra o período anterior do mesmo tamanho.
+        </div>
+      </div>
+    </div>
+  );
+};
+
 /* ---------------- Tela ---------------- */
 // Seções do painel (2026-10-27): o shell em Admin.html desenha o menu e passa
 // `section`; `onSection` troca de seção (abrir ficha leva pra Contas).
@@ -936,7 +1073,8 @@ const AdminScreen = ({ section = 'visao', onSection }) => {
       {section === 'contas' && (
         <>
           {account && <div ref={accountRef} style={{ flexShrink: 0 }}><AdAccountCard clientId={account} days={periodDays || 30} onClose={() => setAccount('')} /></div>}
-          {data && <AdClientsTable rows={data.clientes} onOpen={openAccount} />}
+          <AdAccountsLifecycle args={period === 'custom' ? { from, to, compare } : { days, compare }} onOpen={openAccount} />
+          {data && <><SectionTitle>Receita e custo por conta no período</SectionTitle><AdClientsTable rows={data.clientes} onOpen={openAccount} /></>}
         </>
       )}
 

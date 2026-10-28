@@ -350,6 +350,58 @@ async def build_overview(days: int = 30, date_from: str = "", date_to: str = "",
     return overview
 
 
+# ── ciclo de vida das contas (2026-10-27) ──────────────────────
+
+async def build_accounts(days: int = 30, date_from: str = "", date_to: str = "", ref: str = "", compare: bool = False) -> dict:
+    """
+    Seção Contas do painel: cada conta com estágio, há quantos dias, datas
+    chave, uso e receita; segmentos; marcos pra agir; recorte por data de
+    referência dentro do período (`ref`: cadastro, ativacao, primeira_cobranca,
+    ultima_cobranca, cancelamento, ultimo_uso, estagio). `compare=True`
+    devolve as contagens do período anterior na mesma referência.
+    """
+    from huma.core import admin_lifecycle
+    from huma.services import billing_service as billing
+
+    now = datetime.now(timezone.utc)
+    since, until = resolve_window(days, date_from, date_to)
+    length = until - since
+    supa = get_supabase()
+    if supa is None:
+        return admin_lifecycle.build_lifecycle(clients=[], subs=[], paying_rows=[], activity_rows=[], now=now, trial_days=TRIAL_DAYS)
+    clients, subs, paying_rows, activity = await _seq(
+        _rows("clients(ciclo)", lambda: supa.table("clients").select(
+            CLIENT_COLS + ",ativado_em:onboarding_answers->>_activated_at").limit(_ROW_LIMIT)),
+        _rows("subscriptions", lambda: supa.table("subscriptions").select(SUB_COLS).limit(_ROW_LIMIT)),
+        _rows("credit_transactions(de sempre)", lambda: supa.table("credit_transactions").select(
+            "client_id,type,amount,source,description,created_at"
+        ).in_("source", list(admin_metrics.PAYING_SOURCES) + [admin_metrics.PACK_SOURCE, admin_metrics.OVERAGE_SOURCE])
+        .gt("amount", 0).limit(_ROW_LIMIT)),
+        _activity_rows(supa),
+    )
+    activated_meta = {str(c.get("client_id") or ""): c.get("ativado_em") for c in clients if c.get("ativado_em")}
+    out = admin_lifecycle.build_lifecycle(
+        clients=clients, subs=subs, paying_rows=paying_rows, activity_rows=activity, now=now, trial_days=TRIAL_DAYS,
+        since=since, until=until, ref=ref, prev_since=(since - length) if compare else None, prev_until=since if compare else None,
+        activated_meta=activated_meta, plan_price=billing.PLAN_CONFIG[billing.Plan.START]["price_brl"],
+        pack_prices=billing.EXTRA_PACKS, overage_price=billing.OVERAGE_PRICE_BRL,
+    )
+    out["periodo"] = {"de": since.date().isoformat(), "ate": (until - timedelta(seconds=1)).date().isoformat(), "dias": max(1, round(length.total_seconds() / 86400))}
+    out["uso_disponivel"] = bool(activity)
+    log.info(f"Admin | contas | total={out['total_contas']} | recorte={len(out['contas'])} | ref={ref or '-'} | uso={bool(activity)}")
+    return out
+
+
+async def _activity_rows(supa) -> list[dict]:
+    """Uso por conta via função SQL admin_client_activity (migration_admin_lifecycle.sql). [] sem ela."""
+    try:
+        resp = await run_in_threadpool(lambda: supa.rpc("admin_client_activity", {}).execute())
+        return resp.data or []
+    except Exception as e:
+        log.warning(f"Admin | uso por conta indisponível (rodou scripts/migration_admin_lifecycle.sql?) | {type(e).__name__}: {e}")
+        return []
+
+
 # ── trilha de eventos (painel) ─────────────────────────────────
 
 LAYER_LABELS = {"db": "Banco", "app": "Produto", "http": "Requisição", "ext": "Serviço externo", "webhook": "Webhook"}
