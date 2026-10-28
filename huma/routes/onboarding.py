@@ -23,6 +23,7 @@
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -223,7 +224,7 @@ async def get_state(client_id: str, _=Depends(verify_api_key)):
     # pra sempre e em silêncio. Já compilou e ainda não tem análise = agenda
     # de novo (a guarda de _run_market_analysis impede corrida e repetição).
     compiled = identity.onboarding_status in (OnboardingStatus.SANDBOX, OnboardingStatus.ACTIVE)
-    if compiled and not identity.market_analysis and state["answered_count"] > 0:
+    if compiled and not identity.market_analysis and (state["answered_count"] > 0 or interview.has_minimum_identity(identity)):
         _schedule_market_analysis(client_id)
 
     meta = identity.onboarding_answers or {}
@@ -244,6 +245,8 @@ async def get_state(client_id: str, _=Depends(verify_api_key)):
         "deferred_questions": interview.get_deferred_questions(),
         "playground_ready": playground_ready,
         "has_market_analysis": bool(identity.market_analysis),
+        "market_analysis_status": interview.get_market_status(identity),
+        "site_facts": interview.get_site_facts(identity),
     }
 
 
@@ -343,6 +346,11 @@ async def apply_business_source(client_id: str, payload: SourceApplyPayload, _=D
     gaps = interview.coerce_gap_questions(payload.proposal.get("open_questions"))
     if gaps:
         meta[interview.META_GAP_QUESTIONS] = json.dumps([g["question"] for g in gaps], ensure_ascii=False)
+    # Fatos do site inteiro (2026-10-27): ficam como metadado pra entrevista
+    # pular o que o site respondeu e pra compilação não repetir.
+    facts = payload.proposal.get("site_facts")
+    if isinstance(facts, dict) and facts:
+        meta[interview.META_SITE_FACTS] = json.dumps(facts, ensure_ascii=False)[:12000]
     if meta != (identity.onboarding_answers or {}):
         updates["onboarding_answers"] = meta
 
@@ -357,7 +365,11 @@ async def apply_business_source(client_id: str, payload: SourceApplyPayload, _=D
         updates["onboarding_status"] = OnboardingStatus.IN_PROGRESS.value
 
     await db.update_client(client_id, updates)
-    log.info(f"Fonte aplicada | client={client_id} | fields={list(updates.keys())}")
+    log.info(
+        f"Fonte aplicada | client={client_id} | fields={list(updates.keys())} | "
+        f"produtos={len(updates.get('products_or_services') or [])} | faq={len(updates.get('faq') or [])} | "
+        f"regras={len(updates.get('custom_rules') or '')} | horario={bool(updates.get('working_hours'))}"
+    )
     return {"status": "ok", "applied_fields": list(updates.keys())}
 
 
@@ -570,11 +582,44 @@ async def _run_market_analysis(client_id: str) -> dict:
     if await _market_already_running(client_id):
         log.info(f"Análise de mercado | já em andamento | client={client_id}")
         return {"status": "skipped", "detail": "running"}
+    result = await _market_analysis_inner(client_id)
+    # Status visível (2026-10-27): antes a falha era silenciosa e a conta
+    # conversava sem playbook. "completed" | "error" vão pro metadado
+    # _market_status; o job market_analysis_retry refaz quem ficou em erro.
+    if result.get("status") in ("completed", "error", "partial"):
+        await _set_market_status(client_id, "completed" if result["status"] == "completed" else "error", result.get("detail", ""))
+    return result
 
+
+async def _set_market_status(client_id: str, status: str, detail: str = "") -> None:
+    """
+    Grava o estado da análise de mercado no metadado _market_status
+    (onboarding_answers, zero migration): running | completed | error, com
+    horário, motivo e nº de tentativas. Nunca levanta.
+    """
+    try:
+        fresh = await db.get_client(client_id)
+        if fresh is None:
+            return
+        meta = dict(fresh.onboarding_answers or {})
+        prev = interview.get_market_status(fresh)
+        attempts = int(prev.get("attempts") or 0) + (1 if status == "running" else 0)
+        meta[interview.META_MARKET_STATUS] = json.dumps({
+            "status": status, "at": datetime.now(timezone.utc).isoformat(),
+            "detail": (detail or "")[:200], "attempts": attempts,
+        }, ensure_ascii=False)
+        await db.update_client(client_id, {"onboarding_answers": meta})
+    except Exception as e:
+        log.warning(f"Análise de mercado | status não gravado | client={client_id} | {type(e).__name__}: {e}")
+
+
+async def _market_analysis_inner(client_id: str) -> dict:
+    """Corpo da análise (ver _run_market_analysis). Nunca levanta."""
     try:
         identity = await db.get_client(client_id)
         if identity is None:
             return {"status": "skipped", "detail": "client_not_found"}
+        await _set_market_status(client_id, "running")
 
         # F3: passa o texto do site (se houver) pra instanciar o playbook com
         # fatos reais do negócio. Falha de leitura não bloqueia: segue sem site.

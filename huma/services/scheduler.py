@@ -1102,6 +1102,43 @@ async def _run_events_maintenance_job() -> None:
         log.error(f"sched | events_maintenance | {type(e).__name__}: {e}")
 
 
+_MARKET_RETRY_MAX_ATTEMPTS = 3
+
+
+async def _run_market_analysis_retry_job() -> None:
+    """
+    Análise de mercado que falhou em silêncio (2026-10-27): toda conta
+    compilada sem playbook ganha nova tentativa, no máximo
+    _MARKET_RETRY_MAX_ATTEMPTS vezes e 5 contas por rodada (uma chamada de
+    Sonnet cada). 1x/hora. Nunca levanta.
+    """
+    try:
+        from huma.onboarding import interview
+        from huma.routes.onboarding import _schedule_market_analysis
+        from huma.services import db_service as db
+
+        rows = await db.list_clients_missing_market_analysis(limit=5)
+        scheduled = 0
+        for row in rows:
+            answers = row.get("onboarding_answers") if isinstance(row.get("onboarding_answers"), dict) else {}
+            raw = answers.get(interview.META_MARKET_STATUS)
+            attempts = 0
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    import json as _json
+                    attempts = int((_json.loads(raw) or {}).get("attempts") or 0)
+                except (ValueError, TypeError, AttributeError):
+                    attempts = 0
+            if attempts >= _MARKET_RETRY_MAX_ATTEMPTS:
+                continue
+            if _schedule_market_analysis(str(row.get("client_id") or "")):
+                scheduled += 1
+        if rows:
+            log.info(f"sched | market_analysis_retry | sem_playbook={len(rows)} | agendadas={scheduled}")
+    except Exception as e:
+        log.error(f"sched | market_analysis_retry | {type(e).__name__}: {e}")
+
+
 async def _run_lead_dossier_job() -> None:
     """Dossiê do lead (2026-10-25): consolida memória das conversas que esfriaram. Nunca levanta."""
     try:
@@ -1304,6 +1341,8 @@ _jobs: list[tuple[str, Callable[[], Awaitable[None]], int, int]] = [
     ("site_reindex", _run_site_reindex_job, 86400, 3600),
     # Trilha de eventos — partições, retenção e custo de armazenamento: 1x/dia, lock 1h. Zero IA.
     ("events_maintenance", _run_events_maintenance_job, 86400, 3600),
+    # Playbook que falhou em silêncio — nova tentativa pra conta compilada sem análise: 1x/hora, lock 30min.
+    ("market_analysis_retry", _run_market_analysis_retry_job, 3600, 1800),
 ]
 
 

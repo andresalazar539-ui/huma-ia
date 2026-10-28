@@ -11,6 +11,8 @@
 #   - _validate_history (rotas): sanitização do histórico do playground
 # ================================================================
 
+import pytest
+
 from huma.models.schemas import (
     BusinessCategory, ClientIdentity, CloneMode, MessagingStyle,
     OnboardingStatus,
@@ -18,6 +20,14 @@ from huma.models.schemas import (
 from huma.onboarding import interview
 from huma.onboarding.categories import AUTONOMY_QUESTIONS, COMMON_QUESTIONS
 from huma.routes.onboarding import _validate_history
+
+
+@pytest.fixture(autouse=True)
+def _sem_rastreador_de_site(monkeypatch):
+    """A leitura do site inteiro (2026-10-27) nunca sai pra rede nos testes."""
+    async def _nada(url):
+        return "", {}
+    monkeypatch.setattr(interview, "fetch_site_corpus", _nada)
 
 
 def _identity(**overrides) -> ClientIdentity:
@@ -390,6 +400,7 @@ class TestCompileMarketInBackground:
         out = asyncio.run(ob._run_market_analysis("cli_interview"))
 
         assert out["status"] == "completed"
+        saved = [w for w in saved if set(w) != {"onboarding_answers"}]  # gravações de status (2026-10-27) ficam fora
         assert "regra que o dono acabou de editar" in saved[-1]["custom_rules"]
         assert "CONTEXTO DE MERCADO: mercado aquecido" in saved[-1]["custom_rules"]
         assert saved[-1]["market_analysis"] == {"market_context": "mercado aquecido"}
@@ -417,7 +428,9 @@ class TestCompileMarketInBackground:
         out = asyncio.run(ob._run_market_analysis("cli_interview"))
 
         assert out["status"] == "error"
-        assert saved == []
+        # Só o status da análise é gravado (running → error); nada da identidade.
+        assert [w for w in saved if set(w) != {"onboarding_answers"}] == []
+        assert "error" in saved[-1]["onboarding_answers"][interview.META_MARKET_STATUS]
 
     def test_state_reagenda_quando_playbook_ficou_faltando(self, monkeypatch):
         import asyncio
@@ -939,8 +952,8 @@ class TestSourceAnalysisParsing:
             "products_or_services": produtos, "faq": faq,
         })])
         out, _ = self._run(monkeypatch, resp)
-        assert len(out["proposal"]["products_or_services"]) == 10
-        assert len(out["proposal"]["faq"]) == 5
+        assert len(out["proposal"]["products_or_services"]) == interview._MAX_SOURCE_PRODUCTS
+        assert len(out["proposal"]["faq"]) == interview._MAX_SOURCE_FAQ
 
     def test_resposta_sem_json_nenhum_degrada_sem_quebrar(self, monkeypatch):
         out, _ = self._run(monkeypatch, _Resp([_Block("text", text="desculpe, não consegui")]))

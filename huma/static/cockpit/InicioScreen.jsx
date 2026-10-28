@@ -342,8 +342,23 @@ const IniDiaZero = ({ setup, wa, onGoto }) => {
   const agendaOn = !!setup && (setup.google_oauth === 'ok' || !!setup.google_calendar);
   const payOn = !!setup && (setup.mercadopago_connected === 'ok' || setup.asaas_connected === 'ok');
   const lojaOn = !!setup && (setup.nuvemshop_connected === 'ok' || setup.bling_access_token === 'ok' || setup.omie_connected === 'ok' || setup.tiny_connected === 'ok');
+  // Estudo do mercado (playbook, 2026-10-27): antes a análise falhava em
+  // silêncio e a conta conversava sem playbook sem ninguém saber.
+  const mkt = (setup && setup.market_analysis_status) || null;
+  const mktStatus = mkt ? mkt.status : '';
+  const mktLinha = mkt ? {
+    label: 'Estudo do seu mercado',
+    ok: mktStatus === 'completed',
+    goto: 'negocio',
+    acao: mktStatus === 'running' ? 'Ver' : 'Refazer',
+    sub: mktStatus === 'completed' ? 'playbook do seu negócio pronto: objeções, provas e argumentos já entram em toda conversa'
+      : mktStatus === 'running' ? 'ainda estudando o seu mercado; leva uns 2 minutos e entra sozinho nas conversas'
+        : mktStatus === 'error' ? 'o estudo falhou; eu tento de novo sozinha a cada hora, ou refaça agora em Negócio'
+          : 'ainda não estudei o seu mercado; sem isso respondo sem o playbook do seu negócio',
+  } : null;
   const linhas = [
     waLinha,
+    ...(mktLinha ? [mktLinha] : []),
     ...(setup && caps.includes('schedule') ? [{
       label: 'Agenda',
       ok: agendaOn,

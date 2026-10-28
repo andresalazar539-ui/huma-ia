@@ -55,11 +55,17 @@ const lookLines = ['abrindo suas páginas...', 'lendo o que você oferece...', '
 // satélites do núcleo de análise = o que a leitura da página extrai de verdade
 const lookNodes = ['Suas páginas', 'Produtos', 'Preços', 'Jeito de falar', 'Dúvidas', 'Público'];
 
+const PAY_LABELS = { pix: 'Pix', boleto: 'boleto', credit_card: 'cartão' };
+const SHOW_ITEMS = 8;
+
 function ProposalReview({ url, instagram, proposal, sources, onApplied, onTellMyself }) {
   const [p, setP] = useState(proposal);
   const [verticals, setVerticals] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+  const [showAllProducts, setShowAllProducts] = useState(false);
+  const [showAllFaq, setShowAllFaq] = useState(false);
+  const facts = (p && p.site_facts) || {};
   useEffect(() => { HumaAPI.verticals().then(d => setVerticals(d.verticals || [])).catch(() => {}); }, []);
   const set = (k, v) => setP(prev => ({ ...prev, [k]: v }));
   const apply = async () => {
@@ -83,18 +89,37 @@ function ProposalReview({ url, instagram, proposal, sources, onApplied, onTellMy
         </select>
       </div>
     </div></Reveal>
+    {/* Leitura do site inteiro (2026-10-27): tudo que a HUMA tirou das páginas
+        vira configuração sem o dono repetir. Aqui ele confere e corrige. */}
+    {(facts.leitura && facts.leitura.paginas_lidas > 1) && <p className="ob-micro">Li {facts.leitura.paginas_lidas} páginas do seu site{facts.subcategory ? ` e entendi que é ${facts.subcategory}` : ''}. O que está aqui embaixo eu já aprendi, então não vou te perguntar de novo.</p>}
+    {(p.working_hours || facts.address || facts.service_region || (p.accepted_payment_methods || []).length > 0) && <Reveal delay={300}><div className="qcard">
+      <span className="eyebrow">Horário, lugar e pagamento</span>
+      <Field label="Dias e horários de atendimento" value={p.working_hours || ''} onChange={v => set('working_hours', v)} placeholder="ex.: segunda a sexta das 9h às 18h" />
+      {facts.address && <div className="subrow"><div className="stack g6"><span className="nm">Endereço</span><span className="ds">{facts.address}</span></div></div>}
+      {facts.service_region && <div className="subrow"><div className="stack g6"><span className="nm">Região atendida</span><span className="ds">{facts.service_region}</span></div></div>}
+      {(p.accepted_payment_methods || []).length > 0 && <div className="subrow"><div className="stack g6"><span className="nm">Pagamento</span><span className="ds">{p.accepted_payment_methods.map(m => PAY_LABELS[m] || m).join(', ')}{p.max_installments ? ` · até ${p.max_installments}x` : ''}</span></div></div>}
+    </div></Reveal>}
     {(p.products_or_services || []).length > 0 && <Reveal delay={350}><div className="qcard">
-      <span className="eyebrow">O que você oferece</span>
-      <div>{p.products_or_services.map((it, i) => <div className="subrow" key={i}>
+      <span className="eyebrow">O que você oferece{p.products_or_services.length > SHOW_ITEMS ? ` (${p.products_or_services.length})` : ''}</span>
+      <div>{p.products_or_services.slice(0, showAllProducts ? undefined : SHOW_ITEMS).map((it, i) => <div className="subrow" key={i}>
         <div className="stack g6"><span className="nm">{it.name}</span><span className="ds">{it.description}</span></div>
         <span className="pr">{it.price}</span>
       </div>)}</div>
+      {p.products_or_services.length > SHOW_ITEMS && !showAllProducts && <LinkBtn onClick={() => setShowAllProducts(true)}>Ver todos os {p.products_or_services.length}</LinkBtn>}
+      {facts.price_policy === 'sob_consulta' && <p className="ob-micro">Vi que o valor é sob consulta. Eu nunca invento preço: entendo o que a pessoa precisa e encaminho pro orçamento.</p>}
+      {facts.price_policy === 'gratuito' && <p className="ob-micro">Vi que o serviço não é cobrado do cliente. Se perguntarem o preço, eu digo que é gratuito e explico o próximo passo.</p>}
     </div></Reveal>}
-    {(p.faq || []).length > 0 && <Reveal delay={500}><div className="qcard">
-      <span className="eyebrow">Perguntas que seus clientes fazem</span>
-      <div>{p.faq.map((f, i) => <div className="subrow" key={i}>
+    {(p.faq || []).length > 0 && <Reveal delay={450}><div className="qcard">
+      <span className="eyebrow">Perguntas que seus clientes fazem{p.faq.length > SHOW_ITEMS ? ` (${p.faq.length})` : ''}</span>
+      <div>{p.faq.slice(0, showAllFaq ? undefined : SHOW_ITEMS).map((f, i) => <div className="subrow" key={i}>
         <div className="stack g6"><span className="nm">{f.question}</span><span className="ans">{f.answer}</span></div>
       </div>)}</div>
+      {p.faq.length > SHOW_ITEMS && !showAllFaq && <LinkBtn onClick={() => setShowAllFaq(true)}>Ver todas as {p.faq.length}</LinkBtn>}
+    </div></Reveal>}
+    {(p.custom_rules || '').trim() && <Reveal delay={550}><div className="qcard">
+      <span className="eyebrow">Regras que eu já aprendi com o seu site</span>
+      <Field label="Políticas, o que não atende, diferenciais (pode editar)" textarea value={p.custom_rules || ''} onChange={v => set('custom_rules', v)} />
+      {p.self_serve_label && <p className="ob-micro">Próximo passo que o site propõe: {p.self_serve_label}. Quando o cliente demonstrar interesse, eu levo ele até lá.</p>}
     </div></Reveal>}
     {err && <ErrNote onRetry={apply}>{err}</ErrNote>}
     <Reveal delay={650}><div className="stack g10">

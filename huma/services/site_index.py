@@ -313,8 +313,13 @@ async def discover_urls(http: httpx.AsyncClient, site: str) -> list[str]:
     return (head + rest)[:MAX_PAGES]
 
 
-async def fetch_page(http: httpx.AsyncClient, url: str) -> Optional[tuple[str, str]]:
-    """(título, texto) de uma página; leitor reserva quando o site bloqueia IP de datacenter."""
+async def fetch_page(http: httpx.AsyncClient, url: str, min_chars: int = MIN_PAGE_CHARS) -> Optional[tuple[str, str]]:
+    """
+    (título, texto) de uma página; leitor reserva quando o site bloqueia IP de
+    datacenter ou quando a página veio rasa (abaixo de `min_chars`: loja
+    montada por JavaScript). `min_chars` só muda quando se tenta o leitor;
+    o teto mínimo pra devolver a página continua MIN_PAGE_CHARS.
+    """
     html = await fetch_html(http, url)
     title, text = html_to_text(html) if html else ("", "")
     try:
@@ -322,7 +327,7 @@ async def fetch_page(http: httpx.AsyncClient, url: str) -> Optional[tuple[str, s
         blocked = bool(text) and looks_like_wall(text)
     except Exception:
         blocked = False
-    if (blocked or len(text) < MIN_PAGE_CHARS) and SOURCE_READER_URL:
+    if (blocked or len(text) < max(min_chars, MIN_PAGE_CHARS)) and SOURCE_READER_URL:
         try:
             from huma.onboarding.interview import _fetch_via_reader
             via = await _fetch_via_reader(url)

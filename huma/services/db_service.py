@@ -263,6 +263,35 @@ async def list_store_clients() -> list[ClientIdentity]:
     return list(out.values())
 
 
+async def list_clients_missing_market_analysis(limit: int = 5) -> list[dict]:
+    """
+    Contas já compiladas (sandbox/active) SEM análise de mercado (playbook),
+    pro job que refaz a análise que falhou em silêncio (2026-10-27). Lê só
+    colunas leves (o `market_analysis` inteiro tem ~15k chars por conta).
+    [] em falha, nunca levanta.
+    """
+    try:
+        resp = await run_in_threadpool(
+            lambda: get_supabase().table("clients")
+            .select("client_id,onboarding_status,website,business_description,onboarding_answers,ctx:market_analysis->>market_context")
+            .in_("onboarding_status", ["sandbox", "active"])
+            .limit(2000).execute()
+        )
+    except Exception as e:
+        log.warning(f"DB | list_clients_missing_market_analysis falhou | {type(e).__name__}: {e}")
+        return []
+    out: list[dict] = []
+    for row in (resp.data or []):
+        if (row.get("ctx") or "").strip():
+            continue
+        if not ((row.get("business_description") or "").strip() or (row.get("website") or "").strip()):
+            continue
+        out.append(row)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
 # ── Site do negócio como memória (2026-10-26, scripts/migration_site_index.sql) ──
 # Sem a tabela: replace levanta (a rota devolve 503 amigável), busca e status
 # devolvem vazio com WARNING e a IA segue como antes.

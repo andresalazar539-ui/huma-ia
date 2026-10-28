@@ -603,6 +603,14 @@ async def get_settings(client_id: str, _=Depends(verify_api_key)) -> dict:
     # Capabilities efetivas (None no banco = derivadas das flags legadas):
     # a tela de Missão mostra o que VALE hoje, não o campo cru.
     settings["capabilities_resolved"] = sorted(c.value for c in client.capabilities_resolved)
+    # Estudo do mercado (playbook): pronto, em andamento, falhou ou pendente,
+    # pra "Saúde do setup" do Início mostrar (2026-10-27).
+    try:
+        from huma.onboarding import interview as _interview
+        settings["market_analysis_status"] = _interview.get_market_status(client)
+    except Exception as e:
+        log.warning(f"Settings | status do playbook indisponível | client={client_id} | {type(e).__name__}: {e}")
+        settings["market_analysis_status"] = {"status": "completed" if client.market_analysis else "pending"}
     return {"settings": settings}
 
 
