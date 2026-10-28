@@ -31,9 +31,167 @@ MAX_DAYS = 365
 _ROW_LIMIT = 50000
 
 
-def admin_emails() -> set[str]:
-    """E-mails com acesso ao painel do dono (minúsculos, sem espaços)."""
+def env_admin_emails() -> set[str]:
+    """E-mails fixos de HUMA_ADMIN_EMAILS (minúsculos, sem espaços). Nunca removíveis pela tela."""
     return {e.strip().lower() for e in (HUMA_ADMIN_EMAILS or "").split(",") if e.strip()}
+
+
+# Convidados pela tela Acesso (tabela admin_users, scripts/migration_admin_users.sql).
+# Cache de 60 s em memória: is_admin_email é síncrono e roda em todo /cockpit.
+_ACCESS_TTL = 60.0
+_access_cache: dict = {"at": 0.0, "emails": set()}
+
+
+def admin_emails() -> set[str]:
+    """Todos com acesso ao painel: fixos da env + convidados (cache). O painel existe só se a env tem alguém."""
+    fixed = env_admin_emails()
+    if not fixed:
+        return set()
+    return fixed | set(_access_cache.get("emails") or set())
+
+
+async def refresh_admin_emails(force: bool = False) -> set[str]:
+    """Recarrega os convidados da tabela admin_users (a cada 60 s, ou já com force). Falha = mantém o cache."""
+    import time as _time
+
+    now = _time.time()
+    if not force and now - float(_access_cache.get("at") or 0) < _ACCESS_TTL:
+        return admin_emails()
+    supa = get_supabase()
+    if supa is None:
+        _access_cache["at"] = now
+        return admin_emails()
+    rows = await _rows("admin_users", lambda: supa.table("admin_users").select("email").limit(500))
+    _access_cache["emails"] = {str(r.get("email") or "").strip().lower() for r in rows if r.get("email")}
+    _access_cache["at"] = now
+    return admin_emails()
+
+
+async def list_access() -> list[dict]:
+    """Quem tem acesso: fixos (env) e convidados (tabela), com nome, quem convidou e último acesso."""
+    supa = get_supabase()
+    rows = await _rows("admin_users", lambda: supa.table("admin_users").select("*").order("created_at").limit(500)) if supa is not None else []
+    out = [{"email": e, "name": "", "fixed": True, "invited_by": "", "created_at": "", "last_seen_at": ""} for e in sorted(env_admin_emails())]
+    for r in rows:
+        email = str(r.get("email") or "").strip().lower()
+        if not email or email in env_admin_emails():
+            continue
+        out.append({
+            "email": email, "name": str(r.get("name") or ""), "fixed": False,
+            "invited_by": str(r.get("invited_by") or ""), "created_at": str(r.get("created_at") or "")[:10],
+            "last_seen_at": str(r.get("last_seen_at") or "")[:16].replace("T", " "),
+        })
+    return out
+
+
+async def invite_access(email: str, name: str = "", invited_by: str = "") -> dict:
+    """Dá acesso ao painel a um e-mail (upsert) e manda o convite. Levanta ValueError/RuntimeError."""
+    e = (email or "").strip().lower()
+    if "@" not in e or "." not in e.split("@")[-1]:
+        raise ValueError("E-mail inválido.")
+    if e in env_admin_emails():
+        raise ValueError("Esse e-mail já tem acesso fixo.")
+    row = {"email": e, "name": (name or "").strip()[:120], "invited_by": (invited_by or "").strip()[:120]}
+    try:
+        supa = get_supabase()
+        if supa is None:
+            raise RuntimeError("banco indisponível")
+        await run_in_threadpool(lambda: supa.table("admin_users").upsert(row, on_conflict="email").execute())
+    except Exception as ex:
+        log.warning(f"Admin | convite não gravado (rodou scripts/migration_admin_users.sql?) | {type(ex).__name__}: {ex}")
+        raise RuntimeError("Não deu pra gravar o acesso. A tabela admin_users existe?") from ex
+    await refresh_admin_emails(force=True)
+    sent = False
+    try:
+        from huma.config import PUBLIC_BASE_URL
+        from huma.services import email_service
+
+        base = (PUBLIC_BASE_URL or "https://app.humaia.com.br").rstrip("/")
+        sent = await email_service.send_admin_invite(e, inviter=invited_by, url=f"{base}/admin")
+    except Exception as ex:
+        log.warning(f"Admin | e-mail do convite falhou | to=***@{e.split('@')[-1]} | {type(ex).__name__}: {ex}")
+    log.info(f"Admin | acesso liberado | to=***@{e.split('@')[-1]} | por={invited_by} | email_enviado={sent}")
+    return {**row, "fixed": False, "email_sent": sent}
+
+
+async def remove_access(email: str) -> bool:
+    """Tira o acesso de um convidado. Fixo da env não sai (False)."""
+    e = (email or "").strip().lower()
+    if not e or e in env_admin_emails():
+        return False
+    try:
+        supa = get_supabase()
+        if supa is None:
+            return False
+        await run_in_threadpool(lambda: supa.table("admin_users").delete().eq("email", e).execute())
+    except Exception as ex:
+        log.warning(f"Admin | remoção de acesso falhou | {type(ex).__name__}: {ex}")
+        return False
+    await refresh_admin_emails(force=True)
+    log.info(f"Admin | acesso removido | ***@{e.split('@')[-1]}")
+    return True
+
+
+async def touch_last_seen(email: str) -> None:
+    """Marca o último acesso de um convidado. Nunca levanta; fixo da env não tem linha."""
+    e = (email or "").strip().lower()
+    if not e or e in env_admin_emails():
+        return
+    try:
+        supa = get_supabase()
+        if supa is None:
+            return
+        await run_in_threadpool(lambda: supa.table("admin_users").update(
+            {"last_seen_at": datetime.now(timezone.utc).isoformat()}).eq("email", e).execute())
+    except Exception as ex:
+        log.debug(f"Admin | last_seen não gravado | {type(ex).__name__}: {ex}")
+
+
+async def system_status() -> dict:
+    """
+    Saúde do sistema pro painel: dependências (/health/deep), versão do
+    deploy, jobs do agendador, modelos e flags em vigor, fila da trilha.
+    Nunca levanta; cada parte degrada sozinha.
+    """
+    out: dict = {"health": {}, "versao": "", "jobs": [], "config": {}, "trilha": {}}
+    try:
+        from huma.routes.api import health_deep
+        out["health"] = await health_deep()
+    except Exception as ex:
+        log.warning(f"Admin | health indisponível | {type(ex).__name__}: {ex}")
+        out["health"] = {"overall": "desconhecido", "services": {}}
+    try:
+        from huma.routes.cockpit import ASSET_VERSION
+        out["versao"] = ASSET_VERSION
+    except Exception:
+        out["versao"] = ""
+    try:
+        from huma.services import scheduler
+        out["jobs"] = [{"nome": n, "intervalo_s": i, "lock_s": t} for n, _fn, i, t in scheduler._jobs]
+        out["scheduler_rodando"] = scheduler.is_running()
+    except Exception as ex:
+        log.warning(f"Admin | jobs indisponíveis | {type(ex).__name__}: {ex}")
+    try:
+        from huma import config as cfg
+        out["config"] = {
+            "modelo_principal": getattr(cfg, "AI_MODEL_PRIMARY", ""),
+            "modelo_rapido": getattr(cfg, "AI_MODEL_FAST", ""),
+            "modelo_unico_nas_conversas": bool(getattr(cfg, "REPLY_SINGLE_MODEL", False)),
+            "esforco_resposta": getattr(cfg, "AI_EFFORT_REPLY", ""),
+            "trilha_de_eventos": bool(getattr(cfg, "EVENT_TRAIL_ENABLED", False)),
+            "memoria_de_inteligencia": bool(getattr(cfg, "INTEL_EVENTS_ENABLED", False)),
+            "cambio_usd_brl": getattr(cfg, "USD_BRL_RATE", 0),
+            "ambiente": "producao" if getattr(cfg, "RAILWAY_ENVIRONMENT", "") or __import__("os").getenv("RAILWAY_ENVIRONMENT") else "local",
+            "admins_fixos": len(env_admin_emails()),
+        }
+    except Exception as ex:
+        log.warning(f"Admin | config indisponível | {type(ex).__name__}: {ex}")
+    try:
+        from huma.services import event_trail
+        out["trilha"] = {"na_fila": event_trail.pending(), "http": bool(event_trail.EVENT_TRAIL_HTTP), "ext": bool(event_trail.EVENT_TRAIL_EXT)}
+    except Exception as ex:
+        log.debug(f"Admin | trilha indisponível | {type(ex).__name__}: {ex}")
+    return out
 
 
 def _canonical(email: str) -> str:

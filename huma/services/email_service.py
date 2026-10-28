@@ -97,6 +97,29 @@ async def send_email(
         return False
 
 
+async def send_admin_invite(to: str, inviter: str = "", url: str = "https://app.humaia.com.br/admin") -> bool:
+    """
+    Convite pro painel "HUMA por dentro" (/admin). A pessoa entra com o
+    mesmo login da HUMA (Google ou e-mail e senha) e abre o endereço.
+    Nunca levanta.
+    """
+    who = (inviter or "").strip() or "A equipe da HUMA"
+    body = (
+        f"<p style=\"font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.55;color:{_INK};margin:0 0 16px 0;\">"
+        f"{who} liberou o seu acesso ao painel interno da HUMA, o <strong>HUMA por dentro</strong>: "
+        "contas, assinaturas, receita, custos, margem e a trilha de tudo que acontece na plataforma.</p>"
+        f"<p style=\"font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.55;color:{_INK_SOFT};margin:0 0 20px 0;\">"
+        "Entre com a sua conta da HUMA (Google ou e-mail e senha) usando este mesmo e-mail e abra o endereço abaixo. "
+        "Se ainda não tem senha, use \"Esqueci minha senha\" na tela de login.</p>"
+        f"<p style=\"margin:0 0 24px 0;\"><a href=\"{url}\" style=\"display:inline-block;background:{_TERRACOTTA};color:#ffffff;"
+        "text-decoration:none;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:bold;padding:12px 22px;"
+        "border-radius:10px;\">Abrir o painel</a></p>"
+        f"<p style=\"font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:1.5;color:{_INK_SOFT};margin:0;\">"
+        f"Endereço: {url}</p>"
+    )
+    return await send_email(to, "Você tem acesso ao HUMA por dentro", _shell("Acesso ao painel da HUMA", body))
+
+
 async def send_team_invite(
     to: str,
     business_name: str,

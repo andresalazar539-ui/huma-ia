@@ -204,6 +204,80 @@ class TestRota:
         r = self._client().get("/api/admin/overview", headers={"Authorization": "Bearer chave-teste"})
         assert r.status_code == 403
 
+    # "HUMA por dentro" fora do Cockpit, em /admin (2026-10-27)
+    def test_pagina_admin_so_pra_admin(self, monkeypatch):
+        self._enable(monkeypatch)
+        html = self._client().get("/admin", cookies=self._cookie(monkeypatch)).text
+        assert "<AdminApp />" in html and "window.HUMA_IS_SUPERADMIN = true" in html
+        assert 'window.HUMA_EMAIL = "andre@humaia.com.br"' in html
+        assert "__ASSET_V__" not in html
+        assert self._client().get("/admin", cookies=self._cookie(monkeypatch, email="cliente@loja.com.br")).status_code == 404
+
+    def test_pagina_admin_sem_sessao_vai_pro_login(self, monkeypatch):
+        self._enable(monkeypatch)
+        r = self._client().get("/admin", follow_redirects=False)
+        assert r.status_code == 307 and r.headers["location"] == "/login"
+
+    def test_pagina_admin_nao_existe_sem_env(self, monkeypatch):
+        import huma.services.admin_service as svc
+        monkeypatch.setattr(svc, "HUMA_ADMIN_EMAILS", "")
+        assert self._client().get("/admin", cookies=self._cookie(monkeypatch)).status_code == 404
+
+    def test_acesso_lista_convida_e_remove(self, monkeypatch):
+        import huma.services.admin_service as svc
+        self._enable(monkeypatch)
+        store: dict[str, dict] = {}
+
+        async def list_access():
+            return [{"email": "andre@humaia.com.br", "fixed": True}] + [{"email": e, "fixed": False, **v} for e, v in store.items()]
+
+        async def invite_access(email, name="", invited_by=""):
+            if "@" not in email:
+                raise ValueError("E-mail inválido.")
+            store[email] = {"name": name, "invited_by": invited_by}
+            return {"email": email, "name": name, "invited_by": invited_by, "fixed": False, "email_sent": False}
+
+        async def remove_access(email):
+            return bool(store.pop(email, None))
+
+        monkeypatch.setattr(svc, "list_access", list_access)
+        monkeypatch.setattr(svc, "invite_access", invite_access)
+        monkeypatch.setattr(svc, "remove_access", remove_access)
+        c, ck = self._client(), self._cookie(monkeypatch)
+        assert c.post("/api/admin/access", json={"email": "sem-arroba"}, cookies=ck).status_code == 400
+        r = c.post("/api/admin/access", json={"email": "socio@humaia.com.br", "name": "Sócio"}, cookies=ck)
+        assert r.status_code == 200 and r.json()["item"]["invited_by"] == "andre@humaia.com.br"
+        items = c.get("/api/admin/access", cookies=ck).json()["items"]
+        assert [i["email"] for i in items] == ["andre@humaia.com.br", "socio@humaia.com.br"]
+        assert c.delete("/api/admin/access/andre@humaia.com.br", cookies=ck).status_code == 400  # o próprio
+        assert c.delete("/api/admin/access/socio@humaia.com.br", cookies=ck).status_code == 200
+        assert c.delete("/api/admin/access/socio@humaia.com.br", cookies=ck).status_code == 400  # já não existe
+        assert c.get("/api/admin/access").status_code == 403  # sem sessão
+
+    def test_convidado_da_tabela_entra_e_fixo_nao_sai(self, monkeypatch):
+        import huma.services.admin_service as svc
+        monkeypatch.setattr(svc, "HUMA_ADMIN_EMAILS", "andre@humaia.com.br")
+        monkeypatch.setattr(svc, "_access_cache", {"at": 0.0, "emails": {"socio@humaia.com.br"}})
+        assert svc.is_admin_email("socio@humaia.com.br") is True
+        assert svc.is_admin_email("outro@x.com") is False
+        assert asyncio.run(svc.remove_access("andre@humaia.com.br")) is False
+        # sem ninguém na env o painel não existe, mesmo com convidado na tabela
+        monkeypatch.setattr(svc, "HUMA_ADMIN_EMAILS", "")
+        assert svc.admin_emails() == set()
+
+    def test_sistema(self, monkeypatch):
+        self._enable(monkeypatch)
+        r = self._client().get("/api/admin/system", cookies=self._cookie(monkeypatch))
+        assert r.status_code == 200
+        body = r.json()
+        assert "health" in body and isinstance(body["jobs"], list) and body["jobs"]
+        assert body["config"]["admins_fixos"] == 2
+
+    def test_cockpit_nao_carrega_mais_o_painel(self):
+        from huma.routes.cockpit import COCKPIT_HTML
+        html = COCKPIT_HTML.read_text(encoding="utf-8")
+        assert "AdminScreen.jsx" not in html and "case 'admin'" not in html
+
 
 class TestV2:
 

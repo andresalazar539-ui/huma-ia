@@ -9,13 +9,16 @@
 # configurada, a rota devolve 404 (o painel não existe).
 # ================================================================
 
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
-from huma.core.auth import session_actor
+from huma.core.auth import SESSION_COOKIE_NAME, session_actor
 from huma.services import admin_service
 from huma.services import db_service as db
 from huma.utils.logger import get_logger
@@ -29,6 +32,10 @@ async def resolve_admin_email(huma_session: str) -> str:
     client_id, email = session_actor(huma_session or "")
     if not client_id:
         return ""
+    try:
+        await admin_service.refresh_admin_emails()  # convidados da tabela (cache 60 s)
+    except Exception as e:
+        log.debug(f"Admin | lista de convidados indisponível | {type(e).__name__}: {e}")
     if not email:
         try:
             client = await db.get_client(client_id)
@@ -47,6 +54,81 @@ async def require_admin(huma_session: Optional[str] = Cookie(default=None)) -> s
     if not email:
         raise HTTPException(403, "Esse painel é só de quem administra a HUMA.")
     return email
+
+
+ADMIN_HTML = Path(__file__).resolve().parent.parent / "static" / "cockpit" / "Admin.html"
+
+
+@router.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+async def admin_page(request: Request) -> HTMLResponse:
+    """
+    "HUMA por dentro" com endereço próprio, fora do Cockpit (2026-10-27).
+    Sem HUMA_ADMIN_EMAILS a página não existe (404). Sem sessão, manda pro
+    login. Logado sem ser admin: 404 também (a página não é dele).
+    """
+    if not admin_service.admin_emails():
+        raise HTTPException(404, "Not Found")
+    token = request.cookies.get(SESSION_COOKIE_NAME, "")
+    client_id, email = session_actor(token)
+    if not client_id:
+        return RedirectResponse("/login", status_code=307)
+    admin = await resolve_admin_email(token)
+    if not admin:
+        raise HTTPException(404, "Not Found")
+    from huma.routes.cockpit import ASSET_VERSION
+
+    html = ADMIN_HTML.read_text(encoding="utf-8").replace("__ASSET_V__", ASSET_VERSION)
+    inject = (
+        f"<script>window.HUMA_CLIENT_ID = {json.dumps(client_id)};"
+        f"window.HUMA_IS_SUPERADMIN = true;"
+        f"window.HUMA_EMAIL = {json.dumps(admin)};"
+        f"window.HUMA_ROLE = \"dono\";</script>"
+    )
+    html = html.replace("<head>", "<head>" + inject, 1)
+    await admin_service.touch_last_seen(admin)
+    log.info(f"Admin | página | por={admin}")
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+
+
+# ── acesso ao painel (2026-10-27) ──────────────────────────────
+
+class AccessPayload(BaseModel):
+    email: str = ""
+    name: str = ""
+
+
+@router.get("/api/admin/access")
+async def admin_access_list(admin: str = Depends(require_admin)) -> dict:
+    """Quem tem acesso ao painel: fixos (env) e convidados (tabela admin_users)."""
+    return {"items": await admin_service.list_access(), "you": admin}
+
+
+@router.post("/api/admin/access")
+async def admin_access_invite(payload: AccessPayload, admin: str = Depends(require_admin)) -> dict:
+    """Libera o painel pra um e-mail e manda o convite."""
+    try:
+        item = await admin_service.invite_access(payload.email, payload.name, invited_by=admin)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    return {"item": item}
+
+
+@router.delete("/api/admin/access/{email}")
+async def admin_access_remove(email: str, admin: str = Depends(require_admin)) -> dict:
+    """Tira o acesso de um convidado (fixo da env e você mesmo não saem)."""
+    if email.strip().lower() == admin.strip().lower():
+        raise HTTPException(400, "Você não pode tirar o seu próprio acesso.")
+    if not await admin_service.remove_access(email):
+        raise HTTPException(400, "Esse acesso é fixo (HUMA_ADMIN_EMAILS) ou não existe.")
+    return {"ok": True}
+
+
+@router.get("/api/admin/system")
+async def admin_system(admin: str = Depends(require_admin)) -> dict:
+    """Saúde das dependências, versão do deploy, jobs, modelos e flags."""
+    return await admin_service.system_status()
 
 
 @router.get("/api/admin/overview")

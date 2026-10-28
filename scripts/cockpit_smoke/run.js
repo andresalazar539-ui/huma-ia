@@ -19,6 +19,9 @@ const { JSDOM, VirtualConsole } = require('jsdom');
 const STATIC = path.resolve(__dirname, '../../huma/static');
 const COCKPIT = path.join(STATIC, 'cockpit', 'Cockpit.html');
 const ROUTES = [...fs.readFileSync(COCKPIT, 'utf8').matchAll(/case '([a-z]+)':\s+screen =/g)].map(m => m[1]);
+// "HUMA por dentro" mora fora do Cockpit, em /admin (Admin.html); entra como tela 'admin'.
+const ADMIN = path.join(STATIC, 'cockpit', 'Admin.html');
+for (const sec of ['', 'contas', 'custos', 'trilha', 'pedidos', 'acesso', 'sistema']) ROUTES.push(sec ? `admin:${sec}` : 'admin');
 const only = process.argv.slice(2);
 const screens = only.length ? only : ROUTES;
 
@@ -31,6 +34,10 @@ const INJECT = '<script>' + [
 const MIME = { '.html': 'text/html', '.jsx': 'text/plain', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json' };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  if (u.pathname === '/admin') {
+    const html = fs.readFileSync(ADMIN, 'utf8').replace(/__ASSET_V__/g, 'smoke').replace('<head>', '<head>' + INJECT);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(html);
+  }
   if (u.pathname === '/cockpit') {
     const html = fs.readFileSync(COCKPIT, 'utf8').replace(/__ASSET_V__/g, 'smoke').replace('<head>', '<head>' + INJECT);
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(html);
@@ -73,7 +80,7 @@ async function openScreen(base, screen) {
   const vc = new VirtualConsole();
   vc.on('jsdomError', e => errors.push(String(e.message || e).split('\n')[0]));
   vc.on('error', (...a) => errors.push(a.map(String).join(' ').split('\n')[0]));
-  const dom = await JSDOM.fromURL(`${base}/cockpit?screen=${screen}`, {
+  const dom = await JSDOM.fromURL(screen.startsWith('admin') ? `${base}/admin?section=${screen.split(':')[1] || ''}` : `${base}/cockpit?screen=${screen}`, {
     runScripts: 'dangerously', resources: 'usable', pretendToBeVisual: true, virtualConsole: vc, beforeParse: w => stubs(w, base),
   });
   const w = dom.window;
