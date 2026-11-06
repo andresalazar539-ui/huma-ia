@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .env
 .pytest_cache/
+
+# carimbo do verificador pre-push (local)
+.claude/.prepush-ok

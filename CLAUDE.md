@@ -26,7 +26,32 @@ pytest huma/tests/test_huma.py::TestFunnel::test_committed_stage_exists -v
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Verificador pré-push (testes + smoke do Cockpit se houve .jsx + travessão + migration + except vazio)
+bash .claude/skills/huma-pre-push/check.sh
 ```
+
+### Skills do repo (`.claude/skills/`, 2026-11-05)
+
+Skills de projeto, invocáveis por `/nome` ou carregadas sozinhas quando o pedido casa com a descrição. Cada uma é um `SKILL.md` com o procedimento e as consultas prontas; o Supabase de produção (`nqdnbpevwbuzbweseezd`), o Semrush e o conector da própria HUMA ficam acessíveis daqui pelos conectores do claude.ai.
+
+- `huma-pre-push`: revisor de entrega; roda `check.sh` antes de qualquer push ou "pronto".
+- `huma-review`: revisor de código com as regras deste arquivo (lead, dono, dinheiro, IA, banco, rota, Cockpit).
+- `huma-prompt-review`: revisor de conteúdo (prompt SE/QUANDO, tom do dono, cache, textos pro lead e pro dono).
+- `huma-migration`: escreve, APLICA (Supabase MCP) e prova a migration antes do push.
+- `huma-testar-como-lead`: simula um lead pelo canal web, lê etapa/lead_state/custo no banco.
+- `huma-prod-check`: semáforo pós-deploy (health, Cockpit, logs, IA respondendo, leads sem resposta).
+- `huma-custo`: custo e margem medidos em `ai_usage`, por origem e por conversa.
+- `huma-site-analise`: lê o site de prospect/cliente como o onboarding lê, cruza com Semrush.
+- `huma-mapear-integracao`: checklist completo do provedor + encaixe na HUMA antes de codar.
+- `huma-relatorio-de-sessao`: fecha a sessão com o que subiu, o que depende do André, custo medido e uma recomendação.
+- `huma-concorrente`: dossiê/delta de concorrente (preço, produto, Semrush, reclamações) e argumento de venda.
+- `huma-cliente-em-risco`: contas que precisam de ação (onboarding parado, trial, sem uso) com e-mail em RASCUNHO no Gmail.
+- `huma-nova-skill`: como criar/melhorar skill neste repo e quando não criar.
+
+**Regra de uso (André, 2026-11-05): pedido que casa com uma skill dispara a skill sem perguntar; rotina que se repete sem skill vira proposta de skill na mesma sessão.**
+
+**Hook de push** (`.claude/settings.json`, PreToolUse em Bash chamando `huma-pre-push/hook.py`, `onFailure: block`): o `check.sh` grava em `.claude/.prepush-ok` a impressão digital do código testado (tree hash de `huma/`, `scripts/`, `requirements.txt`); o push só passa se o código atual tiver a mesma impressão. Mudar só documentação não invalida. Erro de sintaxe no `hook.py` bloqueia TODO comando Bash (fail-closed): teste com o pipe-test do docstring antes de editar.
 
 ## Architecture
 
@@ -367,4 +392,3 @@ Before considering any task complete:
 - [ ] No new `TODO` or `FIXME` added without a corresponding issue
 - [ ] Redis keys used follow existing patterns (`category:id:field`)
 - [ ] Logs added for any new external API call
-- [ ] The change was scoped to the files explicitly requested — no drive-by edits
