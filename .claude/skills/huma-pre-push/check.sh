@@ -13,7 +13,10 @@ echo "== Arquivos mudados =="; echo "${changed:-<nenhum>}"
 
 # 1. Testes
 echo; echo "== pytest =="
-if python -m pytest huma/tests/ -q --tb=short; then ok "pytest"; else bad "pytest vermelho"; fi
+# Em paralelo nos núcleos quando o pytest-xdist está instalado (12 min -> ~3 min);
+# sem ele roda em série como antes.
+if python -c "import xdist" 2>/dev/null; then XDIST="-n auto"; else XDIST=""; fi
+if python -m pytest huma/tests/ -q --tb=short $XDIST; then ok "pytest"; else bad "pytest vermelho"; fi
 
 # 2. Cockpit smoke se houve .jsx
 if echo "$changed" | grep -q '^huma/static/cockpit/.*\.jsx$'; then

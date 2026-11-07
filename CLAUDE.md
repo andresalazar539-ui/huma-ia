@@ -28,6 +28,7 @@ pytest huma/tests/test_huma.py::TestFunnel::test_committed_stage_exists -v
 pip install -r requirements.txt
 
 # Verificador pré-push (testes + smoke do Cockpit se houve .jsx + travessão + migration + except vazio)
+# Com `pip install pytest-xdist` a suíte roda em paralelo (~4,5 min em vez de 12); sem ele, em série.
 bash .claude/skills/huma-pre-push/check.sh
 ```
 
