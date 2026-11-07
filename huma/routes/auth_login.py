@@ -397,7 +397,18 @@ async def _validate_referrer(ref: str) -> str:
 
 
 async def _resolve_or_provision_client(email: str, business_name: str = "", ref: str = ""):
+    """Resolve (ou cria) o cliente do e-mail autenticado. Ver `_resolve_or_provision_client_ex`."""
+    client, _created = await _resolve_or_provision_client_ex(email, business_name, ref)
+    return client
+
+
+async def _resolve_or_provision_client_ex(email: str, business_name: str = "", ref: str = "") -> tuple:
     """
+    Igual a `_resolve_or_provision_client`, mas devolve (cliente, criado_agora).
+
+    `criado_agora` alimenta o evento `sign_up` do GA4 no login com Google
+    (antes toda conta nova pelo Google era contada só como `login`).
+
     Resolve o cliente do e-mail autenticado — criando um novo se não
     existir (signup self-service: qualquer conta válida ganha negócio).
 
@@ -408,7 +419,7 @@ async def _resolve_or_provision_client(email: str, business_name: str = "", ref:
     """
     clients = await db.get_clients_by_owner_email(email)
     if len(clients) == 1:
-        return clients[0]
+        return clients[0], False
     if len(clients) > 1:
         # Duplicidade (caso real 2026-09-10: cadastro abandonado em "pending"
         # + a conta de verdade em "active"). Se só UMA está ativa, é ela; a
@@ -422,7 +433,7 @@ async def _resolve_or_provision_client(email: str, business_name: str = "", ref:
                 f"Login | e-mail em {len(clients)} contas, entrando na única ativa | "
                 f"client={active[0].client_id} | email=***@{email.split('@')[-1]}"
             )
-            return active[0]
+            return active[0], False
         log.warning(f"Login | e-mail vinculado a 2+ clientes ativos | email=***@{email.split('@')[-1]}")
         raise HTTPException(
             403,
@@ -434,7 +445,7 @@ async def _resolve_or_provision_client(email: str, business_name: str = "", ref:
     member_of = await db.get_client_by_team_email(email)
     if member_of:
         log.info(f"Login | membro da equipe | client={member_of.client_id}")
-        return member_of
+        return member_of, False
 
     referred_by = await _validate_referrer(ref)
     client = await db.create_client_signup(email, business_name, referred_by=referred_by)
@@ -448,7 +459,7 @@ async def _resolve_or_provision_client(email: str, business_name: str = "", ref:
     from huma.services import subscription_service as subs
     await subs.start_trial_if_eligible(client.client_id, trigger="signup")
 
-    return client
+    return client, True
 
 
 def _post_login_redirect(client) -> str:
@@ -463,7 +474,7 @@ def _post_login_redirect(client) -> str:
     return "/onboarding/page"
 
 
-def _session_response(client, remember: bool, email: str = "") -> JSONResponse:
+def _session_response(client, remember: bool, email: str = "", new_account: bool = False) -> JSONResponse:
     """
     Monta a resposta de login OK: cookie de sessão + redirect.
 
@@ -472,7 +483,10 @@ def _session_response(client, remember: bool, email: str = "") -> JSONResponse:
     """
     client_id = client.client_id
     session = create_session_token(client_id, email=email)
-    resp = JSONResponse({"status": "ok", "redirect": _post_login_redirect(client)})
+    body = {"status": "ok", "redirect": _post_login_redirect(client)}
+    if new_account:
+        body["new_account"] = True
+    resp = JSONResponse(body)
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session,
@@ -576,10 +590,10 @@ async def session_from_supabase(payload: SupabaseSessionRequest) -> JSONResponse
     # GoTrue (ver _gotrue_signup) — é aqui que o provisionamento acontece
     # no fluxo com confirmação de e-mail.
     business_name = str((user.get("user_metadata") or {}).get("business_name", ""))
-    client = await _resolve_or_provision_client(email, business_name, ref=payload.ref)
+    client, created = await _resolve_or_provision_client_ex(email, business_name, ref=payload.ref)
 
-    log.info(f"Login | sessão via supabase token | client={client.client_id}")
-    return _session_response(client, payload.remember, email=email)
+    log.info(f"Login | sessão via supabase token | client={client.client_id} | nova={created}")
+    return _session_response(client, payload.remember, email=email, new_account=created)
 
 
 # ================================================================
@@ -1510,11 +1524,18 @@ async def oauth_callback_page() -> HTMLResponse:
     }});
     const data = await r.json();
     if (r.ok) {{
-      // Analytics: login via Google (inclui o primeiro acesso pós-confirmação)
-      try {{ (window.dataLayer = window.dataLayer || []).push({{event: "login", method: "google"}}); }} catch (e) {{}}
+      // Analytics: conta criada agora = sign_up; senão login. O callback
+      // também recebe a confirmação de e-mail (sign_up já contado no form).
+      const method = location.hash.includes("provider_token") ? "google" : "email";
+      const ev = (data.new_account && method === "google") ? "sign_up" : "login";
       let next = "";
       try {{ next = sessionStorage.getItem("huma_next") || ""; sessionStorage.removeItem("huma_next"); }} catch (e) {{}}
-      location.replace(next.startsWith("/oauth/mcp/authorize") ? next : data.redirect);
+      const go = () => location.replace(next.startsWith("/oauth/mcp/authorize") ? next : data.redirect);
+      // Espera a tag do GA4 sair antes de trocar de página (teto de 800 ms)
+      let gone = false;
+      const goOnce = () => {{ if (!gone) {{ gone = true; go(); }} }};
+      try {{ (window.dataLayer = window.dataLayer || []).push({{event: ev, method, eventCallback: goOnce, eventTimeout: 800}}); }} catch (e) {{}}
+      setTimeout(goOnce, 900);
       return;
     }}
     document.getElementById("msg").className = "msg err";

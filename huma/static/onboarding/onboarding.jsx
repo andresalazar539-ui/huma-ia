@@ -26,6 +26,20 @@ function OnboardingApp() {
     }).catch(() => {});
     return () => window.removeEventListener('huma-auth', h);
   }, []);
+  // Analytics: um evento por passo do onboarding (funil de ativação no GA4)
+  // e onboarding_complete só quando o dono termina o passo 7 nesta sessão
+  // (retomar uma conta já ativa cai no 8 e não conta de novo).
+  const prevMoment = React.useRef(0);
+  useEffect(() => {
+    try {
+      const names = ['', 'voce', 'site', 'entrevista', 'compilacao', 'teste_clone', 'me_prepara', 'whatsapp', 'final'];
+      window.humaTrack?.('onboarding_step', { step_number: moment, step_name: names[moment] || String(moment) });
+      if (moment === 8 && prevMoment.current === 7) {
+        window.humaTrack?.('onboarding_complete', { whatsapp_connected: waConnected ? 'sim' : 'nao' });
+      }
+    } catch (e) { /* analytics nunca derruba o app */ }
+    prevMoment.current = moment;
+  }, [moment]);
   const next = () => setMoment(m => m + 1);
   const fromProposal = (p) => {
     setFacts(f => ({
