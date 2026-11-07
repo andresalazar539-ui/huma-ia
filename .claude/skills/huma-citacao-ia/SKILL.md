@@ -41,7 +41,9 @@ Prompts fixos (não trocar sem motivo: a comparação semana a semana é o valor
 
 Registrar em `reports/citacao-ia/AAAA-MM-DD.md`: por prompt e por IA, (a) HUMA mencionada? (b) posição
 na lista, (c) URL da HUMA citada como fonte, (d) concorrentes citados e as fontes deles. Fechar com
-o placar (menções / 40) e o delta da semana anterior. GA4: comparar sessões com origem chatgpt.com,
+o placar (menções / 40) e o delta da semana anterior. Bing Webmaster Tools (site `https://humaia.com.br/`,
+conta Google andre@humaia.com.br) → **AI Performance** (beta): citações da HUMA no Copilot e nas respostas
+de IA do Bing; anotar o número da semana. GA4: comparar sessões com origem chatgpt.com,
 gemini.google.com, perplexity.ai, claude.ai (relatório Aquisição de tráfego, filtro por origem).
 
 ## B. Escrever página citável
