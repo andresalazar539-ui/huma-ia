@@ -9,6 +9,7 @@
 #   GET /llms-full.txt        todo o conteúdo citável em Markdown (2026-11-07)
 #   GET /precos, /como-funciona, /comparar-precos, /sobre, /perguntas,
 #       /para/{tipo}          páginas citáveis (texto em core/aeo_content.py)
+#   GET /para/{tipo}/{guia}   guias em arquivo (huma/content/guias, core/aeo_guides.py)
 #   GET /{INDEXNOW_KEY}.txt   chave do IndexNow (Bing e parceiros)
 #
 # Nada aqui exige login, nada aqui chama o banco ou a IA. As páginas de
@@ -30,6 +31,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from huma.config import PUBLIC_BASE_URL
 from huma.core import aeo_content as aeo
+from huma.core import aeo_guides
 from huma.integrations import SECTION_LABELS, all_specs, get_spec
 from huma.utils.logger import get_logger
 
@@ -89,7 +91,8 @@ def aeo_indexnow_key() -> str:
 
 def public_paths() -> list[str]:
     """Todos os endereços públicos indexáveis (sitemap e IndexNow usam a mesma lista)."""
-    return ["/", "/integracoes"] + aeo.all_paths() + [_spec_path(s.id) for s in all_specs()]
+    return (["/", "/integracoes"] + aeo.all_paths() + [g.path for g in aeo_guides.all_guides()]
+            + [_spec_path(s.id) for s in all_specs()])
 
 _INDEX_INTRO = (
     "Conectar uma integração na HUMA é colar a chave ou o token do sistema que você já usa. "
@@ -494,12 +497,51 @@ def _render_vertical(slug: str) -> str:
              f"<h2>O que a HUMA faz para {_e(v['name'])}</h2><ul>"]
     parts.extend(f"<li>{_e(point)}</li>" for point in v["points"])
     parts.append("</ul>")
+    guides = aeo_guides.guides_for(slug)
+    if guides:
+        parts.append(f"<h2>Guias para {_e(v['name'])}</h2><ul>")
+        parts.extend(f'<li><a href="{_e(g.path)}">{_e(g.pergunta)}</a></li>' for g in guides)
+        parts.append("</ul>")
     parts.append(_faq_html(v["faq"]))
     parts.append(_cta_html())
     graph = [_org_ld(), _software_ld(url_path=path), _faq_ld(v["faq"]),
              _breadcrumb_ld([(_SITE_NAME, "/"), (v["title"], path)])]
     json_ld = _json_ld({"@context": "https://schema.org", "@graph": graph})
     return _page(v["title"], _meta_description(v["answer"]), path, "\n".join(parts), json_ld)
+
+
+def _render_guide(g: "aeo_guides.Guide") -> str:
+    """HTML de um guia em arquivo: resposta direta, corpo, FAQ e chamada."""
+    v = aeo.VERTICALS[g.vertical]
+    hub = aeo.vertical_path(g.vertical)
+    parts = [
+        f"<h1>{_e(g.pergunta)}</h1>",
+        f'<p class="lead">{_e(aeo_guides.plain(g.answer))}</p>',
+        f'<p class="in" style="font-size:13px;color:var(--ink-3)">Atualizado em {_e(g.atualizado)} · '
+        f'<a href="{_e(hub)}">HUMA para {_e(v["name"])}</a></p>',
+        aeo_guides.body_html(g),
+        _faq_html([(q, aeo_guides.plain(a)) for q, a in g.faq]),
+        _cta_html(),
+    ]
+    faq_plain = [(q, aeo_guides.plain(a)) for q, a in g.faq]
+    graph = [
+        _org_ld(),
+        {
+            "@type": "Article",
+            "headline": g.titulo,
+            "description": g.descricao,
+            "inLanguage": "pt-BR",
+            "datePublished": g.atualizado,
+            "dateModified": g.atualizado,
+            "mainEntityOfPage": _abs(g.path),
+            "author": {"@id": _abs("/#organizacao")},
+            "publisher": {"@id": _abs("/#organizacao")},
+        },
+        _faq_ld(faq_plain),
+        _breadcrumb_ld([(_SITE_NAME, "/"), (v["title"], hub), (g.titulo, g.path)]),
+    ]
+    json_ld = _json_ld({"@context": "https://schema.org", "@graph": graph})
+    return _page(g.titulo, _meta_description(g.descricao), g.path, "\n".join(parts), json_ld)
 
 
 def _llms_full() -> str:
@@ -517,6 +559,11 @@ def _llms_full() -> str:
         lines += [f"- {point}" for point in v["points"]] + [""]
         for q, a in v["faq"]:
             lines += [f"**{q}** {a}", ""]
+    for g in aeo_guides.all_guides():
+        lines += [f"## {g.pergunta}", "", f"Fonte: {_abs(g.path)} (atualizado em {g.atualizado})", "",
+                  aeo_guides.plain(g.answer), "", aeo_guides.body_markdown(g)]
+        for q, a in g.faq:
+            lines += [f"**{q}** {aeo_guides.plain(a)}", ""]
     lines += ["## Perguntas frequentes", "", f"Fonte: {_abs('/perguntas')}", ""]
     for q, a in aeo.GENERAL_FAQ:
         lines += [f"**{q}** {a}", ""]
@@ -585,6 +632,15 @@ async def page_vertical(slug: str) -> HTMLResponse:
     if slug not in aeo.VERTICALS:
         raise HTTPException(404, "Página não encontrada.")
     return HTMLResponse(_render_vertical(slug))
+
+
+@router.get("/para/{vertical}/{guide_slug}", response_class=HTMLResponse)
+async def page_guide(vertical: str, guide_slug: str) -> HTMLResponse:
+    """Guia em arquivo (huma/content/guias); 404 quando não existe."""
+    g = aeo_guides.get(vertical, guide_slug)
+    if g is None or vertical not in aeo.VERTICALS:
+        raise HTTPException(404, "Página não encontrada.")
+    return HTMLResponse(_render_guide(g))
 
 
 @router.get("/llms-full.txt")
@@ -663,6 +719,12 @@ async def llms_txt() -> Response:
         "",
     ] + [
         f"- [{v['title']}]({_abs(aeo.vertical_path(slug))})" for slug, v in aeo.VERTICALS.items()
+    ] + [
+        "",
+        "## Guias",
+        "",
+    ] + [
+        f"- [{g.pergunta}]({_abs(g.path)}): {g.descricao}" for g in aeo_guides.all_guides()
     ] + [
         "",
         "## Integrações",

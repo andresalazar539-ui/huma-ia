@@ -45,7 +45,13 @@ o placar (menções / 40) e o delta da semana anterior. GA4: comparar sessões c
 gemini.google.com, perplexity.ai, claude.ai (relatório Aquisição de tráfego, filtro por origem).
 
 ## B. Escrever página citável
-Todo texto público mora em `huma/core/aeo_content.py` (PAGES, VERTICALS, GENERAL_FAQ). A rota em
+**Guia novo (o caminho normal, 10 por tipo de negócio)**: criar `huma/content/guias/<tipo>/<slug>.md`
+no molde de `huma/content/guias/LEIA-ME.md`. Vira `/para/<tipo>/<slug>` sozinho (Article + FAQPage +
+Breadcrumb, sitemap, llms, IndexNow, lista na página do tipo). O teste `test_aeo_guides.py` é a régua:
+barra o push de guia fora do padrão. Tipo de negócio novo: entrada em `aeo_content.VERTICALS` primeiro.
+
+**Páginas fixas** (preço, como funciona, sobre, perguntas, a página de cada tipo) moram em
+`huma/core/aeo_content.py` (PAGES, VERTICALS, GENERAL_FAQ). A rota em
 `huma/routes/public_pages.py` desenha HTML + JSON-LD (Organization, SoftwareApplication com preço,
 FAQPage, BreadcrumbList) e entra sozinha no sitemap, llms.txt, llms-full.txt e IndexNow.
 Regras:
