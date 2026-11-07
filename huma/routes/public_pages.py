@@ -6,6 +6,10 @@
 #   GET /robots.txt           libera as páginas públicas, esconde o produto logado
 #   GET /sitemap.xml          raiz + /integracoes + cada página de integração
 #   GET /llms.txt             resumo em Markdown pra assistentes de IA
+#   GET /llms-full.txt        todo o conteúdo citável em Markdown (2026-11-07)
+#   GET /precos, /como-funciona, /comparar-precos, /sobre, /perguntas,
+#       /para/{tipo}          páginas citáveis (texto em core/aeo_content.py)
+#   GET /{INDEXNOW_KEY}.txt   chave do IndexNow (Bing e parceiros)
 #
 # Nada aqui exige login, nada aqui chama o banco ou a IA. As páginas de
 # integração são GERADAS do registro (`huma.integrations.all_specs()`): uma
@@ -25,6 +29,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
 from huma.config import PUBLIC_BASE_URL
+from huma.core import aeo_content as aeo
 from huma.integrations import SECTION_LABELS, all_specs, get_spec
 from huma.utils.logger import get_logger
 
@@ -74,6 +79,17 @@ _INCLUDED_CONVERSATIONS = 150
 _EXTRA_PRICE_BRL = "1,99"
 _SIGNUP_PATH = "/login"
 _META_DESCRIPTION_MAX = 150
+
+def aeo_indexnow_key() -> str:
+    """Chave pública do IndexNow (config INDEXNOW_KEY)."""
+    from huma.config import INDEXNOW_KEY
+
+    return INDEXNOW_KEY
+
+
+def public_paths() -> list[str]:
+    """Todos os endereços públicos indexáveis (sitemap e IndexNow usam a mesma lista)."""
+    return ["/", "/integracoes"] + aeo.all_paths() + [_spec_path(s.id) for s in all_specs()]
 
 _INDEX_INTRO = (
     "Conectar uma integração na HUMA é colar a chave ou o token do sistema que você já usa. "
@@ -214,14 +230,15 @@ def _page(title: str, description: str, canonical_path: str, body: str, json_ld:
 <body>
 <header>
   <a class="brand" href="/">{_SITE_NAME}</a>
-  <nav><a href="/integracoes">Integrações</a><a href="{_SIGNUP_PATH}">Entrar</a></nav>
+  <nav><a href="/precos">Preço</a><a href="/como-funciona">Como funciona</a><a href="/integracoes">Integrações</a><a href="{_SIGNUP_PATH}">Entrar</a></nav>
 </header>
 <main>
 {body}
 </main>
 <footer>
-  <a href="/">{_SITE_NAME}</a><a href="/integracoes">Integrações</a><a href="{_SIGNUP_PATH}">Teste grátis</a>
-  <span>R$ {_PRICE_BRL} por mês com {_INCLUDED_CONVERSATIONS} conversas engajadas. Sem contrato de fidelidade.</span>
+  <p><a href="/">{_SITE_NAME}</a><a href="/precos">Preço</a><a href="/como-funciona">Como funciona</a><a href="/comparar-precos">Modelos de cobrança</a><a href="/perguntas">Perguntas frequentes</a><a href="/integracoes">Integrações</a><a href="/sobre">Sobre</a><a href="{_SIGNUP_PATH}">Teste grátis</a></p>
+  <p>Para: {_vertical_links()}</p>
+  <span>R$ {_PRICE_BRL} por mês com {_INCLUDED_CONVERSATIONS} conversas engajadas. Sem contrato de fidelidade. {_e(aeo.CONTACT_EMAIL)}</span>
 </footer>
 </body>
 </html>"""
@@ -250,6 +267,76 @@ def _software_ld(name_suffix: str = "", url_path: str = "/") -> dict:
             },
         },
     }
+
+
+def _org_ld() -> dict:
+    """Organization: a entidade HUMA IA (quem é, onde fica, quem fundou, contato)."""
+    return {
+        "@type": "Organization",
+        "@id": _abs("/#organizacao"),
+        "name": _SITE_NAME,
+        "alternateName": ["HUMA", "Huma IA", "HumaIA"],
+        "url": _abs("/"),
+        "logo": _abs("/static/brand/icon-512.png"),
+        "description": aeo.ONE_LINER,
+        "email": aeo.CONTACT_EMAIL,
+        "founder": {"@type": "Person", "name": aeo.FOUNDER},
+        "address": {"@type": "PostalAddress", "addressLocality": aeo.CITY, "addressCountry": "BR"},
+        "areaServed": "BR",
+        "knowsLanguage": "pt-BR",
+    }
+
+
+def _breadcrumb_ld(items: list[tuple[str, str]]) -> dict:
+    """BreadcrumbList: [(nome, caminho), ...]."""
+    return {
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": i + 1, "name": name, "item": _abs(path)}
+            for i, (name, path) in enumerate(items)
+        ],
+    }
+
+
+def _faq_ld(faq: list[tuple[str, str]]) -> dict:
+    """FAQPage a partir de pares (pergunta, resposta)."""
+    return {
+        "@type": "FAQPage",
+        "mainEntity": [
+            {"@type": "Question", "name": q, "acceptedAnswer": {"@type": "Answer", "text": a}}
+            for q, a in faq
+        ],
+    }
+
+
+def _vertical_links() -> str:
+    """Links do rodapé pras páginas por tipo de negócio."""
+    return " ".join(
+        f'<a href="{aeo.vertical_path(slug)}">{_e(v["name"])}</a>' for slug, v in aeo.VERTICALS.items()
+    )
+
+
+def _faq_html(faq: list[tuple[str, str]]) -> str:
+    """Lista de perguntas e respostas visível."""
+    if not faq:
+        return ""
+    items = "".join(f"<dt>{_e(q)}</dt><dd>{_e(a)}</dd>" for q, a in faq)
+    return f'<h2>Perguntas frequentes</h2><dl class="faq">{items}</dl>'
+
+
+def _cta_html() -> str:
+    """Chamada final comum das páginas citáveis."""
+    return (
+        f'<div class="cta"><h2 style="margin-top:0">Teste grátis por {aeo.TRIAL_DAYS} dias</h2>'
+        f"<p>{_e(aeo.PRICE_SENTENCE)}</p>"
+        f'<a class="btn primary" href="{_SIGNUP_PATH}">Começar grátis</a> '
+        f'<a class="btn" href="/precos">Ver o preço</a></div>'
+    )
+
+
+def _updated_html() -> str:
+    """Data de atualização visível (sinal de frescor pra buscadores e IAs)."""
+    return f'<p class="in" style="font-size:13px;color:var(--ink-3)">Atualizado em {_e(aeo.UPDATED_AT)}</p>'
 
 
 # ----------------------------------------------------------------
@@ -365,6 +452,84 @@ def _render_spec(pub: dict) -> str:
     return _page(title, description, path, "\n".join(parts), json_ld)
 
 
+def _render_content_page(slug: str) -> str:
+    """HTML de uma página citável de `aeo_content.PAGES`."""
+    page = aeo.PAGES[slug]
+    parts: list[str] = [f"<h1>{_e(page['h1'])}</h1>", f'<p class="lead">{_e(page["answer"])}</p>', _updated_html()]
+    for heading, items in page["sections"]:
+        parts.append(f"<h2>{_e(heading)}</h2><ul>")
+        parts.extend(f"<li>{_e(item)}</li>" for item in items)
+        parts.append("</ul>")
+    parts.append(_faq_html(page["faq"]))
+    parts.append(_cta_html())
+    graph: list[dict] = [_org_ld(), _software_ld(url_path=page["path"]),
+                         _breadcrumb_ld([(_SITE_NAME, "/"), (page["h1"], page["path"])])]
+    if page["faq"]:
+        graph.append(_faq_ld(page["faq"]))
+    json_ld = _json_ld({"@context": "https://schema.org", "@graph": graph})
+    return _page(page["title"], _meta_description(page["answer"]), page["path"], "\n".join(parts), json_ld)
+
+
+def _render_faq_page() -> str:
+    """HTML de /perguntas: todas as perguntas gerais."""
+    parts = [
+        f"<h1>Perguntas frequentes sobre a {_SITE_NAME}</h1>",
+        f'<p class="lead">{_e(aeo.ONE_LINER)}</p>',
+        _updated_html(),
+        _faq_html(aeo.GENERAL_FAQ),
+        _cta_html(),
+    ]
+    graph = [_org_ld(), _faq_ld(aeo.GENERAL_FAQ),
+             _breadcrumb_ld([(_SITE_NAME, "/"), ("Perguntas frequentes", "/perguntas")])]
+    json_ld = _json_ld({"@context": "https://schema.org", "@graph": graph})
+    return _page(f"Perguntas frequentes sobre a {_SITE_NAME}", _meta_description(aeo.ONE_LINER),
+                 "/perguntas", "\n".join(parts), json_ld)
+
+
+def _render_vertical(slug: str) -> str:
+    """HTML de /para/{slug}: a HUMA pra um tipo de negócio."""
+    v = aeo.VERTICALS[slug]
+    path = aeo.vertical_path(slug)
+    parts = [f"<h1>{_e(v['title'])}</h1>", f'<p class="lead">{_e(v["answer"])}</p>', _updated_html(),
+             f"<h2>O que a HUMA faz para {_e(v['name'])}</h2><ul>"]
+    parts.extend(f"<li>{_e(point)}</li>" for point in v["points"])
+    parts.append("</ul>")
+    parts.append(_faq_html(v["faq"]))
+    parts.append(_cta_html())
+    graph = [_org_ld(), _software_ld(url_path=path), _faq_ld(v["faq"]),
+             _breadcrumb_ld([(_SITE_NAME, "/"), (v["title"], path)])]
+    json_ld = _json_ld({"@context": "https://schema.org", "@graph": graph})
+    return _page(v["title"], _meta_description(v["answer"]), path, "\n".join(parts), json_ld)
+
+
+def _llms_full() -> str:
+    """Todo o conteúdo citável em Markdown, numa página só."""
+    lines = [f"# {_SITE_NAME}", "", f"> {aeo.ONE_LINER}", f"> {aeo.PRICE_SENTENCE}",
+             f"> Atualizado em {aeo.UPDATED_AT}. Site: {_abs('/')}. Contato: {aeo.CONTACT_EMAIL}.", ""]
+    for page in aeo.PAGES.values():
+        lines += [f"## {page['h1']}", "", f"Fonte: {_abs(page['path'])}", "", page["answer"], ""]
+        for heading, items in page["sections"]:
+            lines += [f"### {heading}", ""] + [f"- {i}" for i in items] + [""]
+        for q, a in page["faq"]:
+            lines += [f"**{q}** {a}", ""]
+    for slug, v in aeo.VERTICALS.items():
+        lines += [f"## {v['title']}", "", f"Fonte: {_abs(aeo.vertical_path(slug))}", "", v["answer"], ""]
+        lines += [f"- {point}" for point in v["points"]] + [""]
+        for q, a in v["faq"]:
+            lines += [f"**{q}** {a}", ""]
+    lines += ["## Perguntas frequentes", "", f"Fonte: {_abs('/perguntas')}", ""]
+    for q, a in aeo.GENERAL_FAQ:
+        lines += [f"**{q}** {a}", ""]
+    lines += ["## Integrações", ""]
+    for spec in all_specs():
+        pub = spec.public()
+        lines.append(f"- [{pub['name']}]({_abs(_spec_path(pub['id']))}): {pub['summary'] or pub['what_ai_does']}")
+    for item in LEGACY_INTEGRATIONS:
+        lines.append(f"- {item['name']}: {item['summary']}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # ----------------------------------------------------------------
 # Rotas
 # ----------------------------------------------------------------
@@ -384,9 +549,62 @@ async def integration_page(integration_id: str) -> HTMLResponse:
     return HTMLResponse(_render_spec(spec.public(_base_url())))
 
 
+@router.get("/precos", response_class=HTMLResponse)
+async def page_precos() -> HTMLResponse:
+    """Preço público da HUMA (a página que as IAs mais citam)."""
+    return HTMLResponse(_render_content_page("precos"))
+
+
+@router.get("/como-funciona", response_class=HTMLResponse)
+async def page_como_funciona() -> HTMLResponse:
+    """Como a HUMA atende, agenda e vende."""
+    return HTMLResponse(_render_content_page("como-funciona"))
+
+
+@router.get("/comparar-precos", response_class=HTMLResponse)
+async def page_comparar_precos() -> HTMLResponse:
+    """Os modelos de cobrança de atendimento com IA no WhatsApp."""
+    return HTMLResponse(_render_content_page("comparar-precos"))
+
+
+@router.get("/sobre", response_class=HTMLResponse)
+async def page_sobre() -> HTMLResponse:
+    """A empresa HUMA IA (entidade pra buscadores e IAs)."""
+    return HTMLResponse(_render_content_page("sobre"))
+
+
+@router.get("/perguntas", response_class=HTMLResponse)
+async def page_perguntas() -> HTMLResponse:
+    """Perguntas frequentes gerais."""
+    return HTMLResponse(_render_faq_page())
+
+
+@router.get("/para/{slug}", response_class=HTMLResponse)
+async def page_vertical(slug: str) -> HTMLResponse:
+    """A HUMA para um tipo de negócio; 404 quando o tipo não existe."""
+    if slug not in aeo.VERTICALS:
+        raise HTTPException(404, "Página não encontrada.")
+    return HTMLResponse(_render_vertical(slug))
+
+
+@router.get("/llms-full.txt")
+async def llms_full_txt() -> Response:
+    """Todo o conteúdo citável em Markdown, pra assistentes de IA lerem de uma vez."""
+    return Response(content=_llms_full(), media_type="text/markdown; charset=utf-8")
+
+
+@router.get(f"/{aeo_indexnow_key()}.txt", include_in_schema=False)
+async def indexnow_key_file() -> PlainTextResponse:
+    """Prova de posse do domínio pro IndexNow (o conteúdo é a própria chave)."""
+    return PlainTextResponse(aeo_indexnow_key())
+
+
 @router.get("/robots.txt", response_class=PlainTextResponse)
 async def robots_txt() -> PlainTextResponse:
     """Libera as páginas públicas pra buscadores e IAs; esconde o produto logado."""
+    # Login, onboarding e pedido NÃO entram no Disallow (2026-11-07): eles
+    # respondem X-Robots-Tag noindex (app.py) e o robô precisa abrir a
+    # página pra ler esse "não indexe". O "*" já vale pros robôs de IA.
     lines = [
         "User-agent: *",
         "Allow: /",
@@ -395,9 +613,6 @@ async def robots_txt() -> PlainTextResponse:
         "Disallow: /admin",
         "Disallow: /webhook/",
         "Disallow: /oauth/",
-        "Disallow: /pedido/",
-        "Disallow: /onboarding",
-        "Disallow: /login",
         "Disallow: /static/cockpit/",
         "",
         f"Sitemap: {_abs('/sitemap.xml')}",
@@ -410,7 +625,7 @@ async def robots_txt() -> PlainTextResponse:
 async def sitemap_xml() -> Response:
     """Sitemap com a raiz, a lista e cada página de integração."""
     today = _today_iso()
-    paths = ["/", "/integracoes"] + [_spec_path(s.id) for s in all_specs()]
+    paths = public_paths()
     urls = "".join(
         f"<url><loc>{_e(_abs(p))}</loc><lastmod>{today}</lastmod></url>" for p in paths
     )
@@ -434,6 +649,21 @@ async def llms_txt() -> Response:
         f"R$ {_EXTRA_PRICE_BRL} por conversa extra, tudo incluso, sem contrato de fidelidade.",
         f"> Teste grátis em {_abs(_SIGNUP_PATH)}. Conectar uma integração é colar a chave; "
         "a IA usa na próxima conversa.",
+        "",
+        "## Páginas principais",
+        "",
+        f"- [Preço]({_abs('/precos')}): {aeo.PRICE_SENTENCE}",
+        f"- [Como funciona]({_abs('/como-funciona')}): {aeo.PAGES['como-funciona']['answer']}",
+        f"- [Modelos de cobrança de IA no WhatsApp]({_abs('/comparar-precos')}): por atendente, por crédito, por conversa aberta e por mês",
+        f"- [Perguntas frequentes]({_abs('/perguntas')}): o que é, quanto custa, conversa engajada, agenda, pagamento, equipe",
+        f"- [Sobre]({_abs('/sobre')}): empresa brasileira de {aeo.CITY}, fundada por {aeo.FOUNDER}",
+        f"- [Conteúdo completo]({_abs('/llms-full.txt')}): todas as páginas em Markdown",
+        "",
+        "## Por tipo de negócio",
+        "",
+    ] + [
+        f"- [{v['title']}]({_abs(aeo.vertical_path(slug))})" for slug, v in aeo.VERTICALS.items()
+    ] + [
         "",
         "## Integrações",
         "",

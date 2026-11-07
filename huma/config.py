@@ -97,6 +97,12 @@ VAPID_SUBJECT = os.getenv("VAPID_SUBJECT", "mailto:andre@humaia.com.br").strip()
 # na hora de criar a instância do cliente. Sem barra no fim.
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
 
+# IndexNow (2026-11-07): avisa Bing, Yandex e parceiros na hora em que uma
+# página pública nasce ou muda (o ChatGPT busca no índice do Bing). A chave
+# é PÚBLICA por desenho (fica em /{chave}.txt), não é segredo.
+INDEXNOW_KEY = os.getenv("INDEXNOW_KEY", "bf3ddd6a89be8f6896cb558858ebf7f6")
+INDEXNOW_ENABLED = os.getenv("INDEXNOW_ENABLED", "true").lower() == "true"
+
 # Leitor reserva de páginas do onboarding (2026-09-20). Lojas atrás de
 # CloudFront/Cloudflare devolvem 405/403 pra IP de datacenter e sites em
 # JavaScript vêm vazios na leitura direta; este serviço busca por outra rota

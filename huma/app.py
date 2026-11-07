@@ -110,6 +110,19 @@ def create_app() -> FastAPI:
         ],
     )
 
+    # Áreas privadas fora do Google e das IAs (2026-11-07): o robots.txt só
+    # pede pra não rastrear; quem tira do índice é este cabeçalho. Vale pro
+    # produto logado e pras páginas com token (convite, retomada, pedido).
+    _NOINDEX_PREFIXES = ("/cockpit", "/admin", "/login", "/onboarding", "/wizard", "/auth/",
+                         "/convite/", "/continuar/", "/pedido/", "/l/", "/c/", "/static/balcao/", "/static/cockpit/")
+
+    @app.middleware("http")
+    async def noindex_private(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith(_NOINDEX_PREFIXES):
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
+
     # Request ID middleware (reaproveita o id da trilha de eventos quando ela
     # está ligada, pra o cabeçalho e a tabela `events` falarem do mesmo id).
     @app.middleware("http")
@@ -254,6 +267,14 @@ def create_app() -> FastAPI:
             _asyncio.create_task(lines_service.ensure_webhooks())
         except Exception as e:
             log.error(f"Conferência dos webhooks não iniciou | {type(e).__name__}: {e}")
+        # Páginas públicas avisadas ao Bing e parceiros (IndexNow), 1 min
+        # depois de subir e só quando a lista mudou (dedup no Redis).
+        try:
+            import asyncio as _asyncio
+            from huma.services import indexnow
+            _asyncio.create_task(indexnow.submit_public_pages_after_startup())
+        except Exception as e:
+            log.error(f"IndexNow não iniciou | {type(e).__name__}: {e}")
 
     # Sprint 3 / item 16 — Graceful shutdown.
     # Quando Railway envia SIGTERM (deploy/restart), o uvicorn dispara este handler.
