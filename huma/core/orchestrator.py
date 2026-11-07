@@ -293,6 +293,21 @@ async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
         from huma.services import reactivation_engine
         await reactivation_engine.attach_to_conversation(client_data, conv, unified_text)
 
+        # Infoproduto (Hotmart/Monetizze, 2026-11-06): quem comprou/abandonou
+        # antes de existir conversa deixou um marker pendente no Redis; na
+        # primeira mensagem ele entra no histórico pra IA já saber o contexto.
+        if not conv.history or not conv.last_message_at:
+            try:
+                from huma.services import infoproduct_events
+                pend = await infoproduct_events.pending_for(client_id, phone)
+                if pend and pend.get("marker"):
+                    conv.history.append({"role": "assistant", "content": str(pend["marker"])})
+                    from huma.services import redis_service as _redis
+                    await _redis.delete_key(f"infoproduct_pending:{client_id}:{phone}")
+                    log.info(f"Infoproduto | pendente aplicado na 1ª mensagem | {phone} | kind={pend.get('kind', '?')}")
+            except Exception as e:
+                log.warning(f"Infoproduto | pendente não aplicado | {phone} | {type(e).__name__}: {e}")
+
         # ── Fase 3 (QUALIFY): handoff humano em andamento ──
         # Se o humano já assumiu, IA não responde. Registra a msg no
         # histórico (pro humano ter contexto quando conferir) e sai.
@@ -1862,6 +1877,13 @@ async def _send_with_human_delay(
                     await _handle_appointment_action(phone, action, client_data, conv=conv)
                 else:
                     log.info(f"Action create_appointment ignorada | {phone} | já agendado")
+            elif action_type in ("send_contract", "lookup_charges", "lookup_case"):
+                # Conexões por token (2026-11-06): contrato pra assinar, cobranças em
+                # aberto por CPF, andamento de processo. O handler manda a mensagem
+                # factual ao lead, grava no histórico e o marker do turno seguinte.
+                from huma.core import connection_actions
+                conn_result = await connection_actions.handle(phone, action, client_data, conv)
+                log.info(f"{action_type} | {phone} | {conn_result}")
             elif action_type == "handoff_to_human":
                 # Fase 3 (QUALIFY): notifica humano + suprime IA dos próximos turns.
                 # Executado APÓS o reply do Claude sair — handler manda sua própria

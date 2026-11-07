@@ -34,7 +34,9 @@ from huma.utils.logger import get_logger
 
 log = get_logger("lead_events")
 
-EVENTS = ("lead.new", "lead.qualified", "appointment.confirmed", "payment.approved")
+# contract.* (2026-11-06, assinatura digital por conexão): entregue ao webhook e
+# à planilha do dono; na CAPI vira "Lead" (não há evento padrão da Meta).
+EVENTS = ("lead.new", "lead.qualified", "appointment.confirmed", "payment.approved", "contract.signed", "contract.refused")
 
 # Evento HUMA → evento padrão da Meta (o que o Gerenciador de Anúncios
 # entende como conversão).
@@ -50,6 +52,8 @@ _EVENT_LABEL_PT = {
     "lead.qualified": "Lead qualificado",
     "appointment.confirmed": "Agendamento confirmado",
     "payment.approved": "Pagamento aprovado",
+    "contract.signed": "Contrato assinado",
+    "contract.refused": "Contrato recusado",
 }
 
 _HTTP_TIMEOUT = 8.0

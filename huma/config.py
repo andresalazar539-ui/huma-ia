@@ -290,8 +290,50 @@ HUMA_ADMIN_EMAILS = os.getenv("HUMA_ADMIN_EMAILS", "")
 OMIE_API_BASE_URL = os.getenv("OMIE_API_BASE_URL", "https://app.omie.com.br/api/v1")
 TINY_API_BASE_URL = os.getenv("TINY_API_BASE_URL", "https://api.tiny.com.br/api2")
 
+# ── Lojas por credencial colada (2026-11-06, huma/integrations/specs): WooCommerce,
+# Loja Integrada e Shopify. Só versão/base da API; a credencial de cada loja mora
+# em clients.integrations. ──
+WOOCOMMERCE_API_VERSION = os.getenv("WOOCOMMERCE_API_VERSION", "wc/v3")
+LOJAINTEGRADA_API_BASE_URL = os.getenv("LOJAINTEGRADA_API_BASE_URL", "https://api.awsli.com.br/v1")
+SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2026-10")
+
 # ── RD Station CRM — token da instância por cliente (sem OAuth, sem env de app) ──
 RDSTATION_API_BASE_URL = os.getenv("RDSTATION_API_BASE_URL", "https://crm.rdstation.com/api/v1")
+
+# ── Sistemas jurídicos por token (ADVBOX, Projuris ADV; sem OAuth, sem env de app) ──
+ADVBOX_API_BASE_URL = os.getenv("ADVBOX_API_BASE_URL", "https://app.advbox.com.br/api/v1")
+PROJURIS_AUTH_URL = os.getenv("PROJURIS_AUTH_URL", "https://apigw.projurisadv.com.br/auth/token")
+PROJURIS_API_BASE_URL = os.getenv("PROJURIS_API_BASE_URL", "https://api.projurisadv.com.br/adv-service")
+
+# ── Agendas por token (2026-11-06, huma/integrations/specs): Feegow, Trinks,
+# Calendly (Personal Access Token) e Clínica nas Nuvens. Só a base da API. ──
+FEEGOW_API_BASE_URL = os.getenv("FEEGOW_API_BASE_URL", "https://api.feegow.com/v1/api")
+TRINKS_API_BASE_URL = os.getenv("TRINKS_API_BASE_URL", "https://api.trinks.com/v1")
+CALENDLY_API_BASE_URL = os.getenv("CALENDLY_API_BASE_URL", "https://api.calendly.com")
+CLINICANASNUVENS_API_BASE_URL = os.getenv("CLINICANASNUVENS_API_BASE_URL", "https://api.clinicanasnuvens.com.br")
+
+# ── Assinatura digital por token do cliente (ZapSign, Clicksign, D4Sign; 2026-11-06) ──
+# Sem env de app: o dono cola a credencial. Sandbox troca só a base URL.
+ZAPSIGN_API_BASE_URL = os.getenv("ZAPSIGN_API_BASE_URL", "https://api.zapsign.com.br/api/v1")
+ZAPSIGN_SANDBOX_BASE_URL = os.getenv("ZAPSIGN_SANDBOX_BASE_URL", "https://sandbox.api.zapsign.com.br/api/v1")
+CLICKSIGN_API_BASE_URL = os.getenv("CLICKSIGN_API_BASE_URL", "https://app.clicksign.com/api/v3")
+CLICKSIGN_SANDBOX_BASE_URL = os.getenv("CLICKSIGN_SANDBOX_BASE_URL", "https://sandbox.clicksign.com/api/v3")
+D4SIGN_API_BASE_URL = os.getenv("D4SIGN_API_BASE_URL", "https://secure.d4sign.com.br/api/v1")
+D4SIGN_SANDBOX_BASE_URL = os.getenv("D4SIGN_SANDBOX_BASE_URL", "https://sandbox.d4sign.com.br/api/v1")
+
+# ── Agendor e Moskit/Ollow (CRMs por token do cliente, 2026-11-06). Bitrix24 não
+# tem base: a credencial é a própria URL do webhook de entrada da conta. ──
+AGENDOR_API_BASE_URL = os.getenv("AGENDOR_API_BASE_URL", "https://api.agendor.com.br/v3")
+MOSKIT_API_BASE_URL = os.getenv("MOSKIT_API_BASE_URL", "https://api.ms.prod.ollow.services/v2")
+
+# ── Cobrança e financeiro por token do cliente (2026-11-06): Vindi (chave de
+# acesso, sandbox próprio), Superlógica (app_token + access_token, produtos
+# Assinaturas /financeiro e Condomínios /condor) e InfinitePay (Checkout
+# Integrado, sem sandbox). O Asaas de cobranças reusa ASAAS_API_BASE_URL. ──
+VINDI_API_BASE_URL = os.getenv("VINDI_API_BASE_URL", "https://app.vindi.com.br/api/v1")
+VINDI_SANDBOX_BASE_URL = os.getenv("VINDI_SANDBOX_BASE_URL", "https://sandbox-app.vindi.com.br/api/v1")
+SUPERLOGICA_API_BASE_URL = os.getenv("SUPERLOGICA_API_BASE_URL", "https://api.superlogica.net/v2")
+INFINITEPAY_API_BASE_URL = os.getenv("INFINITEPAY_API_BASE_URL", "https://api.checkout.infinitepay.io")
 
 # ── HubSpot (CRM) — mesmo desenho do Pipedrive ──
 HUBSPOT_CLIENT_ID = os.getenv("HUBSPOT_CLIENT_ID", "")

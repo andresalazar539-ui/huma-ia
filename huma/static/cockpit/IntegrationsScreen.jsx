@@ -28,9 +28,17 @@ const INTEGRATIONS = [
       ['SINCRONIZA', 'Catálogo e pedidos'],
       ['REQUER', 'Chave e token da API Tray'],
     ],
-    note: 'Conecta catálogo e pedidos da Tray às conversas da HUMA',
+    note: 'Depende de credenciamento da HUMA como parceira Tray',
   },
 ];
+
+// Data curta (dd/mm/aa, Brasília) pro "DESDE" dos cards do catálogo.
+function connShortDate(iso) {
+  if (!iso) return 'hoje';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'hoje';
+  return d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: '2-digit' });
+}
 
 // Ordem das seções e dos cards dentro delas. 'whatsapp' é o WhatsAppCard
 // (componente próprio, com status buscado por ele mesmo); os outros ids
@@ -40,7 +48,11 @@ const SECTIONS = [
   { id: 'agenda', title: 'Agenda', desc: 'A HUMA só confirma horário que a sua agenda diz que está livre.', ids: ['gcal', 'doctoralia'] },
   { id: 'loja', title: 'Loja e estoque', desc: 'Catálogo, preço e estoque reais dentro da conversa.', ids: ['nuvemshop', 'omie', 'tiny', 'bling', 'tray'] },
   { id: 'pagamentos', title: 'Pagamentos', desc: 'Pix, boleto e cartão na conversa. O dinheiro cai na sua conta.', ids: ['mercadopago', 'asaas'] },
+  { id: 'cobranca', title: 'Cobrança e financeiro', desc: 'Cobranças em aberto, segunda via e situação do cliente dentro da conversa.', ids: [] },
   { id: 'crm', title: 'CRM', desc: 'Lead qualificado vira negócio no seu funil, sem digitar nada.', ids: ['hubspot', 'pipedrive', 'rdstation'] },
+  { id: 'juridico', title: 'Jurídico', desc: 'Lead vira caso no seu sistema jurídico e a HUMA consulta o andamento.', ids: [] },
+  { id: 'assinatura', title: 'Assinatura digital', desc: 'Contrato pra assinar a partir do seu modelo, sem sair da conversa.', ids: [] },
+  { id: 'marketing', title: 'Marketing e infoprodutos', desc: 'Compra aprovada no seu checkout vira contexto pra HUMA atender quem comprou.', ids: [] },
   { id: 'anuncios', title: 'Anúncios e automação', desc: 'Resultados de volta pros seus anúncios e cada lead no seu sistema.', ids: ['pixel', 'webhook'] },
   { id: 'assistentes', title: 'Assistentes de IA', desc: 'Pergunte sobre o seu negócio e mande a HUMA agir de dentro do Claude e do ChatGPT.', ids: ['mcp'] },
 ];
@@ -64,6 +76,64 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     } catch (e) {
       window.alert(`Não consegui desconectar: ${(e && e.message) || e}`);
     }
+  };
+
+  // ── Catálogo de conexões por token (2026-11-06, huma/integrations) ──
+  // GET /api/integrations/catalog devolve specs + estado desta conta. Falha
+  // ou `specs` ausente = catálogo vazio e a tela fica igual à de antes.
+  const [connCatalog, setConnCatalog] = React.useState({ specs: [], state: {}, server_ready: false });
+  const [connModal, setConnModal] = React.useState(null); // { spec, showWebhook }
+  const loadConnCatalog = React.useCallback(async () => {
+    try {
+      const c = await fetchIntegrationsCatalog();
+      setConnCatalog({
+        specs: Array.isArray(c && c.specs) ? c.specs.filter(s => s && s.id) : [],
+        state: (c && c.state && typeof c.state === 'object') ? c.state : {},
+        server_ready: Boolean(c && c.server_ready),
+      });
+    } catch (e) {
+      console.error('Integrações | catálogo de conexões falhou', e);
+    }
+  }, []);
+  React.useEffect(() => { loadConnCatalog(); }, [loadConnCatalog]);
+  // Depois de conectar/desconectar: status do shell + catálogo.
+  const connReload = async () => {
+    if (onReloadStatus) await onReloadStatus();
+    await loadConnCatalog();
+  };
+  const connCardFor = (spec) => {
+    const st = (connCatalog.state && connCatalog.state[spec.id]) || {};
+    const on = Boolean(st.connected);
+    const fields = Array.isArray(spec.fields) ? spec.fields : [];
+    const disconnect = async () => {
+      if (!window.confirm(`Desconectar ${spec.name}? A HUMA para de usar essa conexão.`)) return;
+      await handleDisconnect(spec.id);
+      await loadConnCatalog();
+    };
+    return {
+      id: spec.id,
+      name: spec.name,
+      category: spec.section_label || '',
+      glyph: { type: spec.id, name: spec.name, logo: spec.logo || '' },
+      status: on ? 'connected' : 'disconnected',
+      meta: on
+        ? [['CONTA', st.label || 'conectada'], ['DESDE', connShortDate(st.connected_at)]]
+        : [['O QUE FAZ', spec.summary || spec.section_label || ''], ['COMO', fields.length ? 'Cole a chave · 1 minuto' : 'Um clique']],
+      note: on
+        ? `A HUMA já usa o ${spec.name} nas conversas. ${spec.summary || ''}`.trim()
+        : (spec.what_ai_does || spec.summary || ''),
+      actions: (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button variant={on ? 'ghost' : 'primary'} size="sm" icon={<Icon name="link" size={13}/>} onClick={() => setConnModal({ spec, showWebhook: false })}>
+            {on ? 'Trocar chave' : 'Conectar'}
+          </Button>
+          {on && st.webhook_url && (
+            <Button variant="ghost" size="sm" onClick={() => setConnModal({ spec, showWebhook: true })}>Ver URL do webhook</Button>
+          )}
+          {on && <Button variant="plain" size="sm" onClick={disconnect}>Desconectar</Button>}
+        </div>
+      ),
+    };
   };
 
   // Bling: status derivado do token real. Sem token = desconectado (sem mock).
@@ -487,10 +557,20 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
     ),
   };
 
-  const integrations = [
+  const connFixed = [
     instagramCard, balcaoCard, gcalCard, pixelCard, webhookCard,
     nuvemshopCard, omieCard, tinyCard, blingCard, mpCard, asaasCard, hubspotCard, pipedriveCard, rdCard, mcpCard, ...INTEGRATIONS,
   ];
+  // Spec do catálogo com o mesmo id de um card fixo (ou do WhatsApp) não gera
+  // card: o fixo vence. Os demais entram na seção que o spec declara.
+  const connFixedIds = new Set(connFixed.map(i => i.id).concat(['whatsapp']));
+  const connSpecs = connCatalog.specs.filter(s => !connFixedIds.has(s.id));
+  const connIdsBySection = {};
+  connSpecs.forEach(s => {
+    const sec = SECTIONS.some(x => x.id === s.section) ? s.section : 'anuncios';
+    (connIdsBySection[sec] = connIdsBySection[sec] || []).push(s.id);
+  });
+  const integrations = [...connFixed, ...connSpecs.map(connCardFor)];
   const isOn = (i) => i.status === 'connected' || i.status === 'active';
   const connectedCount = integrations.filter(isOn).length;
   const availableCount = integrations.length - connectedCount;
@@ -500,11 +580,14 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
   const waOn = Boolean(client && ['meta', 'evolution'].includes(client.whatsapp_provider));
   // Cada seção resolve seus cards pela ordem declarada em SECTIONS; id sem
   // card (ex.: removido) é ignorado em vez de quebrar a tela.
-  const sections = SECTIONS.map(sec => ({
-    ...sec,
-    cards: sec.ids.filter(id => id === 'whatsapp' || byId[id]),
-    on: sec.ids.filter(id => id === 'whatsapp' ? waOn : (byId[id] && isOn(byId[id]))).length,
-  })).filter(sec => sec.cards.length > 0);
+  const sections = SECTIONS.map(sec => {
+    const ids = sec.ids.concat(connIdsBySection[sec.id] || []).filter((id, i, arr) => arr.indexOf(id) === i);
+    return {
+      ...sec,
+      cards: ids.filter(id => id === 'whatsapp' || byId[id]),
+      on: ids.filter(id => id === 'whatsapp' ? waOn : (byId[id] && isOn(byId[id]))).length,
+    };
+  }).filter(sec => sec.cards.length > 0);
 
   return (
     <div style={{
@@ -559,6 +642,15 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       {omieModal && <OmieModal client={client} onClose={() => setOmieModal(false)} onSaved={onReloadStatus} />}
       {tinyModal && <TinyModal client={client} onClose={() => setTinyModal(false)} onSaved={onReloadStatus} />}
       {mcpModal && <AssistantsModal clientId={resolvedClientId} info={mcpInfo} onClose={() => setMcpModal(false)} onChanged={loadMcp} />}
+      {connModal && (
+        <ConnectionModal
+          spec={connModal.spec}
+          state={(connCatalog.state && connCatalog.state[connModal.spec.id]) || {}}
+          showWebhook={Boolean(connModal.showWebhook)}
+          onClose={() => setConnModal(null)}
+          onSaved={connReload}
+        />
+      )}
     </div>
   );
 };
@@ -838,6 +930,84 @@ const RdStationModal = ({ client, onClose, onSaved }) => {
       <div>{_modalLabel('Token da instância')}<input value={token} onChange={e => setToken(e.target.value)} placeholder="Token da instância do RD Station CRM" type="password" style={_modalInput}
              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); connect(); } }}/></div>
       <ModalMsg msg={msg} />
+    </IntegrationModal>
+  );
+};
+
+// ConnectionModal (2026-11-06): modal GENÉRICO das conexões por token. O spec
+// (de GET /api/integrations/catalog) diz o que a IA passa a fazer, os passos
+// no painel do provedor e os campos; o POST .../connections/{id}/connect valida
+// e grava. Com `showWebhook`, abre direto na URL do webhook já gravada.
+const ConnectionModal = ({ spec, state, onClose, onSaved, showWebhook }) => {
+  const fields = Array.isArray(spec.fields) ? spec.fields : [];
+  const steps = Array.isArray(spec.how_to) ? spec.how_to : [];
+  const [values, setValues] = React.useState(() => Object.fromEntries(fields.map(f => [
+    f.key,
+    (f.kind === 'select' && f.required && Array.isArray(f.options) && f.options.length) ? String(f.options[0][0]) : '',
+  ])));
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const [webhookUrl, setWebhookUrl] = React.useState(showWebhook ? ((state && state.webhook_url) || '') : '');
+  const ready = fields.every(f => !f.required || String(values[f.key] || '').trim());
+  const setVal = (k, v) => setValues(prev => ({ ...prev, [k]: v }));
+  const isSecret = (f) => Boolean(f.secret) || f.kind === 'password';
+  const connect = async () => {
+    if (busy || !ready) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await connectConnection(spec.id, values);
+      const conta = r.label ? ` a ${r.label}` : '';
+      const sync = r.synced ? ` Aprendi ${r.synced} produtos.` : '';
+      setMsg({ kind: 'ok', text: `Conectado${conta}.${sync} A HUMA já usa o ${spec.name} nas conversas.` });
+      setWebhookUrl(r.webhook_url || '');
+      if (onSaved) await onSaved();
+    } catch (e) { setMsg({ kind: 'err', text: (e && e.message) || String(e) }); }
+    setBusy(false);
+  };
+  const onEnter = (e) => { if (e.key === 'Enter') { e.preventDefault(); connect(); } };
+  return (
+    <IntegrationModal title={showWebhook ? spec.name : `Conectar o ${spec.name}`} onClose={onClose} footer={
+      <>
+        <Button variant="ghost" size="sm" onClick={onClose}>{msg && msg.kind === 'ok' ? 'Concluir' : 'Fechar'}</Button>
+        <Button variant="primary" size="sm" onClick={connect} disabled={busy || !ready}>{busy ? 'Validando…' : 'Conectar'}</Button>
+      </>
+    }>
+      {spec.what_ai_does && <ModalText>{spec.what_ai_does}</ModalText>}
+      {steps.length > 0 && (
+        <ol style={{ margin: 0, paddingLeft: 18, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.65 }}>
+          {steps.map((s, i) => <li key={i}>{s}</li>)}
+        </ol>
+      )}
+      {fields.map((f, i) => (
+        <div key={f.key}>
+          {_modalLabel(f.label + (f.required ? '' : ' (opcional)'))}
+          {f.kind === 'select' ? (
+            <select value={values[f.key] || ''} onChange={e => setVal(f.key, e.target.value)} style={_modalInput}>
+              {!f.required && <option value="">Nenhum</option>}
+              {(Array.isArray(f.options) ? f.options : []).map(([v, l]) => <option key={String(v)} value={String(v)}>{l}</option>)}
+            </select>
+          ) : (
+            <input value={values[f.key] || ''} onChange={e => setVal(f.key, e.target.value)} placeholder={f.placeholder || ''}
+                   type={isSecret(f) ? 'password' : (f.kind === 'url' ? 'url' : 'text')} style={_modalInput}
+                   onKeyDown={i === fields.length - 1 ? onEnter : undefined}/>
+          )}
+          {f.help && <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 6 }}>{f.help}</div>}
+        </div>
+      ))}
+      {spec.docs_url && (
+        <a href={spec.docs_url} target="_blank" rel="noopener noreferrer" style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)' }}>
+          Documentação do {spec.name}
+        </a>
+      )}
+      <ModalMsg msg={msg} />
+      {webhookUrl && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: '1px solid var(--paper-edge)', borderRadius: 10, background: 'var(--paper-sunk)' }}>
+          <McpCopyRow label="URL do webhook" value={webhookUrl} />
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+            Cole esta URL no painel do {spec.name}, na parte de webhooks ou notificações. É por ela que a HUMA fica sabendo do que acontece lá.
+          </div>
+        </div>
+      )}
     </IntegrationModal>
   );
 };
@@ -1371,7 +1541,7 @@ const IntegrationCard = ({ name, category, glyph, status, meta, note, onConnect,
     }}>
       {/* Head */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <IntegrationGlyph type={glyph.type}/>
+        <IntegrationGlyph type={glyph.type} name={glyph.name || name} logo={glyph.logo}/>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 15, color: 'var(--ink)', letterSpacing: '-0.01em' }}>{name}</div>
           <div style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--ink-3)', marginTop: 1 }}>{category}</div>
@@ -1480,7 +1650,7 @@ const INTEGRATION_LOGOS = {
   make: '/static/brand/integrations/make.svg',
   n8n: '/static/brand/integrations/n8n.svg',
 };
-const IntegrationGlyph = ({ type }) => {
+const IntegrationGlyph = ({ type, name, logo: logoFile }) => {
   const size = 40;
   const box = (content, bg = '#FFFFFF') => (
     <div style={{
@@ -1510,7 +1680,17 @@ const IntegrationGlyph = ({ type }) => {
       // ficam com respiro de 8px dentro do fundo branco.
       const FULL = new Set(['bling', 'omie', 'rdstation', 'asaas', 'tray', 'pipedrive', 'nuvemshop']);
       if (INTEGRATION_LOGOS[type]) return box(logo(type, FULL.has(type) ? size : size - 14));
-      return box(<span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, color: 'var(--ink-3)' }}>?</span>, 'var(--paper-sunk)');
+      // Spec do catálogo com arquivo de logo declarado (static/brand/integrations/<logo>).
+      if (logoFile) {
+        return box(<img src={'/static/brand/integrations/' + logoFile} alt="" width={size - 14} height={size - 14} draggable={false}
+                        style={{ width: size - 14, height: size - 14, objectFit: 'contain', display: 'block' }} />);
+      }
+      // Sem logo: as 2 primeiras letras do nome, nunca um "?".
+      const initials = String(name || type || '').trim().slice(0, 2).toUpperCase() || '··';
+      return box(
+        <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: 14, letterSpacing: '0.02em', color: 'var(--ink-2)' }}>{initials}</span>,
+        'var(--paper-sunk)'
+      );
     }
   }
 };
@@ -1630,4 +1810,5 @@ const AssistantsModal = ({ clientId, info, onClose, onChanged }) => {
 Object.assign(window, {
   IntegrationsScreen, IntegrationCard, IntegrationGlyph, INTEGRATION_LOGOS, StatusDot, WhatsAppCard, WhatsAppQRModal, WhatsAppMetaModal, BalcaoActions,
   WebhookModal, PixelModal, AsaasModal, IntegrationModal, AssistantsModal, fetchMcpStatus, revokeMcp,
+  ConnectionModal, connShortDate,
 });

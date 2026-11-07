@@ -29,6 +29,13 @@ CONNECT_EFFECTS: dict[str, tuple[str, ...]] = {
     "tiny": ("sell_physical",),
     "google_calendar": ("schedule",),
     "crm": ("qualify",),
+    # Conexões por token (2026-11-06, huma/integrations): chaves genéricas que
+    # os specs usam em `effects`. "store" = loja/ERP novo (WooCommerce, Shopify,
+    # Tray...), "scheduling" = agenda externa (Feegow, Outlook, Calendly...),
+    # "legal" = sistema jurídico (pré-atendimento é qualificação).
+    "store": ("sell_physical",),
+    "scheduling": ("schedule",),
+    "legal": ("qualify",),
     # Meio de pagamento próprio: o dono quer COBRAR na conversa. Só liga
     # sell_digital se nenhuma venda estiver ligada (não invade sell_physical).
     "payment": ("sell_digital",),

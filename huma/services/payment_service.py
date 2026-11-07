@@ -375,6 +375,13 @@ async def create_payment(request) -> dict:
     if identity is not None and (getattr(identity, "payment_provider", "") or "") == "asaas" \
             and (getattr(identity, "asaas_api_key", "") or "").strip():
         return await _create_asaas_link(request, identity, method)
+    # Provedor de link conectado por token (2026-11-06, huma/integrations, kind "payment").
+    _pp = (getattr(identity, "payment_provider", "") or "").strip().lower() if identity is not None else ""
+    if _pp and _pp not in ("mercadopago", "asaas"):
+        from huma.integrations import get_spec
+        _spec = get_spec(_pp)
+        if _spec is not None and _spec.kind == "payment":
+            return await _create_connection_link(request, identity, method, _spec.id)
 
     # Mercado Pago DO CLIENTE (OAuth, 2026-09-10); vazio = global da HUMA (legado).
     own = mp_own_token(identity)
@@ -400,6 +407,54 @@ async def _identity_for(client_id: str):
 # ================================================================
 # ASAAS (conta do cliente) — link de pagamento
 # ================================================================
+
+
+async def _create_connection_link(req, identity, method: str, integration_id: str) -> dict:
+    """
+    Cobra por um provedor de link conectado por token (InfinitePay e afins,
+    huma/integrations, kind "payment"). Mesmo shape de retorno do Asaas.
+    """
+    from huma.integrations import provider_for
+
+    provider = provider_for(identity, integration_id)
+    if provider is None or not hasattr(provider, "create_payment_link"):
+        return {"status": "error", "detail": f"{integration_id}:no_provider"}
+    ext_ref = _build_external_reference(req.client_id, req.phone)
+    amount = _format_brl(req.amount_cents)
+    link = await provider.create_payment_link(
+        req.amount_cents,
+        (req.description or f"Pagamento {identity.business_name}")[:60],
+        {"name": req.lead_name or "", "phone": req.phone or "", "reference": ext_ref,
+         "installments": int(getattr(req, "installments", 1) or 1), "method": method},
+    )
+    if link.get("status") != "ok":
+        log.error(f"{integration_id} link erro | client={req.client_id} | {link.get('detail', '')}")
+        return {"status": "error", "detail": f"{integration_id}:{link.get('detail', '')}"}
+    link_id = str(link.get("reference") or link.get("id") or ext_ref)
+    await _save_payment_record(
+        client_id=req.client_id,
+        phone=req.phone,
+        lead_name=req.lead_name,
+        mp_payment_id=link_id,
+        external_reference=ext_ref,
+        method=method,
+        amount_cents=req.amount_cents,
+        description=req.description,
+        metadata={"provider": integration_id, "link_id": link_id, "checkout_url": link["url"]},
+    )
+    log.info(f"{integration_id} link criado | id={link_id} | ref={ext_ref} | {amount}")
+    nome = getattr(provider, "display_name", "") or integration_id
+    return {
+        "payment_id": link_id,
+        "status": "pending",
+        "method": method,
+        "amount_display": amount,
+        "checkout_url": link["url"],
+        "whatsapp_message": (
+            f"Segue o link de pagamento de {amount}:\n\n{link['url']}\n\n"
+            f"É só abrir e escolher Pix ou cartão. Ambiente seguro do {nome}."
+        ),
+    }
 
 
 async def _create_asaas_link(req, identity, method: str) -> dict:

@@ -2814,10 +2814,22 @@ async def integrations_status(
         "mercadopago_live_mode": bool(getattr(identity, "mercadopago_live_mode", True)),
         "mercadopago_server": _mercadopago_oauth_server(),
         "mercadopago_global": bool(MERCADOPAGO_ACCESS_TOKEN),
+        # Conexões por token (2026-11-06, huma/integrations): {id: {connected, label, ...}}
+        "connections": _connections_state(identity),
         # Capabilities resolvidas (2026-09-07): a sidebar do Cockpit decide
         # Agenda (schedule) / Vendas (sell_digital|sell_physical) por aqui.
         "capabilities_resolved": sorted(c.value for c in identity.capabilities_resolved),
     }
+
+
+def _connections_state(identity) -> dict:
+    """Estado (sem segredo) de cada conexão por token; {} se o registro falhar."""
+    try:
+        from huma.integrations import all_specs, public_state
+        return {s.id: public_state(identity, s.id) for s in all_specs()}
+    except Exception as e:
+        log.warning(f"Integrações | estado das conexões falhou | {type(e).__name__}: {e}")
+        return {}
 
 
 def _google_oauth_server() -> bool:
@@ -2974,11 +2986,37 @@ async def integrations_disconnect(
         if identity is not None and (getattr(identity, "payment_provider", "") or "") == "mercadopago":
             updates["payment_provider"] = ""
     else:
-        raise HTTPException(
-            400,
-            f"Integração '{integration_id}' não suporta disconnect ainda. "
-            f"Disponíveis: bling, omie, tiny, pipedrive, hubspot, rd_station, google, instagram, nuvemshop, webhook, pixel, asaas.",
-        )
+        # Conexões por token (2026-11-06, huma/integrations): tira a entrada do
+        # JSONB, solta o ponteiro do motor que apontava pra ela e remove os itens
+        # de catálogo daquela fonte. Desconectar NÃO desliga capability.
+        from huma.integrations import get_spec
+        spec = get_spec(integration_id)
+        if spec is None:
+            raise HTTPException(
+                400,
+                f"Integração '{integration_id}' não suporta disconnect ainda. "
+                f"Disponíveis: bling, omie, tiny, pipedrive, hubspot, rd_station, google, instagram, "
+                f"nuvemshop, webhook, pixel, asaas, mercadopago e as conexões por token.",
+            )
+        identity = await db.get_client(client_id)
+        await db.set_integration(client_id, spec.id, None)
+        updates = {}
+        if identity is not None:
+            if spec.kind in ("crm", "legal") and (getattr(identity, "crm_provider", "") or "") == spec.id:
+                updates["crm_provider"] = ""
+            if spec.kind == "scheduling":
+                from huma.services import scheduling_service as sched
+                if (getattr(identity, "google_calendar_id", "") or "") == sched.ext_pointer(spec.id, client_id):
+                    updates["google_calendar_id"] = ""
+            if spec.kind == "payment" and (getattr(identity, "payment_provider", "") or "") == spec.id:
+                updates["payment_provider"] = ""
+            existing = getattr(identity, "products_or_services", None) or []
+            if any(isinstance(p, dict) and p.get("source") == spec.id for p in existing):
+                from huma.core.catalog_sync import remove_store_items
+                updates["products_or_services"] = remove_store_items(existing, source=spec.id)
+        if not updates:
+            log.info(f"Cockpit disconnect | client_id={client_id} | integration={integration_id} | só JSONB")
+            return {"status": "ok", "integration": integration_id}
 
     await db.update_client(client_id, updates)
     log.info(

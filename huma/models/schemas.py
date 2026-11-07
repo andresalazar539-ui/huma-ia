@@ -777,6 +777,14 @@ class ClientIdentity(BaseModel):
     nuvemshop_access_token: str = Field(default="", description="Token da loja (não expira).")
     nuvemshop_store_url: str = Field(default="", description="URL pública da loja (só exibição).")
     nuvemshop_store_name: str = Field(default="", description="Nome da loja (só exibição).")
+    # Conexões por token/chave (2026-11-06): credenciais e metadados de TODAS as
+    # integrações novas (ZapSign, Agendor, Feegow, WooCommerce, Hotmart...), uma
+    # chave por id do spec em huma/integrations/specs. Migration:
+    # scripts/migration_integrations_jsonb.sql. Ler só por huma.integrations.creds_for.
+    integrations: dict = Field(
+        default_factory=dict,
+        description='{"<id>": {"<campo>": "...", "connected_at": iso, "label": "...", "meta": {...}}}',
+    )
     # Checkout de Conversa (2026-09-08): como a HUMA cobra o frete ao fechar
     # produto da loja dentro da conversa. 'site' = não fecha na conversa
     # (manda o link do pedido pronto); 'gratis'; 'fixo' (valor em centavos).

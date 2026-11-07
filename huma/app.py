@@ -21,6 +21,7 @@ from huma.routes.cockpit import router as cockpit_router
 from huma.routes.crm_webhook import router as crm_webhook_router
 from huma.routes.instagram import router as instagram_router
 from huma.routes.integrations import router as integrations_router
+from huma.routes.connections import router as connections_router
 from huma.routes.legal import router as legal_router
 from huma.routes.oauth_bling import router as oauth_bling_router
 from huma.routes.oauth_crm import router as oauth_crm_router
@@ -31,6 +32,7 @@ from huma.routes.onboarding import router as onboarding_router
 from huma.routes.web_channel import router as web_channel_router
 from huma.routes.whatsapp_connect import router as whatsapp_connect_router
 from huma.routes.push import router as push_router
+from huma.routes.public_pages import router as public_pages_router
 from huma.routes.whatsapp_meta import router as whatsapp_meta_router
 from huma.routes.wizard import router as wizard_router
 from huma.services import redis_service as cache
@@ -211,10 +213,12 @@ def create_app() -> FastAPI:
     app.include_router(store_checkout_page_router)
     app.include_router(instagram_router)
     app.include_router(integrations_router)
+    app.include_router(connections_router)
     app.include_router(crm_webhook_router)
     app.include_router(legal_router)
     app.include_router(whatsapp_connect_router)
     app.include_router(push_router)
+    app.include_router(public_pages_router)
     from huma.routes.followup import router as followup_router
     app.include_router(followup_router)
     from huma.routes.reactivation import router as reactivation_router

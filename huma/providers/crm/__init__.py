@@ -71,6 +71,18 @@ def get_provider_for(identity: "ClientIdentity") -> CRMProvider | None:
             return None
         return RDStationAdapter(identity=identity)
 
+    # Conexões por token (2026-11-06): Agendor, Moskit, Bitrix24, ADVBOX, Projuris,
+    # Astrea... O connect grava crm_provider=<id> e a credencial em
+    # clients.integrations; o spec entrega o adapter.
+    from huma.integrations import get_spec, provider_for
+    spec = get_spec(provider_name)
+    if spec is not None and spec.kind in ("crm", "legal"):
+        adapter = provider_for(identity, provider_name)
+        if adapter is not None:
+            return adapter
+        log.warning(f"crm_provider={provider_name} sem credencial em integrations | client={getattr(identity, 'client_id', '?')}")
+        return None
+
     log.warning(
         f"crm_provider desconhecido | client={getattr(identity, 'client_id', '?')} | "
         f"provider={provider_name!r} — ignorando (sem sync)"
@@ -104,6 +116,15 @@ def get_parser_for(provider_name: str) -> CRMProvider | None:
             log.warning("rd_station parser ainda não implementado (Fase E)")
             return None
         return RDStationAdapter()
+    # Conexões por token: o spec instancia o adapter sem credencial (só parse_outcome).
+    from huma.integrations import get_spec
+    spec = get_spec(name)
+    if spec is not None and spec.kind in ("crm", "legal") and spec.provider_factory is not None:
+        try:
+            return spec.provider_factory(None)
+        except Exception as e:
+            log.warning(f"parser de {name} não instanciou sem credencial | {type(e).__name__}: {e}")
+            return None
     return None
 
 

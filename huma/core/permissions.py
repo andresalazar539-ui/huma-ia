@@ -99,6 +99,7 @@ _ROUTE_RULES: tuple[tuple[str, str, Optional[str]], ...] = (
     ("GET", rf"^{_C}/settings$", None),
     ("GET", rf"^{_C}/team$", None),
     ("GET", r"^/api/integrations/status$", None),
+    ("GET", r"^/api/integrations/catalog$", None),
     ("GET", r"^/api/crm/status$", None),
     ("GET", r"^/whatsapp/(status|meta/status)$", None),
     ("GET", r"^/instagram/status$", None),
@@ -123,7 +124,7 @@ _ROUTE_RULES: tuple[tuple[str, str, Optional[str]], ...] = (
     ("*", rf"^{_C}/(outbound|media|tracking-link)(/|$)", "disparos"),
     # Ajustes do negócio e integrações
     ("*", rf"^{_C}/(settings|mode|funnel|playbook|knowledge|gaps|voice|calendar|"
-          rf"pixel|sheet|asaas|rd_station|omie|tiny|custom-requests|analytics-ids|import-whatsapp|followup|brief|site-index)(/|$)", "ajustes"),
+          rf"pixel|sheet|asaas|rd_station|omie|tiny|connections|custom-requests|analytics-ids|import-whatsapp|followup|brief|site-index)(/|$)", "ajustes"),
     ("*", r"^/api/integrations/", "ajustes"),
     ("*", r"^/whatsapp/", "ajustes"),
     ("*", r"^/instagram/", "ajustes"),

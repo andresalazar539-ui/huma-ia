@@ -1411,6 +1411,22 @@ async function connectRdStation(token) {
   return r.json();
 }
 
+// Conexões por token (2026-11-06, huma/integrations): catálogo (specs + estado
+// desta conta, sem segredo) e conectar genérico. Backend: routes/connections.py.
+async function fetchIntegrationsCatalog() {
+  const r = await fetch(`/api/integrations/catalog?client_id=${encodeURIComponent(CLIENT_ID)}`, { headers: { ...AUTH_HEADERS } });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+async function connectConnection(integrationId, fields) {
+  const r = await fetch(`/api/clients/${encodeURIComponent(CLIENT_ID)}/connections/${encodeURIComponent(integrationId)}/connect`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...AUTH_HEADERS },
+    body: JSON.stringify({ fields: fields || {} }),
+  });
+  if (!r.ok) throw await _readApiError(r);
+  return r.json();
+}
+
 // Instagram Direct
 async function instagramStatus() {
   const r = await fetch(`/instagram/status?client_id=${encodeURIComponent(CLIENT_ID)}`, { headers: { ...AUTH_HEADERS } });
@@ -1434,5 +1450,5 @@ function oauthStartUrl(kind) {
 
 Object.assign(window, {
   fetchWebhook, saveWebhook, testWebhook, savePixel, testPixel, createLeadsSheet,
-  connectAsaas, instagramStatus, oauthStartUrl,
+  connectAsaas, instagramStatus, oauthStartUrl, fetchIntegrationsCatalog, connectConnection,
 });

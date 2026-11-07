@@ -1891,6 +1891,14 @@ def _build_reply_tool_compact(
                 action_lines.extend(STORE_CHECKOUT_LINES)
     if include_qualify:
         action_lines.extend(QUALIFY_LINES)
+    # Conexões por token (2026-11-06): send_contract / lookup_charges / lookup_case
+    # entram SÓ quando há provider desse tipo conectado (core/connection_actions).
+    if identity is not None:
+        try:
+            from huma.core.connection_actions import action_lines as _conn_lines
+            action_lines.extend(_conn_lines(identity))
+        except Exception as e:
+            log.warning(f"Tool | linhas de conexão falharam | {type(e).__name__}: {e}")
     action_lines.extend(UNIVERSAL_LINES)
     actions_description = "\n".join(action_lines)
 

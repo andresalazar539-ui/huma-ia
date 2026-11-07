@@ -24,14 +24,24 @@ else
   ok "sem .jsx mudado, smoke não precisa"
 fi
 
-# 3. Travessão em arquivo de produto
+# 3. Travessão em arquivo de produto: só nas LINHAS ADICIONADAS (arquivo antigo tem
+#    travessão em comentário de antes da regra; o que importa é não entrar texto novo)
+#    e nos arquivos NOVOS inteiros.
 src=$(echo "$changed" | grep -E '^huma/.*\.(py|jsx|html|js)$' | grep -v '^huma/tests/' || true)
 if [ -n "$src" ]; then
-  hits=$(echo "$src" | xargs -r grep -ln $'\xe2\x80\x94' 2>/dev/null || true)
-  if [ -n "$hits" ]; then bad "travessão (U+2014) em texto de produto: $hits"; else ok "sem travessão"; fi
-  # 4. except vazio
-  ex=$(echo "$src" | xargs -r grep -nA1 'except Exception' 2>/dev/null | grep -E '^\S+-[0-9]+-\s*pass\s*$' || true)
-  if [ -n "$ex" ]; then bad "except Exception + pass (regra 10):"$'\n'"$ex"; else ok "sem except vazio"; fi
+  novos=$(git ls-files --others --exclude-standard | grep -E '^huma/.*\.(py|jsx|html|js)$' | grep -v '^huma/tests/' || true)
+  added=$(git diff -U0 HEAD -- $src 2>/dev/null | grep -E '^\+[^+]' || true)
+  hits_add=$(printf '%s' "$added" | grep -c $'\xe2\x80\x94' || true)
+  hits_new=$(echo "$novos" | xargs -r grep -ln $'\xe2\x80\x94' 2>/dev/null || true)
+  if [ "${hits_add:-0}" != "0" ] || [ -n "$hits_new" ]; then
+    bad "travessão (U+2014) em texto novo: ${hits_add:-0} linha(s) adicionada(s); arquivos novos: ${hits_new:-nenhum}"
+  else ok "sem travessão no que mudou"; fi
+  # 4. except vazio (mesma regra: só linhas adicionadas + arquivos novos)
+  ex_add=$(printf '%s\n' "$added" | grep -A1 'except Exception' | grep -cE '^\+\s*pass\s*$' || true)
+  ex_new=$(echo "$novos" | grep '\.py$' | xargs -r grep -nA1 'except Exception' 2>/dev/null | grep -E '^\S+-[0-9]+-\s*pass\s*$' || true)
+  if [ "${ex_add:-0}" != "0" ] || [ -n "$ex_new" ]; then
+    bad "except Exception + pass em código novo (regra 10): adicionadas=${ex_add:-0}"$'\n'"${ex_new}"
+  else ok "sem except vazio no que mudou"; fi
 fi
 
 # 5. Campo novo em schema sem migration

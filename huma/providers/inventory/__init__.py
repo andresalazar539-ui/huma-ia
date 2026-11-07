@@ -48,6 +48,17 @@ def get_provider_for(identity: "ClientIdentity") -> InventoryProvider:
         from huma.providers.inventory.tiny import TinyAdapter
 
         return TinyAdapter(identity=identity)
+    if getattr(identity, "bling_access_token", "") or "":
+        return BlingAdapter(identity=identity)
+    # Lojas por token (2026-11-06): WooCommerce, Shopify, Tray, Loja Integrada...
+    # (huma/integrations). Entram depois das antigas pra não mudar quem já usa.
+    from huma.integrations import first_connected_of_kind, provider_for
+
+    spec = first_connected_of_kind(identity, "inventory")
+    if spec is not None:
+        adapter = provider_for(identity, spec.id)
+        if adapter is not None:
+            return adapter
     return BlingAdapter(identity=identity)
 
 
@@ -65,7 +76,10 @@ def store_source_for(identity: "ClientIdentity") -> str:
         return "tiny"
     if getattr(identity, "bling_access_token", "") or "":
         return "bling"
-    return ""
+    from huma.integrations import first_connected_of_kind
+
+    spec = first_connected_of_kind(identity, "inventory")
+    return spec.id if spec is not None else ""
 
 
 def get_default_provider() -> InventoryProvider:

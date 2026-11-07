@@ -311,6 +311,50 @@ def _oauth_credentials_for_pointer(pointer: str):
         return None
 
 
+# Agenda EXTERNA por token (2026-11-06, huma/integrations): Feegow, Clínica nas
+# Nuvens, Trinks, Calendly, Outlook... O connect grava
+# google_calendar_id = "ext:<id do spec>:<client_id>" e as 4 funções públicas
+# abaixo delegam ao SchedulingProvider do spec (providers/base.py), com o MESMO
+# contrato de retorno. Google continua intacto pra todo ponteiro que não é "ext:".
+EXT_POINTER_PREFIX = "ext:"
+
+
+def ext_pointer(integration_id: str, client_id: str) -> str:
+    """Ponteiro gravado em google_calendar_id quando a agenda é externa."""
+    return f"{EXT_POINTER_PREFIX}{integration_id}:{client_id}"
+
+
+def is_ext_pointer(calendar_id: str = "") -> bool:
+    """True quando o calendar_id aponta pra uma agenda externa por token."""
+    return (calendar_id or "").strip().startswith(EXT_POINTER_PREFIX)
+
+
+async def _external_provider(calendar_id: str = ""):
+    """SchedulingProvider do spec apontado, ou None (ponteiro Google/legado ou falha)."""
+    cal = (calendar_id or "").strip()
+    if not cal.startswith(EXT_POINTER_PREFIX):
+        return None
+    parts = cal[len(EXT_POINTER_PREFIX):].split(":", 1)
+    integration_id = parts[0].strip()
+    client_id = parts[1].strip() if len(parts) > 1 else ""
+    if not integration_id or not client_id:
+        return None
+    try:
+        from huma.integrations import provider_for
+        from huma.services import db_service as db
+
+        identity = await db.get_client(client_id)
+        if identity is None:
+            return None
+        provider = provider_for(identity, integration_id)
+        if provider is None:
+            log.warning(f"Agenda externa | sem credencial | client={client_id} | integration={integration_id}")
+        return provider
+    except Exception as e:
+        log.error(f"Agenda externa | provider falhou | client={client_id} | {integration_id} | {type(e).__name__}: {e}")
+        return None
+
+
 def _target_calendar(calendar_id: str = "") -> str:
     """calendarId das chamadas: a agenda do cliente, ou 'primary' no legado/OAuth."""
     cal = (calendar_id or "").strip()
@@ -413,6 +457,9 @@ async def create_appointment(request, existing_event_id: str = "") -> dict:
         (mover pra nova data) em vez de criar um novo. Se o update falhar ou o evento não
         existir mais, cai no fluxo normal de criação.
     """
+    ext = await _external_provider(getattr(request, "calendar_id", "") or "")
+    if ext is not None:
+        return await ext.create_appointment(request, existing_event_id)
     missing = []
     if not request.lead_name:
         missing.append("nome")
@@ -1224,6 +1271,10 @@ async def cancel_appointment(event_id: str, calendar_id: str = "") -> dict:
     if not event_id:
         return {"status": "error", "detail": "empty_event_id"}
 
+    ext = await _external_provider(calendar_id)
+    if ext is not None:
+        return await ext.cancel_appointment(event_id)
+
     result = await _delete_google_calendar_event(event_id, calendar_id=calendar_id)
 
     if result.get("ok"):
@@ -1272,6 +1323,12 @@ async def find_next_available_slots(
 
     Reutiliza _find_available_slots que já existe no módulo.
     """
+    ext = await _external_provider(calendar_id)
+    if ext is not None:
+        return await ext.find_next_available_slots(
+            slots_to_find=slots_to_find, duration_minutes=duration_minutes, urgency=urgency,
+            schedule_config=schedule_config, exclude_weekdays=exclude_weekdays,
+        )
     credentials, owner_email = _credentials_for(calendar_id)
     if not credentials:
         log.warning("check_availability: Google Calendar não configurado")
@@ -1377,6 +1434,10 @@ async def check_specific_slot(
     raw = (requested_datetime or "").strip()
     if not raw:
         return {"status": "unparseable", "requested": raw}
+
+    ext = await _external_provider(calendar_id)
+    if ext is not None:
+        return await ext.check_specific_slot(raw, duration_minutes=duration_minutes, schedule_config=schedule_config)
 
     dt = _parse_datetime(raw)
     if dt is None:

@@ -502,6 +502,41 @@ async def update_client(client_id: str, updates: dict):
         log.warning(f"Cache invalidation falhou | {client_id} | {type(e).__name__}: {e}")
 
 
+async def set_integration(client_id: str, integration_id: str, data: dict | None) -> dict:
+    """
+    Grava (ou remove, com data=None) UMA conexão em clients.integrations (JSONB,
+    2026-11-06). Lê o JSON atual, mescla e regrava, pra não apagar as outras
+    conexões. Devolve o dict final. Erro de coluna ausente sobe pro chamador
+    (a rota transforma em 503 amigável).
+    """
+    resp = await _db(
+        lambda: get_supabase().table("clients").select("integrations").eq("client_id", client_id).execute(),
+        "get_integrations",
+    )
+    current = {}
+    if resp.data and isinstance(resp.data[0].get("integrations"), dict):
+        current = dict(resp.data[0]["integrations"])
+    key = (integration_id or "").strip().lower()
+    if data is None:
+        current.pop(key, None)
+    else:
+        current[key] = data
+    await update_client(client_id, {"integrations": current})
+    log.info(f"Conexão | client={client_id} | integration={key} | {'removida' if data is None else 'gravada'}")
+    return current
+
+
+async def list_clients_with_integration(integration_id: str) -> list[ClientIdentity]:
+    """Clientes que têm a conexão <id> gravada (jobs de renovação de catálogo/token)."""
+    key = (integration_id or "").strip().lower()
+    if not key:
+        return []
+    resp = await run_in_threadpool(
+        lambda: get_supabase().table("clients").select("*").filter("integrations", "cs", json.dumps({key: {}})).execute()
+    )
+    return [_identity_from_row(r) for r in (resp.data or [])]
+
+
 async def get_conversation(client_id: str, phone: str) -> Conversation:
     """Busca conversa existente ou cria nova."""
     resp = await _db(
