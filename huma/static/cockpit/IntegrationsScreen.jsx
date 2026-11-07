@@ -40,6 +40,22 @@ function connShortDate(iso) {
   return d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
+// Linha curta da tabelinha do card (valores longos estouram a grade; a explicação vai na note).
+const CONN_META_BY_KIND = {
+  scheduling: ['AGENDA', 'Livre/ocupado, marca e cancela'],
+  crm: ['SINCRONIZA', 'Pessoa, negócio e resumo'],
+  legal: ['SINCRONIZA', 'Cliente, caso e andamento'],
+  signature: ['ENVIA', 'Contrato pra assinar'],
+  billing: ['CONSULTA', 'Cobranças em aberto por CPF'],
+  payment: ['COBRA', 'Pix e cartão na sua conta'],
+  inventory: ['CONSULTA', 'Produtos, preço e estoque'],
+  infoproduct: ['RECEBE', 'Compra, carrinho e reembolso'],
+  automation: ['LIGA', 'Fluxos prontos'],
+};
+function connMetaLine(spec) {
+  return CONN_META_BY_KIND[spec.kind] || ['O QUE FAZ', (spec.section_label || '').slice(0, 28)];
+}
+
 // Ordem das seções e dos cards dentro delas. 'whatsapp' é o WhatsAppCard
 // (componente próprio, com status buscado por ele mesmo); os outros ids
 // apontam pros cards montados no IntegrationsScreen.
@@ -118,7 +134,7 @@ const IntegrationsScreen = ({ client, clientId, onReloadStatus } = {}) => {
       status: on ? 'connected' : 'disconnected',
       meta: on
         ? [['CONTA', st.label || 'conectada'], ['DESDE', connShortDate(st.connected_at)]]
-        : [['O QUE FAZ', spec.summary || spec.section_label || ''], ['COMO', fields.length ? 'Cole a chave · 1 minuto' : 'Um clique']],
+        : [connMetaLine(spec), ['COMO', fields.length ? 'Cole a chave · 1 minuto' : 'Um clique']],
       note: on
         ? `A HUMA já usa o ${spec.name} nas conversas. ${spec.summary || ''}`.trim()
         : (spec.what_ai_does || spec.summary || ''),
@@ -673,7 +689,7 @@ const IntegrationSection = ({ title, desc, on, total, children }) => (
         {on} de {total} {total === 1 ? 'conectada' : 'conectadas'}
       </span>
     </div>
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 18 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14, marginBottom: 18 }}>
       {children}
     </div>
   </section>
