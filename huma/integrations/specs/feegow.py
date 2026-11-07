@@ -66,5 +66,5 @@ SPEC = register(IntegrationSpec(
         ("Se a recepção cancelar no Feegow, a HUMA fica sabendo?", "Ainda não: o Feegow não avisa sistemas externos. O cancelamento feito pelo lead no WhatsApp a HUMA aplica na hora."),
     ],
     summary="Agenda da clínica no Feegow: a HUMA vê horário livre, marca e cancela.",
-    logo="",
+    logo="feegow.png",
 ))

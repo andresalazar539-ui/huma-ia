@@ -54,6 +54,7 @@ SPEC = register(IntegrationSpec(
     docs_url="https://docs.asaas.com/reference/listar-cobrancas",
     site_url="https://www.asaas.com",
     effects="",
+    logo="asaas.png",
     validate=validate,
     provider_factory=lambda identity: AsaasCobrancaAdapter(identity=identity),
     tags=("clinica", "escola", "academia", "servicos", "assinatura"),

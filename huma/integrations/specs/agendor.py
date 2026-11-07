@@ -130,5 +130,5 @@ SPEC = register(IntegrationSpec(
          "A HUMA procura pelo WhatsApp e pelo telefone antes de criar. Se achar, reaproveita a pessoa e só completa a descrição com o resumo da conversa."),
     ],
     summary="Lead qualificado vira pessoa e negócio no funil do Agendor.",
-    logo="",
+    logo="agendor.png",
 ))

@@ -69,5 +69,5 @@ SPEC = register(IntegrationSpec(
         ("Com qual profissional a HUMA marca?", "Com o primeiro profissional com agenda que ela encontra ao conectar, usando a duração e o preço do serviço que o lead pediu."),
     ],
     summary="Agenda do salão no Trinks: a HUMA vê horário vago, marca e cancela.",
-    logo="",
+    logo="trinks.png",
 ))

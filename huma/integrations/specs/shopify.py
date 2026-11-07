@@ -155,5 +155,5 @@ SPEC = register(IntegrationSpec(
         ),
     ],
     summary="Catálogo, estoque e pedidos pagos da sua loja Shopify na conversa.",
-    logo="",
+    logo="shopify.svg",
 ))

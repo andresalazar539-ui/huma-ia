@@ -60,6 +60,7 @@ SPEC = IntegrationSpec(
         "e responde 'como está meu processo?' com o último andamento real quando o cliente informa o CPF."
     ),
     summary="Pré-atendimento vira pessoa e atendimento no Projuris ADV; andamento real pelo CPF.",
+    logo="projuris.png",
     validate=validate,
     docs_url="https://projurishelp.atlassian.net/wiki/spaces/BDC/pages/1117904",
     site_url="https://www.projuris.com.br/adv/",

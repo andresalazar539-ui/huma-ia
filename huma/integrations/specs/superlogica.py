@@ -79,6 +79,7 @@ SPEC = register(IntegrationSpec(
     docs_url="https://apiassinaturas.superlogica.com/",
     site_url="https://superlogica.com",
     effects="",
+    logo="superlogica.png",
     validate=validate,
     provider_factory=lambda identity: SuperlogicaAdapter(identity=identity),
     tags=("condominio", "administradora", "escola", "assinatura", "imobiliaria"),

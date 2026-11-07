@@ -120,6 +120,7 @@ SPEC = register(IntegrationSpec(
     docs_url="https://www.infinitepay.io/checkout-documentacao",
     site_url="https://www.infinitepay.io",
     effects="payment",
+    logo="infinitepay.png",
     validate=validate,
     provider_factory=lambda identity: InfinitePayAdapter(identity=identity),
     on_webhook=on_webhook,

@@ -49,6 +49,7 @@ SPEC = IntegrationSpec(
         "e responde 'como está meu processo?' com o último andamento real quando o cliente informa o CPF."
     ),
     summary="Pré-atendimento vira cliente e processo no ADVBOX; andamento real pelo CPF.",
+    logo="advbox.ico",
     validate=validate,
     docs_url="https://api.softwareadvbox.com.br/docs",
     site_url="https://advbox.com.br",

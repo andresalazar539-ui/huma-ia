@@ -254,7 +254,7 @@ SPEC = IntegrationSpec(
         ("Como a HUMA sabe que foi assinado?",
          "A Clicksign avisa a HUMA na hora (webhook assinado com HMAC). A conversa ganha a marcação de contrato assinado e você recebe um aviso."),
     ],
-    logo="",
+    logo="clicksign.png",
 )
 
 register(SPEC)

@@ -277,7 +277,7 @@ SPEC = IntegrationSpec(
         ),
     ],
     summary="Compra, carrinho abandonado e reembolso da Hotmart viram contexto na conversa.",
-    logo="",
+    logo="hotmart.png",
 )
 
 register(SPEC)

@@ -179,6 +179,7 @@ SPEC = register(IntegrationSpec(
     docs_url="https://developers.vindi.com.br/reference",
     site_url="https://vindi.com.br",
     effects="",
+    logo="vindi.png",
     validate=validate,
     provider_factory=lambda identity: VindiAdapter(identity=identity),
     on_webhook=on_webhook,

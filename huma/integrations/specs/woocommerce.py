@@ -154,5 +154,5 @@ SPEC = register(IntegrationSpec(
         ),
     ],
     summary="Catálogo, estoque e pedidos pagos da sua loja WooCommerce na conversa.",
-    logo="",
+    logo="woocommerce.svg",
 ))

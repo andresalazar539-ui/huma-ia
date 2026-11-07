@@ -198,5 +198,5 @@ SPEC = register(IntegrationSpec(
         ("E se o lead cancelar pelo link do Calendly?", "O Calendly avisa a HUMA, que apaga o horário da conversa e, se o lead voltar, oferece outro. Remarcação pelo link também chega como aviso."),
     ],
     summary="Agenda do Calendly: a HUMA vê os horários abertos, marca e cancela, e fica sabendo quando o lead cancela.",
-    logo="",
+    logo="calendly.svg",
 ))

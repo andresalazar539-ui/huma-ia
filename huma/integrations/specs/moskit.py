@@ -125,5 +125,5 @@ SPEC = register(IntegrationSpec(
          "Não. Sem webhook a HUMA já cria contato e negócio. O webhook serve só para o ganho ou perdido do Ollow voltar pra HUMA e entrar no seu relatório."),
     ],
     summary="Lead qualificado vira contato e negócio no funil do Ollow (Moskit).",
-    logo="",
+    logo="moskit.gif",
 ))

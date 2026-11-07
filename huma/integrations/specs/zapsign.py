@@ -232,7 +232,7 @@ SPEC = IntegrationSpec(
         ("Como a HUMA sabe que foi assinado?",
          "A ZapSign avisa a HUMA na hora (webhook). A conversa ganha a marcação de contrato assinado e você recebe um aviso."),
     ],
-    logo="",
+    logo="zapsign.png",
 )
 
 register(SPEC)

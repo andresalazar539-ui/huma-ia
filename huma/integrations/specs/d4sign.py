@@ -294,7 +294,7 @@ SPEC = IntegrationSpec(
         ("Por que a D4Sign limita 10 requisições por hora?",
          "É o padrão da conta. Cada contrato gasta 4 chamadas, então dá pra fechar 2 contratos por hora sem pedir aumento. O comercial da D4Sign libera mais."),
     ],
-    logo="",
+    logo="d4sign.png",
 )
 
 register(SPEC)

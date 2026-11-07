@@ -143,5 +143,5 @@ SPEC = register(IntegrationSpec(
         ),
     ],
     summary="Catálogo, estoque e pedidos pagos da sua Loja Integrada na conversa.",
-    logo="",
+    logo="lojaintegrada.png",
 ))

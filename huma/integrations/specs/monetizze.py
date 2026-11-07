@@ -277,7 +277,7 @@ SPEC = IntegrationSpec(
         ),
     ],
     summary="Compra, carrinho abandonado e reembolso da Monetizze viram contexto na conversa.",
-    logo="",
+    logo="monetizze.svg",
 )
 
 register(SPEC)

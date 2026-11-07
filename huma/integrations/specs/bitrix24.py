@@ -139,5 +139,5 @@ SPEC = register(IntegrationSpec(
          "O Bitrix24 não reenvia avisos que falharam. Quando isso acontecer, mova a conversa para Fechado no quadro da HUMA; o resultado entra no relatório do mesmo jeito."),
     ],
     summary="Lead qualificado vira contato e negócio no funil do Bitrix24.",
-    logo="",
+    logo="bitrix24.png",
 ))
