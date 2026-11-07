@@ -76,6 +76,9 @@ resposta, % de conversas fora do horário, agendamentos por mês; dado original 
   → solicitar indexação das páginas novas mais importantes.
 - Bing Webmaster Tools: mesma coisa (Envio de URL). IndexNow já avisa sozinho na subida do app
   (`huma/services/indexnow.py`, log `IndexNow | enviado`).
+- **Brave** (é o índice da busca do Claude): sem painel; cada página nova vai à mão em
+  `https://search.brave.com/submit-url` (uma por vez; a verificação de humano passa sozinha em ~5 s;
+  se pedir para clicar ou resolver algo, parar e passar pro André). Primeiras 13 enviadas em 2026-11-07.
 - `X-Robots-Tag` nunca em página pública (teste em `test_aeo_pages.py`).
 
 ## D. Menções de terceiros (ação do André, preparar o material)
