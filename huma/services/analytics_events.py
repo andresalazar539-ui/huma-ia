@@ -259,6 +259,7 @@ async def _send_ga4_purchase(
 
     payload = {
         "client_id": (ids.get("ga_client_id") or "").strip() or _fallback_ga_client_id(client_id),
+        "user_id": client_id,
         "events": [{"name": "purchase", "params": params}],
     }
     url = f"{GA4_MP_URL}?measurement_id={measurement_id}&api_secret={api_secret}"
@@ -325,3 +326,50 @@ async def _send_meta_purchase(
         log.error(f"Timeout | service=meta_capi | client={client_id} | tx={transaction_id}")
     except httpx.HTTPError as e:
         log.error(f"HTTP erro | service=meta_capi | client={client_id} | tx={transaction_id} | {type(e).__name__}: {e}")
+
+
+# ================================================================
+# EVENTO GENÉRICO: marcos de ativação (activation_milestones)
+# ================================================================
+
+
+async def track_event(client_id: str, name: str, params: dict | None = None) -> None:
+    """
+    Manda um evento qualquer pro GA4 (Measurement Protocol) em nome da conta.
+
+    Sai com o mesmo user_id do navegador (client_id da HUMA) e, quando o
+    Cockpit já capturou, o client_id/session_id do cookie do dono: o GA4
+    junta o marco à jornada e à campanha que trouxe a pessoa. Só GA4: os
+    marcos não são conversão de anúncio. Nunca levanta exceção.
+    """
+    try:
+        ga4 = _ga4_config()
+        if not ga4 or not client_id or not name:
+            return
+        measurement_id, api_secret = ga4
+        ids = await _load_web_ids(client_id)
+        event_params: dict = {"engagement_time_msec": 100}
+        for key, value in (params or {}).items():
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                event_params[str(key)[:40]] = value if not isinstance(value, str) else value[:100]
+        session_id = (ids.get("ga_session_id") or "").strip()
+        if session_id.isdigit():
+            event_params["session_id"] = int(session_id)
+        payload = {
+            "client_id": (ids.get("ga_client_id") or "").strip() or _fallback_ga_client_id(client_id),
+            "user_id": client_id,
+            "events": [{"name": name[:40], "params": event_params}],
+        }
+        url = f"{GA4_MP_URL}?measurement_id={measurement_id}&api_secret={api_secret}"
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as http:
+            resp = await http.post(url, json=payload)
+        if resp.status_code >= 300:
+            log.error(f"Analytics | GA4 MP status={resp.status_code} | client={client_id} | evento={name}")
+        else:
+            log.info(f"Analytics | GA4 evento enviado | client={client_id} | evento={name}")
+    except httpx.TimeoutException:
+        log.error(f"Timeout | service=ga4_mp | client={client_id} | evento={name}")
+    except httpx.HTTPError as e:
+        log.error(f"HTTP erro | service=ga4_mp | client={client_id} | evento={name} | {type(e).__name__}: {e}")
+    except Exception as e:
+        log.error(f"Analytics | track_event falhou | client={client_id} | evento={name} | {type(e).__name__}: {e}")

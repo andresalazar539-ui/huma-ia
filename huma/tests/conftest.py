@@ -37,3 +37,21 @@ def _no_background_playbook(monkeypatch):
     monkeypatch.setattr(playbook_service, "schedule_regenerate", _record)
     monkeypatch.setattr(playbook_service, "_scheduled", scheduled, raising=False)
     yield scheduled
+
+
+@pytest.fixture(autouse=True)
+def _no_background_milestones(monkeypatch):
+    """
+    Marcos de ativação (2026-11-07) agendam leitura do banco e envio ao GA4
+    em background. Nos testes, `_schedule` vira um gravador; os testes do
+    próprio módulo chamam `record_milestone` direto.
+    """
+    from huma.services import activation_milestones
+
+    scheduled: list[tuple[str, str, dict]] = []
+
+    def _record(client_id: str, milestone: str, params: dict) -> None:
+        scheduled.append((client_id, milestone, params))
+
+    monkeypatch.setattr(activation_milestones, "_schedule", _record)
+    yield scheduled

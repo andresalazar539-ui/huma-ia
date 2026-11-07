@@ -964,6 +964,13 @@ async def debit_engaged_conversation(client_id: str, phone: str, allow_overage: 
         {"debited": bool, "overage": bool}
     """
     desc = f"Conversa com {phone}" if phone else ""
+    # Marco de ativação no GA4: primeira conversa engajada da conta (1x na vida,
+    # background). Conta mesmo quando o débito falha: a conversa engajou.
+    try:
+        from huma.services import activation_milestones
+        activation_milestones.on_engaged_conversation(client_id)
+    except Exception as e:
+        log.warning(f"SpendControl | marco falhou | client={client_id} | {type(e).__name__}: {e}")
     if await debit_conversation(client_id, desc):
         return {"debited": True, "overage": False}
     if not allow_overage:

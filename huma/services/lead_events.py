@@ -79,6 +79,13 @@ def fire(client_data: Any, conv: Any, event: str, **data: Any) -> None:
         intel.record_event(client_data, conv, event, **data)
     except Exception as e:
         log.warning(f"LeadEvents | persistência falhou | event={event} | {type(e).__name__}: {e}")
+    # Marcos de ativação no GA4 (2026-11-07): primeiro lead, primeiro
+    # qualificado, primeiro agendamento, primeira venda. Background, 1x na vida.
+    try:
+        from huma.services import activation_milestones
+        activation_milestones.on_lead_event(client_data, conv, event)
+    except Exception as e:
+        log.warning(f"LeadEvents | marco falhou | event={event} | {type(e).__name__}: {e}")
     try:
         if not has_any_sink(client_data):
             return
