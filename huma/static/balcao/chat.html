@@ -134,6 +134,14 @@
     margin-top: 4px; background: transparent; border: 1px solid var(--paper-edge);
     color: inherit; font-size: 13px; padding: 7px 10px; border-radius: 10px; cursor: pointer;
   }
+  /* Opções de escolha (2026-11-07): chips que viram a mensagem do visitante */
+  .opts { display: flex; flex-wrap: wrap; gap: 6px; max-width: 92%; align-self: flex-start; padding: 0 0 6px; animation: rise .18s ease-out; }
+  .opts button {
+    background: var(--paper-raised); border: 1px solid var(--terracotta); color: var(--terracotta-ink);
+    font: inherit; font-size: 13.5px; font-weight: 500; padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .opts button:hover { background: var(--terracotta-tint); }
+  .opts.used button { opacity: .45; cursor: default; }
   /* Caixinha na bolha (2026-09-10): o pagamento abre DENTRO do widget */
   .card.checkout { flex-basis: 250px; border-color: var(--terracotta); }
   .card .pay {
@@ -424,6 +432,31 @@
     return wrap;
   }
 
+  // Opções de escolha: um toque vira a mensagem do visitante (igual ao
+  // voto da enquete no WhatsApp). Depois de usar, os chips apagam.
+  function addOptions(options, persist) {
+    if (!options || !options.length) return null;
+    var wrap = document.createElement('div');
+    wrap.className = 'opts';
+    options.forEach(function (o) {
+      var b = document.createElement('button'); b.type = 'button'; b.textContent = o;
+      b.addEventListener('click', function () {
+        if (sendBtn.disabled || wrap.classList.contains('used')) return;
+        wrap.classList.add('used');
+        input.value = o;
+        form.dispatchEvent(new Event('submit', { cancelable: true }));
+      });
+      wrap.appendChild(b);
+    });
+    chat.appendChild(wrap);
+    chat.scrollTop = chat.scrollHeight;
+    if (persist !== false) {
+      history.push({ k: 'options', o: options });
+      saveHistory(history);
+    }
+    return wrap;
+  }
+
   // Caixinha na bolha: painel com a página segura da HUMA por cima do chat.
   var sheetEl = null;
   function openSheet(url, title) {
@@ -468,7 +501,7 @@
 
   // Restaura histórico local (a memória real vive no servidor).
   history.forEach(function (m) {
-    if (m.k === 'cards') addCards(m.c, false); else addMsg(m.k, m.t, false);
+    if (m.k === 'cards') addCards(m.c, false); else if (m.k === 'options') { var w = addOptions(m.o, false); if (w) w.classList.add('used'); } else addMsg(m.k, m.t, false);
   });
 
   // ── Info do negócio: 404 = indisponível de verdade; erro de rede =
@@ -517,6 +550,7 @@
       .then(function (data) {
         (data.messages || []).forEach(function (m) {
           if (m.cards && m.cards.length) addCards(m.cards);
+          else if (m.options && m.options.length) addOptions(m.options);
           else if (m.content) addMsg('bot', m.content);
         });
         if (typeof data.total === 'number' && data.total > seen) setSeen(data.total);
@@ -577,6 +611,10 @@
     if (data.cards && data.cards.length) {
       delay += 500;
       setTimeout(function () { addCards(data.cards); }, delay);
+    }
+    if (data.options && data.options.length) {
+      delay += 350;
+      setTimeout(function () { addOptions(data.options); }, delay);
     }
     // Libera o campo junto com a última parte agendada — sem depender
     // do callback rodar (aba escondida atrasa timer, storage pode falhar).

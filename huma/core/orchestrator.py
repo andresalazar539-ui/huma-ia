@@ -156,6 +156,10 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
     """
     phone = payload.phone
 
+    # Opções de resposta (2026-11-07): o lead que digitou "2" (ou tocou num
+    # botão com título cortado) manda o TEXTO da opção pro motor.
+    payload = await _resolve_option_reply(payload)
+
     # Escudo antiban: lead pedindo pra não receber mais ("pare", "não
     # quero receber"...) → supressão de CAMPANHA em background. Não muda
     # a conversa em nada — o clone segue respondendo normalmente (regex
@@ -196,6 +200,59 @@ async def handle_message(payload: MessagePayload, background_tasks: BackgroundTa
     )
 
     return {"status": result.get("status", "buffered")}
+
+
+async def _resolve_option_reply(payload: MessagePayload) -> MessagePayload:
+    """
+    Traduz a resposta do lead pra opção mostrada no turno anterior (Redis
+    `reply_options:*`, 24h): "2" / "opção 2" / título truncado de botão →
+    texto inteiro da opção. Uma vez usada, a lista some (o próximo "2" não
+    vira escolha). Nunca levanta; sem casar, devolve o payload como veio.
+    """
+    try:
+        from huma.core import reply_options as ro
+        text = (payload.text or "").strip()
+        if not text or len(text) > 80:
+            return payload
+        key = ro.redis_key(payload.client_id, payload.phone)
+        options = ro.unpack(await cache.get_value(key))
+        if not options:
+            return payload
+        chosen = ro.resolve_typed(text, options)
+        if not chosen:
+            return payload
+        await cache.delete_key(key)
+        log.info(f"Options | escolha | {payload.phone} | client={payload.client_id} | '{text[:30]}' -> '{chosen[:40]}'")
+        if chosen == text:
+            return payload
+        return payload.model_copy(update={"text": chosen})
+    except Exception as e:
+        log.warning(f"Options | resolução falhou | {payload.phone} | {type(e).__name__}: {e}")
+        return payload
+
+
+async def _send_options_to_lead(phone: str, cid: str, conv, options: list, question: str) -> bool:
+    """
+    Mostra as opções no canal do lead (enquete / botões / chips), guarda a
+    lista no Redis pra traduzir a resposta e registra no histórico o que
+    ele viu. Nunca levanta. False quando nada saiu.
+    """
+    try:
+        from huma.core import reply_options as ro
+        opts = ro.clean_options(options)
+        if not opts:
+            return False
+        q = (question or "").strip() or ro.DEFAULT_QUESTION
+        await cache.set_with_ttl(ro.redis_key(cid, phone), ro.pack(opts), ttl=ro.REDIS_TTL_SECONDS)
+        mid = await wa.send_options(phone, q, opts, client_id=cid)
+        if not mid:
+            return False
+        if conv is not None:
+            conv.history.append(ro.history_entry(q, opts))
+        return True
+    except Exception as e:
+        log.error(f"Options | envio falhou | {phone} | client={cid} | {type(e).__name__}: {e}")
+        return False
 
 
 async def _process_buffered(client_id, phone, unified_text, unified_image, bg):
@@ -1406,6 +1463,13 @@ async def _send_with_human_delay(
                             f"check_availability follow-up enviado | {phone} | "
                             f"reply_len={len(fup_reply)} | parts={len(fup_parts)}"
                         )
+                        # Horários verificados viram opções de um toque (2026-11-07).
+                        if followup_result.get("options"):
+                            from huma.core.reply_options import question_for
+                            await _send_options_to_lead(
+                                phone, cid, fresh_conv, followup_result.get("options") or [],
+                                question_for(fup_reply, fup_parts),
+                            )
 
                         # Safety net (v12 / fix 7.4) — lead NUNCA fica no vácuo.
                         # Se o reply do turn 2 não tem dígito (proxy: "não ofereceu horário"),
@@ -1609,6 +1673,12 @@ async def _send_with_human_delay(
                             f"inventory follow-up enviado | {phone} | "
                             f"reply_len={len(fup_reply)} | parts={len(fup_parts)}"
                         )
+                        if followup_result.get("options"):
+                            from huma.core.reply_options import question_for
+                            await _send_options_to_lead(
+                                phone, cid, fresh_conv, followup_result.get("options") or [],
+                                question_for(fup_reply, fup_parts),
+                            )
                     except Exception as e:
                         log.error(
                             f"inventory follow-up falhou | {phone} | "
@@ -1774,12 +1844,22 @@ async def _send_with_human_delay(
                     closing_order = True
             # Lead já disse "vou levar": só o card Finalizar pedido sai (na action),
             # o card de produto seria redundante.
+            ia_options = [] if suppress_claude_reply else (ai_result.get("options") or [])
             if not closing_order:
                 await _send_product_cards(
                     phone, cid, client_data, conv, lead_text, stock_result, action_query=show_query,
+                    skip_poll=bool(ia_options),
                 )
         except Exception as e:
+            ia_options = []
             log.error(f"Cards de produto falharam | {phone} | {type(e).__name__}: {e}")
+
+        # Opções de resposta (2026-11-07): a escolha que a IA ofereceu no
+        # texto vira enquete / botões / chips. Nunca quando o reply foi
+        # descartado (conflito de agenda) ou suprimido.
+        if ia_options and not appointment_override:
+            from huma.core.reply_options import question_for
+            await _send_options_to_lead(phone, cid, conv, ia_options, question_for(reply, parts))
 
         # ============================================================
         # ACTIONS RESTANTES (mídia, pagamento — agendamento já tratado)
@@ -3224,17 +3304,20 @@ async def _handle_check_stock_action(phone, action, client_data, conv) -> dict:
 
 async def _send_product_cards(
     phone: str, cid: str, client_data, conv, user_text: str, stock_result: dict | None,
-    action_query: str = "",
+    action_query: str = "", skip_poll: bool = False,
 ) -> int:
     """
     Manda card(s) de produto e registra no histórico o que o lead viu.
 
     action_query: query da action show_products (a IA pediu o carrossel).
+    skip_poll: True quando a IA já vai mostrar opções neste turno (evita
+    duas enquetes). No WhatsApp, 2+ cards saem numerados e seguidos da
+    enquete "Qual te interessou?" com os nomes (2026-11-07).
 
     Returns:
         Quantos cards saíram (0 = nada a mandar ou canal sem suporte).
     """
-    from huma.core.product_cards import decide_cards, history_entry
+    from huma.core.product_cards import decide_cards, history_entry, options_for_cards, CARDS_POLL_QUESTION
 
     cards = await decide_cards(client_data, user_text, stock_result, action_query=action_query)
     if not cards:
@@ -3258,6 +3341,9 @@ async def _send_product_cards(
     except Exception as e:
         log.error(f"Erro salvando cards no histórico | {phone} | {type(e).__name__}: {e}")
     log.info(f"Cards de produto | {phone} | enviados={sent} | skus={[c.get('sku') for c in cards][:10]}")
+    # Instagram já tem botão por card; no site o widget tem "Quero esse".
+    if sent > 1 and not skip_poll and not phone.startswith(("ig:", "web:")):
+        await _send_options_to_lead(phone, cid, conv, options_for_cards(cards[:sent]), CARDS_POLL_QUESTION)
     return sent
 
 

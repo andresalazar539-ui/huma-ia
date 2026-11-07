@@ -475,8 +475,12 @@ async def ensure_webhooks() -> dict:
         for instance in instances:
             has = await wa.evo_webhook_has_token(instance)
             if has is True:
-                out["ok"] += 1
-                continue
+                # Senha certa; falta conferir os eventos (MESSAGES_UPDATE traz o
+                # voto da enquete, 2026-11-07). Só False regrava; None = não deu
+                # pra conferir, não mexe.
+                if await wa.evo_webhook_has_events(instance) is not False:
+                    out["ok"] += 1
+                    continue
             if not await wa.evo_instance_exists(instance):
                 out["missing"] += 1
                 continue

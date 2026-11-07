@@ -570,11 +570,12 @@ const FuNextBanner = ({ phone, refreshKey }) => {
   );
 };
 
-const Message = ({ from, text, time, responseTime, audio, audio_url, cards, image_url, video_url, file_url, note, by, by_name, via, followup, reactivation }) => {
+const Message = ({ from, text, time, responseTime, audio, audio_url, cards, options, image_url, video_url, file_url, note, by, by_name, via, followup, reactivation }) => {
   if (from === 'note') return <InternalNote note={note} text={text} time={time} />;
   const isClient = from === 'client';
   const isHuma = from === 'huma' && by !== 'owner';
   const hasCards = Array.isArray(cards) && cards.length > 0;
+  const hasOptions = Array.isArray(options) && options.length > 0;
   const hasMedia = Boolean(image_url || video_url || file_url);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: isClient ? 'flex-start' : 'flex-end', gap: 4 }}>
@@ -591,6 +592,17 @@ const Message = ({ from, text, time, responseTime, audio, audio_url, cards, imag
           // Cards que o lead viu: 1 = card; vários = carrossel com rolagem.
           <div style={{ display: 'flex', gap: 8, overflowX: 'auto', maxWidth: '100%', paddingBottom: cards.length > 1 ? 4 : 0 }}>
             {cards.map((c, i) => <MessageCard key={i} card={c} dark={!isClient} />)}
+          </div>
+        ) : hasOptions ? (
+          // Opções de escolha que o lead viu (enquete / botões / chips).
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {text && <div>{text}</div>}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {options.map((o, i) => (
+                <span key={i} style={{ fontSize: 12.5, fontWeight: 500, padding: '5px 10px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.55)', background: 'rgba(255,255,255,0.14)', color: 'inherit' }}>{o}</span>
+              ))}
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', opacity: 0.8 }}>escolha de um toque</div>
           </div>
         ) : audio_url ? (
           // Áudio real: player + o que foi falado (da HUMA) ou a transcrição (do lead).

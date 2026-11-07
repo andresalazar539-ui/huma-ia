@@ -313,8 +313,35 @@ async def get_web_messages(client_id: str, session_id: str, after: int) -> dict:
         item = {"i": idx, "content": str(m.get("content", "")), "by": m.get("by", "ai")}
         if isinstance(m.get("cards"), list) and m["cards"]:
             item["cards"] = m["cards"]  # o widget desenha o card em vez do texto
+        if isinstance(m.get("options"), list) and m["options"]:
+            item["options"] = m["options"]  # chips de escolha (2026-11-07)
         messages.append(item)
     return {"status": "ok", "total": total, "messages": messages}
+
+
+async def _resolve_web_option(client_id: str, phone: str, text: str) -> str:
+    """
+    Visitante digitou "2" (ou clicou num chip) depois de a HUMA mostrar
+    opções: vira o texto da opção (Redis `reply_options:*`, uma vez só).
+    Sem opção pendente ou sem casar, o texto segue como veio. Nunca levanta.
+    """
+    try:
+        from huma.core import reply_options as ro
+        if not text or len(text) > 80:
+            return text
+        key = ro.redis_key(client_id, phone)
+        options = ro.unpack(await cache.get_value(key))
+        if not options:
+            return text
+        chosen = ro.resolve_typed(text, options)
+        if not chosen:
+            return text
+        await cache.delete_key(key)
+        log.info(f"Options | escolha (web) | {phone} | '{text[:30]}' -> '{chosen[:40]}'")
+        return chosen
+    except Exception as e:
+        log.warning(f"Options | resolução falhou (web) | {phone} | {type(e).__name__}: {e}")
+        return text
 
 
 def _is_silent_hours_web(client_data: ClientIdentity) -> bool:
@@ -350,6 +377,7 @@ async def process_web_message(
     """
     session_id = (session_id or "").strip().lower()
     text = (text or "").strip()
+    text = await _resolve_web_option(client_id, web_phone(session_id), text)
 
     if not is_valid_session_id(session_id) or not text:
         return {"status": "invalid", "reply_parts": [], "history_len": 0}
@@ -716,6 +744,20 @@ async def _process_web_message_locked(
         _entry["parts"] = list(reply_parts)  # balões iguais aos que o visitante viu
     conv.history.append(_entry)
 
+    # Opções de resposta (2026-11-07): chips no widget. A lista fica no Redis
+    # pra "2" (ou o clique) virar o texto da opção no próximo turno.
+    options: list = []
+    try:
+        from huma.core import reply_options as ro
+        options = ro.clean_options(ai_result.get("options"))
+        if options:
+            q = ro.question_for(reply, reply_parts)
+            await cache.set_with_ttl(ro.redis_key(client_id, phone), ro.pack(options), ttl=ro.REDIS_TTL_SECONDS)
+            conv.history.append(ro.history_entry(q, options))
+    except Exception as e:
+        options = []
+        log.warning(f"Options | falhou (web) | {phone} | {type(e).__name__}: {e}")
+
     # Caixinha universal (2026-09-10): o site também fecha a venda. Actions de
     # venda viram cards "Finalizar pedido"/"Pagar" que o widget abre na bolha.
     checkout_cards: list = []
@@ -776,4 +818,4 @@ async def _process_web_message_locked(
         f"Web OK | {client_id} | {phone} | via={resolved_by} | "
         f"stage={conv.stage} | parts={len(reply_parts)}"
     )
-    return {"status": "ok", "reply_parts": reply_parts, "history_len": len(conv.history), "cards": cards}
+    return {"status": "ok", "reply_parts": reply_parts, "history_len": len(conv.history), "cards": cards, "options": options}

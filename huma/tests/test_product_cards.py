@@ -193,8 +193,10 @@ class TestSendCards:
         monkeypatch.setattr(wa, "_meta_send_text", _text)
         cards = [pc.card_from_product(_ITEMS[0]), pc.card_from_product(_ITEMS[1])]
         assert asyncio.run(wa.send_cards("5511999990000", cards, client_id="cli_cards")) == 2
+        # 2+ cards saem numerados (2026-11-07): a enquete "Qual te interessou?" vem depois.
         assert calls[0][0] == "media" and calls[0][1] == "https://img.x/cam.jpg" and "Comprar: https://loja.x/cam" in calls[0][2]
-        assert calls[1][0] == "text" and calls[1][1].startswith("Boné Aba Curva")
+        assert calls[0][2].startswith("1. ")
+        assert calls[1][0] == "text" and calls[1][1].startswith("2. Boné Aba Curva")
 
     def test_web_nao_envia_nada(self):
         from huma.services import whatsapp_service as wa

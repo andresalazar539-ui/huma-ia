@@ -1964,6 +1964,23 @@ def _build_reply_tool_compact(
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                # Opções de resposta (2026-11-07): viram enquete no WhatsApp por
+                # QR, botões/lista no oficial e chips no site. SE/QUANDO: só
+                # quando a mensagem pede uma escolha entre alternativas concretas.
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 6,
+                    "description": (
+                        "SE a sua mensagem pede que o lead ESCOLHA entre alternativas concretas "
+                        "(horários que a VERIFICAÇÃO DE AGENDA devolveu, variações de um produto, "
+                        "confirmar ou mudar algo), liste de 2 a 6 opções curtas (até 30 caracteres, "
+                        "sem numeração), na ordem em que aparecem no texto. O sistema mostra as opções "
+                        "como botões de escolha no canal do lead. Deixe vazio quando a resposta não "
+                        "pede escolha, quando a resposta é livre (nome, e-mail, endereço) ou quando os "
+                        "horários não foram verificados."
+                    ),
+                },
                 "actions": {
                     "type": "array",
                     "items": {"type": "object"},
@@ -2301,6 +2318,8 @@ async def generate_response(identity, conv, user_text, image_url=None, use_fast_
         "audio_text": parsed.get("audio_text", ""),
         # F4 — chave nova com default neutro (contrato do CLAUDE.md §1).
         "lead_read": parsed.get("lead_read") if isinstance(parsed.get("lead_read"), dict) else {},
+        # Opções de resposta (2026-11-07), default [] (contrato §1).
+        "options": _clean_options(parsed.get("options")),
     }
 
     if "reply_parts" in parsed and isinstance(parsed["reply_parts"], list) and parsed["reply_parts"]:
@@ -2337,7 +2356,18 @@ def _fallback_result(text):
         "emotional_reading": "",
         "audio_text": "",
         "lead_read": {},
+        "options": [],
     }
+
+
+def _clean_options(raw) -> list[str]:
+    """Opções de resposta sanitizadas (core.reply_options); [] em qualquer dúvida."""
+    try:
+        from huma.core.reply_options import clean_options
+        return [_sanitize_text(o) for o in clean_options(raw)]
+    except Exception as e:
+        log.warning(f"Options | limpeza falhou | {type(e).__name__}: {e}")
+        return []
 
 
 # ================================================================

@@ -244,7 +244,7 @@ function mapHistory(history) {
     .filter(m => m.role === 'user' || m.role === 'assistant')
     .filter(m => {
       const c = (m.content || '').trim();
-      const hasRich = (Array.isArray(m.cards) && m.cards.length) || m.image_url || m.video_url || m.file_url || m.audio_url;
+      const hasRich = (Array.isArray(m.cards) && m.cards.length) || (Array.isArray(m.options) && m.options.length) || m.image_url || m.video_url || m.file_url || m.audio_url;
       if (hasRich) return true;  // card/mídia sem texto ainda é uma mensagem que o lead viu
       if (m.note && typeof m.note === 'object') return true;  // nota interna da equipe (transferência)
       return c && !INTERNAL_MARKER.test(c);
@@ -267,6 +267,12 @@ function mapHistory(history) {
       // resumo do pedido): a bolha desenha o card, não o texto "📦 …".
       if (Array.isArray(m.cards) && m.cards.length) {
         return [{ ...base, text: '', cards: m.cards }];
+      }
+      // Opções de escolha (enquete no WhatsApp, botões no oficial, chips no
+      // site): a bolha mostra a pergunta e os chips, como o lead viu.
+      if (Array.isArray(m.options) && m.options.length) {
+        const question = String(m.content || '').split('\n')[0];
+        return [{ ...base, text: question, options: m.options }];
       }
       // Áudio do lead: um balão com o player e a transcrição embaixo.
       if (m.audio_url && m.role === 'user') {

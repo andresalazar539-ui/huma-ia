@@ -236,6 +236,16 @@ def render_form(token: str, data: dict, identity, prefill: dict | None = None) -
 }})();
 </script>"""
     head = '<script src="https://sdk.mercadopago.com/js/v2"></script>' if (has_card and not is_asaas) else ""
+    # Prévia rica do link (2026-11-07): o WhatsApp monta o card do link com
+    # estas tags (foto do produto, nome, total). Sem imagem, só título e texto.
+    og_desc = html.escape(f"{str(data.get('name') or 'Produto')} · total {_price(total)} · pagamento seguro pela HUMA", quote=True)
+    head += (
+        f'<meta property="og:type" content="website">'
+        f'<meta property="og:title" content="{titulo} · {store}">'
+        f'<meta property="og:description" content="{og_desc}">'
+    )
+    if img:
+        head += f'<meta property="og:image" content="{html.escape(img, quote=True)}">'
     return _shell(f"{titulo} · {store}", body, head)
 
 

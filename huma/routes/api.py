@@ -3702,6 +3702,26 @@ async def _ingest_evolution_media(
 # existir cadastrada num cliente — instância desconhecida é ignorada.
 # ================================================================
 
+async def _evolution_poll_vote(vote: dict, bg: BackgroundTasks) -> dict:
+    """Voto de enquete → mensagem do lead com o texto da opção escolhida."""
+    instance = vote.get("instance") or ""
+    phone = vote.get("phone") or ""
+    chosen = (vote.get("chosen") or [""])[0]
+    if not instance or not phone or not chosen or (vote.get("remote_jid") or "").endswith("@g.us"):
+        return {"status": "ignored", "reason": "poll_incomplete"}
+    client, _line = await _client_for_instance(instance)
+    if not client:
+        log.warning(f"Enquete | instância sem cliente | instance={instance}")
+        return {"status": "ignored", "reason": "unknown_instance"}
+    remote_jid = vote.get("remote_jid") or ""
+    if remote_jid:
+        await cache.set_with_ttl(f"wajid:{client.client_id}:{phone}", remote_jid, ttl=2592000)
+    payload = MessagePayload(client_id=client.client_id, phone=phone, text=chosen[:800])
+    bg.add_task(handle_message, payload, bg)
+    log.info(f"Enquete | voto | client={client.client_id} | instance={instance} | phone={phone} | opcao='{chosen[:40]}'")
+    return {"status": "received", "poll": True}
+
+
 @router.post("/webhook/evolution", tags=["Webhook"])
 async def evolution_webhook(request: Request, bg: BackgroundTasks):
     """Recebe mensagem do Evolution API v2 e delega pro motor."""
@@ -3714,6 +3734,21 @@ async def evolution_webhook(request: Request, bg: BackgroundTasks):
         body = await request.json()
     except Exception:
         return {"status": "ignored", "reason": "bad_json"}
+
+    # Voto de enquete (2026-11-07): o Evolution agrega os votos e manda em
+    # messages.update (data.pollUpdates). O nome votado entra no motor como
+    # TEXTO do lead, igual a um botão do oficial.
+    from huma.core import reply_options as _ro
+    vote = _ro.evolution_poll_vote(body)
+    if vote:
+        return await _evolution_poll_vote(vote, bg)
+    if _ro.is_poll_related(body):
+        # Formato ainda não validado com o servidor real: o cru vai pro log
+        # (sem conteúdo de mensagem) pra ajustar o parser se vier diferente.
+        try:
+            log.info(f"Enquete | evento cru | {json.dumps(body, ensure_ascii=False)[:1500]}")
+        except (TypeError, ValueError):
+            pass
 
     parsed = wa.parse_evolution_webhook(body)
     if not parsed:

@@ -366,6 +366,10 @@ async def _evo_destination(identity, phone: str) -> str:
 
 async def _evo_send_text(identity, phone: str, message: str, reply_to: str | None) -> str | None:
     body: dict = {"number": await _evo_destination(identity, phone), "text": message}
+    # Link com prévia rica (2026-11-07): a Caixinha e o "próximo passo" saem
+    # com foto, título e preço (tags OG da página), não como URL seca.
+    if "http://" in message or "https://" in message:
+        body["linkPreview"] = True
     if reply_to:
         body["quoted"] = {"key": {"id": reply_to}}
     line = await _line_route(getattr(identity, "client_id", "") or "", phone)
@@ -475,7 +479,8 @@ async def send_cards(phone: str, cards: list[dict], client_id: str = "") -> int:
     """
     Cards de produto dentro da conversa (2026-09-07), roteados por canal:
       Instagram → carrossel nativo (generic template, até 10 cards)
-      WhatsApp (Meta/Evolution) → foto com legenda por card (máx 3); sem foto, texto
+      WhatsApp (Meta/Evolution) → foto com legenda por card (máx 5, numerados
+                                  quando há mais de um); sem foto, texto
       Web → nada aqui (o widget desenha a partir do histórico)
     Retorna quantos cards saíram. Nunca levanta.
     """
@@ -495,10 +500,13 @@ async def send_cards(phone: str, cards: list[dict], client_id: str = "") -> int:
 
         if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
             provider = "evolution"  # lead chegou por um número da equipe (QR)
-        from huma.core.product_cards import caption_for_card
+        from huma.core.product_cards import caption_for_card, WHATSAPP_MAX_CARDS
         sent = 0
-        for card in cards[:3]:
+        batch = cards[:WHATSAPP_MAX_CARDS]
+        for idx, card in enumerate(batch, 1):
             caption = caption_for_card(card)
+            if len(batch) > 1:
+                caption = f"{idx}. {caption}"  # numerado: a enquete "qual te interessou?" vem depois
             image_url = (card.get("image_url") or "").strip()
             if image_url:
                 if provider == "meta":
@@ -516,11 +524,91 @@ async def send_cards(phone: str, cards: list[dict], client_id: str = "") -> int:
                     mid = await _twilio_send_text(phone, caption)
             if mid:
                 sent += 1
-        log.info(f"Cards enviados | phone={phone} | provider={provider} | sent={sent}/{min(len(cards), 3)}")
+        log.info(f"Cards enviados | phone={phone} | provider={provider} | sent={sent}/{len(batch)}")
         return sent
     except Exception as e:
         log.error(f"send_cards falhou | phone={phone} | client={client_id} | {type(e).__name__}: {e}")
         return 0
+
+
+async def _evo_send_poll(identity, phone: str, question: str, options: list[str]) -> str | None:
+    """Enquete nativa (POST /message/sendPoll): o "botão" que todo número renderiza."""
+    from huma.core.reply_options import poll_body
+    dest = await _evo_destination(identity, phone)
+    line = await _line_route(getattr(identity, "client_id", "") or "", phone)
+    return await _evo_send(identity, "message/sendPoll", poll_body(dest, question, options), instance=line)
+
+
+async def _meta_send_interactive(identity, phone: str, question: str, options: list[str]) -> str | None:
+    """Botões de resposta (até 3) ou lista (até 10) da Cloud API."""
+    from huma.core.reply_options import meta_interactive_body
+    return await _meta_send(identity, meta_interactive_body(_dest_digits(phone), question, options))
+
+
+async def _ig_send_options(identity, phone: str, question: str, options: list[str]) -> str | None:
+    """Quick replies do Instagram Direct (título até 20 chars, até 13 itens)."""
+    if identity is None or not getattr(identity, "instagram_access_token", ""):
+        return None
+    from huma.services import instagram_service as ig  # lazy: evita ciclo
+    igsid = ig.igsid_from_phone(phone)
+    if not igsid:
+        return None
+    quick = [
+        {"content_type": "text", "title": (o[:19] + "…") if len(o) > 20 else o, "payload": f"opt_{i}"}
+        for i, o in enumerate(options[:13], 1)
+    ]
+    return await ig._post_message(identity, {
+        "recipient": {"id": igsid},
+        "message": {"text": question[:1000], "quick_replies": quick},
+    })
+
+
+async def send_options(
+    phone: str,
+    question: str,
+    options: list[str],
+    client_id: str = "",
+    **kwargs,
+) -> str | None:
+    """
+    Mostra opções de escolha pro lead, no formato nativo do canal
+    (2026-11-07): enquete no WhatsApp por QR (Evolution), botões/lista no
+    oficial (Meta), quick replies no Instagram. Twilio ou falha do envio
+    nativo: texto numerado, pra o lead nunca ficar sem as alternativas.
+    Canal web devolve None (o widget desenha os chips a partir do histórico).
+
+    Returns:
+        message_id do que saiu, ou None.
+    """
+    if not options or _is_web_destination(phone, "send_options", client_id):
+        return None
+    from huma.core.reply_options import numbered_text
+    provider, identity = await _resolve_channel(client_id)
+    mid: str | None = None
+    how = "texto"
+    try:
+        if _is_instagram_destination(phone):
+            mid = await _ig_send_options(identity, phone, question, options)
+            how = "quick_replies"
+        else:
+            if identity is not None and provider != "evolution" and await _line_route(client_id, phone):
+                provider = "evolution"  # lead chegou por um número da equipe (QR)
+            if provider == "meta":
+                mid = await _meta_send_interactive(identity, phone, question, options)
+                how = "interactive"
+            elif provider == "evolution":
+                mid = await _evo_send_poll(identity, phone, question, options)
+                how = "poll"
+    except Exception as e:
+        log.error(f"Options | envio nativo falhou | phone={phone} | client={client_id} | {type(e).__name__}: {e}")
+        mid = None
+    if not mid:
+        if how != "texto":
+            log.warning(f"Options | nativo não saiu, caindo pra texto numerado | phone={phone} | via={how}")
+        how = "texto"
+        mid = await send_text(phone, numbered_text(question, options), client_id=client_id)
+    log.info(f"Options | phone={phone} | client={client_id} | via={how} | n={len(options)} | ok={bool(mid)}")
+    return mid
 
 
 async def send_audio(
@@ -869,13 +957,19 @@ def evo_webhook_token() -> str:
     return EVOLUTION_WEBHOOK_TOKEN or EVOLUTION_WEBHOOK_TOKEN_NEXT
 
 
+# MESSAGES_UPDATE (2026-11-07): é por ele que o Evolution entrega o VOTO da
+# enquete (data.pollUpdates). Instância antiga ganha o evento no startup
+# (lines_service.ensure_webhooks → evo_webhook_is_current).
+EVOLUTION_WEBHOOK_EVENTS: tuple[str, ...] = ("MESSAGES_UPSERT", "MESSAGES_UPDATE")
+
+
 def _evo_webhook_config(webhook_url: str) -> dict:
     """Configuração do webhook de uma instância (mesma na criação e na atualização)."""
     cfg: dict = {
         "url": webhook_url,
         "byEvents": False,
         "base64": True,
-        "events": ["MESSAGES_UPSERT"],
+        "events": list(EVOLUTION_WEBHOOK_EVENTS),
     }
     # Token compartilhado: a HUMA valida este header na rota /webhook/evolution.
     token = evo_webhook_token()
@@ -922,6 +1016,57 @@ async def evo_webhook_has_token(instance: str) -> bool | None:
         if not isinstance(headers, dict):
             return False
         return bool(token) and headers.get("x-huma-webhook-token") == token
+    except Exception as e:
+        log.warning(f"Evolution webhook/find erro | instance={instance} | {type(e).__name__}: {e}")
+        return None
+
+
+async def evo_webhook_has_events(instance: str) -> bool | None:
+    """
+    A instância assina todos os eventos que a HUMA precisa
+    (EVOLUTION_WEBHOOK_EVENTS)? True/False, ou None se não deu pra conferir.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(f"{_evo_base()}/webhook/find/{instance}", headers=_evo_headers())
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if isinstance(data, dict) and isinstance(data.get("webhook"), dict):
+            data = data["webhook"]
+        if not isinstance(data, dict):
+            return False
+        events = data.get("events")
+        have = {str(e).upper() for e in events} if isinstance(events, list) else set()
+        return all(e in have for e in EVOLUTION_WEBHOOK_EVENTS)
+    except Exception as e:
+        log.warning(f"Evolution webhook/find erro | instance={instance} | {type(e).__name__}: {e}")
+        return None
+
+
+async def evo_webhook_is_current(instance: str) -> bool | None:
+    """
+    A instância está com a senha certa E assinando todos os eventos que a
+    HUMA precisa (EVOLUTION_WEBHOOK_EVENTS)? True/False, ou None se não deu
+    pra conferir. Nunca devolve nem loga a senha.
+    """
+    token = evo_webhook_token()
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.get(f"{_evo_base()}/webhook/find/{instance}", headers=_evo_headers())
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if isinstance(data, dict) and isinstance(data.get("webhook"), dict):
+            data = data["webhook"]
+        if not isinstance(data, dict):
+            return False
+        headers = data.get("headers")
+        if not isinstance(headers, dict) or not token or headers.get("x-huma-webhook-token") != token:
+            return False
+        events = data.get("events")
+        have = {str(e).upper() for e in events} if isinstance(events, list) else set()
+        return all(e in have for e in EVOLUTION_WEBHOOK_EVENTS)
     except Exception as e:
         log.warning(f"Evolution webhook/find erro | instance={instance} | {type(e).__name__}: {e}")
         return None

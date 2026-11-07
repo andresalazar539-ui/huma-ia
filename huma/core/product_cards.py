@@ -118,6 +118,29 @@ def history_entry(cards: list[dict]) -> dict:
     }
 
 
+# WhatsApp (foto+legenda): até 5 cards numerados; depois a enquete
+# "Qual te interessou?" com os nomes (2026-11-07).
+WHATSAPP_MAX_CARDS = 5
+CARDS_POLL_QUESTION = "Qual te interessou?"
+CARDS_POLL_NONE = "Nenhum desses"
+
+
+def options_for_cards(cards: list[dict]) -> list[str]:
+    """Nomes dos cards como opções de escolha (+ "Nenhum desses"); [] com menos de 2."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for c in cards[:WHATSAPP_MAX_CARDS]:
+        t = str(c.get("title") or "").strip()
+        if len(t) > 60:
+            t = t[:59].rstrip() + "…"
+        if t and t.casefold() not in seen:
+            seen.add(t.casefold())
+            names.append(t)
+    if len(names) < 2:
+        return []
+    return names + [CARDS_POLL_NONE]
+
+
 def caption_for_card(card: dict) -> str:
     """Legenda do card quando o canal só tem foto+texto (WhatsApp)."""
     parts = [card.get("title", "")]

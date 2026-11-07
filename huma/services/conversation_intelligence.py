@@ -630,6 +630,7 @@ def format_rule_response(
         "lead_facts": [],
         "actions": [],
         "lead_read": {},  # F4 — contrato do generate_response
+        "options": [],  # opções de resposta (2026-11-07), contrato do generate_response
         "resolved_by": "rule",  # Flag pra saber que não usou IA
         "msg_type": result.msg_type.value,
     }

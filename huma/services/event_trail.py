@@ -237,6 +237,25 @@ _ID_RE = re.compile(r"/(cli_[0-9a-f]+|\d{6,}|ig:\d+|web:[0-9a-f-]+|[0-9a-f]{16,}
 _WEBHOOK_SOURCE_RE = re.compile(r"^/webhook/([a-z_]+)")
 
 
+class _SkipTrail(Exception):
+    """Sinal interno: esta requisição não entra na trilha."""
+
+
+def _is_webhook_noise(payload: Any) -> bool:
+    """
+    Evento de webhook que não vale uma linha: `messages.update` do Evolution
+    sem `pollUpdates` (status de entrega/leitura). Puro. False em dúvida.
+    """
+    if not isinstance(payload, dict):
+        return False
+    event = str(payload.get("event") or "").lower().replace("_", ".")
+    if event != "messages.update":
+        return False
+    data = payload.get("data")
+    items = data if isinstance(data, list) else [data]
+    return not any(isinstance(i, dict) and i.get("pollUpdates") for i in items)
+
+
 def _skip_request(method: str, path: str) -> bool:
     if method in ("OPTIONS", "HEAD"):
         return True
@@ -383,6 +402,12 @@ class TrailMiddleware:
                 ua = headers.get("user-agent", "")
                 if ua:
                     data["ua"] = ua[:120]
+                payload = _parse_body(body_chunks, headers.get("content-type", "")) if is_webhook else None
+                if is_webhook and _is_webhook_noise(payload):
+                    # Status de entrega/leitura do Evolution (MESSAGES_UPDATE sem voto
+                    # de enquete, 2026-11-07): chega a cada mensagem e não diz nada
+                    # novo. Fora da trilha, senão o armazenamento triplica.
+                    raise _SkipTrail()
                 emit("http", f"{method} {template}", client_id=cid, phone=phone, actor=current_actor.get() or actor,
                      status=str(state["status"] or ""), duration_ms=ms, data=data, request_id=rid)
                 if is_webhook:
@@ -390,7 +415,9 @@ class TrailMiddleware:
                     source = m.group(1) if m else "desconhecido"
                     emit("webhook", f"{source}.inbound", client_id=cid, phone=phone, actor="webhook",
                          status=str(state["status"] or ""), duration_ms=ms, request_id=rid,
-                         data={"rota": template, "bytes": body_len, "payload": _parse_body(body_chunks, headers.get("content-type", ""))})
+                         data={"rota": template, "bytes": body_len, "payload": payload})
+            except _SkipTrail:
+                pass
             except Exception as e:
                 log.error(f"EventTrail | middleware falhou ao registrar | {type(e).__name__}: {e}")
             finally:
