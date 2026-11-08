@@ -1,0 +1,9 @@
+{
+  "name": "HandOffConversation",
+  "label": "Hand Off Conversation",
+  "description": "Hands a conversation to a person (HUMA IA stays silent) or gives it back to HUMA IA.",
+  "typeId": 4,
+  "crud": "update",
+  "connection": "humaia",
+  "webhook": null
+}

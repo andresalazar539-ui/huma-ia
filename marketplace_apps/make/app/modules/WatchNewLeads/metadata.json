@@ -1,0 +1,9 @@
+{
+  "name": "WatchNewLeads",
+  "label": "Watch New Leads",
+  "description": "Triggers when a lead talks to HUMA IA for the first time.",
+  "typeId": 10,
+  "crud": null,
+  "connection": null,
+  "webhook": "leadNew"
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "name": "conversationId",
+    "type": "select",
+    "label": "Conversation",
+    "required": true,
+    "options": "rpc://ListConversations",
+    "help": "Pick a recent conversation, or map the Conversation ID from a HUMA IA trigger or from Search Conversations."
+  },
+  {
+    "name": "takeover",
+    "type": "boolean",
+    "label": "A person takes over",
+    "required": true,
+    "default": true,
+    "help": "Yes: a person takes over and HUMA IA stops answering this lead. No: HUMA IA answers again."
+  }
+]

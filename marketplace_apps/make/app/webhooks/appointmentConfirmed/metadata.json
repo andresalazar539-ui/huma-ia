@@ -1,0 +1,7 @@
+{
+  "name": "appointmentConfirmed",
+  "type": "web",
+  "label": "HUMA IA Confirmed Appointment",
+  "connection": "humaia",
+  "event": "appointment.confirmed"
+}

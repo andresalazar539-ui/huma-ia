@@ -1,0 +1,5 @@
+{
+  "name": "ListConversations",
+  "label": "List Conversations",
+  "connection": "humaia"
+}

@@ -1,0 +1,131 @@
+[
+  {
+    "name": "id",
+    "type": "text",
+    "label": "Event ID",
+    "help": "Unique per delivery. Use it to skip duplicates."
+  },
+  {
+    "name": "event",
+    "type": "text",
+    "label": "Event"
+  },
+  {
+    "name": "event_label",
+    "type": "text",
+    "label": "Event label"
+  },
+  {
+    "name": "at",
+    "type": "date",
+    "label": "Occurred at"
+  },
+  {
+    "name": "client_id",
+    "type": "text",
+    "label": "HUMA IA account ID"
+  },
+  {
+    "name": "business_name",
+    "type": "text",
+    "label": "Business name"
+  },
+  {
+    "name": "lead",
+    "type": "collection",
+    "label": "Lead",
+    "spec": [
+      {
+        "name": "name",
+        "type": "text",
+        "label": "Lead name"
+      },
+      {
+        "name": "phone",
+        "type": "text",
+        "label": "Phone",
+        "help": "WhatsApp number with country code. Empty for Instagram and website leads."
+      },
+      {
+        "name": "id",
+        "type": "text",
+        "label": "Conversation ID",
+        "help": "Use this value in the Conversation field of the action modules."
+      },
+      {
+        "name": "email",
+        "type": "email",
+        "label": "Email"
+      },
+      {
+        "name": "channel",
+        "type": "text",
+        "label": "Channel",
+        "help": "whatsapp, instagram or web."
+      },
+      {
+        "name": "source",
+        "type": "text",
+        "label": "Source"
+      },
+      {
+        "name": "source_detail",
+        "type": "text",
+        "label": "Source detail"
+      },
+      {
+        "name": "stage",
+        "type": "text",
+        "label": "Stage"
+      },
+      {
+        "name": "facts",
+        "type": "array",
+        "label": "Facts",
+        "spec": {
+          "type": "text",
+          "label": "Fact"
+        }
+      },
+      {
+        "name": "assigned_to",
+        "type": "text",
+        "label": "Assigned to (email)"
+      },
+      {
+        "name": "assigned_name",
+        "type": "text",
+        "label": "Assigned to (name)"
+      }
+    ]
+  },
+  {
+    "name": "data",
+    "type": "collection",
+    "label": "Event data",
+    "spec": [
+      {
+        "name": "summary",
+        "type": "text",
+        "label": "Summary"
+      }
+    ]
+  },
+  {
+    "name": "conversation_url",
+    "type": "url",
+    "label": "Conversation URL"
+  },
+  {
+    "name": "exemplo",
+    "type": "boolean",
+    "label": "Example data",
+    "help": "Yes when the event carries example data instead of a real lead."
+  },
+  {
+    "name": "teste",
+    "type": "boolean",
+    "label": "Test delivery",
+    "help": "Yes when the event was sent by the HUMA IA test endpoint. Filter these out in production scenarios."
+  }
+]

@@ -5,3 +5,8 @@ __pycache__/
 
 # carimbo do verificador pre-push (local)
 .claude/.prepush-ok
+
+# apps dos marketplaces de automação (Zapier, Make, n8n)
+marketplace_apps/**/node_modules/
+marketplace_apps/**/dist/
+marketplace_apps/**/.env.local

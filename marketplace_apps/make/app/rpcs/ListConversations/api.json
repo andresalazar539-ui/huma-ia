@@ -1,0 +1,22 @@
+{
+  "url": "/conversations",
+  "method": "GET",
+  "qs": {
+    "limit": 50,
+    "offset": 0
+  },
+  "response": {
+    "iterate": "{{body}}",
+    "output": {
+      "label": "{{ifempty(item.lead_name, 'Lead without name')}} ({{ifempty(item.phone, item.channel)}})",
+      "value": "{{item.id}}"
+    },
+    "limit": 100
+  },
+  "pagination": {
+    "qs": {
+      "offset": "{{(pagination.page - 1) * 50}}"
+    },
+    "condition": "{{length(body) == 50}}"
+  }
+}

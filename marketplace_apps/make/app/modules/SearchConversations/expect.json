@@ -1,0 +1,20 @@
+[
+  {
+    "name": "q",
+    "type": "text",
+    "label": "Search term",
+    "help": "Lead name or phone digits. Leave empty to list the most recent conversations."
+  },
+  {
+    "name": "limit",
+    "type": "uinteger",
+    "label": "Limit",
+    "required": true,
+    "default": 10,
+    "validate": {
+      "min": 1,
+      "max": 200
+    },
+    "help": "Maximum number of conversations returned in one execution cycle (1 to 200). The search covers the 200 most recent conversations."
+  }
+]

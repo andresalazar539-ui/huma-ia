@@ -1,0 +1,11 @@
+{
+  "condition": "{{body.event == 'lead.new'}}",
+  "respond": {
+    "status": 200,
+    "type": "json",
+    "body": {
+      "received": true
+    }
+  },
+  "output": "{{body}}"
+}

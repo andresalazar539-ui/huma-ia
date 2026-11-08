@@ -1,0 +1,9 @@
+{
+  "name": "SearchConversations",
+  "label": "Search Conversations",
+  "description": "Searches conversations by lead name or phone number. Returns the most recent first.",
+  "typeId": 9,
+  "crud": "read",
+  "connection": "humaia",
+  "webhook": null
+}

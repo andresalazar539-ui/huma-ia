@@ -1,0 +1,7 @@
+{
+  "name": "contractSigned",
+  "type": "web",
+  "label": "HUMA IA Signed Contract",
+  "connection": "humaia",
+  "event": "contract.signed"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "huma-ia-make-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HUMA IA custom app for Make (definition files + upload script). Not runtime code.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "check": "node scripts/check.js",
+    "plan": "node scripts/upload.mjs",
+    "selftest": "node scripts/upload.mjs --mock",
+    "upload": "node scripts/check.js && node scripts/upload.mjs --live"
+  },
+  "dependencies": {
+    "@makehq/sdk": "1.8.1"
+  }
+}

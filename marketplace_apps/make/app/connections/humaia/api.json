@@ -1,0 +1,103 @@
+{
+  "authorize": {
+    "url": "https://app.humaia.com.br/oauth/mcp/authorize",
+    "temp": {
+      "code_verifier": "{{uuid}}.{{uuid}}"
+    },
+    "qs": {
+      "response_type": "code",
+      "client_id": "{{common.clientId}}",
+      "redirect_uri": "{{oauth.localRedirectUri}}",
+      "scope": "huma",
+      "code_challenge": "{{base64url(sha256(temp.code_verifier, 'base64'))}}",
+      "code_challenge_method": "S256"
+    },
+    "response": {
+      "temp": {
+        "code": "{{query.code}}"
+      }
+    }
+  },
+  "token": {
+    "url": "https://app.humaia.com.br/oauth/mcp/token",
+    "method": "POST",
+    "type": "urlencoded",
+    "body": {
+      "grant_type": "authorization_code",
+      "code": "{{temp.code}}",
+      "client_id": "{{common.clientId}}",
+      "redirect_uri": "{{oauth.localRedirectUri}}",
+      "code_verifier": "{{temp.code_verifier}}"
+    },
+    "response": {
+      "data": {
+        "accessToken": "{{body.access_token}}",
+        "refreshToken": "{{body.refresh_token}}",
+        "expires": "{{addSeconds(now, body.expires_in)}}"
+      },
+      "expires": "{{addDays(now, 365)}}",
+      "error": {
+        "message": "[{{statusCode}}] {{ifempty(body.error_description, body.error)}}"
+      }
+    },
+    "log": {
+      "sanitize": [
+        "request.body.code",
+        "request.body.code_verifier",
+        "response.body.access_token",
+        "response.body.refresh_token"
+      ]
+    }
+  },
+  "refresh": {
+    "condition": "{{data.expires < addMinutes(now, 15)}}",
+    "url": "https://app.humaia.com.br/oauth/mcp/token",
+    "method": "POST",
+    "type": "urlencoded",
+    "body": {
+      "grant_type": "refresh_token",
+      "refresh_token": "{{data.refreshToken}}",
+      "client_id": "{{common.clientId}}"
+    },
+    "response": {
+      "data": {
+        "accessToken": "{{body.access_token}}",
+        "refreshToken": "{{body.refresh_token}}",
+        "expires": "{{addSeconds(now, body.expires_in)}}"
+      },
+      "expires": "{{addDays(now, 365)}}",
+      "error": {
+        "message": "[{{statusCode}}] {{ifempty(body.error_description, body.error)}} Reauthorize the HUMA IA connection."
+      }
+    },
+    "log": {
+      "sanitize": [
+        "request.body.refresh_token",
+        "response.body.access_token",
+        "response.body.refresh_token"
+      ]
+    }
+  },
+  "info": {
+    "url": "https://app.humaia.com.br/api/v1/me",
+    "method": "GET",
+    "headers": {
+      "authorization": "Bearer {{connection.accessToken}}"
+    },
+    "response": {
+      "metadata": {
+        "type": "text",
+        "value": "{{body.label}}"
+      },
+      "uid": "{{body.client_id}}",
+      "error": {
+        "message": "[{{statusCode}}] {{ifempty(body.detail, 'Could not validate the HUMA IA connection.')}}"
+      }
+    },
+    "log": {
+      "sanitize": [
+        "request.headers.authorization"
+      ]
+    }
+  }
+}

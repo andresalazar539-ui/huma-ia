@@ -1,0 +1,9 @@
+{
+  "name": "WatchApprovedPayments",
+  "label": "Watch Approved Payments",
+  "description": "Triggers when a payment made inside a HUMA IA conversation is approved.",
+  "typeId": 10,
+  "crud": null,
+  "connection": null,
+  "webhook": "paymentApproved"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "WatchQualifiedLeads",
+  "label": "Watch Qualified Leads",
+  "description": "Triggers when HUMA IA qualifies a lead and hands it to your team.",
+  "typeId": 10,
+  "crud": null,
+  "connection": null,
+  "webhook": "leadQualified"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "MoveLeadToStage",
+  "label": "Move Lead to Stage",
+  "description": "Moves a lead to another stage of the HUMA IA sales funnel.",
+  "typeId": 4,
+  "crud": "update",
+  "connection": "humaia",
+  "webhook": null
+}

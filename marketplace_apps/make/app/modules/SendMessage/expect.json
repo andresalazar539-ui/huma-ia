@@ -1,0 +1,21 @@
+[
+  {
+    "name": "conversationId",
+    "type": "select",
+    "label": "Conversation",
+    "required": true,
+    "options": "rpc://ListConversations",
+    "help": "Pick a recent conversation, or map the Conversation ID from a HUMA IA trigger or from Search Conversations."
+  },
+  {
+    "name": "text",
+    "type": "text",
+    "label": "Message",
+    "required": true,
+    "multiline": true,
+    "validate": {
+      "max": 1600
+    },
+    "help": "Up to 1600 characters. Sent only to conversations that already exist."
+  }
+]

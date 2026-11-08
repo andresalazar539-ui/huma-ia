@@ -1,0 +1,32 @@
+{
+  "id": "evt_Ab12Cd34Ef56Gh78",
+  "event": "payment.approved",
+  "event_label": "Pagamento aprovado",
+  "at": "2026-11-08T12:00:00+00:00",
+  "client_id": "cli_exemplo",
+  "business_name": "Clínica Sorriso",
+  "lead": {
+    "name": "Maria Souza",
+    "phone": "5511999998888",
+    "id": "5511999998888",
+    "email": "maria@exemplo.com.br",
+    "channel": "whatsapp",
+    "source": "instagram",
+    "source_detail": "",
+    "stage": "won",
+    "facts": [
+      "Quer clareamento dental",
+      "Prefere sábado de manhã"
+    ],
+    "assigned_to": "",
+    "assigned_name": ""
+  },
+  "data": {
+    "value_brl": 397,
+    "value_cents": 39700,
+    "method": "pix",
+    "payment_id": "123456789",
+    "service": "Clareamento dental"
+  },
+  "conversation_url": "https://app.humaia.com.br/cockpit?screen=conversas"
+}

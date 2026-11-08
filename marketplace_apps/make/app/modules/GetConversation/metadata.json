@@ -1,0 +1,9 @@
+{
+  "name": "GetConversation",
+  "label": "Get a Conversation",
+  "description": "Gets a conversation with the lead data, notes, appointment and the last 20 messages.",
+  "typeId": 4,
+  "crud": "read",
+  "connection": "humaia",
+  "webhook": null
+}

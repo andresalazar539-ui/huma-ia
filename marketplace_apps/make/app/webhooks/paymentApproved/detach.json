@@ -1,0 +1,9 @@
+{
+  "url": "/hooks/{{webhook.externalHookId}}",
+  "method": "DELETE",
+  "log": {
+    "sanitize": [
+      "request.headers.authorization"
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "url": "/conversations/{{encodeURL(parameters.conversationId)}}/handoff",
+  "method": "POST",
+  "body": {
+    "takeover": "{{ifempty(parameters.takeover, true)}}"
+  },
+  "response": {
+    "output": {
+      "id": "{{body.id}}",
+      "handoff_status": "{{body.handoff_status}}"
+    }
+  }
+}

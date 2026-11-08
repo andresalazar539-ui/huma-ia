@@ -1,0 +1,9 @@
+{
+  "name": "WatchSignedContracts",
+  "label": "Watch Signed Contracts",
+  "description": "Triggers when a lead signs a contract sent by HUMA IA.",
+  "typeId": 10,
+  "crud": null,
+  "connection": null,
+  "webhook": "contractSigned"
+}

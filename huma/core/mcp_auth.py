@@ -39,6 +39,7 @@ CODE_TTL_SECONDS = 300
 CONSENT_TTL_SECONDS = 600
 
 SCOPE = "huma"
+LONG_REFRESH_TTL_SECONDS = 365 * 86400
 MAX_REDIRECT_URIS = 10
 _LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 
@@ -114,6 +115,18 @@ def issue_refresh(client_id: str, email: str) -> str:
     return _pack(["mcr", _clean(client_id), _clean(email), str(now + REFRESH_TTL_SECONDS), str(now), _jti()])
 
 
+def issue_long_refresh(client_id: str, email: str) -> str:
+    """
+    Refresh das plataformas de automação (Zapier, Make, n8n): 1 ano e NÃO é
+    de uso único. Automação roda sozinha, pode ficar semanas parada e a
+    plataforma pode renovar duas vezes ao mesmo tempo; rotação estrita
+    derrubaria a conexão do dono sem ele saber. Desconectar no Cockpit
+    (revogação por iat) continua matando todos.
+    """
+    now = int(time.time())
+    return _pack(["mcl", _clean(client_id), _clean(email), str(now + LONG_REFRESH_TTL_SECONDS), str(now), _jti()])
+
+
 def _parse_bearer(token: str, prefix: str) -> Optional[dict[str, Any]]:
     parts = _unpack(token, prefix, 6)
     if not parts:
@@ -134,8 +147,18 @@ def parse_access(token: str) -> Optional[dict[str, Any]]:
 
 
 def parse_refresh(token: str) -> Optional[dict[str, Any]]:
-    """Valida o refresh token. Mesmo formato do acesso."""
-    return _parse_bearer(token, "mcr")
+    """
+    Valida o refresh token. Mesmo formato do acesso, mais `long`: True pro
+    refresh das plataformas de automação (não é de uso único).
+    """
+    tok = _parse_bearer(token, "mcr")
+    if tok:
+        tok["long"] = False
+        return tok
+    tok = _parse_bearer(token, "mcl")
+    if tok:
+        tok["long"] = True
+    return tok
 
 
 # ----------------------------------------------------------------
@@ -290,6 +313,59 @@ def parse_dcr_client_id(client_id: str) -> Optional[dict[str, Any]]:
     return {"redirect_uris": [str(u) for u in uris], "client_name": str(data.get("n") or "")}
 
 
+# ----------------------------------------------------------------
+# Plataformas de automação (Zapier, Make, n8n): client_id FIXO
+# ----------------------------------------------------------------
+# Nenhuma das três faz registro dinâmico: cada uma guarda um client_id
+# fixo no app publicado. Cliente público com PKCE S256 obrigatório (as
+# três suportam), então não existe segredo pra guardar; o client_secret
+# que a plataforma mandar é ignorado. Cada client_id só aceita o retorno
+# da própria plataforma.
+
+PARTNER_CLIENTS: dict[str, str] = {
+    "huma-zapier": "Zapier",
+    "huma-make": "Make",
+    "huma-n8n": "n8n",
+}
+
+_ZAPIER_RETURN_PREFIX = "/dashboard/auth/oauth/return/"
+_MAKE_RETURNS = ("https://www.make.com/oauth/cb/app", "https://www.integromat.com/oauth/cb/app")
+_N8N_CALLBACK_SUFFIX = "/oauth2-credential/callback"
+
+
+def is_partner(client_id: str) -> bool:
+    """True pros client_ids fixos de Zapier, Make e n8n."""
+    return (client_id or "") in PARTNER_CLIENTS
+
+
+def partner_redirect_ok(client_id: str, uri: str) -> bool:
+    """
+    Retorno permitido pra cada plataforma:
+      Zapier: https://zapier.com/dashboard/auth/oauth/return/<App>/ (o id do app só existe depois do registro);
+      Make:   https://www.make.com/oauth/cb/app (ou o legado integromat.com);
+      n8n:    https://<instância>/<rest>/oauth2-credential/callback (cada n8n instalado tem o seu),
+              e http://localhost/127.0.0.1 pro desenvolvimento do nó.
+    """
+    try:
+        parts = urlsplit(uri or "")
+    except ValueError:
+        return False
+    if parts.fragment or parts.username or parts.password:
+        return False
+    host = (parts.hostname or "").lower()
+    if client_id == "huma-zapier":
+        return parts.scheme == "https" and host == "zapier.com" and parts.path.startswith(_ZAPIER_RETURN_PREFIX) and len(parts.path) > len(_ZAPIER_RETURN_PREFIX)
+    if client_id == "huma-make":
+        return f"{parts.scheme}://{host}{parts.path}" in _MAKE_RETURNS and not parts.query
+    if client_id == "huma-n8n":
+        if not parts.path.endswith(_N8N_CALLBACK_SUFFIX):
+            return False
+        if parts.scheme == "https" and host and "." in host:
+            return True
+        return parts.scheme == "http" and host in ("localhost", "127.0.0.1")
+    return False
+
+
 def is_cimd(client_id: str) -> bool:
     """client_id em forma de URL https = Client ID Metadata Document."""
     try:
@@ -318,7 +394,9 @@ def cimd_document_ok(client_id: str, doc: Any) -> tuple[bool, str]:
 
 
 def client_label(client_id: str, cimd_doc: Optional[dict[str, Any]] = None) -> str:
-    """Nome amigável pra tela de consentimento (Claude, ChatGPT, …)."""
+    """Nome amigável pra tela de consentimento (Claude, ChatGPT, Zapier, …)."""
+    if is_partner(client_id):
+        return PARTNER_CLIENTS[client_id]
     name = ""
     if is_cimd(client_id):
         name = str((cimd_doc or {}).get("client_name") or "")

@@ -1,0 +1,20 @@
+{
+  "url": "/conversations",
+  "method": "GET",
+  "qs": {
+    "q": "{{parameters.q}}",
+    "limit": 10,
+    "offset": 0
+  },
+  "response": {
+    "iterate": "{{body}}",
+    "output": "{{item}}",
+    "limit": "{{parameters.limit}}"
+  },
+  "pagination": {
+    "qs": {
+      "offset": "{{(pagination.page - 1) * 10}}"
+    },
+    "condition": "{{length(body) == 10}}"
+  }
+}

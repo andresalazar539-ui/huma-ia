@@ -1,0 +1,12 @@
+[
+  {
+    "name": "id",
+    "type": "text",
+    "label": "Conversation ID"
+  },
+  {
+    "name": "notes",
+    "type": "text",
+    "label": "All notes"
+  }
+]

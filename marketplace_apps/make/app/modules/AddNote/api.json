@@ -1,0 +1,14 @@
+{
+  "url": "/conversations/{{encodeURL(parameters.conversationId)}}/notes",
+  "method": "POST",
+  "body": {
+    "text": "{{parameters.text}}",
+    "replace": "{{ifempty(parameters.replace, false)}}"
+  },
+  "response": {
+    "output": {
+      "id": "{{body.id}}",
+      "notes": "{{body.notes}}"
+    }
+  }
+}

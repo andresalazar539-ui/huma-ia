@@ -1,0 +1,23 @@
+{
+  "url": "/hooks",
+  "method": "POST",
+  "body": {
+    "event": "contract.signed",
+    "target_url": "{{webhook.url}}",
+    "platform": "make"
+  },
+  "response": {
+    "data": {
+      "externalHookId": "{{body.id}}",
+      "secret": "{{body.secret}}"
+    }
+  },
+  "log": {
+    "sanitize": [
+      "request.headers.authorization",
+      "request.body.target_url",
+      "response.body.secret",
+      "response.body.target_url"
+    ]
+  }
+}

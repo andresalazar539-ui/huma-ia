@@ -1,0 +1,9 @@
+{
+  "name": "WatchConfirmedAppointments",
+  "label": "Watch Confirmed Appointments",
+  "description": "Triggers when HUMA IA confirms an appointment in your calendar.",
+  "typeId": 10,
+  "crud": null,
+  "connection": null,
+  "webhook": "appointmentConfirmed"
+}

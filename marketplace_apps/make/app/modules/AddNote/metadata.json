@@ -1,0 +1,9 @@
+{
+  "name": "AddNote",
+  "label": "Add a Note",
+  "description": "Adds a note to the lead. HUMA IA reads the notes when it answers the lead.",
+  "typeId": 4,
+  "crud": "update",
+  "connection": "humaia",
+  "webhook": null
+}

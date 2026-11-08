@@ -1,0 +1,29 @@
+{
+  "id": "evt_Ab12Cd34Ef56Gh78",
+  "event": "lead.qualified",
+  "event_label": "Lead qualificado",
+  "at": "2026-11-08T12:00:00+00:00",
+  "client_id": "cli_exemplo",
+  "business_name": "Clínica Sorriso",
+  "lead": {
+    "name": "Maria Souza",
+    "phone": "5511999998888",
+    "id": "5511999998888",
+    "email": "maria@exemplo.com.br",
+    "channel": "whatsapp",
+    "source": "instagram",
+    "source_detail": "",
+    "stage": "qualified",
+    "facts": [
+      "Quer clareamento dental",
+      "Prefere sábado de manhã"
+    ],
+    "assigned_to": "",
+    "assigned_name": ""
+  },
+  "data": {
+    "summary": "Quer clareamento dental, prefere sábado de manhã, orçamento até R$ 800.",
+    "urgency": "alta"
+  },
+  "conversation_url": "https://app.humaia.com.br/cockpit?screen=conversas"
+}

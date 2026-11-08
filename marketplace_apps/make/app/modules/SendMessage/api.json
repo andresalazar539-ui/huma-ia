@@ -1,0 +1,13 @@
+{
+  "url": "/conversations/{{encodeURL(parameters.conversationId)}}/messages",
+  "method": "POST",
+  "body": {
+    "text": "{{parameters.text}}"
+  },
+  "response": {
+    "output": {
+      "id": "{{body.id}}",
+      "sent": "{{body.sent}}"
+    }
+  }
+}

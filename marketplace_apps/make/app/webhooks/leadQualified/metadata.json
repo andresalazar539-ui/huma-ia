@@ -1,0 +1,7 @@
+{
+  "name": "leadQualified",
+  "type": "web",
+  "label": "HUMA IA Qualified Lead",
+  "connection": "humaia",
+  "event": "lead.qualified"
+}

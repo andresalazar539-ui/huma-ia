@@ -1,0 +1,9 @@
+{
+  "name": "MakeAPICall",
+  "label": "Make an API Call",
+  "description": "Performs an arbitrary authorized call to the HUMA IA API.",
+  "typeId": 12,
+  "crud": null,
+  "connection": "humaia",
+  "webhook": null
+}

@@ -1,0 +1,22 @@
+{
+  "baseUrl": "https://app.humaia.com.br/api/v1",
+  "headers": {
+    "authorization": "Bearer {{connection.accessToken}}"
+  },
+  "response": {
+    "error": {
+      "401": {
+        "message": "[401] {{ifempty(body.detail, 'Unauthorized.')}} Reauthorize the HUMA IA connection."
+      },
+      "403": {
+        "message": "[403] {{ifempty(body.detail, 'Forbidden.')}} Your HUMA IA role does not allow this action; ask the account owner or an admin."
+      },
+      "message": "[{{statusCode}}] {{ifempty(body.detail, 'HUMA IA returned an error without a message.')}}"
+    }
+  },
+  "log": {
+    "sanitize": [
+      "request.headers.authorization"
+    ]
+  }
+}

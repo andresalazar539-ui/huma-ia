@@ -1,0 +1,7 @@
+{
+  "name": "paymentApproved",
+  "type": "web",
+  "label": "HUMA IA Approved Payment",
+  "connection": "humaia",
+  "event": "payment.approved"
+}

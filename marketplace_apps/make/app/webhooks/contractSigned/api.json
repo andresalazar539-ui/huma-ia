@@ -1,0 +1,11 @@
+{
+  "condition": "{{body.event == 'contract.signed'}}",
+  "respond": {
+    "status": 200,
+    "type": "json",
+    "body": {
+      "received": true
+    }
+  },
+  "output": "{{body}}"
+}

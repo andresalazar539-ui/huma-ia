@@ -548,7 +548,7 @@ def _llms_full() -> str:
     """Todo o conteúdo citável em Markdown, numa página só."""
     lines = [f"# {_SITE_NAME}", "", f"> {aeo.ONE_LINER}", f"> {aeo.PRICE_SENTENCE}",
              f"> Atualizado em {aeo.UPDATED_AT}. Site: {_abs('/')}. Contato: {aeo.CONTACT_EMAIL}.", ""]
-    for page in aeo.PAGES.values():
+    for page in aeo.listed_pages():
         lines += [f"## {page['h1']}", "", f"Fonte: {_abs(page['path'])}", "", page["answer"], ""]
         for heading, items in page["sections"]:
             lines += [f"### {heading}", ""] + [f"- {i}" for i in items] + [""]
@@ -618,6 +618,18 @@ async def page_comparar_precos() -> HTMLResponse:
 async def page_sobre() -> HTMLResponse:
     """A empresa HUMA IA (entidade pra buscadores e IAs)."""
     return HTMLResponse(_render_content_page("sobre"))
+
+
+@router.get("/automacoes", response_class=HTMLResponse)
+async def page_automacoes() -> HTMLResponse:
+    """Zapier, Make e n8n: como ligar e boas práticas (documentação dos apps)."""
+    return HTMLResponse(_render_content_page("automacoes"))
+
+
+@router.get("/automacoes/referencia", response_class=HTMLResponse)
+async def page_automacoes_referencia() -> HTMLResponse:
+    """Referência da API pública /api/v1 (exigida na revisão do Zapier e do Make)."""
+    return HTMLResponse(_render_content_page("automacoes-referencia"))
 
 
 @router.get("/perguntas", response_class=HTMLResponse)

@@ -1,0 +1,62 @@
+[
+  {
+    "name": "id",
+    "type": "text",
+    "label": "Conversation ID"
+  },
+  {
+    "name": "phone",
+    "type": "text",
+    "label": "Phone"
+  },
+  {
+    "name": "lead_name",
+    "type": "text",
+    "label": "Lead name"
+  },
+  {
+    "name": "stage",
+    "type": "text",
+    "label": "Stage"
+  },
+  {
+    "name": "handoff_status",
+    "type": "text",
+    "label": "Handoff status",
+    "help": "active = HUMA is answering; handed_off = a person took over."
+  },
+  {
+    "name": "channel",
+    "type": "text",
+    "label": "Channel"
+  },
+  {
+    "name": "last_message_at",
+    "type": "date",
+    "label": "Last message at"
+  },
+  {
+    "name": "last_message_preview",
+    "type": "text",
+    "label": "Last message preview"
+  },
+  {
+    "name": "assigned_name",
+    "type": "text",
+    "label": "Assigned to (name)"
+  },
+  {
+    "name": "assigned_to",
+    "type": "text",
+    "label": "Assigned to (email)"
+  },
+  {
+    "name": "lead_facts",
+    "type": "array",
+    "label": "Lead facts",
+    "spec": {
+      "type": "text",
+      "label": "Fact"
+    }
+  }
+]

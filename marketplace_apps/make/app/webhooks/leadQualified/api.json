@@ -1,0 +1,11 @@
+{
+  "condition": "{{body.event == 'lead.qualified'}}",
+  "respond": {
+    "status": 200,
+    "type": "json",
+    "body": {
+      "received": true
+    }
+  },
+  "output": "{{body}}"
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "name": "conversationId",
+    "type": "select",
+    "label": "Conversation",
+    "required": true,
+    "options": "rpc://ListConversations",
+    "help": "Pick a recent conversation, or map the Conversation ID from a HUMA IA trigger or from Search Conversations."
+  }
+]

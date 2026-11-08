@@ -87,7 +87,7 @@ def fire(client_data: Any, conv: Any, event: str, **data: Any) -> None:
     except Exception as e:
         log.warning(f"LeadEvents | marco falhou | event={event} | {type(e).__name__}: {e}")
     try:
-        if not has_any_sink(client_data):
+        if not has_any_sink(client_data) and not _may_have_hooks(client_data):
             return
         asyncio.get_running_loop().create_task(emit(client_data, conv, event, **data))
     except RuntimeError:
@@ -95,6 +95,16 @@ def fire(client_data: Any, conv: Any, event: str, **data: Any) -> None:
         pass
     except Exception as e:
         log.error(f"LeadEvents | fire falhou | event={event} | {type(e).__name__}: {e}")
+
+
+def _may_have_hooks(client_data: Any) -> bool:
+    """Inscrições de Zapier/Make/n8n (automation_hooks). Síncrono, cache em memória."""
+    try:
+        from huma.services import automation_hooks
+        return automation_hooks.possibly_has(str(getattr(client_data, "client_id", "") or ""))
+    except Exception as e:
+        log.warning(f"LeadEvents | checagem de automações falhou | {type(e).__name__}: {e}")
+        return False
 
 
 def has_any_sink(client_data: Any) -> bool:
@@ -123,9 +133,10 @@ async def emit(client_data: Any, conv: Any, event: str, **data: Any) -> None:
             _deliver_webhook(client_data, payload),
             _deliver_sheet(client_data, payload),
             _deliver_capi(client_data, conv, payload, data),
+            _deliver_hooks(client_data, payload),
             return_exceptions=True,
         )
-        for name, res in zip(("webhook", "sheet", "capi"), results):
+        for name, res in zip(("webhook", "sheet", "capi", "automacao"), results):
             if isinstance(res, Exception):
                 log.error(
                     f"LeadEvents | {name} estourou | client={payload['client_id']} | "
@@ -151,6 +162,9 @@ def _lead_id(phone: str) -> dict:
     if phone.startswith("ig:"):
         return {"channel": "instagram", "phone": "", "id": phone}
     return {"channel": "whatsapp", "phone": phone, "id": phone}
+
+
+_KNOWN_DATA_KEYS = frozenset({"summary", "service", "when", "value_cents", "value_brl", "method", "payment_id", "extra"})
 
 
 def build_payload(client_data: Any, conv: Any, event: str, data: dict) -> dict:
@@ -190,6 +204,9 @@ def build_payload(client_data: Any, conv: Any, event: str, data: dict) -> dict:
             "value_brl": round(value_cents / 100, 2) if value_cents else 0,
             "method": data.get("method") or "",
             "payment_id": str(data.get("payment_id") or ""),
+            # Campos simples passados direto no fire (ex.: document_id e provider
+            # do contrato) também saem; antes eram descartados em silêncio.
+            **{k: v for k, v in data.items() if k not in _KNOWN_DATA_KEYS and isinstance(v, (str, int, float, bool))},
             **(data.get("extra") or {}),
         },
         "conversation_url": f"{base}/cockpit?screen=conversas" if base else "",
@@ -239,6 +256,12 @@ async def post_webhook(url: str, secret: str, payload: dict, client_id: str = ""
     except httpx.HTTPError as e:
         log.error(f"HTTP erro | service=webhook_saida | client={client_id} | {type(e).__name__}: {e}")
         return {"status": "error", "http": 0, "detail": f"{type(e).__name__}"}
+
+
+async def _deliver_hooks(client_data: Any, payload: dict) -> None:
+    """Zapier, Make e n8n inscritos no evento (cada um com o seu endereço)."""
+    from huma.services import automation_hooks
+    await automation_hooks.deliver(payload, client_data=client_data)
 
 
 async def _deliver_webhook(client_data: Any, payload: dict) -> None:

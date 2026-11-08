@@ -1,0 +1,13 @@
+{
+  "url": "/conversations/{{encodeURL(parameters.conversationId)}}/stage",
+  "method": "POST",
+  "body": {
+    "stage": "{{parameters.stage}}"
+  },
+  "response": {
+    "output": {
+      "id": "{{body.id}}",
+      "stage": "{{body.stage}}"
+    }
+  }
+}

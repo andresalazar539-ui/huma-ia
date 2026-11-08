@@ -1,0 +1,13 @@
+{
+  "name": "humaia",
+  "label": "HUMA IA",
+  "version": 1,
+  "description": "HUMA IA is an AI sales assistant that answers your leads on WhatsApp, Instagram and your website, qualifies them, books appointments and closes sales. Use it to react to new and qualified leads, appointments, payments and contracts, and to send messages, move leads through the funnel, add notes and hand conversations to your team.",
+  "theme": "#C8553D",
+  "language": "en",
+  "countries": null,
+  "website": "https://humaia.com.br",
+  "docs": "https://app.humaia.com.br/automacoes",
+  "support": "contato@humaia.com.br",
+  "icon": "../assets/icon-512.png"
+}

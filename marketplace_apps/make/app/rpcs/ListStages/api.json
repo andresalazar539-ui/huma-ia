@@ -1,0 +1,12 @@
+{
+  "url": "/stages",
+  "method": "GET",
+  "response": {
+    "iterate": "{{body}}",
+    "output": {
+      "label": "{{item.label}} ({{item.id}})",
+      "value": "{{item.id}}"
+    },
+    "limit": 20
+  }
+}

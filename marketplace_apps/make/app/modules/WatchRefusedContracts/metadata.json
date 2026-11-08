@@ -1,0 +1,9 @@
+{
+  "name": "WatchRefusedContracts",
+  "label": "Watch Refused Contracts",
+  "description": "Triggers when a lead refuses a contract sent by HUMA IA.",
+  "typeId": 10,
+  "crud": null,
+  "connection": null,
+  "webhook": "contractRefused"
+}

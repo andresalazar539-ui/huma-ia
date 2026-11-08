@@ -1,0 +1,13 @@
+[
+  {
+    "name": "id",
+    "type": "text",
+    "label": "Conversation ID"
+  },
+  {
+    "name": "handoff_status",
+    "type": "text",
+    "label": "Handoff status",
+    "help": "handed_off or active."
+  }
+]

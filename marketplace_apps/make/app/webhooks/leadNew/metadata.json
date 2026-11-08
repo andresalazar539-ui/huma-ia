@@ -1,0 +1,7 @@
+{
+  "name": "leadNew",
+  "type": "web",
+  "label": "HUMA IA New Lead",
+  "connection": "humaia",
+  "event": "lead.new"
+}

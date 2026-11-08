@@ -1,0 +1,7 @@
+{
+  "name": "contractRefused",
+  "type": "web",
+  "label": "HUMA IA Refused Contract",
+  "connection": "humaia",
+  "event": "contract.refused"
+}

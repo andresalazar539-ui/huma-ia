@@ -1,0 +1,30 @@
+[
+  {
+    "label": "Leads and events",
+    "modules": [
+      "WatchNewLeads",
+      "WatchQualifiedLeads",
+      "WatchConfirmedAppointments",
+      "WatchApprovedPayments",
+      "WatchSignedContracts",
+      "WatchRefusedContracts"
+    ]
+  },
+  {
+    "label": "Conversations",
+    "modules": [
+      "SendMessage",
+      "MoveLeadToStage",
+      "AddNote",
+      "HandOffConversation",
+      "GetConversation",
+      "SearchConversations"
+    ]
+  },
+  {
+    "label": "Other",
+    "modules": [
+      "MakeAPICall"
+    ]
+  }
+]

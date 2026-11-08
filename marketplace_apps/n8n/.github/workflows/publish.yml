@@ -1,0 +1,76 @@
+# Publishes this n8n community node package to npm on every version tag push.
+#
+# Since May 1 2026, n8n requires community nodes to be published from GitHub
+# Actions with npm provenance. This workflow does that. The file name must stay
+# exactly "publish.yml" because the npm Trusted Publisher is tied to it.
+#
+# One-time setup (OIDC Trusted Publishing, no secrets):
+#   1. On npmjs.com open the package settings (or, for the very first publish,
+#      your account) and go to "Trusted Publisher".
+#   2. Choose GitHub Actions and fill in:
+#        Organization or user: andresalazar539-ui
+#        Repository:           n8n-nodes-humaia
+#        Workflow filename:    publish.yml
+#        Environment:          (leave blank)
+#   3. Do not create an NPM_TOKEN secret. GitHub's OIDC token is used instead.
+#
+# Fallback (only if Trusted Publishing is not available for the first publish):
+#   create a granular npm token with publish rights and save it in GitHub as the
+#   repository secret NPM_TOKEN. Remove it after the Trusted Publisher is set.
+#
+# Release: push a tag like 0.1.0 (see PUBLICAR.md). The tag must match the
+# "version" in package.json.
+
+name: Publish
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Required to mint an OIDC token for npm provenance and Trusted Publishing.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and test
+        run: |
+          npm run build
+          npm test
+
+      - name: Check that the tag matches package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $VERSION"
+            exit 1
+          fi
+
+      - name: Publish with provenance
+        # Inside GitHub Actions, "n8n-node release" runs lint and build again and
+        # then "npm publish" with provenance (NPM_CONFIG_PROVENANCE=true).
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          fi
+          npm run release
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

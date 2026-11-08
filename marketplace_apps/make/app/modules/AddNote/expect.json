@@ -1,0 +1,27 @@
+[
+  {
+    "name": "conversationId",
+    "type": "select",
+    "label": "Conversation",
+    "required": true,
+    "options": "rpc://ListConversations",
+    "help": "Pick a recent conversation, or map the Conversation ID from a HUMA IA trigger or from Search Conversations."
+  },
+  {
+    "name": "text",
+    "type": "text",
+    "label": "Note",
+    "required": true,
+    "multiline": true,
+    "validate": {
+      "max": 2000
+    }
+  },
+  {
+    "name": "replace",
+    "type": "boolean",
+    "label": "Replace existing notes",
+    "default": false,
+    "help": "No (default) appends the note. Yes replaces all existing notes with this one. Notes are limited to 4000 characters in total."
+  }
+]

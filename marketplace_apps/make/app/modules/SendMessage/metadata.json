@@ -1,0 +1,9 @@
+{
+  "name": "SendMessage",
+  "label": "Send a Message",
+  "description": "Sends a text message to the lead in an existing conversation, on the lead channel. HUMA IA keeps answering.",
+  "typeId": 4,
+  "crud": "create",
+  "connection": "humaia",
+  "webhook": null
+}

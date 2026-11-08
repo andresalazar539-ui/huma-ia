@@ -1,0 +1,24 @@
+{
+  "body": [
+    {
+      "id": "5511999998888",
+      "phone": "5511999998888",
+      "lead_name": "Maria Souza",
+      "stage": "offer",
+      "handoff_status": "active",
+      "channel": "whatsapp",
+      "last_message_at": "2026-11-08T12:00:00+00:00",
+      "last_message_preview": "Tem horário no sábado de manhã?",
+      "assigned_name": "",
+      "assigned_to": "",
+      "lead_facts": [
+        "Quer clareamento dental",
+        "Prefere sábado de manhã"
+      ]
+    }
+  ],
+  "headers": {
+    "content-type": "application/json"
+  },
+  "statusCode": 200
+}

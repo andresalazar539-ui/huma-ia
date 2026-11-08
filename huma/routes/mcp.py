@@ -142,12 +142,51 @@ async def _revoked_at(client_id: str, email: str) -> int:
     return max(local, remote)
 
 
+_DURABLE_REVOKE_KEY = "_mcp_revoked"
+
+
+async def _durable_revoked_at(client_id: str, email: str) -> int:
+    """
+    Marca de desconexão guardada no banco (onboarding_answers["_mcp_revoked"]).
+    Lida só na renovação do refresh longo (1x por hora por conexão), pra a
+    revogação sobreviver a Redis apagado. Falha de leitura = 0 com WARNING.
+    """
+    try:
+        from huma.services.db_service import get_client
+        client = await get_client(client_id)
+    except Exception as e:
+        log.warning(f"MCP | leitura da revogação durável falhou | client={client_id} | {type(e).__name__}: {e}")
+        return 0
+    marks = ((getattr(client, "onboarding_answers", None) or {}).get(_DURABLE_REVOKE_KEY) or {}) if client else {}
+    try:
+        return int(marks.get((email or "").strip().lower() or "-", 0)) if isinstance(marks, dict) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _save_durable_revoke(client_id: str, email: str, when: int) -> None:
+    """Grava a marca de desconexão no banco. Nunca levanta."""
+    try:
+        from huma.services.db_service import get_client, update_client
+        client = await get_client(client_id)
+        if client is None:
+            return
+        answers = dict(getattr(client, "onboarding_answers", None) or {})
+        marks = dict(answers.get(_DURABLE_REVOKE_KEY) or {})
+        marks[(email or "").strip().lower() or "-"] = int(when)
+        answers[_DURABLE_REVOKE_KEY] = marks
+        await update_client(client_id, {"onboarding_answers": answers})
+    except Exception as e:
+        log.warning(f"MCP | gravar revogação durável falhou | client={client_id} | {type(e).__name__}: {e}")
+
+
 async def _revoke(client_id: str, email: str) -> None:
     k = _key(client_id, email)
     now = int(time.time())
     _revoked_local[k] = now
     try:
-        await cache.set_with_ttl(f"mcp_revoked:{k}", str(now), oa.REFRESH_TTL_SECONDS)
+        # Vale pelo maior refresh que existe (o das automações dura 1 ano).
+        await cache.set_with_ttl(f"mcp_revoked:{k}", str(now), max(oa.REFRESH_TTL_SECONDS, oa.LONG_REFRESH_TTL_SECONDS))
     except Exception as e:
         log.warning(f"MCP | redis indisponível em revoke | {type(e).__name__}: {e}")
 
@@ -176,6 +215,9 @@ async def _resolve_client(client_id: str) -> tuple[Optional[list[str]], str, str
     Quem é o cliente OAuth: (redirect_uris permitidas, nome, erro).
     CIMD: busca o documento na URL (cache 1h). DCR: abre o client_id assinado.
     """
+    if oa.is_partner(client_id):
+        # Zapier/Make/n8n: retorno conferido por regra em _validate_authz.
+        return [], oa.client_label(client_id), ""
     if oa.is_cimd(client_id):
         hit = _cimd_cache.get(client_id)
         doc: Optional[dict[str, Any]] = hit[1] if hit and hit[0] > time.time() else None
@@ -326,7 +368,10 @@ async def _validate_authz(p: dict[str, str]) -> tuple[Optional[list[str]], str, 
     uris, label, err = await _resolve_client(p["client_id"])
     if uris is None:
         return None, "", ("invalid_client", err), False
-    if not oa.redirect_uri_allowed(p["redirect_uri"], uris):
+    if oa.is_partner(p["client_id"]):
+        if not oa.partner_redirect_ok(p["client_id"], p["redirect_uri"]):
+            return None, "", ("invalid_request", f"redirect_uri não é de {label}"), False
+    elif not oa.redirect_uri_allowed(p["redirect_uri"], uris):
         return None, "", ("invalid_request", "redirect_uri não registrada pra este cliente"), False
     if p["response_type"] != "code":
         return uris, label, ("unsupported_response_type", "só response_type=code"), True
@@ -341,6 +386,23 @@ async def _validate_authz(p: dict[str, str]) -> tuple[Optional[list[str]], str, 
     return uris, label, None, True
 
 
+def _consent_items(oauth_client_id: str) -> str:
+    """O que o app vai poder fazer: assistente de IA x plataforma de automação."""
+    if oa.is_partner(oauth_client_id):
+        items = (
+            "receber os eventos da HUMA: lead novo, lead qualificado, agendamento, pagamento e contrato",
+            "mandar mensagem numa conversa que já existe, assumir ou devolver, anotar e mover etapa",
+            "buscar conversas pelo nome ou telefone do lead",
+        )
+    else:
+        items = (
+            "ver conversas, agenda, clientes, vendas e relatórios",
+            "responder leads, assumir ou devolver conversas, anotar e mover etapa",
+            "responder perguntas que a HUMA não soube",
+        )
+    return '<ul class="list">' + "".join(f"<li>{html.escape(i)}</li>" for i in items) + "</ul>"
+
+
 def _consent_page(p: dict[str, str], label: str, req: str, client_id: str, email: str, business: str) -> HTMLResponse:
     host = (urlsplit(p["redirect_uri"]).hostname or "").lower()
     loopback = host in ("localhost", "127.0.0.1", "::1")
@@ -349,6 +411,11 @@ def _consent_page(p: dict[str, str], label: str, req: str, client_id: str, email
         f'<input type="hidden" name="{k}" value="{html.escape(v)}">' for k, v in p.items()
     ) + f'<input type="hidden" name="req" value="{html.escape(req)}">'
     warn = ""
+    if p["client_id"] == "huma-n8n" and not loopback and not host.endswith(".app.n8n.cloud"):
+        warn = (
+            f'<p class="hint">O retorno vai pra um n8n instalado em <b>{html.escape(host)}</b>. '
+            'Só continue se esse n8n é seu ou da sua empresa e foi você que pediu a conexão agora.</p>'
+        )
     if loopback:
         warn = (
             '<p class="hint">O retorno vai pra um programa neste computador (endereço local). '
@@ -379,11 +446,7 @@ def _consent_page(p: dict[str, str], label: str, req: str, client_id: str, email
     <div class="mark ok">⇄</div>
     <h1>Conectar {html.escape(label)} à HUMA?</h1>
     <p>Logado como <b>{who}</b>{(" em <b>" + html.escape(business) + "</b>") if business else ""}. O {html.escape(label)} vai poder, em seu nome:</p>
-    <ul class="list">
-      <li>ver conversas, agenda, clientes, vendas e relatórios</li>
-      <li>responder leads, assumir ou devolver conversas, anotar e mover etapa</li>
-      <li>responder perguntas que a HUMA não soube</li>
-    </ul>
+    {_consent_items(p["client_id"])}
     <p class="hint">Só o que o seu papel na equipe já permite no Cockpit. Você desconecta quando quiser em Integrações.</p>
     <p class="dest">Retorno: {html.escape(host)}</p>
     {warn}
@@ -490,22 +553,30 @@ async def token_endpoint(request: Request) -> JSONResponse:
             log.warning(f"MCP | código reutilizado | client={code['client_id']}")
             return _no_store({"error": "invalid_grant", "error_description": "Código já usado."}, 400)
         actor_client, actor_email = code["client_id"], code["email"]
+        long_refresh = oa.is_partner(oauth_client_id)
     elif grant == "refresh_token":
         rt = oa.parse_refresh(data.get("refresh_token", ""))
         if not rt:
             return _no_store({"error": "invalid_grant", "error_description": "Refresh token inválido ou expirado."}, 400)
-        if rt["iat"] < await _revoked_at(rt["client_id"], rt["email"]):
+        if rt.get("long") and not oa.is_partner(oauth_client_id):
+            return _no_store({"error": "invalid_grant", "error_description": "Refresh token emitido pra outro cliente."}, 400)
+        revoked = await _revoked_at(rt["client_id"], rt["email"])
+        if rt.get("long"):
+            revoked = max(revoked, await _durable_revoked_at(rt["client_id"], rt["email"]))
+        if rt["iat"] < revoked:
             return _no_store({"error": "invalid_grant", "error_description": "Conexão desconectada no Cockpit."}, 400)
-        if not await _mark_used("rt", rt["jti"], oa.REFRESH_TTL_SECONDS):
+        # Refresh longo (Zapier/Make/n8n) não é de uso único: ver oa.issue_long_refresh.
+        if not rt.get("long") and not await _mark_used("rt", rt["jti"], oa.REFRESH_TTL_SECONDS):
             log.warning(f"MCP | refresh reutilizado | client={rt['client_id']}")
             return _no_store({"error": "invalid_grant", "error_description": "Refresh token já usado."}, 400)
         actor_client, actor_email = rt["client_id"], rt["email"]
+        long_refresh = bool(rt.get("long"))
     else:
         return _no_store({"error": "unsupported_grant_type"}, 400)
 
     access, expires_in = oa.issue_access(actor_client, actor_email)
-    refresh = oa.issue_refresh(actor_client, actor_email)
-    log.info(f"MCP | token | grant={grant} | client={actor_client} | email={actor_email or '-'}")
+    refresh = oa.issue_long_refresh(actor_client, actor_email) if long_refresh else oa.issue_refresh(actor_client, actor_email)
+    log.info(f"MCP | token | grant={grant} | client={actor_client} | email={actor_email or '-'} | longo={long_refresh}")
     return _no_store({
         "access_token": access,
         "token_type": "Bearer",
@@ -728,8 +799,14 @@ async def mcp_revoke(client_id: str, request: Request, client=Depends(verify_api
     targets = {email} if email else {"", owner}
     if email == owner:
         targets.add("")
+    from huma.services import automation_hooks
+
+    now = int(time.time())
     for e in targets:
         await _revoke(client_id, e)
+        await _save_durable_revoke(client_id, e, now)
+        # Zapier/Make/n8n que essa pessoa ligou param de receber eventos na hora.
+        await automation_hooks.delete_by_creator(client_id, e)
         try:
             await cache.delete_key(f"mcp_last:{_key(client_id, e)}")
         except Exception:

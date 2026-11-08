@@ -186,6 +186,21 @@ def create_app() -> FastAPI:
 
     # Sprint 1 / item 15 — handler dedicado pra HTTPException antes do generic.
     # Antes o handler genérico engolia HTTPException e transformava 404 em 500.
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        # API pública (/api/v1): mensagem legível pra Zapier/Make/n8n mostrarem ao
+        # dono. O resto do app segue com a resposta padrão do FastAPI.
+        if request.url.path.startswith("/api/v1/"):
+            parts = []
+            for err in exc.errors()[:5]:
+                field = ".".join(str(x) for x in err.get("loc", ()) if x not in ("body", "query", "path"))
+                parts.append(f"{field or 'pedido'}: {err.get('msg', 'inválido')}")
+            return JSONResponse({"detail": "Dados inválidos. " + "; ".join(parts)}, status_code=422)
+        return await request_validation_exception_handler(request, exc)
+
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         return JSONResponse(
@@ -241,6 +256,9 @@ def create_app() -> FastAPI:
     # Conector MCP (Claude e ChatGPT, 2026-10-12): /mcp + OAuth 2.1 em /oauth/mcp/*
     from huma.routes.mcp import router as mcp_router
     app.include_router(mcp_router)
+    # API pública pra Zapier, Make e n8n (2026-11-08): /api/v1, login = OAuth do MCP
+    from huma.routes.automation import router as automation_router
+    app.include_router(automation_router)
     from huma.routes.custom_requests import router as custom_requests_router
     app.include_router(custom_requests_router)
     app.include_router(whatsapp_meta_router)

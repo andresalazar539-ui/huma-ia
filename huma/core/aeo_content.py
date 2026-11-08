@@ -216,6 +216,121 @@ PAGES: dict[str, dict] = {
         ],
         "faq": [GENERAL_FAQ[0], GENERAL_FAQ[1], GENERAL_FAQ[12]],
     },
+    "automacoes": {
+        "path": "/automacoes",
+        # Fora do sitemap/llms até os apps saírem nas lojas (só fato): ligar quando aprovados.
+        "listed": False,
+        "title": "HUMA IA com Zapier, Make e n8n: como ligar e boas práticas",
+        "h1": "Como ligar a HUMA IA no Zapier, no Make e no n8n",
+        "answer": (
+            "O app da HUMA IA no Zapier, no Make e no n8n conecta com a conta da HUMA, sem copiar chave. Você "
+            "escolhe um gatilho (lead novo, lead qualificado, agendamento confirmado, pagamento aprovado, contrato assinado) "
+            "e manda o lead para planilha, CRM, e-mail ou qualquer outro app. Também dá para mandar mensagem, mover etapa, "
+            "anotar e assumir a conversa a partir de outra ferramenta."
+        ),
+        "sections": [
+            ("Como conectar", [
+                "No Zapier, no Make ou no n8n, procure por HUMA IA e escolha um gatilho ou uma ação.",
+                "Clique em conectar: abre a tela de login da HUMA. Entre com a sua conta e clique em Conectar.",
+                "Ligue a automação. A partir daí, cada evento chega na hora, sem precisar copiar endereço de webhook.",
+                "Para desconectar tudo de uma vez, vá em Integrações, Assistentes de IA, no Cockpit da HUMA.",
+            ]),
+            ("Gatilhos disponíveis", [
+                "Lead novo: alguém falou com a HUMA pela primeira vez, no WhatsApp, no Instagram ou no site.",
+                "Lead qualificado: a HUMA qualificou e passou para a equipe, com resumo e dados coletados.",
+                "Agendamento confirmado: a HUMA marcou um horário conferido na agenda real.",
+                "Pagamento aprovado: um Pix, boleto ou cartão feito pela conversa caiu.",
+                "Contrato assinado e contrato recusado: quando a assinatura eletrônica está conectada.",
+            ]),
+            ("Ações disponíveis", [
+                "Mandar mensagem numa conversa que já existe, pelo canal do lead. A HUMA continua atendendo.",
+                "Mover o lead de etapa no funil, igual arrastar no quadro do Cockpit.",
+                "Anotar no lead. A HUMA lê as anotações e usa no atendimento.",
+                "Assumir a conversa (a HUMA fica em silêncio) ou devolver para a HUMA.",
+                "Buscar uma conversa pelo nome ou telefone do lead.",
+            ]),
+            ("Boas práticas", [
+                "Use o gatilho Lead qualificado para levar ao CRM só quem está pronto, em vez de todo contato que mandou um oi.",
+                "Use Pagamento aprovado para emitir nota, liberar acesso ou avisar o estoque, sem conferir o banco na mão.",
+                "Mande o resumo da conversa junto: o campo de resumo já vem pronto no evento.",
+                "Evite automação que responde o lead por fora a cada mensagem. A HUMA já responde; duas vozes confundem o cliente.",
+                "Quando um vendedor assumir pelo CRM, use a ação Assumir conversa para a HUMA parar de falar com aquele lead.",
+                "A automação age com o papel de quem conectou. Para receber os eventos da conta inteira, conecte com o dono ou um admin.",
+                "Não existe ação para puxar conversa com número novo. Disparo para contatos antigos é feito na tela Reativação, pelo WhatsApp oficial.",
+            ]),
+            ("Segurança", [
+                "O login usa OAuth com PKCE: a senha da HUMA nunca passa pela plataforma de automação.",
+                "Cada pessoa da equipe só faz pela automação o que o papel dela já permite no Cockpit.",
+                "Uma automação desligada para de receber eventos na hora. Endereço que não responde por 20 vezes seguidas é desligado sozinho.",
+            ]),
+        ],
+        "faq": [
+            ("A HUMA IA funciona com Zapier?",
+             "Sim. A HUMA IA tem app no Zapier com gatilhos de lead novo, lead qualificado, agendamento, pagamento e contrato, "
+             "e ações de mandar mensagem, mover etapa, anotar e assumir conversa."),
+            ("A HUMA IA funciona com Make e n8n?",
+             "Sim. No Make é um app com gatilhos instantâneos e ações; no n8n é um nó da comunidade chamado HUMA IA "
+             "(pacote n8n-nodes-humaia), instalado em Configurações, Nós da comunidade."),
+            ("Preciso pagar a mais para usar automação na HUMA?",
+             f"Não. As integrações estão incluídas no preço da HUMA. {PRICE_SENTENCE} "
+             "O uso do Zapier, Make ou n8n é cobrado por eles, no plano de cada um."),
+            ("Dá para mandar os leads da HUMA para uma planilha?",
+             "Dá. Use o gatilho Lead novo ou Lead qualificado e a ação de planilha da plataforma. "
+             "Se preferir sem automação, a HUMA também grava direto numa planilha do Google conectada em Integrações."),
+        ],
+    },
+    "automacoes-referencia": {
+        "path": "/automacoes/referencia",
+        "listed": False,
+        "title": "API pública da HUMA IA: referência para Zapier, Make e n8n",
+        "h1": "Referência da API pública da HUMA IA",
+        "answer": (
+            "A API pública da HUMA IA fica em https://app.humaia.com.br/api/v1, usa OAuth 2.0 com PKCE (S256) e devolve JSON. "
+            "Ela tem inscrição de webhooks por evento (REST hooks) e ações sobre conversas que já existem: mandar mensagem, "
+            "mover etapa, anotar e assumir ou devolver para a IA."
+        ),
+        "sections": [
+            ("Autenticação", [
+                "Autorização: GET https://app.humaia.com.br/oauth/mcp/authorize com response_type=code, client_id, redirect_uri, state, code_challenge e code_challenge_method=S256.",
+                "Token: POST https://app.humaia.com.br/oauth/mcp/token com grant_type=authorization_code, code, client_id, redirect_uri e code_verifier.",
+                "Renovação: POST no mesmo endereço com grant_type=refresh_token. O acesso dura 1 hora; a renovação das plataformas de automação dura 1 ano.",
+                "Toda chamada leva o cabeçalho Authorization: Bearer com o token de acesso. Escopo: huma.",
+                "Erros vêm como JSON com o campo detail em português: 400, 401 (renovar o token), 403 (papel sem permissão), 404, 429 (limite de 240 por minuto) e 503.",
+            ]),
+            ("Conta e listas", [
+                "GET /api/v1/me: negócio, e-mail e papel de quem conectou. Serve de teste da conexão.",
+                "GET /api/v1/events: eventos disponíveis como gatilho.",
+                "GET /api/v1/events/{evento}/sample: até 3 eventos reais recentes da conta, no mesmo formato da entrega.",
+                "GET /api/v1/stages: etapas do funil (discovery, offer, closing, committed, qualified, won, lost).",
+            ]),
+            ("Webhooks por evento", [
+                "POST /api/v1/hooks com event, target_url (https) e platform: cria a inscrição e devolve o id (201).",
+                "DELETE /api/v1/hooks/{id}: apaga a inscrição. Apagar o que já não existe também responde 200.",
+                "GET /api/v1/hooks: inscrições ativas da conta. Só dono e admin podem criar e listar.",
+                "Entrega: POST JSON no target_url com os cabeçalhos X-HUMA-Event e X-HUMA-Hook-Id. Resposta 410 desliga a inscrição.",
+                "Formato do evento: id, event, event_label, at, client_id, business_name, lead (name, phone, id, email, channel, source, stage, facts, assigned_to, assigned_name), data (summary, service, when, value_cents, value_brl, method, payment_id) e conversation_url.",
+                "Eventos: lead.new, lead.qualified, appointment.confirmed, payment.approved, contract.signed, contract.refused.",
+            ]),
+            ("Conversas", [
+                "GET /api/v1/conversations?q=&limit=: conversas recentes, com busca por nome ou telefone. Lista vazia quando nada casa.",
+                "GET /api/v1/conversations/{id}: etapa, quem atende, fatos do lead, anotações e as últimas 20 mensagens.",
+                "POST /api/v1/conversations/{id}/messages com text (até 1600 caracteres): manda pelo canal do lead.",
+                "POST /api/v1/conversations/{id}/stage com stage: move o lead de etapa.",
+                "POST /api/v1/conversations/{id}/notes com text e replace (opcional): acrescenta ou troca as anotações.",
+                "POST /api/v1/conversations/{id}/handoff com takeover verdadeiro ou falso: uma pessoa assume ou devolve para a HUMA.",
+                "O id da conversa é o telefone com DDI no WhatsApp, ig: seguido do id no Instagram e web: seguido do id no chat do site.",
+            ]),
+        ],
+        "faq": [
+            ("A API da HUMA IA tem chave de API?",
+             "Não. O acesso é por OAuth com PKCE, então ninguém precisa copiar chave: a pessoa entra com a conta da HUMA e autoriza."),
+            ("A API da HUMA IA começa conversa com um número novo?",
+             "Não. As ações valem para conversas que já existem. Disparo para contatos novos ou antigos sai só pelo WhatsApp oficial, "
+             "com modelo aprovado pela Meta, na tela Reativação."),
+            ("Existe limite de chamadas na API da HUMA IA?",
+             "Sim: 240 chamadas por minuto por pessoa conectada. Acima disso a resposta é 429 e basta tentar de novo em seguida."),
+        ],
+    },
 }
 
 # ----------------------------------------------------------------
@@ -329,6 +444,11 @@ def vertical_path(slug: str) -> str:
     return f"/para/{slug}"
 
 
+def listed_pages() -> list[dict]:
+    """Páginas que entram no sitemap, IndexNow e llms (as com listed=False ficam só no endereço)."""
+    return [p for p in PAGES.values() if p.get("listed", True)]
+
+
 def all_paths() -> list[str]:
     """Todos os endereços citáveis desta fonte (pro sitemap, IndexNow e llms.txt)."""
-    return [p["path"] for p in PAGES.values()] + ["/perguntas"] + [vertical_path(s) for s in VERTICALS]
+    return [p["path"] for p in listed_pages()] + ["/perguntas"] + [vertical_path(s) for s in VERTICALS]
