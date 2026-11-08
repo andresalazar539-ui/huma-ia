@@ -718,3 +718,28 @@ def test_pkce_aceita_base64_padrao_da_make():
     assert oa.pkce_ok(verifier, std.replace("+", " "))  # "+" sem escape na query vira espaço
     assert oa.pkce_ok(verifier, _b.urlsafe_b64encode(raw).decode().rstrip("="))
     assert not oa.pkce_ok(verifier, _b.b64encode(_h.sha256(b"outro").digest()).decode())
+
+
+def test_410_da_make_nao_desliga_na_hora(fake_sb, monkeypatch):
+    """Make devolve 410 com o cenário ainda não salvo (temporário): conta como falha, não desliga."""
+    h = asyncio.run(hooks.create("cli_auto", "lead.new", "https://hook.us2.make.com/abc", "make"))
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, content=None, headers=None, extensions=None):
+            class R:
+                status_code = 410
+            return R()
+
+    monkeypatch.setattr(hooks.httpx, "AsyncClient", _Client)
+    asyncio.run(hooks.deliver({"client_id": "cli_auto", "event": "lead.new"}))
+    row = fake_sb.tables["automation_hooks"]["rows"][0]
+    assert row["id"] == h["id"] and row["disabled_at"] is None and row["fail_count"] == 1 and row["last_status"] == 410

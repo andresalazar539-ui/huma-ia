@@ -46,6 +46,8 @@ COLUMNS = "id,client_id,created_by,platform,event,target_url,created_at,last_del
 PLATFORMS = ("zapier", "make", "n8n", "outro")
 MAX_HOOKS_PER_CLIENT = 100
 MAX_CONSECUTIVE_FAILURES = 20
+# Plataformas em que a resposta 410 significa "a automação foi apagada".
+GONE_MEANS_DELETED = frozenset({"zapier", "outro"})
 CACHE_SECONDS = 60
 _HTTP_TIMEOUT = 10.0
 
@@ -405,8 +407,10 @@ async def _post(row: dict, payload: dict) -> int:
         log.warning(f"HTTP erro | service=automacao | client={client_id} | hook={hook_id} | {type(e).__name__}: {e}")
 
     now = datetime.now(timezone.utc).isoformat()
-    if status == 410:
-        # A plataforma diz que a automação não existe mais: desliga.
+    if status == 410 and str(row.get("platform") or "") in GONE_MEANS_DELETED:
+        # Zapier: 410 é o jeito oficial de dizer "automação apagada": desliga.
+        # Na Make o 410 também sai quando o cenário ainda não foi salvo/ligado
+        # (temporário, visto no teste real de 2026-11-08): lá conta como falha.
         await _update(client_id, hook_id, {"disabled_at": now, "last_status": status, "last_delivery_at": now})
         invalidate(client_id)
         log.info(f"Automação | 410, inscrição desligada | client={client_id} | hook={hook_id}")
