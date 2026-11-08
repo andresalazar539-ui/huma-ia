@@ -167,3 +167,58 @@ class TestReplyToolSemActions:
         assert "generate_payment" in desc
         # Regra #1 do CLAUDE.md: a instrução estrutural de 'type' permanece.
         assert "type" in desc
+
+
+class TestLeadNovoNoSite:
+    """Chat do site dispara lead.new na primeira mensagem (antes de 2026-11-08 não disparava)."""
+
+    def _run(self, monkeypatch, history):
+        import asyncio
+        from huma.core import orchestrator, web_channel
+        from huma.models.schemas import ClientIdentity, Conversation, OnboardingStatus
+        from huma.services import lead_events
+
+        identity = ClientIdentity(client_id="cli_web", business_name="Sol", onboarding_status=OnboardingStatus.ACTIVE)
+        conv = Conversation(client_id="cli_web", phone="web:" + "a" * 32, history=history, handoff_status="handed_off")
+        fired = []
+
+        async def ok(*a, **k):
+            return True
+
+        async def plan(*a, **k):
+            return {}
+
+        async def no(*a, **k):
+            return False
+
+        async def get_conv(*a, **k):
+            return conv
+
+        async def nothing(*a, **k):
+            return None
+
+        async def entry(client_id, phone, text):
+            return {"role": "user", "content": text}
+
+        async def client(*a, **k):
+            return identity
+
+        monkeypatch.setattr(orchestrator, "_get_client_cached", client)
+        monkeypatch.setattr(orchestrator, "_get_plan_cached", plan)
+        monkeypatch.setattr(orchestrator, "_is_new_conversation", no)
+        monkeypatch.setattr(orchestrator, "_ping_human_lead_waiting", nothing)
+        monkeypatch.setattr(web_channel, "_is_silent_hours_web", lambda c: False)
+        monkeypatch.setattr(web_channel.billing, "check_ia_limit", ok)
+        monkeypatch.setattr(web_channel.db, "get_conversation", get_conv)
+        monkeypatch.setattr(web_channel.db, "save_conversation", nothing)
+        monkeypatch.setattr(web_channel.lead_media, "user_entry", entry)
+        monkeypatch.setattr(web_channel.cache, "exists", ok)
+        monkeypatch.setattr(lead_events, "fire", lambda c, cv, ev, **d: fired.append((ev, cv.lead_source)))
+        asyncio.run(web_channel._process_web_message_locked("cli_web", conv.phone, "oi", ""))
+        return fired
+
+    def test_primeira_mensagem_dispara_lead_new_com_origem_site(self, monkeypatch):
+        assert self._run(monkeypatch, []) == [("lead.new", "site")]
+
+    def test_conversa_existente_nao_dispara(self, monkeypatch):
+        assert self._run(monkeypatch, [{"role": "user", "content": "antes"}]) == []

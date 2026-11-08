@@ -557,6 +557,13 @@ async def _process_web_message_locked(
         conv.lead_source = "site"
         conv.lead_source_detail = "chat do site (Balcão)"
 
+    # Lead novo de verdade (primeira mensagem da vida): mesmos destinos do
+    # WhatsApp (webhook, planilha, pixel, Zapier/Make/n8n). Antes de 2026-11-08
+    # o chat do site nunca disparava lead.new. Fire-and-forget, nunca levanta.
+    if not conv.history and not conv.last_message_at:
+        from huma.services import lead_events
+        lead_events.fire(client_data, conv, "lead.new")
+
     # Humano assumiu (handoff via Cockpit): IA silencia, registra a
     # mensagem pro humano ter contexto. Aviso fixo só na PRIMEIRA vez —
     # depois o visitante conversa com o humano via poll, sem robô
