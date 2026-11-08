@@ -452,6 +452,45 @@ async def send_test(client_data: Any, hook_id: str) -> Optional[dict]:
     return {"id": hook_id, "event": event, "http": status}
 
 
+# "lead.new" sai no COMEÇO do atendimento, antes de a conversa ser salva (ela é
+# gravada depois que a IA responde). Automação que escreve de volta no lead
+# (anotar, mover etapa, responder) recebia "conversa não encontrada" (visto no
+# teste real na Make em 2026-11-08). A entrega às automações espera a conversa
+# existir no banco, até LEAD_NEW_WAIT_SECONDS; depois entrega mesmo assim.
+LEAD_NEW_WAIT_SECONDS = 30.0
+_LEAD_NEW_POLL_SECONDS = 2.0
+
+
+async def _conversation_saved(client_id: str, phone: str) -> bool:
+    """True se a conversa já tem linha no banco. Erro de leitura = True (não segura a entrega)."""
+    sb = _sb()
+    if sb is None:
+        return True
+    try:
+        resp = await run_in_threadpool(
+            lambda: sb.table("conversations").select("phone").eq("client_id", client_id).eq("phone", phone).limit(1).execute()
+        )
+        return bool(resp.data)
+    except Exception as e:
+        log.warning(f"Automação | checagem da conversa falhou | client={client_id} | {type(e).__name__}: {e}")
+        return True
+
+
+async def wait_conversation_saved(client_id: str, phone: str, max_seconds: float = LEAD_NEW_WAIT_SECONDS) -> bool:
+    """Espera a conversa aparecer no banco. Devolve se apareceu dentro do prazo."""
+    if not client_id or not phone:
+        return True
+    waited = 0.0
+    while True:
+        if await _conversation_saved(client_id, phone):
+            return True
+        if waited >= max_seconds:
+            log.warning(f"Automação | conversa não apareceu em {max_seconds:.0f}s, entregando assim mesmo | client={client_id} | phone={phone}")
+            return False
+        await asyncio.sleep(_LEAD_NEW_POLL_SECONDS)
+        waited += _LEAD_NEW_POLL_SECONDS
+
+
 def creator_still_allowed(client_data: Any, created_by: str) -> bool:
     """
     Quem criou a inscrição ainda vê a conta inteira? (o evento leva lead de
@@ -501,6 +540,8 @@ async def deliver(payload: dict, client_data: Any = None) -> None:
         rows = allowed
         if not rows:
             return
+        if event == "lead.new":
+            await wait_conversation_saved(client_id, str((payload.get("lead") or {}).get("id") or ""))
         out = dict(payload)
         out.setdefault("id", new_event_id())
         results = await asyncio.gather(*[_post(r, out) for r in rows], return_exceptions=True)

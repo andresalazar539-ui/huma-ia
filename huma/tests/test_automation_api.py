@@ -743,3 +743,36 @@ def test_410_da_make_nao_desliga_na_hora(fake_sb, monkeypatch):
     asyncio.run(hooks.deliver({"client_id": "cli_auto", "event": "lead.new"}))
     row = fake_sb.tables["automation_hooks"]["rows"][0]
     assert row["id"] == h["id"] and row["disabled_at"] is None and row["fail_count"] == 1 and row["last_status"] == 410
+
+
+def test_lead_new_espera_a_conversa_existir(monkeypatch):
+    """lead.new sai antes de a conversa ser salva: a entrega espera ela aparecer (teste real na Make)."""
+    order = []
+    answers = iter([False, False, True])
+
+    async def saved(client_id, phone):
+        order.append(("check", phone))
+        return next(answers)
+
+    async def rows(client_id):
+        return [{"id": "ahk_1", "client_id": client_id, "event": "lead.new", "target_url": "https://hook.us2.make.com/x", "created_by": ""}]
+
+    async def post(row, payload):
+        order.append(("post", payload["lead"]["id"]))
+        return 200
+
+    monkeypatch.setattr(hooks, "_conversation_saved", saved)
+    monkeypatch.setattr(hooks, "_active_rows", rows)
+    monkeypatch.setattr(hooks, "_post", post)
+    monkeypatch.setattr(hooks, "_LEAD_NEW_POLL_SECONDS", 0.01)
+    asyncio.run(hooks.deliver({"client_id": "cli_auto", "event": "lead.new", "lead": {"id": "web:abc"}}))
+    assert order == [("check", "web:abc"), ("check", "web:abc"), ("check", "web:abc"), ("post", "web:abc")]
+
+
+def test_lead_new_entrega_mesmo_se_a_conversa_nao_aparecer(monkeypatch):
+    async def never(client_id, phone):
+        return False
+
+    monkeypatch.setattr(hooks, "_conversation_saved", never)
+    monkeypatch.setattr(hooks, "_LEAD_NEW_POLL_SECONDS", 0.01)
+    assert asyncio.run(hooks.wait_conversation_saved("cli_auto", "web:abc", max_seconds=0.03)) is False
