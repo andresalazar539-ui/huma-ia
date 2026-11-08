@@ -101,7 +101,7 @@ const connectionApi = {
       client_id: '{{common.clientId}}',
       redirect_uri: '{{oauth.localRedirectUri}}',
       scope: 'huma',
-      code_challenge: "{{base64url(sha256(temp.code_verifier, 'base64'))}}",
+      code_challenge: "{{sha256(temp.code_verifier, 'base64')}}", // a Make não tem base64url; a HUMA aceita base64 padrão
       code_challenge_method: 'S256',
     },
     response: {

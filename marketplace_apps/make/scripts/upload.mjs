@@ -209,7 +209,11 @@ if (problems.length) {
 const { Make } = MOCK ? await import('./mock-make.mjs') : await import('@makehq/sdk');
 const make = new Make(env.MAKE_API_KEY, env.MAKE_ZONE, { retry: { maxRetries: 0, onRateLimit: false, onServerError: false } });
 const sdk = make.sdk;
-const APP_NAME = plan.meta.name;
+// A Make põe um sufixo no nome escolhido (ex.: humaia-hwsk2c). BASE_NAME é o que pedimos;
+// APP_NAME passa a ser o nome real que a Make devolveu.
+const BASE_NAME = plan.meta.name;
+let APP_NAME = BASE_NAME;
+const isOurs = (n) => n === BASE_NAME || String(n || '').startsWith(`${BASE_NAME}-`);
 let version;
 const remote = { connections: {}, webhooks: {} };
 
@@ -226,8 +230,9 @@ async function run() {
   // App: find or create (private).
   if (!(await step('app.findOrCreate', async () => {
     const apps = await sdk.apps.list({ cols: ['name', 'version', 'public', 'label'] });
-    const found = (apps || []).filter((a) => a.name === APP_NAME).sort((a, b) => b.version - a.version)[0];
+    const found = (apps || []).filter((a) => isOurs(a.name)).sort((a, b) => b.version - a.version)[0];
     if (found) {
+      APP_NAME = found.name;
       version = found.version;
       if (found.public === true && !ALLOW_PUBLIC) {
         throw new CheckFailure('the app is already PUBLISHED; changes would reach users immediately. Re-run with --allow-public-app only if you really mean it.');
@@ -238,7 +243,7 @@ async function run() {
       return `existing app, version ${version}`;
     }
     const created = await sdk.apps.create({
-      name: APP_NAME,
+      name: BASE_NAME,
       label: plan.meta.label,
       description: plan.meta.description,
       theme: plan.meta.theme,
@@ -246,7 +251,8 @@ async function run() {
       private: true,
       audience: env.MAKE_APP_AUDIENCE,
     });
-    if (created?.name !== APP_NAME) throw new CheckFailure('Make acknowledged a different app name');
+    if (!isOurs(created?.name)) throw new CheckFailure('Make acknowledged a different app name');
+    APP_NAME = created.name;
     version = created.version;
     if (created.public === true) throw new CheckFailure('Make reported the new app as public; stopped before writing any section');
     return `created, version ${version}`;

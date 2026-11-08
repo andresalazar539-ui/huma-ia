@@ -705,3 +705,14 @@ class TestLacunasDosApps:
         c = TestClient(app)
         r = c.post("/api/v1/conversations/5511999998888/messages", json={}, headers=_bearer())
         assert r.status_code == 422 and isinstance(r.json()["detail"], str) and "text" in r.json()["detail"]
+
+
+def test_pkce_aceita_base64_padrao_da_make():
+    import base64 as _b, hashlib as _h, secrets as _s
+    verifier = _s.token_urlsafe(48)
+    raw = _h.sha256(verifier.encode()).digest()
+    std = _b.b64encode(raw).decode()            # o que a Make gera: base64 padrão, com "="
+    assert oa.pkce_ok(verifier, std)
+    assert oa.pkce_ok(verifier, std.replace("+", " "))  # "+" sem escape na query vira espaço
+    assert oa.pkce_ok(verifier, _b.urlsafe_b64encode(raw).decode().rstrip("="))
+    assert not oa.pkce_ok(verifier, _b.b64encode(_h.sha256(b"outro").digest()).decode())

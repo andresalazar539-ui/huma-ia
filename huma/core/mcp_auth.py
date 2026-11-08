@@ -194,7 +194,11 @@ def pkce_ok(code_verifier: str, code_challenge: str) -> bool:
         return False
     digest = hashlib.sha256(code_verifier.encode("ascii", "ignore")).digest()
     expected = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-    return hmac.compare_digest(expected, code_challenge.rstrip("="))
+    # Aceita também o base64 padrão do mesmo hash (a Make só tem sha256 em base64,
+    # sem base64url; e um "+" sem escape chega como espaço na query). É o mesmo
+    # valor em outro alfabeto: não enfraquece a checagem.
+    got = code_challenge.replace(" ", "-").replace("+", "-").replace("/", "_").rstrip("=")
+    return hmac.compare_digest(expected, got)
 
 
 def code_matches(code: dict[str, Any], oauth_client_id: str, redirect_uri: str) -> bool:
