@@ -305,7 +305,7 @@ async def conversations(request: Request, q: str = "", limit: int = 25, offset: 
         limit = max(1, min(int(limit or 25), 100))
         offset = max(0, min(int(offset or 0), 200))
         data = await _internal("GET", "/api/conversations", actor, params={
-            "client_id": actor["client_id"], "filter": "all", "limit": 200 if (q or offset) else limit,
+            "client_id": actor["client_id"], "filter": "todas", "limit": 200 if (q or offset) else limit,
         })
     except AutomationError as e:
         return _handle(e)

@@ -692,6 +692,8 @@ class TestLacunasDosApps:
         from huma.services import mcp_tools
 
         async def api(method, path, actor, params=None, json_body=None):
+            # A rota do Cockpit só aceita os filtros em português (bug pego no teste real da Make).
+            assert params["filter"] == "todas"
             return {"items": [{"phone": f"55119{i:08d}", "lead_name": f"Lead {i}"} for i in range(30)]}
 
         monkeypatch.setattr(mcp_tools, "api", api)
