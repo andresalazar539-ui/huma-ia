@@ -776,3 +776,21 @@ def test_lead_new_entrega_mesmo_se_a_conversa_nao_aparecer(monkeypatch):
     monkeypatch.setattr(hooks, "_conversation_saved", never)
     monkeypatch.setattr(hooks, "_LEAD_NEW_POLL_SECONDS", 0.01)
     assert asyncio.run(hooks.wait_conversation_saved("cli_auto", "web:abc", max_seconds=0.03)) is False
+
+
+def test_id_da_conversa_codificado_duas_vezes(fake_db, monkeypatch):
+    """A Make mandou 'web%253A...' (codificado 2x): a HUMA decodifica e acha a conversa certa."""
+    from huma.services import mcp_tools
+    seen = []
+
+    async def api(method, path, actor, params=None, json_body=None):
+        seen.append(path)
+        return {"phone": "web:abc", "owner_notes": ""}
+
+    monkeypatch.setattr(mcp_tools, "api", api)
+    c = TestClient(app)
+    r = c.post("/api/v1/conversations/web%253Aabc/notes", json={"text": "oi"}, headers=_bearer())
+    assert r.status_code == 200, r.text
+    assert seen[0] == "/api/conversations/cli_auto/web:abc"
+    from huma.routes.automation import _phone
+    assert _phone("web%3Aabc") == "web:abc" and _phone("ig%253A12") == "ig:12" and _phone("+55 (11) 99999-8888") == "5511999998888"

@@ -86,8 +86,22 @@ def _err(status: int, detail: str) -> JSONResponse:
 
 
 def _phone(raw: Any) -> str:
+    """
+    Id da conversa como a HUMA guarda. A Make chegou a mandar o id codificado
+    duas vezes ("web%3A..."): sem decodificar, o ":" sumia e o id virava só
+    dígitos (teste real, 2026-11-08). Decodifica até estabilizar.
+    """
+    from urllib.parse import unquote
+
     from huma.services.mcp_tools import _phone as norm
-    return norm(raw)
+
+    s = str(raw or "").strip()
+    for _ in range(3):
+        decoded = unquote(s)
+        if decoded == s:
+            break
+        s = decoded
+    return norm(s)
 
 
 # ----------------------------------------------------------------
